@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd service so the webapp starts on login/boot and restarts if it crashes.
+  1. Edit the two paths below (node path + project path).
+  2. cp deploy/com.ytstreamer.webapp.plist ~/Library/LaunchAgents/
+  3. launchctl load ~/Library/LaunchAgents/com.ytstreamer.webapp.plist
+  Find your node path with:  which node
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ytstreamer.webapp</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/Users/amesh/Desktop/ytstreamerhabkupfin/webapp/src/server.js</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/amesh/Desktop/ytstreamerhabkupfin/webapp</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PORT</key>
+    <string>8099</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/amesh/Desktop/ytstreamerhabkupfin/webapp/data/server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/amesh/Desktop/ytstreamerhabkupfin/webapp/data/server.err.log</string>
+</dict>
+</plist>

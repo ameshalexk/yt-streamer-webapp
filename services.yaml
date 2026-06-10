@@ -1,0 +1,41 @@
+# Describes the services offered by the YT Streamer integration
+
+download_url:
+  name: Download and Prepare a Video
+  description: "Downloads a video from a given URL, prepares it for streaming, and saves it to the library."
+  fields:
+    url:
+      name: URL
+      description: "The YouTube video URL to download."
+      required: true
+      example: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+      selector:
+        text:
+
+play_saved:
+  name: Play a Saved Video
+  description: "Starts streaming a previously saved video from the library to the camera entity."
+  fields:
+    video_id:
+      name: Video ID
+      description: "The ID (directory name) of the saved video to play."
+      required: true
+      example: "dQw4w9WgXcQ"
+      selector:
+        text:
+
+delete_saved:
+  name: Delete a Saved Video
+  description: "Permanently deletes a video from the saved media library."
+  fields:
+    video_id:
+      name: Video ID
+      description: "The ID (directory name) of the saved video to delete."
+      required: true
+      example: "dQw4w9WgXcQ"
+      selector:
+        text:
+
+stop_playback:
+  name: Stop Playback
+  description: "Stops any currently active MJPEG stream on the camera entity."

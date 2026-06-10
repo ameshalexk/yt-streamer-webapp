@@ -1,0 +1,25 @@
+.DS_Store
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Node dependencies
+node_modules/
+webapp/node_modules/
+frontend/node_modules/
+
+# Local runtime data
+webapp/data/
+*.log
+
+# Local environment and credentials
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Local editor/tooling
+.vscode/
+.idea/

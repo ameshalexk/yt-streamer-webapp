@@ -1,0 +1,17 @@
+# Cloudflare Tunnel config. Copy to ~/.cloudflared/config.yml and edit.
+# Created automatically by `cloudflared tunnel create yt-streamer`.
+
+tunnel: <YOUR_TUNNEL_ID>
+credentials-file: /Users/amesh/.cloudflared/<YOUR_TUNNEL_ID>.json
+
+ingress:
+  # Your custom domain -> the local webapp.
+  - hostname: stream.yourdomain.com
+    service: http://127.0.0.1:8099
+    originRequest:
+      # MJPEG is a long-lived response; disable timeouts so streams don't get cut.
+      connectTimeout: 30s
+      noTLSVerify: true
+      disableChunkedEncoding: false
+  # Required catch-all.
+  - service: http_status:404

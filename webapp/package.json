@@ -1,0 +1,20 @@
+{
+  "name": "yt-streamer-webapp",
+  "version": "1.0.0",
+  "description": "Self-hosted MJPEG streamer for m3u8 playlists and YouTube downloads, deployable behind Cloudflare Tunnel. Tesla-browser optimized.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "check": "node --check src/server.js && node --check src/lib/store.js && node --check src/lib/ytdlp.js && node --check src/lib/stream.js",
+    "setup": "node scripts/check-deps.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "mpegts.js": "^1.7.3"
+  }
+}
