@@ -18,6 +18,14 @@ const state = {
   playlists: [],
   selectedPlaylistId: null,
   playingItemId: null,
+  mode: "watch",
+  manageSaved: false,
+  lastSavedPlaylistId: null,
+  legacyItems: [],
+  legacyPlayingId: null,
+  legacyPlaylists: [],
+  selectedLegacyPlaylistId: null,
+  legacyPlaylistVideos: [],
 };
 
 const FPS_OPTIONS = [
@@ -66,25 +74,59 @@ function closeModal() { $("#modalBackdrop").hidden = true; $("#modal").innerHTML
 function openModal(html) { $("#modal").innerHTML = html; $("#modalBackdrop").hidden = false; }
 $("#modalBackdrop").addEventListener("click", (e) => { if (e.target.id === "modalBackdrop") closeModal(); });
 
-function setPlaylistDrawer(open) {
-  const drawer = $("#playlistDrawer");
-  const btn = $("#playlistMenuBtn");
-  drawer.classList.toggle("open", open);
-  drawer.setAttribute("aria-hidden", open ? "false" : "true");
-  btn.setAttribute("aria-expanded", open ? "true" : "false");
-  $("#drawerBackdrop").hidden = !open;
+function isMobileMode() { return window.matchMedia("(max-width: 760px)").matches; }
+
+function setPanelHidden(el, hidden) {
+  if (!el) return;
+  el.hidden = hidden;
+  el.inert = hidden;
+  el.setAttribute("aria-hidden", hidden ? "true" : "false");
 }
 
-function closePlaylistDrawer() { setPlaylistDrawer(false); }
-function isCompactDrawer() { return window.matchMedia("(max-width: 760px)").matches; }
+function setMode(mode) {
+  state.mode = mode;
+  const layout = $("#layout");
+  layout.classList.toggle("mode-watch", mode === "watch");
+  layout.classList.toggle("mode-browse", mode === "browse");
+  layout.classList.toggle("mode-saved", mode === "saved");
+  layout.classList.toggle("mode-library", mode === "library");
+  document.querySelectorAll(".mode-tab").forEach((tab) => {
+    const active = tab.dataset.mode === mode;
+    tab.classList.toggle("active", active);
+    if (active) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  });
+  setPanelHidden($("#channelsView"), mode !== "browse");
+  setPanelHidden($("#playlistDrawer"), mode !== "saved");
+  setPanelHidden($("#legacyLibraryView"), mode !== "library");
+  const player = $(".player");
+  const hideMobilePlayer = isMobileMode() && mode !== "watch";
+  player.inert = hideMobilePlayer;
+  player.setAttribute("aria-hidden", hideMobilePlayer ? "true" : "false");
+}
+
+function closePlaylistDrawer() { if (state.mode === "saved") setMode("watch"); }
 function revealDrawerItems() {
-  if (!isCompactDrawer()) return;
+  if (!isMobileMode()) return;
   const itemsHead = $("#itemsTitle");
   if (!itemsHead) return;
   requestAnimationFrame(() => {
     itemsHead.scrollIntoView({ block: "start", behavior: "smooth" });
     $("#itemList").scrollTop = 0;
   });
+}
+
+function openSavedPlaylist(playlistId) {
+  if (playlistId) state.selectedPlaylistId = playlistId;
+  setMode("saved");
+  renderPlaylists();
+  renderItems();
+  revealDrawerItems();
+}
+
+function showAttemptedUrl(url) {
+  const input = $("#quickUrl");
+  if (input && url) input.value = String(url).trim();
 }
 
 function bindTap(container, handler) {
@@ -118,6 +160,7 @@ async function loadPlaylists() {
   renderPlaylists();
   if (!state.selectedPlaylistId && state.playlists.length) selectPlaylist(state.playlists[0].id);
   else renderItems();
+  refreshChannelSavedStates();
 }
 
 function renderPlaylists() {
@@ -129,7 +172,7 @@ function renderPlaylists() {
         <div class="title">${esc(p.name)}</div>
         <div class="sub">${esc(channelPlaylistSub(p))}</div>
       </div>
-      <div class="row-actions">
+      <div class="row-actions manage-only">
         <button class="icon-btn" data-act="rename" title="Rename">✎</button>
         <button class="icon-btn danger" data-act="delPlaylist" title="Delete">🗑</button>
       </div>
@@ -154,7 +197,7 @@ function itemRowHtml(it) {
       <div class="title">${esc(it.title)}</div>
       <div class="sub">${category}${it.meta?.duration ? fmtDur(it.meta.duration) + " · " : ""}${esc((it.url || "").slice(0, 60))}</div>
     </div>
-    <div class="row-actions">
+    <div class="row-actions manage-only">
       <button class="icon-btn danger" data-act="delItem" title="Remove">🗑</button>
     </div>
   </li>`;
@@ -185,14 +228,37 @@ function renderItems() {
   }).join("");
 }
 
+function setManageSaved(enabled) {
+  state.manageSaved = enabled;
+  const panel = $("#playlistDrawer");
+  const btn = $("#manageSavedBtn");
+  panel.classList.toggle("manage", enabled);
+  btn.textContent = enabled ? "Done" : "Manage";
+  btn.setAttribute("aria-pressed", enabled ? "true" : "false");
+}
+
 // ---- Player ----
-function streamQuery() {
+function timestampValue(startAt) {
+  const n = Number(startAt);
+  return Number.isFinite(n) && n > 0 ? Math.max(0, n) : 0;
+}
+
+function streamQuery(startAt = 0) {
   const p = new URLSearchParams({
     height: $("#ctlHeight").value,
     fps: $("#ctlFps").value,
     quality: $("#ctlQuality").value,
     _: Date.now(), // cache-bust so re-play restarts ffmpeg
   });
+  const timestamp = timestampValue(startAt);
+  if (timestamp) p.set("timestamp", String(Math.floor(timestamp * 1000) / 1000));
+  return p.toString();
+}
+
+function audioQuery(startAt = 0) {
+  const p = new URLSearchParams({ _: Date.now() });
+  const timestamp = timestampValue(startAt);
+  if (timestamp) p.set("timestamp", String(Math.floor(timestamp * 1000) / 1000));
   return p.toString();
 }
 
@@ -206,8 +272,17 @@ let streamAttempt = 0;
 let streamWarnTimer = null;
 let streamFailTimer = null;
 let restreamTimer = null;
+const streamSeek = {
+  seekable: false,
+  duration: 0,
+  startAt: 0,
+  timer: null,
+  liveAtMs: 0,
+};
 const STREAM_WARN_MS = 12000;
 const STREAM_FAIL_MS = 30000;
+const COMPAT_STREAM_WARN_MS = 25000;
+const COMPAT_STREAM_FAIL_MS = 60000;
 
 function currentSettingsLabel() {
   const h = $("#ctlHeight");
@@ -287,12 +362,87 @@ function markStreamLive(attempt) {
   clearStreamNotice();
   $("#screen").classList.remove("loading");
   setBadge("live", "● LIVE · " + currentSettingsLabel());
+  if (streamSeek.seekable) {
+    streamSeek.liveAtMs = Date.now();
+    startStreamSeekTimer();
+  }
+}
+
+function clampStreamSeekTime(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, streamSeek.duration ? Math.min(n, streamSeek.duration) : n);
+}
+
+function getStreamCurrentTime() {
+  if (!streamSeek.seekable) return 0;
+  const videoTime = $("#video").currentTime || 0;
+  const audioTime = $("#audio").currentTime || 0;
+  const mediaTime = Math.max(videoTime, audioTime);
+  if (mediaTime > 0) return clampStreamSeekTime(streamSeek.startAt + mediaTime);
+  if (streamSeek.liveAtMs) {
+    return clampStreamSeekTime(streamSeek.startAt + ((Date.now() - streamSeek.liveAtMs) / 1000));
+  }
+  return clampStreamSeekTime(streamSeek.startAt);
+}
+
+function updateStreamSeekUi(current = getStreamCurrentTime()) {
+  const panel = $("#streamSeek");
+  if (!panel) return;
+  panel.hidden = !streamSeek.seekable;
+  if (!streamSeek.seekable) return;
+  const duration = streamSeek.duration || 0;
+  const pct = duration ? Math.max(0, Math.min(100, (current / duration) * 100)) : 0;
+  $("#streamSeekFill").style.width = `${pct}%`;
+  $("#streamSeekThumb").style.left = `${pct}%`;
+  $("#streamSeekTrack").setAttribute("aria-valuenow", String(Math.round(pct)));
+  $("#streamSeekTime").textContent = `${clock(current)} / ${clock(duration)}`;
+  $("#streamBackBtn").disabled = current <= 0;
+  $("#streamForwardBtn").disabled = duration ? current >= duration - 1 : false;
+}
+
+function stopStreamSeekTimer(reset = false) {
+  clearInterval(streamSeek.timer);
+  streamSeek.timer = null;
+  streamSeek.liveAtMs = 0;
+  if (reset) {
+    streamSeek.seekable = false;
+    streamSeek.duration = 0;
+    streamSeek.startAt = 0;
+    updateStreamSeekUi(0);
+  }
+}
+
+function startStreamSeekTimer() {
+  clearInterval(streamSeek.timer);
+  updateStreamSeekUi();
+  streamSeek.timer = setInterval(updateStreamSeekUi, 500);
+}
+
+function configureStreamSeek(meta = {}, startAt = 0) {
+  stopStreamSeekTimer(false);
+  const duration = Number(meta.duration || 0);
+  streamSeek.duration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  streamSeek.seekable = Boolean(meta.seekable && streamSeek.duration);
+  streamSeek.startAt = clampStreamSeekTime(startAt);
+  updateStreamSeekUi(streamSeek.startAt);
+}
+
+function seekStreamTo(time) {
+  if (!streamSeek.seekable || !replayFn) return;
+  const target = clampStreamSeekTime(time);
+  streamSeek.startAt = target;
+  streamSeek.liveAtMs = 0;
+  updateStreamSeekUi(target);
+  toast("Seeking to " + clock(target));
+  replayFn(target);
 }
 
 function failStreamAttempt(attempt, title, detail) {
   if (!currentAttempt(attempt)) return;
   streamAttempt++;
   clearStreamTimers();
+  stopStreamSeekTimer(false);
   destroyPlayer();
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), audio = $("#audio");
   screen.classList.remove("loading");
@@ -309,7 +459,7 @@ function failStreamAttempt(attempt, title, detail) {
   toast(title, true);
 }
 
-function startStreamWatchdog(attempt, mode) {
+function startStreamWatchdog(attempt, mode, { warnMs = STREAM_WARN_MS, failMs = STREAM_FAIL_MS } = {}) {
   clearStreamTimers();
   streamWarnTimer = setTimeout(() => {
     if (!currentAttempt(attempt)) return;
@@ -319,14 +469,14 @@ function startStreamWatchdog(attempt, mode) {
       "Still connecting",
       `${mode} has not delivered a video frame yet. Waiting a bit longer before marking it failed.`
     );
-  }, STREAM_WARN_MS);
+  }, warnMs);
   streamFailTimer = setTimeout(() => {
     failStreamAttempt(
       attempt,
       "No video frames received",
-      "The stream connection stayed open, but no playable video arrived after 30 seconds. Try Retry, Lower quality, another channel, or check VPN/geo restrictions."
+      `The stream connection stayed open, but no playable video arrived after ${Math.round(failMs / 1000)} seconds. Try Retry, Lower quality, another channel, or check VPN/geo restrictions.`
     );
-  }, STREAM_FAIL_MS);
+  }, failMs);
 }
 
 // Lazy-load mpegts.js: local copy first, CDN fallback.
@@ -363,6 +513,7 @@ function cleanupMedia() {
   streamAttempt++;
   clearStreamTimers();
   clearStreamNotice();
+  stopStreamSeekTimer(false);
   destroyPlayer();
   try { video.pause(); } catch {}
   video.onplaying = null;
@@ -374,9 +525,13 @@ function cleanupMedia() {
   img.onload = null;
   img.onerror = null;
   img.removeAttribute("src");
+  img.style.visibility = "";
   try { audio.pause(); } catch {}
+  audio.onloadeddata = null;
   audio.oncanplay = null;
+  audio.oncanplaythrough = null;
   audio.onerror = null;
+  audio.onplaying = null;
   audio.removeAttribute("src");
   try { audio.load(); } catch {}
   activeCompat = null;
@@ -385,7 +540,7 @@ function cleanupMedia() {
 
 function startCompatAudio(notify = false) {
   const audio = $("#audio");
-  if (!activeCompat?.audioUrl || !soundOn) return;
+  if (!activeCompat?.audioUrl || !soundOn) return null;
   if (!audio.src) audio.src = activeCompat.audioUrl;
   audio.muted = false;
   const play = audio.play();
@@ -397,11 +552,24 @@ function startCompatAudio(notify = false) {
       }
     });
   }
+  return play || null;
 }
 
-function playCompatStream({ mjpegUrl, audioUrl }, label) {
+function loadCompatVideo(attempt, mjpegUrl) {
+  const img = $("#mjpeg");
+  if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl || activeCompat.videoStarted) return;
+  activeCompat.videoStarted = true;
+  img.src = mjpegUrl;
+}
+
+function audioReadyForSync(audio) {
+  return audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
+}
+
+function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const screen = $("#screen"), img = $("#mjpeg"), audio = $("#audio");
   cleanupMedia();
+  configureStreamSeek(meta, meta.startAt || 0);
   const attempt = streamAttempt;
   $("#nowPlaying").textContent = label || "Playing";
   $("#stopBtn").disabled = false;
@@ -409,48 +577,87 @@ function playCompatStream({ mjpegUrl, audioUrl }, label) {
   screen.classList.remove("video-mode");
   screen.classList.add("playing", "loading", "mjpeg-mode");
   setBadge("reconnecting", "↻ Connecting…");
-  startStreamWatchdog(attempt, "MJPEG fallback");
-  activeCompat = { mjpegUrl, audioUrl };
+  startStreamWatchdog(attempt, "MJPEG fallback", {
+    warnMs: COMPAT_STREAM_WARN_MS,
+    failMs: COMPAT_STREAM_FAIL_MS,
+  });
+  activeCompat = { mjpegUrl, audioUrl, audioReady: false, videoReady: false, videoStarted: false, playbackStarted: false };
+
+  const releaseCompatPlayback = () => {
+    if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl || activeCompat.playbackStarted) return;
+    if (!activeCompat.videoReady) return;
+    if (audioUrl && soundOn && !activeCompat.audioReady) return;
+    activeCompat.playbackStarted = true;
+    img.style.visibility = "";
+    if (audioUrl && soundOn) {
+      const play = startCompatAudio(true);
+      if (play?.catch) play.catch(() => {});
+    }
+    markStreamLive(attempt);
+  };
 
   img.onload = () => {
     if (activeCompat?.mjpegUrl !== mjpegUrl) return;
-    markStreamLive(attempt);
+    activeCompat.videoReady = true;
+    releaseCompatPlayback();
   };
   img.onerror = () => {
     if (activeCompat?.mjpegUrl !== mjpegUrl) return;
     failStreamAttempt(attempt, "Mac could not convert stream", "The source opened, but ffmpeg did not produce MJPEG video frames. Try Lower quality, a lower resolution, or another channel.");
   };
-  img.src = mjpegUrl;
 
   audio.muted = !soundOn;
-  audio.oncanplay = () => startCompatAudio(false);
   if (audioUrl && soundOn) {
+    img.style.visibility = "hidden";
+    setBadge("reconnecting", "↻ Syncing A/V…");
+    const loadVideoIfAudioReady = () => {
+      if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl) return;
+      if (!audioReadyForSync(audio)) return;
+      activeCompat.audioReady = true;
+      loadCompatVideo(attempt, mjpegUrl);
+      releaseCompatPlayback();
+    };
+    audio.onloadeddata = loadVideoIfAudioReady;
+    audio.oncanplay = loadVideoIfAudioReady;
+    audio.oncanplaythrough = loadVideoIfAudioReady;
+    audio.onerror = () => {
+      if (!currentAttempt(attempt)) return;
+      toast("Audio failed, starting video");
+      activeCompat.audioReady = true;
+      loadCompatVideo(attempt, mjpegUrl);
+      releaseCompatPlayback();
+    };
     audio.src = audioUrl;
-    startCompatAudio(true);
+    try { audio.load(); } catch {}
+    loadVideoIfAudioReady();
+  } else {
+    activeCompat.audioReady = true;
+    loadCompatVideo(attempt, mjpegUrl);
   }
 }
 
 // Play one synced MPEG-TS stream (H.264+AAC) via mpegts.js / MSE.
-async function playStream(sources, label) {
+async function playStream(sources, label, meta = {}) {
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
   const screen = $("#screen"), video = $("#video");
   $("#nowPlaying").textContent = label || "Playing";
   $("#stopBtn").disabled = false;
   $("#restreamBtn").disabled = false;
   cleanupMedia();
+  configureStreamSeek(meta, meta.startAt || 0);
   const attempt = streamAttempt;
-  if (mjpegUrl && !canTryMpegts()) return playCompatStream({ mjpegUrl, audioUrl }, label);
+  if (mjpegUrl && !canTryMpegts()) return playCompatStream({ mjpegUrl, audioUrl }, label, meta);
   screen.classList.remove("mjpeg-mode");
   screen.classList.add("playing", "loading", "video-mode");
   setBadge("reconnecting", "↻ Connecting…");
   startStreamWatchdog(attempt, "MPEG-TS playback");
   try { await ensureMpegts(); } catch (e) {
-    if (mjpegUrl) return playCompatStream({ mjpegUrl, audioUrl }, label);
+    if (mjpegUrl) return playCompatStream({ mjpegUrl, audioUrl }, label, meta);
     failStreamAttempt(attempt, "Player failed to load", streamErrorDetail(e.message)); return;
   }
   if (!currentAttempt(attempt)) return;
   if (!window.mpegts || !mpegts.isSupported()) {
-    if (mjpegUrl) return playCompatStream({ mjpegUrl, audioUrl }, label);
+    if (mjpegUrl) return playCompatStream({ mjpegUrl, audioUrl }, label, meta);
     failStreamAttempt(attempt, "Unsupported browser player", "This browser cannot play MPEG-TS/MSE video for this stream."); return;
   }
 
@@ -466,7 +673,7 @@ async function playStream(sources, label) {
   mpegtsPlayer.attachMediaElement(video);
   mpegtsPlayer.on(mpegts.Events.ERROR, (type, detail, info) => {
     if (!currentAttempt(attempt)) return;
-    if (mjpegUrl) return playCompatStream({ mjpegUrl, audioUrl }, label);
+    if (mjpegUrl) return playCompatStream({ mjpegUrl, audioUrl }, label, meta);
     failStreamAttempt(attempt, "Stream playback failed", formatMpegtsError(type, detail, info));
   });
   video.onplaying = () => markStreamLive(attempt);
@@ -482,22 +689,43 @@ async function playStream(sources, label) {
   video.play().catch(() => {});
 }
 
-function playItem(item) {
+async function enrichYoutubeStreamMeta(item) {
+  if (item.type !== "youtube" || item.meta?.duration) return item;
+  try {
+    const info = await api.get(`/api/youtube/info?url=${encodeURIComponent(item.url)}`);
+    item.meta = { ...(item.meta || {}), duration: info.duration, thumbnail: info.thumbnail };
+    if (!item.title && info.title) item.title = info.title;
+  } catch (e) {
+    console.warn("youtube info failed for saved item:", e.message);
+  }
+  return item;
+}
+
+async function playItem(item) {
+  item = await enrichYoutubeStreamMeta(item);
   state.playingItemId = item.id;
   renderItems();
-  replayFn = () => {
-    const q = streamQuery();
+  if (isMobileMode()) setMode("watch");
+  showAttemptedUrl(item.url);
+  replayFn = (startAt = getStreamCurrentTime()) => {
+    const q = streamQuery(startAt);
     playStream({
       tsUrl: `/stream/ts/item/${item.id}?${q}`,
       mjpegUrl: `/stream/item/${item.id}?${q}`,
-      audioUrl: `/stream/audio/item/${item.id}?_=${Date.now()}`,
-    }, item.title);
+      audioUrl: `/stream/audio/item/${item.id}?${audioQuery(startAt)}`,
+    }, item.title, {
+      seekable: item.type === "youtube" || item.type === "file",
+      duration: item.meta?.duration,
+      startAt,
+    });
   };
   replayFn();
 }
 
 function stopPlayback() {
   cleanupMedia();
+  stopLegacyProgress();
+  stopStreamSeekTimer(true);
   replayFn = null;
   setBadge("hidden");
   $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode");
@@ -505,12 +733,17 @@ function stopPlayback() {
   $("#stopBtn").disabled = true;
   $("#restreamBtn").disabled = true;
   state.playingItemId = null;
+  state.legacyPlayingId = null;
+  legacy.playing = null;
+  legacy.resolution = null;
   renderItems();
+  renderLegacyLibrary();
 }
 
 function restreamPlayback() {
   if (!replayFn) return;
   const replay = replayFn;
+  const resumeAt = streamSeek.seekable ? getStreamCurrentTime() : undefined;
   cleanupMedia();
   $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode");
   setBadge("reconnecting", "↻ Restreaming...");
@@ -518,7 +751,7 @@ function restreamPlayback() {
   clearTimeout(restreamTimer);
   restreamTimer = setTimeout(() => {
     restreamTimer = null;
-    if (replayFn === replay) replay();
+    if (replayFn === replay) replay(resumeAt);
   }, 150);
 }
 
@@ -583,7 +816,7 @@ function reapplyControls() {
   updateBwHint();
   if (!replayFn) return;
   toast("Restarting at " + currentSettingsLabel());
-  replayFn();
+  replayFn(streamSeek.seekable ? getStreamCurrentTime() : undefined);
 }
 
 function updateBwHint() {
@@ -755,6 +988,377 @@ function pollDownload(jobId) {
   });
 }
 
+// ---- Processed YouTube library ----
+const legacy = {
+  playing: null,
+  resolution: null,
+  progressTimer: null,
+  downloading: false,
+};
+
+function clock(sec) {
+  if (!Number.isFinite(sec) || sec < 0) return "0:00";
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  return (h ? h + ":" : "") + String(m).padStart(h ? 2 : 1, "0") + ":" + String(s).padStart(2, "0");
+}
+
+function legacyStatus(text, bad = false) {
+  const el = $("#legacyStatus");
+  if (!el) return;
+  el.textContent = text || "";
+  el.style.color = bad ? "#ff8a8a" : "";
+}
+
+function selectedLegacyResolutions() {
+  return [...document.querySelectorAll("#legacyResolutions input:checked")].map((el) => parseInt(el.value, 10));
+}
+
+function setLegacyProgress(pct, hidden = false) {
+  const bar = $("#legacyProgress");
+  if (!bar) return;
+  bar.hidden = hidden;
+  bar.querySelector("i").style.width = `${Math.max(0, Math.min(100, pct || 0))}%`;
+}
+
+async function loadLegacyLibrary() {
+  state.legacyItems = await api.get("/api/legacy-library");
+  renderLegacyLibrary();
+}
+
+async function loadLegacyPlaylists() {
+  state.legacyPlaylists = await api.get("/api/legacy-library/playlists");
+  if (!state.selectedLegacyPlaylistId && state.legacyPlaylists.length) {
+    state.selectedLegacyPlaylistId = state.legacyPlaylists[0].id;
+  }
+  if (!state.legacyPlaylists.some((playlist) => playlist.id === state.selectedLegacyPlaylistId)) {
+    state.selectedLegacyPlaylistId = state.legacyPlaylists[0]?.id || null;
+  }
+  renderLegacyPlaylists();
+  await loadSelectedLegacyPlaylistVideos();
+}
+
+function renderLegacyPlaylists() {
+  const select = $("#legacyPlaylistSelect");
+  if (!select) return;
+  if (!state.legacyPlaylists.length) {
+    select.innerHTML = `<option>No playlists</option>`;
+    select.disabled = true;
+    $("#legacyDeletePlaylistBtn").disabled = true;
+    return;
+  }
+  select.disabled = false;
+  select.innerHTML = state.legacyPlaylists.map((playlist) => (
+    `<option value="${esc(playlist.id)}" ${playlist.id === state.selectedLegacyPlaylistId ? "selected" : ""}>${esc(playlist.name || playlist.url)}</option>`
+  )).join("");
+  const active = selectedLegacyPlaylist();
+  $("#legacyDeletePlaylistBtn").disabled = !active || active.builtin;
+}
+
+function selectedLegacyPlaylist() {
+  return state.legacyPlaylists.find((playlist) => playlist.id === state.selectedLegacyPlaylistId) || null;
+}
+
+async function loadSelectedLegacyPlaylistVideos() {
+  const container = $("#legacyPlaylistVideos");
+  const playlist = selectedLegacyPlaylist();
+  if (!container) return;
+  if (!playlist) {
+    state.legacyPlaylistVideos = [];
+    container.innerHTML = `<div class="legacy-empty">No playlist selected.</div>`;
+    return;
+  }
+  container.innerHTML = `<div class="legacy-empty">Loading playlist...</div>`;
+  try {
+    const data = await api.get(`/api/legacy-library/playlists/${encodeURIComponent(playlist.id)}/videos`);
+    state.legacyPlaylistVideos = data.videos || [];
+    renderLegacyPlaylistVideos();
+  } catch (e) {
+    state.legacyPlaylistVideos = [];
+    container.innerHTML = `<div class="legacy-empty">Could not load playlist: ${esc(e.message)}</div>`;
+  }
+}
+
+function legacyVideoProcessed(video) {
+  const id = String(video.id || "");
+  return state.legacyItems.some((item) => (
+    item.originalYoutubeId === id ||
+    String(item.originalUrl || "").includes(id)
+  ));
+}
+
+function renderLegacyPlaylistVideos() {
+  const container = $("#legacyPlaylistVideos");
+  if (!container) return;
+  if (!state.legacyPlaylistVideos.length) {
+    container.innerHTML = `<div class="legacy-empty">Playlist is empty or could not be loaded.</div>`;
+    return;
+  }
+  container.innerHTML = state.legacyPlaylistVideos.map((video) => {
+    const processed = legacyVideoProcessed(video);
+    return `<div class="legacy-playlist-row" data-video-id="${esc(video.id)}">
+      <div class="meta">
+        <div class="title">${esc(video.title)}</div>
+        <div class="sub">${fmtDur(video.duration)}${video.duration ? " · " : ""}${esc(video.url)}</div>
+      </div>
+      <div class="actions">
+        <button class="btn small ${processed ? "ghost" : "secondary"}" data-act="download-video" type="button" ${processed ? "disabled" : ""}>${processed ? "Processed" : "Download"}</button>
+        <button class="btn small ghost" data-act="stream-video" type="button">Stream</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderLegacyLibrary() {
+  const list = $("#legacyList");
+  if (!list) return;
+  if (!state.legacyItems.length) {
+    list.innerHTML = `<div class="legacy-empty">No processed videos yet.</div>`;
+    updateLegacyResolutionSelect();
+    return;
+  }
+  list.innerHTML = state.legacyItems.map((item) => `
+    <div class="legacy-item ${item.id === state.legacyPlayingId ? "active" : ""}" data-id="${esc(item.id)}">
+      <div class="meta">
+        <div class="title">${esc(item.title)}</div>
+        <div class="sub">${fmtDur(item.duration)}${item.duration ? " · " : ""}${esc((item.resolutions || []).join("p, "))}p</div>
+      </div>
+      <div class="actions">
+        <button class="btn small secondary" data-act="play" type="button">Play</button>
+        <button class="btn small ghost" data-act="delete" type="button">Delete</button>
+      </div>
+    </div>`).join("");
+  updateLegacyResolutionSelect();
+}
+
+function currentLegacyItem() {
+  return state.legacyItems.find((item) => item.id === state.legacyPlayingId) || legacy.playing || null;
+}
+
+function updateLegacyResolutionSelect() {
+  const select = $("#legacyResolutionSelect");
+  if (!select) return;
+  const item = currentLegacyItem();
+  if (!item) {
+    select.innerHTML = `<option>No video selected</option>`;
+    select.disabled = true;
+    return;
+  }
+  const current = legacy.resolution || item.resolutions?.[0];
+  select.disabled = false;
+  select.innerHTML = (item.resolutions || []).map((res) => (
+    `<option value="${res}" ${res === current ? "selected" : ""}>${res}p</option>`
+  )).join("");
+}
+
+async function probeLegacyFormats() {
+  const url = $("#legacyUrl").value.trim();
+  if (!url) return toast("Paste a YouTube URL first", true);
+  const btn = $("#legacyProbeBtn");
+  btn.disabled = true;
+  btn.textContent = "Checking...";
+  legacyStatus("Checking available qualities...");
+  try {
+    const info = await api.get(`/api/legacy-library/formats?url=${encodeURIComponent(url)}`);
+    const available = info.availableResolutions || [];
+    document.querySelectorAll("#legacyResolutions label").forEach((label) => {
+      const input = label.querySelector("input");
+      const value = parseInt(input.value, 10);
+      const ok = available.some((height) => height <= value && height >= 240);
+      input.disabled = !ok;
+      if (!ok) input.checked = false;
+      label.classList.toggle("disabled", !ok);
+    });
+    legacyStatus(`${info.title || "Video"} · available: ${available.join("p, ")}p`);
+  } catch (e) {
+    legacyStatus(e.message, true);
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Check";
+  }
+}
+
+async function startLegacyDownload() {
+  const url = $("#legacyUrl").value.trim();
+  return startLegacyDownloadForUrl(url, { clearInput: true });
+}
+
+async function startLegacyDownloadForUrl(url, { clearInput = false } = {}) {
+  if (!url) return toast("Paste a YouTube URL first", true);
+  const resolutions = selectedLegacyResolutions();
+  if (!resolutions.length) return toast("Select at least one quality", true);
+  const btn = $("#legacyDownloadBtn");
+  btn.disabled = true;
+  legacy.downloading = true;
+  setLegacyProgress(0, false);
+  legacyStatus("Starting download...");
+  try {
+    const { jobId } = await api.post("/api/legacy-library/download", { url, resolutions });
+    await pollLegacyDownload(jobId);
+    if (clearInput) $("#legacyUrl").value = "";
+    await loadLegacyLibrary();
+    renderLegacyPlaylistVideos();
+    toast("Processed video ready");
+  } catch (e) {
+    legacyStatus(e.message, true);
+    toast(e.message, true);
+  } finally {
+    legacy.downloading = false;
+    btn.disabled = false;
+  }
+}
+
+function pollLegacyDownload(jobId) {
+  return new Promise((resolve, reject) => {
+    const tick = async () => {
+      try {
+        const job = await api.get(`/api/legacy-library/jobs/${jobId}`);
+        setLegacyProgress(job.pct || 0, false);
+        legacyStatus(`${job.message || job.status || "Processing"} · ${Math.round(job.pct || 0)}%`);
+        if (job.status === "done") return resolve(job);
+        if (job.status === "error") return reject(new Error(job.error || "download failed"));
+        setTimeout(tick, 1000);
+      } catch (e) {
+        reject(e);
+      }
+    };
+    tick();
+  });
+}
+
+async function streamLegacyPlaylistVideo(video) {
+  const url = video.url;
+  if (!video.duration) {
+    try {
+      const info = await api.get(`/api/youtube/info?url=${encodeURIComponent(url)}`);
+      video.duration = info.duration;
+      video.isLive = info.isLive;
+      if (!video.title && info.title) video.title = info.title;
+    } catch (e) {
+      console.warn("youtube info failed for streamed playlist video:", e.message);
+    }
+  }
+  state.playingItemId = null;
+  state.legacyPlayingId = null;
+  renderItems();
+  renderLegacyLibrary();
+  showAttemptedUrl(url);
+  replayFn = (startAt = getStreamCurrentTime()) => {
+    const q = streamQuery(startAt);
+    const u = encodeURIComponent(url);
+    playStream({
+      tsUrl: `/stream/ts/youtube?url=${u}&${q}`,
+      mjpegUrl: `/stream/youtube?url=${u}&${q}`,
+      audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
+    }, video.title || "YouTube", {
+      seekable: !video.isLive,
+      duration: video.duration,
+      startAt,
+    });
+  };
+  replayFn();
+}
+
+function stopLegacyProgress() {
+  clearInterval(legacy.progressTimer);
+  legacy.progressTimer = null;
+  const fill = $("#legacySeekFill");
+  const thumb = $("#legacySeekThumb");
+  const time = $("#legacyTime");
+  if (fill) fill.style.width = "0%";
+  if (thumb) thumb.style.left = "0%";
+  if (time) time.textContent = "0:00 / 0:00";
+  ["#legacyBackBtn", "#legacyForwardBtn"].forEach((sel) => {
+    const btn = $(sel);
+    if (btn) btn.disabled = true;
+  });
+}
+
+function startLegacyProgress() {
+  stopLegacyProgress();
+  const audio = $("#audio");
+  const tick = () => {
+    const duration = audio.duration || legacy.playing?.duration || 0;
+    const current = audio.currentTime || 0;
+    const pct = duration ? Math.max(0, Math.min(100, (current / duration) * 100)) : 0;
+    $("#legacySeekFill").style.width = `${pct}%`;
+    $("#legacySeekThumb").style.left = `${pct}%`;
+    $("#legacySeek").setAttribute("aria-valuenow", String(Math.round(pct)));
+    $("#legacyTime").textContent = `${clock(current)} / ${clock(duration)}`;
+    const ready = Boolean(legacy.playing && duration);
+    $("#legacyBackBtn").disabled = !ready;
+    $("#legacyForwardBtn").disabled = !ready;
+  };
+  tick();
+  legacy.progressTimer = setInterval(tick, 250);
+}
+
+function legacyStreamUrl(startAt = 0) {
+  const item = legacy.playing;
+  const resolution = legacy.resolution || item?.resolutions?.[0];
+  const params = new URLSearchParams({
+    height: resolution,
+    fps: $("#ctlFps").value,
+    quality: $("#ctlQuality").value,
+    timestamp: Math.max(0, Math.floor((startAt || 0) * 1000) / 1000),
+    _: Date.now(),
+  });
+  return `/stream/legacy/${encodeURIComponent(item.id)}/${resolution}?${params}`;
+}
+
+function seekLegacy(time) {
+  if (!legacy.playing) return;
+  const audio = $("#audio");
+  const duration = audio.duration || legacy.playing.duration || 0;
+  const target = Math.max(0, duration ? Math.min(time, duration) : time);
+  $("#mjpeg").src = legacyStreamUrl(target);
+  try { audio.currentTime = target; } catch {}
+  if (soundOn) audio.play().catch(() => toast("Tap sound to resume audio"));
+}
+
+function playLegacyItem(item, resolution = null, startAt = 0) {
+  const screen = $("#screen"), img = $("#mjpeg"), audio = $("#audio");
+  cleanupMedia();
+  stopStreamSeekTimer(true);
+  state.playingItemId = null;
+  state.legacyPlayingId = item.id;
+  legacy.playing = item;
+  legacy.resolution = resolution || item.resolutions?.[0];
+  renderItems();
+  renderLegacyLibrary();
+  updateLegacyResolutionSelect();
+  if (isMobileMode()) setMode("watch");
+  $("#nowPlaying").textContent = item.title || "Processed video";
+  $("#stopBtn").disabled = false;
+  $("#restreamBtn").disabled = false;
+  screen.classList.remove("video-mode");
+  screen.classList.add("playing", "loading", "mjpeg-mode");
+  setBadge("reconnecting", "↻ Starting processed video...");
+  const attempt = streamAttempt;
+  startStreamWatchdog(attempt, "Processed video");
+
+  img.onload = () => {
+    if (!currentAttempt(attempt)) return;
+    markStreamLive(attempt);
+  };
+  img.onerror = () => failStreamAttempt(attempt, "Processed video failed", "The Mac could not convert the saved video at this position.");
+  img.src = legacyStreamUrl(startAt);
+
+  audio.src = `/stream/legacy-audio/${encodeURIComponent(item.id)}?_=${Date.now()}`;
+  audio.muted = !soundOn;
+  audio.onloadedmetadata = () => {
+    try { audio.currentTime = startAt || 0; } catch {}
+    if (soundOn) audio.play().catch(() => toast("Tap sound to start audio"));
+    startLegacyProgress();
+  };
+  audio.oncanplay = () => {
+    if (soundOn) audio.play().catch(() => {});
+  };
+  replayFn = () => playLegacyItem(item, legacy.resolution, $("#audio").currentTime || startAt || 0);
+}
+
 window.__closeModal = closeModal;
 
 // ---- Channels browser (built-in IPTV catalog) ----
@@ -783,14 +1387,20 @@ const ch = {
 
 function revealChannels() {
   const view = $("#channelsView");
-  view.hidden = false;
-  const player = $(".player");
-  const scrollToPanel = () => { player.scrollTop = Math.max(0, view.offsetTop - 12); };
-  scrollToPanel();
-  requestAnimationFrame(scrollToPanel);
+  setMode("browse");
+  view.scrollTop = 0;
 }
 function openChannels() { revealChannels(); if (!ch.sourcesLoaded) loadChannelSources(true); else loadChannels(true); }
-function closeChannels() { closeChannelMenus(); $("#channelsView").hidden = true; }
+function closeChannels() { closeChannelMenus(); if (state.mode === "browse") setMode("watch"); }
+
+async function openLegacyLibrary() {
+  setMode("library");
+  try {
+    await loadLegacyLibrary();
+    await loadLegacyPlaylists();
+  }
+  catch (e) { toast(e.message, true); }
+}
 
 function sourceName(id) {
   return ch.sources.find((s) => s.id === id)?.name || (id === "country:us" ? "United States (US)" : "Custom playlist");
@@ -824,6 +1434,82 @@ function channelCountryMeta(c) {
     return { countryCode: code || raw, countryName: code ? `Country ${code}` : raw };
   }
   return { countryCode: "CUSTOM", countryName: "Custom" };
+}
+
+function canonicalUrl(url) {
+  return String(url || "").trim();
+}
+
+function canonicalCategory(category) {
+  return String(category || "Other").trim().toLowerCase();
+}
+
+function displayCategory(category) {
+  const parts = String(category || "Other").split(/[;/]/).map((part) => part.trim()).filter(Boolean);
+  return parts[parts.length - 1] || "Other";
+}
+
+function savedChannelKey(c) {
+  const country = channelCountryMeta(c);
+  return {
+    url: canonicalUrl(c.url),
+    countryCode: String(country.countryCode || "").toUpperCase(),
+    countryName: String(country.countryName || ""),
+    category: canonicalCategory(channelCategory(c)),
+  };
+}
+
+function itemSavedKey(playlist, item) {
+  return {
+    url: canonicalUrl(item.url),
+    countryCode: String(item.meta?.countryCode || playlist.meta?.countryCode || "").toUpperCase(),
+    countryName: String(item.meta?.countryName || playlist.meta?.countryName || ""),
+    category: canonicalCategory(item.meta?.category || item.meta?.group || "Other"),
+  };
+}
+
+function findSavedChannel(c) {
+  const key = savedChannelKey(c);
+  for (const playlist of state.playlists) {
+    for (const item of playlist.items || []) {
+      const existing = itemSavedKey(playlist, item);
+      if (
+        existing.url === key.url &&
+        existing.category === key.category &&
+        (existing.countryCode === key.countryCode || existing.countryName === key.countryName)
+      ) {
+        return { playlist, item };
+      }
+    }
+  }
+  return null;
+}
+
+function setChannelSaveState(row, c) {
+  const addBtn = row.querySelector("[data-act='add']");
+  if (!addBtn) return;
+  const saved = findSavedChannel(c);
+  row.classList.toggle("saved", Boolean(saved));
+  addBtn.disabled = Boolean(saved);
+  addBtn.classList.toggle("saved", Boolean(saved));
+  addBtn.textContent = saved ? "Saved" : "+";
+  addBtn.title = saved ? "Saved" : "Save to playlist";
+  addBtn.setAttribute("aria-label", saved ? `Saved ${c.name}` : `Save ${c.name} to playlist`);
+}
+
+function refreshChannelSavedStates() {
+  document.querySelectorAll("#chList .ch-row").forEach((row) => {
+    try {
+      const c = JSON.parse(decodeURIComponent(row.dataset.ch));
+      setChannelSaveState(row, c);
+    } catch {}
+  });
+}
+
+function showSaveFeedback(playlist, category) {
+  state.lastSavedPlaylistId = playlist.id;
+  $("#chSaveMessage").textContent = `Saved to ${playlist.name} > ${displayCategory(category)}`;
+  $("#chSaveFeedback").hidden = false;
 }
 
 function renderSourceMenu() {
@@ -958,6 +1644,7 @@ function renderChannels(channels, append) {
   if (!append) list.innerHTML = "";
   if (!channels.length && !append) { list.innerHTML = `<div class="ch-empty">No channels match.</div>`; return; }
   const html = channels.map((c) => {
+    const saved = findSavedChannel(c);
     const logo = c.logo
       ? `<img class="logo" src="${esc(c.logo)}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'logo placeholder',textContent:'📺'}))" />`
       : `<div class="logo placeholder">📺</div>`;
@@ -972,12 +1659,12 @@ function renderChannels(channels, append) {
       userAgent: c.userAgent,
       referer: c.referer,
     }));
-    return `<div class="ch-row" data-ch="${payload}">
+    return `<div class="ch-row${saved ? " saved" : ""}" data-ch="${payload}">
       ${logo}
       <div class="info"><div class="nm">${esc(c.name)}</div><div class="gp">${esc(c.group)}</div></div>
       <div class="acts">
         <button class="play" type="button" data-act="play" title="Play" aria-label="Play ${esc(c.name)}">▶</button>
-        <button class="save-channel" type="button" data-act="add" title="Save to playlist" aria-label="Save ${esc(c.name)} to playlist">+</button>
+        <button class="save-channel${saved ? " saved" : ""}" type="button" data-act="add" title="${saved ? "Saved" : "Save to playlist"}" aria-label="${saved ? "Saved" : "Save"} ${esc(c.name)}${saved ? "" : " to playlist"}" ${saved ? "disabled" : ""}>${saved ? "Saved" : "+"}</button>
       </div>
     </div>`;
   }).join("");
@@ -1019,8 +1706,6 @@ async function getOrCreateCountryChannelsPlaylist(c) {
 }
 
 // Channels event wiring
-$("#channelsBtn").onclick = openChannels;
-$("#chClose").onclick = closeChannels;
 $("#chSourceBtn").onclick = () => toggleChannelMenu("source");
 $("#chGroupBtn").onclick = () => toggleChannelMenu("group");
 $("#chSourcePanel").onclick = (e) => {
@@ -1035,6 +1720,7 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest(".ch-menu")) closeChannelMenus();
 });
 $("#chMore").onclick = () => { ch.offset += ch.limit; loadChannels(false); };
+$("#chOpenSaved").onclick = () => openSavedPlaylist(state.lastSavedPlaylistId);
 let chSearchTimer;
 $("#chSearch").addEventListener("input", (e) => {
   clearTimeout(chSearchTimer);
@@ -1046,6 +1732,13 @@ $("#chList").addEventListener("click", async (e) => {
   const act = e.target.closest("[data-act]")?.dataset.act;
   if (act === "add") {
     const addBtn = e.target.closest("[data-act='add']");
+    const existing = findSavedChannel(c);
+    if (existing) {
+      setChannelSaveState(row, c);
+      state.selectedPlaylistId = existing.playlist.id;
+      showSaveFeedback(existing.playlist, channelCategory(c));
+      return;
+    }
     const originalText = addBtn.textContent;
     const originalTitle = addBtn.title;
     try {
@@ -1076,21 +1769,10 @@ $("#chList").addEventListener("click", async (e) => {
       state.selectedPlaylistId = p.id;
       await loadPlaylists();
       row.classList.remove("saving");
-      row.classList.add("saved");
       addBtn.classList.remove("saving");
-      addBtn.classList.add("saved");
-      addBtn.textContent = "✓";
-      addBtn.title = "Saved";
-      addBtn.setAttribute("aria-label", `Saved ${c.name}`);
-      toast(`Saved “${c.name}” to ${country.countryName} / ${category}`);
-      setTimeout(() => {
-        row.classList.remove("saved");
-        addBtn.classList.remove("saved");
-        addBtn.disabled = false;
-        addBtn.textContent = originalText;
-        addBtn.title = originalTitle;
-        addBtn.setAttribute("aria-label", `Save ${c.name} to playlist`);
-      }, 2200);
+      setChannelSaveState(row, c);
+      showSaveFeedback(p, category);
+      toast(`Saved to ${p.name} > ${displayCategory(category)}`);
     } catch (err) {
       row.classList.remove("saving");
       addBtn.classList.remove("saving");
@@ -1104,6 +1786,7 @@ $("#chList").addEventListener("click", async (e) => {
   }
   // default / play
   state.playingItemId = null; renderItems();
+  showAttemptedUrl(c.url);
   replayFn = () => playStream(channelStreamSrc(c), c.name);
   replayFn();
 });
@@ -1111,11 +1794,30 @@ $("#chList").addEventListener("click", async (e) => {
 // ---- Event wiring ----
 $("#addPlaylistBtn").onclick = modalNewPlaylist;
 $("#addItemBtn").onclick = modalAddItem;
-$("#playlistMenuBtn").onclick = () => setPlaylistDrawer(true);
-$("#playlistCloseBtn").onclick = closePlaylistDrawer;
-$("#drawerBackdrop").onclick = closePlaylistDrawer;
+$("#manageSavedBtn").onclick = () => setManageSaved(!state.manageSaved);
+document.querySelectorAll(".mode-tab").forEach((tab) => {
+  tab.onclick = () => {
+    if (tab.dataset.mode === "browse") openChannels();
+    else if (tab.dataset.mode === "library") openLegacyLibrary();
+    else setMode(tab.dataset.mode);
+  };
+});
+$("#emptySavedBtn").onclick = () => setMode("saved");
+$("#emptyBrowseBtn").onclick = openChannels;
+$("#emptyPasteBtn").onclick = () => {
+  setMode("watch");
+  const input = $("#quickUrl");
+  input.focus();
+  input.select();
+};
+$("#streamSettingsBtn").onclick = () => {
+  const panel = $("#streamSettingsPanel");
+  const nextOpen = panel.hidden;
+  panel.hidden = !nextOpen;
+  $("#streamSettingsBtn").setAttribute("aria-expanded", nextOpen ? "true" : "false");
+};
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && $("#playlistDrawer").classList.contains("open")) closePlaylistDrawer();
+  if (e.key === "Escape" && state.mode !== "watch") setMode("watch");
 });
 $("#stopBtn").onclick = stopPlayback;
 $("#restreamBtn").onclick = restreamPlayback;
@@ -1123,14 +1825,109 @@ $("#fullscreenBtn").onclick = toggleScreenFullscreen;
 $("#streamRetryBtn").onclick = () => {
   if (!replayFn) return;
   toast("Retrying stream");
-  replayFn();
+  replayFn(streamSeek.seekable ? getStreamCurrentTime() : undefined);
 };
 $("#streamLowerBtn").onclick = () => {
   if (!replayFn) return;
   lowerPlaybackSettings();
   toast("Retrying at " + currentSettingsLabel());
-  replayFn();
+  replayFn(streamSeek.seekable ? getStreamCurrentTime() : undefined);
 };
+$("#legacyRefreshBtn").onclick = async () => {
+  try {
+    await loadLegacyLibrary();
+    await loadLegacyPlaylists();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+$("#legacyProbeBtn").onclick = probeLegacyFormats;
+$("#legacyDownloadBtn").onclick = startLegacyDownload;
+$("#legacyPlaylistSelect").onchange = async (e) => {
+  state.selectedLegacyPlaylistId = e.target.value;
+  renderLegacyPlaylists();
+  await loadSelectedLegacyPlaylistVideos();
+};
+$("#legacyAddPlaylistBtn").onclick = async () => {
+  const url = prompt("YouTube playlist URL:");
+  if (!url) return;
+  try {
+    const playlist = await api.post("/api/legacy-library/playlists", { url });
+    state.selectedLegacyPlaylistId = playlist.id;
+    await loadLegacyPlaylists();
+    toast("Playlist added");
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+$("#legacyDeletePlaylistBtn").onclick = async () => {
+  const playlist = selectedLegacyPlaylist();
+  if (!playlist || playlist.builtin) return;
+  if (!confirm(`Delete playlist "${playlist.name || playlist.url}"?`)) return;
+  try {
+    await api.del(`/api/legacy-library/playlists/${encodeURIComponent(playlist.id)}`);
+    state.selectedLegacyPlaylistId = null;
+    await loadLegacyPlaylists();
+    toast("Playlist deleted");
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+$("#legacyResolutionSelect").onchange = () => {
+  const item = currentLegacyItem();
+  if (!item) return;
+  const next = parseInt($("#legacyResolutionSelect").value, 10);
+  playLegacyItem(item, next, $("#audio").currentTime || 0);
+};
+$("#streamBackBtn").onclick = () => seekStreamTo(getStreamCurrentTime() - 10);
+$("#streamForwardBtn").onclick = () => seekStreamTo(getStreamCurrentTime() + 10);
+$("#streamSeekTrack").addEventListener("pointerdown", (e) => {
+  if (!streamSeek.seekable) return;
+  e.preventDefault();
+  clearInterval(streamSeek.timer);
+  const seek = (clientX) => {
+    const rect = $("#streamSeekTrack").getBoundingClientRect();
+    const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    updateStreamSeekUi(pos * streamSeek.duration);
+    return pos * streamSeek.duration;
+  };
+  let target = seek(e.clientX);
+  const move = (ev) => { target = seek(ev.clientX); };
+  const up = () => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", up);
+    seekStreamTo(target);
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", up);
+});
+$("#streamSeekTrack").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowLeft") { e.preventDefault(); seekStreamTo(getStreamCurrentTime() - 10); }
+  if (e.key === "ArrowRight") { e.preventDefault(); seekStreamTo(getStreamCurrentTime() + 10); }
+});
+$("#legacyBackBtn").onclick = () => seekLegacy(($("#audio").currentTime || 0) - 5);
+$("#legacyForwardBtn").onclick = () => seekLegacy(($("#audio").currentTime || 0) + 5);
+$("#legacySeek").addEventListener("pointerdown", (e) => {
+  if (!legacy.playing) return;
+  const seek = (clientX) => {
+    const rect = $("#legacySeek").getBoundingClientRect();
+    const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const duration = $("#audio").duration || legacy.playing.duration || 0;
+    seekLegacy(pos * duration);
+  };
+  seek(e.clientX);
+  const move = (ev) => seek(ev.clientX);
+  const up = () => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", up);
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", up);
+});
+$("#legacySeek").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowLeft") { e.preventDefault(); seekLegacy(($("#audio").currentTime || 0) - 5); }
+  if (e.key === "ArrowRight") { e.preventDefault(); seekLegacy(($("#audio").currentTime || 0) + 5); }
+});
 $("#muteBtn").onclick = () => {
   const a = $("#audio");
   if (soundOn && activeCompat?.audioUrl && a.paused) {
@@ -1181,6 +1978,41 @@ bindTap($("#itemList"), async (e) => {
   }
 });
 
+bindTap($("#legacyList"), async (e) => {
+  const row = e.target.closest(".legacy-item");
+  if (!row) return;
+  const item = state.legacyItems.find((x) => x.id === row.dataset.id);
+  if (!item) return;
+  const act = e.target.closest("[data-act]")?.dataset.act || "play";
+  if (act === "delete") {
+    if (!confirm(`Delete "${item.title}" from the processed library?`)) return;
+    try {
+      await api.del(`/api/legacy-library/${encodeURIComponent(item.id)}`);
+      if (state.legacyPlayingId === item.id) stopPlayback();
+      await loadLegacyLibrary();
+    } catch (err) {
+      toast(err.message, true);
+    }
+    return;
+  }
+  playLegacyItem(item);
+});
+
+bindTap($("#legacyPlaylistVideos"), async (e) => {
+  const row = e.target.closest(".legacy-playlist-row");
+  if (!row) return;
+  const video = state.legacyPlaylistVideos.find((entry) => entry.id === row.dataset.videoId);
+  if (!video) return;
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  if (act === "stream-video") {
+    await streamLegacyPlaylistVideo(video);
+    return;
+  }
+  if (act === "download-video") {
+    await startLegacyDownloadForUrl(video.url);
+  }
+});
+
 {
   const screen = $("#screen");
   let lastTapAt = 0;
@@ -1227,18 +2059,33 @@ bindTap($("#itemList"), async (e) => {
 $("#quickPlayBtn").onclick = async () => {
   const url = $("#quickUrl").value.trim();
   if (!url) return toast("Paste a URL first", true);
+  showAttemptedUrl(url);
 
   // YouTube -> play directly.
   if (/youtube\.com|youtu\.be/.test(url)) {
+    const ytBtn = $("#quickPlayBtn");
+    let info = null;
+    ytBtn.disabled = true; ytBtn.textContent = "...";
+    try {
+      info = await api.get(`/api/youtube/info?url=${encodeURIComponent(url)}`);
+    } catch (e) {
+      console.warn("youtube info failed, streaming without seek metadata:", e.message);
+    } finally {
+      ytBtn.disabled = false; ytBtn.textContent = "Go";
+    }
     state.playingItemId = null; renderItems();
-    replayFn = () => {
-      const q = streamQuery();
+    replayFn = (startAt = getStreamCurrentTime()) => {
+      const q = streamQuery(startAt);
       const u = encodeURIComponent(url);
       playStream({
         tsUrl: `/stream/ts/youtube?url=${u}&${q}`,
         mjpegUrl: `/stream/youtube?url=${u}&${q}`,
-        audioUrl: `/stream/audio/youtube?url=${u}&_=${Date.now()}`,
-      }, "YouTube");
+        audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
+      }, info?.title || "YouTube", {
+        seekable: !info?.isLive,
+        duration: info?.duration,
+        startAt,
+      });
     };
     return replayFn();
   }
@@ -1302,9 +2149,11 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
 
 // ---- Init ----
 (async function init() {
+  setMode("watch");
   renderFpsPresets();
   updateBwHint();
   await pingHealth();
   await loadPlaylists().catch((e) => toast(e.message, true));
   setInterval(pingHealth, 10000);
+  window.addEventListener("resize", () => setMode(state.mode));
 })();

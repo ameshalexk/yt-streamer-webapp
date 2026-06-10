@@ -8,6 +8,7 @@ import * as store from "./lib/store.js";
 import * as ytdlp from "./lib/ytdlp.js";
 import * as stream from "./lib/stream.js";
 import * as catalog from "./lib/catalog.js";
+import * as processedLibrary from "./lib/processed-library.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -78,7 +79,7 @@ app.post("/api/playlists/:id/items", asyncH(async (req, res) => {
   if (!url || !url.trim()) return res.status(400).json({ error: "url required" });
   const item = await store.addItem(req.params.id, { title, type: type || "m3u8", url: url.trim(), meta });
   if (!item) return res.status(404).json({ error: "playlist not found" });
-  res.status(201).json(item);
+  res.status(item.duplicate ? 200 : 201).json(item);
 }));
 
 app.patch("/api/playlists/:id/items/:itemId", asyncH(async (req, res) => {
@@ -185,6 +186,81 @@ app.get("/api/download/:jobId", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Legacy-style processed YouTube library
+// ---------------------------------------------------------------------------
+app.get("/api/legacy-library/formats", asyncH(async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: "url required" });
+  res.json(await processedLibrary.formats(url));
+}));
+
+app.get("/api/legacy-library", asyncH(async (req, res) => {
+  res.json(await processedLibrary.list());
+}));
+
+app.get("/api/legacy-library/playlists", asyncH(async (req, res) => {
+  res.json(await processedLibrary.listPlaylists());
+}));
+
+app.post("/api/legacy-library/playlists", asyncH(async (req, res) => {
+  const { url, name } = req.body || {};
+  if (!url) return res.status(400).json({ error: "url required" });
+  res.status(201).json(await processedLibrary.addPlaylist({ url, name }));
+}));
+
+app.get("/api/legacy-library/playlists/:id/videos", asyncH(async (req, res) => {
+  const playlists = await processedLibrary.listPlaylists();
+  const playlist = playlists.find((entry) => entry.id === req.params.id);
+  if (!playlist) return res.status(404).json({ error: "playlist not found" });
+  res.json({ playlist, videos: await processedLibrary.playlistEntries(playlist.url) });
+}));
+
+app.delete("/api/legacy-library/playlists/:id", asyncH(async (req, res) => {
+  const ok = await processedLibrary.deletePlaylist(req.params.id);
+  if (!ok) return res.status(404).json({ error: "playlist not found or built-in" });
+  res.json({ ok: true });
+}));
+
+app.post("/api/legacy-library/download", asyncH(async (req, res) => {
+  const { url, resolutions } = req.body || {};
+  if (!url) return res.status(400).json({ error: "url required" });
+  const job = newJob();
+  job.message = "Queued";
+  res.status(202).json({ jobId: job.id });
+
+  (async () => {
+    try {
+      const item = await processedLibrary.processDownload(url, {
+        resolutions,
+        onProgress: (pct, message) => {
+          job.pct = Math.max(0, Math.min(100, Math.round(pct)));
+          job.message = message;
+        },
+      });
+      job.status = "done";
+      job.pct = 100;
+      job.message = "Ready";
+      job.item = item;
+    } catch (err) {
+      job.status = "error";
+      job.error = err.message;
+      job.message = "Failed";
+    }
+  })();
+}));
+
+app.get("/api/legacy-library/jobs/:jobId", (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "unknown job" });
+  res.json(job);
+});
+
+app.delete("/api/legacy-library/:id", asyncH(async (req, res) => {
+  await processedLibrary.remove(req.params.id);
+  res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
 // Probe an arbitrary url/m3u8 to validate before saving.
 // ---------------------------------------------------------------------------
 app.get("/api/probe", asyncH(async (req, res) => {
@@ -205,7 +281,7 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
 
   if (item.type === "youtube") {
     const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(item.url, config.download.maxHeight);
-    return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false });
+    return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp });
   }
   if (item.type === "file") {
     // Guard: only stream files that live inside the library dir.
@@ -214,7 +290,7 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
       return res.status(403).json({ error: "file outside library" });
     }
     try { await fs.access(resolved); } catch { return res.status(404).json({ error: "file missing" }); }
-    return stream.streamMjpeg(req, res, { input: resolved, params, isLive: false });
+    return stream.streamMjpeg(req, res, { input: resolved, params, isLive: false, startAt: req.query.timestamp });
   }
   // default: m3u8 / direct url (carry any saved UA/referer headers)
   return stream.streamMjpeg(req, res, {
@@ -241,7 +317,33 @@ app.get("/stream/youtube", asyncH(async (req, res) => {
   if (!url) return res.status(400).json({ error: "url required" });
   const params = stream.normalizeParams(req.query);
   const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(url, config.download.maxHeight);
-  return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false });
+  return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp });
+}));
+
+// Stream a processed-library video. This mirrors the old saved-video path:
+// audio is served separately, while video is converted to MJPEG on demand.
+app.get("/stream/legacy/:id/:resolution", asyncH(async (req, res) => {
+  const item = await processedLibrary.get(req.params.id);
+  if (!item) return res.status(404).json({ error: "item not found" });
+  const resolution = parseInt(req.params.resolution, 10);
+  if (!item.resolutions.includes(resolution)) return res.status(404).json({ error: "resolution not found" });
+  const input = processedLibrary.videoPath(item.id, resolution);
+  try { await fs.access(input); } catch { return res.status(404).json({ error: "video missing" }); }
+  return stream.streamMjpeg(req, res, {
+    input,
+    params: stream.normalizeParams({ ...req.query, height: req.query.height || resolution }),
+    isLive: false,
+    startAt: req.query.timestamp,
+  });
+}));
+
+app.get("/stream/legacy-audio/:id", asyncH(async (req, res) => {
+  const item = await processedLibrary.get(req.params.id);
+  if (!item) return res.status(404).json({ error: "item not found" });
+  const input = processedLibrary.audioPath(item.id);
+  try { await fs.access(input); } catch { return res.status(404).json({ error: "audio missing" }); }
+  res.type("audio/mpeg");
+  res.sendFile(input);
 }));
 
 // ---- Synced MPEG-TS (H.264+AAC, one stream) for the mpegts.js player ----
@@ -252,13 +354,13 @@ app.get("/stream/ts/item/:itemId", asyncH(async (req, res) => {
   const params = stream.normalizeParams(req.query);
   if (item.type === "youtube") {
     const { videoUrl } = await ytdlp.getStreamUrls(item.url, config.download.maxHeight);
-    return stream.streamTS(req, res, { input: videoUrl, params, isLive: false });
+    return stream.streamTS(req, res, { input: videoUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp });
   }
   if (item.type === "file") {
     const resolved = path.resolve(item.url);
     if (!resolved.startsWith(path.resolve(config.libraryDir))) return res.status(403).json({ error: "file outside library" });
     try { await fs.access(resolved); } catch { return res.status(404).json({ error: "file missing" }); }
-    return stream.streamTS(req, res, { input: resolved, params, isLive: false });
+    return stream.streamTS(req, res, { input: resolved, params, isLive: false, startAt: req.query.timestamp });
   }
   return stream.streamTS(req, res, { input: item.url, params, isLive: true, userAgent: item.meta?.userAgent, referer: item.meta?.referer });
 }));
@@ -275,7 +377,7 @@ app.get("/stream/ts/youtube", asyncH(async (req, res) => {
   if (!url) return res.status(400).json({ error: "url required" });
   const params = stream.normalizeParams(req.query);
   const { videoUrl } = await ytdlp.getStreamUrls(url, config.download.maxHeight);
-  return stream.streamTS(req, res, { input: videoUrl, params, isLive: false });
+  return stream.streamTS(req, res, { input: videoUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp });
 }));
 
 // ---- Audio (separate mp3 stream — legacy MJPEG path) ----
@@ -285,13 +387,13 @@ app.get("/stream/audio/item/:itemId", asyncH(async (req, res) => {
   const { item } = found;
   if (item.type === "youtube") {
     const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(item.url, config.download.maxHeight);
-    return stream.streamAudio(req, res, { input: audioUrl || videoUrl });
+    return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp });
   }
   if (item.type === "file") {
     const resolved = path.resolve(item.url);
     if (!resolved.startsWith(path.resolve(config.libraryDir))) return res.status(403).json({ error: "file outside library" });
     try { await fs.access(resolved); } catch { return res.status(404).json({ error: "file missing" }); }
-    return stream.streamAudio(req, res, { input: resolved });
+    return stream.streamAudio(req, res, { input: resolved, startAt: req.query.timestamp });
   }
   return stream.streamAudio(req, res, { input: item.url, isLive: true, userAgent: item.meta?.userAgent, referer: item.meta?.referer });
 }));
@@ -306,7 +408,7 @@ app.get("/stream/audio/youtube", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
   const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(url, config.download.maxHeight);
-  return stream.streamAudio(req, res, { input: audioUrl || videoUrl });
+  return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp });
 }));
 
 // ---------------------------------------------------------------------------

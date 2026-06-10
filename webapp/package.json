@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "check": "node --check src/server.js && node --check src/lib/store.js && node --check src/lib/ytdlp.js && node --check src/lib/stream.js",
+    "check": "node --check src/server.js && node --check src/lib/store.js && node --check src/lib/ytdlp.js && node --check src/lib/stream.js && node --check src/lib/processed-library.js && node --check public/app.js",
     "setup": "node scripts/check-deps.js"
   },
   "dependencies": {

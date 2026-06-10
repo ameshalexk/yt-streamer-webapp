@@ -118,12 +118,18 @@ export function normalizeParams(query = {}) {
   };
 }
 
-function buildArgs({ input, audioInput, params, isLive, userAgent, referer }) {
+function seekSeconds(value) {
+  const n = parseFloat(value);
+  return Number.isFinite(n) && n > 0 ? Math.max(0, n) : 0;
+}
+
+function buildArgs({ input, audioInput, params, isLive, userAgent, referer, startAt = 0, paceInput = false }) {
   const vf = [];
   if (params.height && params.height > 0) vf.push(`scale=-2:${params.height}`);
   vf.push(`fps=${params.fps}`);
 
   const args = ["-hide_banner", "-loglevel", "error"];
+  const seek = seekSeconds(startAt);
 
   // Reconnect logic + optional headers for flaky/protected network sources (HLS/HTTP).
   if (/^https?:\/\//i.test(input)) {
@@ -137,7 +143,8 @@ function buildArgs({ input, audioInput, params, isLive, userAgent, referer }) {
     );
   }
   // Pace inputs in real time so ffmpeg doesn't burst buffered media and make the client catch up.
-  if (isLive || !/^https?:\/\//i.test(input)) args.push("-re");
+  if (paceInput || isLive || !/^https?:\/\//i.test(input)) args.push("-re");
+  if (seek) args.push("-ss", String(seek));
 
   args.push("-i", input);
   if (audioInput) args.push("-i", audioInput); // present but unused by mjpeg output
@@ -155,14 +162,14 @@ function buildArgs({ input, audioInput, params, isLive, userAgent, referer }) {
 
 // Spawns ffmpeg and streams MJPEG to `res`. Cleans up on client disconnect.
 // input: m3u8 URL, direct http(s) URL, or local file path.
-export function streamMjpeg(req, res, { input, audioInput = null, params, isLive = false, userAgent = "", referer = "" }) {
+export function streamMjpeg(req, res, { input, audioInput = null, params, isLive = false, userAgent = "", referer = "", startAt = 0, paceInput = false }) {
   if (active >= config.maxConcurrentStreams) {
     res.status(429).type("text/plain").end("Too many active streams. Stop one and retry.");
     return;
   }
   active++;
 
-  const args = buildArgs({ input, audioInput, params, isLive, userAgent, referer });
+  const args = buildArgs({ input, audioInput, params, isLive, userAgent, referer, startAt, paceInput });
   const ff = spawn(config.ffmpegPath, args, { stdio: ["ignore", "pipe", "pipe"] });
   pipeFfmpegOutput(req, res, ff, {
     label: "stream",
@@ -180,16 +187,18 @@ export function streamMjpeg(req, res, { input, audioInput = null, params, isLive
 }
 
 // ---- Single synced stream: H.264 + AAC in MPEG-TS (for mpegts.js / MSE) ----
-function buildTSArgs({ input, params, isLive, userAgent, referer }) {
+function buildTSArgs({ input, params, isLive, userAgent, referer, paceInput = false, startAt = 0 }) {
   const isHttp = /^https?:\/\//i.test(input);
   const args = ["-hide_banner", "-loglevel", "error"];
+  const seek = seekSeconds(startAt);
   if (isHttp) {
     if (userAgent) args.push("-user_agent", userAgent);
     if (referer) args.push("-headers", `Referer: ${referer}\r\n`);
     args.push("-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-rw_timeout", "15000000");
     if (isLive) args.push("-fflags", "nobuffer", "-flags", "low_delay");
   }
-  if (isLive || !isHttp) args.push("-re"); // pace inputs in real time
+  if (paceInput || isLive || !isHttp) args.push("-re"); // pace inputs in real time
+  if (seek) args.push("-ss", String(seek));
 
   args.push("-i", input);
 
@@ -224,13 +233,13 @@ function buildTSArgs({ input, params, isLive, userAgent, referer }) {
 }
 
 // Streams MPEG-TS (synced A/V) to `res`. One ffmpeg per playback.
-export function streamTS(req, res, { input, params, isLive = false, userAgent = "", referer = "" }) {
+export function streamTS(req, res, { input, params, isLive = false, userAgent = "", referer = "", paceInput = false, startAt = 0 }) {
   if (active >= config.maxConcurrentStreams) {
     res.status(429).type("text/plain").end("Too many active streams. Stop one and retry.");
     return;
   }
   active++;
-  const ff = spawn(config.ffmpegPath, buildTSArgs({ input, params, isLive, userAgent, referer }), { stdio: ["ignore", "pipe", "pipe"] });
+  const ff = spawn(config.ffmpegPath, buildTSArgs({ input, params, isLive, userAgent, referer, paceInput, startAt }), { stdio: ["ignore", "pipe", "pipe"] });
   pipeFfmpegOutput(req, res, ff, {
     label: "ts",
     headers: {
@@ -249,22 +258,24 @@ export function streamTS(req, res, { input, params, isLive = false, userAgent = 
 let audioActive = 0;
 export function activeAudioCount() { return audioActive; }
 
-function buildAudioArgs({ input, userAgent, referer, isLive }) {
+function buildAudioArgs({ input, userAgent, referer, isLive, startAt = 0 }) {
   const args = ["-hide_banner", "-loglevel", "error"];
+  const seek = seekSeconds(startAt);
   if (/^https?:\/\//i.test(input)) {
     if (userAgent) args.push("-user_agent", userAgent);
     if (referer) args.push("-headers", `Referer: ${referer}\r\n`);
     args.push("-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-rw_timeout", "15000000");
   }
   if (!isLive && !/^https?:\/\//i.test(input)) args.push("-re");
+  if (seek) args.push("-ss", String(seek));
   args.push("-i", input, "-vn", "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-f", "mp3", "pipe:1");
   return args;
 }
 
 // Streams mp3 audio to `res`. Tolerant of sources with no audio track (just ends).
-export function streamAudio(req, res, { input, userAgent = "", referer = "", isLive = false }) {
+export function streamAudio(req, res, { input, userAgent = "", referer = "", isLive = false, startAt = 0 }) {
   audioActive++;
-  const ff = spawn(config.ffmpegPath, buildAudioArgs({ input, userAgent, referer, isLive }), { stdio: ["ignore", "pipe", "pipe"] });
+  const ff = spawn(config.ffmpegPath, buildAudioArgs({ input, userAgent, referer, isLive, startAt }), { stdio: ["ignore", "pipe", "pipe"] });
   res.writeHead(200, {
     "Content-Type": "audio/mpeg",
     "Cache-Control": "no-cache, no-store, must-revalidate",

@@ -16,6 +16,48 @@ function id() {
   return crypto.randomBytes(8).toString("hex");
 }
 
+function canonicalUrl(url) {
+  return String(url || "").trim();
+}
+
+function canonicalCategory(meta = {}) {
+  return String(meta.category || meta.group || "").trim().toLowerCase();
+}
+
+function canonicalCountry(meta = {}, playlistMeta = {}) {
+  return String(meta.countryCode || playlistMeta.countryCode || meta.countryName || playlistMeta.countryName || "")
+    .trim()
+    .toUpperCase();
+}
+
+function itemKey(item, playlistMeta = {}) {
+  return [
+    item.type || "m3u8",
+    canonicalUrl(item.url),
+    canonicalCountry(item.meta || {}, playlistMeta),
+    canonicalCategory(item.meta || {}),
+  ].join("\u0001");
+}
+
+function dedupeItems(data) {
+  let changed = false;
+  for (const playlist of data.playlists || []) {
+    const seen = new Set();
+    const next = [];
+    for (const item of playlist.items || []) {
+      const key = itemKey(item, playlist.meta || {});
+      if (seen.has(key)) {
+        changed = true;
+        continue;
+      }
+      seen.add(key);
+      next.push(item);
+    }
+    playlist.items = next;
+  }
+  return changed;
+}
+
 async function ensureDirs() {
   await fs.mkdir(config.dataDir, { recursive: true });
   await fs.mkdir(config.libraryDir, { recursive: true });
@@ -29,6 +71,7 @@ async function load() {
     const parsed = JSON.parse(raw);
     cache = { ...DEFAULT_DATA, ...parsed };
     if (!Array.isArray(cache.playlists)) cache.playlists = [];
+    if (dedupeItems(cache)) await persist();
   } catch (err) {
     if (err.code !== "ENOENT") {
       console.error("[store] could not read store, starting fresh:", err.message);
@@ -100,6 +143,10 @@ export async function addItem(playlistId, { title, type, url, meta }) {
   const data = await load();
   const p = data.playlists.find((x) => x.id === playlistId);
   if (!p) return null;
+  const candidate = { type: type || "m3u8", url, meta: meta || {} };
+  const candidateKey = itemKey(candidate, p.meta || {});
+  const existing = (p.items || []).find((item) => itemKey(item, p.meta || {}) === candidateKey);
+  if (existing) return { ...existing, duplicate: true };
   const item = {
     id: id(),
     title: (title || url || "Untitled").toString().slice(0, 300),
