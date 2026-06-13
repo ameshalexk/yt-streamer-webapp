@@ -9,6 +9,7 @@ import * as ytdlp from "./lib/ytdlp.js";
 import * as stream from "./lib/stream.js";
 import * as catalog from "./lib/catalog.js";
 import * as processedLibrary from "./lib/processed-library.js";
+import * as youtubeOAuth from "./lib/youtube-oauth.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -30,7 +31,7 @@ function newJob() {
 
 const asyncH = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) => {
   console.error("[api]", req.method, req.path, "-", err.message);
-  if (!res.headersSent) res.status(500).json({ error: err.message });
+  if (!res.headersSent) res.status(err.status || 500).json({ error: err.message });
 });
 
 // ---------------------------------------------------------------------------
@@ -97,6 +98,43 @@ app.delete("/api/playlists/:id/items/:itemId", asyncH(async (req, res) => {
 // ---------------------------------------------------------------------------
 // YouTube helpers
 // ---------------------------------------------------------------------------
+app.get("/api/youtube-auth/status", asyncH(async (req, res) => {
+  res.json(await youtubeOAuth.status(req));
+}));
+
+app.get("/api/youtube-auth/start", asyncH(async (req, res) => {
+  res.redirect(youtubeOAuth.authUrl(req));
+}));
+
+app.get("/api/youtube-auth/callback", asyncH(async (req, res) => {
+  await youtubeOAuth.finishAuth(req);
+  res.type("html").send(`<!doctype html>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>YouTube connected</title>
+    <body style="font-family:-apple-system,Segoe UI,sans-serif;background:#0b0d10;color:#eef2f6;display:grid;place-items:center;min-height:100vh;margin:0">
+      <div style="max-width:520px;text-align:center;padding:24px">
+        <h1>YouTube connected</h1>
+        <p>You can close this tab and return to YT Streamer.</p>
+        <script>
+          try { if (window.opener) window.opener.postMessage({ type: "ytstreamer-youtube-connected" }, location.origin); } catch {}
+          setTimeout(() => {
+            try { window.close(); } catch {}
+            location.href = "/";
+          }, 900);
+        </script>
+      </div>
+    </body>`);
+}));
+
+app.post("/api/youtube-auth/logout", asyncH(async (req, res) => {
+  await youtubeOAuth.logout();
+  res.json({ ok: true });
+}));
+
+app.get("/api/youtube/recommendations", asyncH(async (req, res) => {
+  res.json(await youtubeOAuth.recommendations());
+}));
+
 // Expand a YouTube playlist URL into entries (for bulk-add).
 app.get("/api/youtube/playlist", asyncH(async (req, res) => {
   const url = req.query.url;

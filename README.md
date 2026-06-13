@@ -156,6 +156,9 @@ Common variables:
 | `MJPEG_HEIGHT` | `480` | Default stream height |
 | `MAX_FPS` | `30` | Maximum selectable FPS |
 | `DL_MAX_HEIGHT` | `720` | Max YouTube download/stream height |
+| `YOUTUBE_OAUTH_CLIENT_ID` | unset | Google OAuth client id for the optional Recommended tab |
+| `YOUTUBE_OAUTH_CLIENT_SECRET` | unset | Google OAuth client secret for the optional Recommended tab |
+| `YOUTUBE_OAUTH_REDIRECT_URI` | inferred | Optional exact redirect URI, e.g. `https://stream.example.com/api/youtube-auth/callback` |
 | `VIDEO_ENCODER` | `libx264` | Use `h264_videotoolbox` on Mac for lighter CPU |
 | `AUDIO_BITRATE_K` | `128` | AAC audio bitrate for MPEG-TS |
 | `MAX_STREAMS` | `3` | Concurrent ffmpeg stream cap |

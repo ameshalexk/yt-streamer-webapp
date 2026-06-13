@@ -44,6 +44,17 @@ export const config = {
     maxHeight: int("DL_MAX_HEIGHT", 720),
   },
 
+  // Optional YouTube OAuth for the isolated Recommended tab.
+  youtubeOAuth: {
+    clientId: process.env.YOUTUBE_OAUTH_CLIENT_ID || "",
+    clientSecret: process.env.YOUTUBE_OAUTH_CLIENT_SECRET || "",
+    redirectUri: process.env.YOUTUBE_OAUTH_REDIRECT_URI || "",
+    tokenFile: process.env.YOUTUBE_OAUTH_TOKEN_FILE || path.join(ROOT, "data", "youtube-oauth.json"),
+    maxChannels: int("YOUTUBE_RECOMMEND_MAX_CHANNELS", 24),
+    perChannel: int("YOUTUBE_RECOMMEND_PER_CHANNEL", 3),
+    maxVideos: int("YOUTUBE_RECOMMEND_MAX_VIDEOS", 60),
+  },
+
   // Live player: single synced H.264+AAC MPEG-TS stream (via mpegts.js / MSE).
   video: {
     // "libx264" (portable, CPU) or "h264_videotoolbox" (Mac hardware, far lighter CPU).

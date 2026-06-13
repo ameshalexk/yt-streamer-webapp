@@ -46,6 +46,7 @@ body {
 .mode-tab {
   min-height: 40px; padding: 0 18px; border: 0; border-radius: 9px;
   background: transparent; color: var(--muted); font-size: 15px; font-weight: 800; cursor: pointer;
+  min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mode-tab.active {
   background: var(--panel-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line);
@@ -60,6 +61,7 @@ body {
   background: var(--line); min-height: 0; overflow: hidden; gap: 1px;
 }
 .layout.mode-browse,
+.layout.mode-recommended,
 .layout.mode-saved,
 .layout.mode-library { grid-template-columns: minmax(500px, 1.15fr) minmax(360px, .85fr); }
 .col { background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
@@ -370,6 +372,60 @@ body.screen-fullscreen .player-actions {
 .ch-foot { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; justify-content: center; }
 .ch-empty { grid-column: 1 / -1; text-align: center; color: var(--muted); padding: 40px; }
 
+/* Recommended YouTube tab */
+.recommendations-view {
+  min-height: 0; overflow: hidden; background: var(--bg); display: flex; flex-direction: column;
+}
+.recommendation-status {
+  min-height: 44px; display: flex; align-items: center; padding: 8px 16px;
+  border-bottom: 1px solid var(--line); color: var(--muted); font-size: 14px; line-height: 1.35;
+  background: var(--bg);
+}
+.recommendation-status.bad { color: #ff8a8a; }
+.recommendation-tabs {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.recommendation-tab {
+  min-width: 0; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); color: var(--muted); font-size: 14px; font-weight: 800;
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.recommendation-tab.active {
+  background: var(--panel-2); color: var(--text); border-color: var(--accent);
+}
+.recommendation-list {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  display: grid; grid-template-columns: 1fr; gap: 10px; align-content: start; padding: 12px 16px;
+}
+.recommendation-row {
+  display: grid; grid-template-columns: 148px minmax(0, 1fr); gap: 12px;
+  min-height: 112px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel);
+}
+.recommendation-row.active { border-color: var(--accent); background: var(--panel-2); }
+.recommendation-thumb {
+  width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: #000;
+}
+.recommendation-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.recommendation-thumb.placeholder {
+  display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 28px;
+}
+.recommendation-info { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.recommendation-title {
+  font-size: 16px; font-weight: 800; line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.recommendation-meta {
+  color: var(--muted); font-size: 13px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.recommendation-actions { display: flex; gap: 8px; margin-top: auto; }
+.recommendation-actions .btn { flex: 1; min-width: 0; }
+.recommendation-empty {
+  color: var(--muted); text-align: center; padding: 38px 18px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--panel);
+}
+
 /* Processed YouTube library */
 .legacy-library {
   min-height: 0; overflow: hidden; background: var(--bg); display: flex; flex-direction: column;
@@ -490,6 +546,7 @@ body.screen-fullscreen .player-actions {
 /* Narrow screens */
 @media (max-width: 1100px) {
   .layout.mode-browse,
+  .layout.mode-recommended,
   .layout.mode-saved,
   .layout.mode-library { grid-template-columns: minmax(440px, 1fr) minmax(340px, .9fr); }
   .saved-columns { grid-template-columns: 240px minmax(0, 1fr); }
@@ -500,6 +557,7 @@ body.screen-fullscreen .player-actions {
   #app { height: auto; min-height: 100vh; }
   .layout { display: block; overflow: visible; background: var(--bg); }
   .layout.mode-browse .player,
+  .layout.mode-recommended .player,
   .layout.mode-saved .player,
   .layout.mode-library .player { display: none; }
   .layout.mode-watch .side-panel { display: none; }
@@ -521,6 +579,7 @@ body.screen-fullscreen .player-actions {
   .status { display: none; }
   .saved-panel,
   .channels-view,
+  .recommendations-view,
   .legacy-library { min-height: calc(100vh - 112px); }
   .saved-columns { grid-template-columns: 1fr; grid-template-rows: minmax(170px, 36%) minmax(0, 1fr); }
   .playlists { border-bottom: 1px solid var(--line); }
@@ -554,6 +613,7 @@ body.screen-fullscreen .player-actions {
     grid-template-columns: 1fr;
   }
   .legacy-resolutions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .recommendation-row { grid-template-columns: 132px minmax(0, 1fr); }
   .legacy-actions,
   .legacy-control-row { flex-wrap: wrap; }
   .legacy-actions .btn,
@@ -643,6 +703,14 @@ body.screen-fullscreen .player-actions {
   }
   .ch-list { padding: 10px; }
   .legacy-body { padding: 10px; }
+  .recommendation-list { padding: 10px; }
+  .recommendation-tabs { padding: 10px; gap: 6px; }
+  .recommendation-tab { font-size: 13px; padding: 0 6px; }
+  .recommendation-row {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+  .recommendation-actions .btn { flex: 1 1 0; }
   .legacy-download,
   .legacy-playlists,
   .legacy-player-controls { padding: 12px; }

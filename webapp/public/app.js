@@ -26,6 +26,12 @@ const state = {
   legacyPlaylists: [],
   selectedLegacyPlaylistId: null,
   legacyPlaylistVideos: [],
+  youtubeAuth: null,
+  recommendations: [],
+  recommendationFilter: "all",
+  recommendationsLoadedAt: null,
+  recommendedPlayingId: null,
+  recommendationDownloads: {},
 };
 
 const FPS_OPTIONS = [
@@ -88,6 +94,7 @@ function setMode(mode) {
   const layout = $("#layout");
   layout.classList.toggle("mode-watch", mode === "watch");
   layout.classList.toggle("mode-browse", mode === "browse");
+  layout.classList.toggle("mode-recommended", mode === "recommended");
   layout.classList.toggle("mode-saved", mode === "saved");
   layout.classList.toggle("mode-library", mode === "library");
   document.querySelectorAll(".mode-tab").forEach((tab) => {
@@ -97,6 +104,7 @@ function setMode(mode) {
     else tab.removeAttribute("aria-current");
   });
   setPanelHidden($("#channelsView"), mode !== "browse");
+  setPanelHidden($("#recommendationsView"), mode !== "recommended");
   setPanelHidden($("#playlistDrawer"), mode !== "saved");
   setPanelHidden($("#legacyLibraryView"), mode !== "library");
   const player = $(".player");
@@ -734,10 +742,12 @@ function stopPlayback() {
   $("#restreamBtn").disabled = true;
   state.playingItemId = null;
   state.legacyPlayingId = null;
+  state.recommendedPlayingId = null;
   legacy.playing = null;
   legacy.resolution = null;
   renderItems();
   renderLegacyLibrary();
+  renderRecommendations();
 }
 
 function restreamPlayback() {
@@ -1361,6 +1371,297 @@ function playLegacyItem(item, resolution = null, startAt = 0) {
 
 window.__closeModal = closeModal;
 
+// ---- Recommended YouTube tab (OAuth-backed, isolated from other modes) ----
+function publishedLabel(value) {
+  const ts = Date.parse(value || "");
+  if (!ts) return "";
+  const diff = Math.max(0, Date.now() - ts);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff < hour) return `${Math.max(1, Math.round(diff / minute))}m ago`;
+  if (diff < day) return `${Math.round(diff / hour)}h ago`;
+  if (diff < 30 * day) return `${Math.round(diff / day)}d ago`;
+  return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function recommendationMeta(item) {
+  const parts = [item.channelTitle];
+  if (isRecommendationShort(item)) parts.push("Short");
+  if (item.isLive) parts.push("Live");
+  else if (item.isUpcoming) parts.push("Upcoming");
+  else if (item.duration) parts.push(fmtDur(item.duration));
+  const published = publishedLabel(item.publishedAt);
+  if (published) parts.push(published);
+  return parts.filter(Boolean).join(" · ");
+}
+
+function setRecommendationStatus(text, bad = false) {
+  const el = $("#ytStatusLine");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("bad", bad);
+}
+
+function isRecommendationShort(item) {
+  return !item?.isLive && !item?.isUpcoming && Number(item?.duration || 0) > 0 && Number(item.duration) <= 180;
+}
+
+function recommendationMatchesFilter(item) {
+  if (state.recommendationFilter === "shorts") return isRecommendationShort(item);
+  if (state.recommendationFilter === "videos") return !isRecommendationShort(item);
+  return true;
+}
+
+function filteredRecommendations() {
+  return state.recommendations.filter(recommendationMatchesFilter);
+}
+
+function renderRecommendationTabs() {
+  const tabs = document.querySelectorAll(".recommendation-tab");
+  if (!tabs.length) return;
+  const counts = state.recommendations.reduce((acc, item) => {
+    acc.all += 1;
+    if (isRecommendationShort(item)) acc.shorts += 1;
+    else acc.videos += 1;
+    return acc;
+  }, { all: 0, videos: 0, shorts: 0 });
+  tabs.forEach((tab) => {
+    const filter = tab.dataset.recFilter;
+    const active = filter === state.recommendationFilter;
+    const label = tab.dataset.label || tab.textContent.replace(/\s+\d+$/, "");
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.textContent = `${label} ${counts[filter] || 0}`;
+  });
+}
+
+function renderYoutubeAuth() {
+  const auth = state.youtubeAuth;
+  if (!auth) {
+    $("#ytConnectBtn").hidden = false;
+    $("#ytConnectBtn").disabled = true;
+    $("#ytDisconnectBtn").hidden = true;
+    $("#ytRefreshBtn").disabled = true;
+    setRecommendationStatus("Checking YouTube connection...");
+    return;
+  }
+  const configured = Boolean(auth?.configured);
+  const connected = Boolean(auth?.connected);
+  $("#ytConnectBtn").hidden = connected;
+  $("#ytConnectBtn").disabled = !configured;
+  $("#ytDisconnectBtn").hidden = !connected;
+  $("#ytRefreshBtn").disabled = !connected;
+
+  if (!configured) {
+    setRecommendationStatus(`Set YOUTUBE_OAUTH_CLIENT_ID and YOUTUBE_OAUTH_CLIENT_SECRET. Redirect: ${auth?.redirectUri || "/api/youtube-auth/callback"}`, true);
+  } else if (!connected) {
+    setRecommendationStatus("YouTube not connected.");
+  } else if (state.recommendationsLoadedAt) {
+    setRecommendationStatus(`Updated ${new Date(state.recommendationsLoadedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
+  } else {
+    setRecommendationStatus("Connected.");
+  }
+}
+
+function renderRecommendations() {
+  renderYoutubeAuth();
+  renderRecommendationTabs();
+  const list = $("#ytRecommendationList");
+  if (!list) return;
+  if (!state.youtubeAuth) {
+    list.innerHTML = `<div class="recommendation-empty">Loading...</div>`;
+    return;
+  }
+  if (!state.youtubeAuth?.configured) {
+    list.innerHTML = `<div class="recommendation-empty">OAuth credentials are missing on the Mac.</div>`;
+    return;
+  }
+  if (!state.youtubeAuth?.connected) {
+    list.innerHTML = `<div class="recommendation-empty">Connect YouTube to load this tab.</div>`;
+    return;
+  }
+  if (!state.recommendations.length) {
+    list.innerHTML = `<div class="recommendation-empty">No videos loaded. Tap Refresh.</div>`;
+    return;
+  }
+  const items = filteredRecommendations();
+  if (!items.length) {
+    const label = state.recommendationFilter === "shorts" ? "Shorts" : "videos";
+    list.innerHTML = `<div class="recommendation-empty">No ${label} in this refresh.</div>`;
+    return;
+  }
+  list.innerHTML = items.map((item) => {
+    const download = state.recommendationDownloads[item.id] || null;
+    const thumb = item.thumbnail
+      ? `<div class="recommendation-thumb"><img src="${esc(item.thumbnail)}" alt="" loading="lazy" /></div>`
+      : `<div class="recommendation-thumb placeholder">▶</div>`;
+    const downloadLabel = download?.status === "done"
+      ? "Downloaded"
+      : download?.status === "error"
+        ? "Retry"
+        : download?.status === "running"
+          ? `${Math.round(download.pct || 0)}%`
+          : "Download";
+    return `<div class="recommendation-row${item.id === state.recommendedPlayingId ? " active" : ""}" data-video-id="${esc(item.id)}">
+      ${thumb}
+      <div class="recommendation-info">
+        <div class="recommendation-title">${esc(item.title)}</div>
+        <div class="recommendation-meta">${esc(recommendationMeta(item))}</div>
+        <div class="recommendation-actions">
+          <button class="btn small secondary" data-act="stream-rec" type="button">Stream</button>
+          <button class="btn small ghost" data-act="download-rec" type="button" ${download?.status === "running" || download?.status === "done" ? "disabled" : ""}>${esc(downloadLabel)}</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function loadYoutubeAuthStatus() {
+  state.youtubeAuth = await api.get("/api/youtube-auth/status");
+  renderRecommendations();
+  return state.youtubeAuth;
+}
+
+async function loadRecommendations() {
+  const btn = $("#ytRefreshBtn");
+  btn.disabled = true;
+  btn.textContent = "Refreshing...";
+  setRecommendationStatus("Refreshing...");
+  try {
+    const data = await api.get(`/api/youtube/recommendations?_=${Date.now()}`);
+    state.recommendations = data.items || [];
+    state.recommendationsLoadedAt = data.generatedAt || Date.now();
+    const hasCurrentFilterItems = state.recommendationFilter === "all" || state.recommendations.some(recommendationMatchesFilter);
+    if (!hasCurrentFilterItems) state.recommendationFilter = "all";
+    renderRecommendations();
+  } catch (e) {
+    setRecommendationStatus(e.message, true);
+    if (/not connected/i.test(e.message)) await loadYoutubeAuthStatus().catch(() => {});
+    toast(e.message, true);
+  } finally {
+    btn.disabled = !state.youtubeAuth?.connected;
+    btn.textContent = "Refresh";
+  }
+}
+
+async function openRecommendations() {
+  setMode("recommended");
+  renderRecommendations();
+  try {
+    const auth = await loadYoutubeAuthStatus();
+    if (auth.connected && !state.recommendations.length) await loadRecommendations();
+  } catch (e) {
+    setRecommendationStatus(e.message, true);
+  }
+}
+
+function connectYoutube() {
+  const popup = window.open("/api/youtube-auth/start", "ytstreamer_youtube_oauth");
+  if (!popup) window.location.href = "/api/youtube-auth/start";
+  let tries = 0;
+  const timer = setInterval(async () => {
+    tries += 1;
+    try {
+      const auth = await loadYoutubeAuthStatus();
+      if (auth.connected) {
+        clearInterval(timer);
+        await loadRecommendations();
+      }
+    } catch {}
+    if (tries > 60) clearInterval(timer);
+  }, 2000);
+}
+
+async function disconnectYoutube() {
+  if (!confirm("Disconnect YouTube from this Mac?")) return;
+  try {
+    await api.post("/api/youtube-auth/logout");
+    state.youtubeAuth = null;
+    state.recommendations = [];
+    state.recommendationsLoadedAt = null;
+    await loadYoutubeAuthStatus();
+    toast("YouTube disconnected");
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function streamRecommendation(item) {
+  if (!item) return;
+  state.playingItemId = null;
+  state.legacyPlayingId = null;
+  state.recommendedPlayingId = item.id;
+  renderItems();
+  renderLegacyLibrary();
+  renderRecommendations();
+  showAttemptedUrl(item.url);
+  if (isMobileMode()) setMode("watch");
+  replayFn = (startAt = getStreamCurrentTime()) => {
+    const q = streamQuery(startAt);
+    const u = encodeURIComponent(item.url);
+    playStream({
+      tsUrl: `/stream/ts/youtube?url=${u}&${q}`,
+      mjpegUrl: `/stream/youtube?url=${u}&${q}`,
+      audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
+    }, item.title || "YouTube", {
+      seekable: !item.isLive && !item.isUpcoming,
+      duration: item.duration,
+      startAt,
+    });
+  };
+  replayFn();
+}
+
+async function getOrCreateRecommendedDownloadsPlaylist() {
+  await loadPlaylists().catch(() => {});
+  let playlist = state.playlists.find((p) => p.meta?.kind === "youtube-recommended-downloads");
+  if (!playlist) playlist = state.playlists.find((p) => p.name.toLowerCase() === "recommended downloads");
+  if (playlist && playlist.meta?.kind !== "youtube-recommended-downloads") {
+    playlist = await api.patch(`/api/playlists/${playlist.id}`, { meta: { kind: "youtube-recommended-downloads" } });
+  }
+  if (!playlist) {
+    playlist = await api.post("/api/playlists", {
+      name: "Recommended Downloads",
+      meta: { kind: "youtube-recommended-downloads" },
+    });
+  }
+  return playlist;
+}
+
+async function downloadRecommendation(item) {
+  if (!item || state.recommendationDownloads[item.id]?.status === "running") return;
+  state.recommendationDownloads[item.id] = { status: "running", pct: 0 };
+  renderRecommendations();
+  try {
+    const playlist = await getOrCreateRecommendedDownloadsPlaylist();
+    const { jobId } = await api.post("/api/download", { url: item.url, playlistId: playlist.id });
+    await new Promise((resolve, reject) => {
+      const tick = async () => {
+        try {
+          const job = await api.get(`/api/download/${jobId}`);
+          state.recommendationDownloads[item.id] = { status: job.status, pct: job.pct || 0 };
+          renderRecommendations();
+          if (job.status === "done") return resolve(job);
+          if (job.status === "error") return reject(new Error(job.error || "download failed"));
+          setTimeout(tick, 1000);
+        } catch (e) {
+          reject(e);
+        }
+      };
+      tick();
+    });
+    state.recommendationDownloads[item.id] = { status: "done", pct: 100 };
+    await loadPlaylists().catch(() => {});
+    renderRecommendations();
+    toast("Download complete");
+  } catch (e) {
+    state.recommendationDownloads[item.id] = { status: "error", pct: 0 };
+    renderRecommendations();
+    toast(e.message, true);
+  }
+}
+
 // ---- Channels browser (built-in IPTV catalog) ----
 const CHANNEL_SOURCE_KEY = "ytStreamerChannelSource";
 
@@ -1798,6 +2099,7 @@ $("#manageSavedBtn").onclick = () => setManageSaved(!state.manageSaved);
 document.querySelectorAll(".mode-tab").forEach((tab) => {
   tab.onclick = () => {
     if (tab.dataset.mode === "browse") openChannels();
+    else if (tab.dataset.mode === "recommended") openRecommendations();
     else if (tab.dataset.mode === "library") openLegacyLibrary();
     else setMode(tab.dataset.mode);
   };
@@ -1879,6 +2181,20 @@ $("#legacyResolutionSelect").onchange = () => {
   const next = parseInt($("#legacyResolutionSelect").value, 10);
   playLegacyItem(item, next, $("#audio").currentTime || 0);
 };
+$("#ytConnectBtn").onclick = connectYoutube;
+$("#ytDisconnectBtn").onclick = disconnectYoutube;
+$("#ytRefreshBtn").onclick = loadRecommendations;
+document.querySelectorAll(".recommendation-tab").forEach((tab) => {
+  tab.onclick = () => {
+    state.recommendationFilter = tab.dataset.recFilter || "all";
+    renderRecommendations();
+  };
+});
+window.addEventListener("message", async (event) => {
+  if (event.origin !== location.origin || event.data?.type !== "ytstreamer-youtube-connected") return;
+  await loadYoutubeAuthStatus().catch(() => {});
+  if (state.youtubeAuth?.connected) await loadRecommendations();
+});
 $("#streamBackBtn").onclick = () => seekStreamTo(getStreamCurrentTime() - 10);
 $("#streamForwardBtn").onclick = () => seekStreamTo(getStreamCurrentTime() + 10);
 $("#streamSeekTrack").addEventListener("pointerdown", (e) => {
@@ -2011,6 +2327,19 @@ bindTap($("#legacyPlaylistVideos"), async (e) => {
   if (act === "download-video") {
     await startLegacyDownloadForUrl(video.url);
   }
+});
+
+bindTap($("#ytRecommendationList"), async (e) => {
+  const row = e.target.closest(".recommendation-row");
+  if (!row) return;
+  const item = state.recommendations.find((entry) => entry.id === row.dataset.videoId);
+  if (!item) return;
+  const act = e.target.closest("[data-act]")?.dataset.act || "stream-rec";
+  if (act === "download-rec") {
+    await downloadRecommendation(item);
+    return;
+  }
+  await streamRecommendation(item);
 });
 
 {

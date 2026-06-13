@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b0d10" />
   <title>YT Streamer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e10600'/><polygon points='40,30 72,50 40,70' fill='white'/></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=20260610-stream-seek" />
+  <link rel="stylesheet" href="/styles.css?v=20260610-recs-shorts" />
 </head>
 <body>
   <div id="app">
@@ -18,6 +18,7 @@
       <nav class="mode-tabs" aria-label="App mode">
         <button class="mode-tab active" type="button" data-mode="watch" aria-current="page">Watch</button>
         <button class="mode-tab" type="button" data-mode="browse">Browse</button>
+        <button class="mode-tab" type="button" data-mode="recommended">Recs</button>
         <button class="mode-tab" type="button" data-mode="saved">Saved</button>
         <button class="mode-tab" type="button" data-mode="library">Library</button>
       </nav>
@@ -166,6 +167,26 @@
         </div>
       </section>
 
+      <section class="recommendations-view side-panel" id="recommendationsView" aria-label="Recommended YouTube videos" hidden>
+        <div class="panel-head">
+          <h2>Recommended</h2>
+          <div class="panel-actions">
+            <button class="btn small ghost" id="ytConnectBtn" type="button">Connect</button>
+            <button class="btn small ghost" id="ytDisconnectBtn" type="button" hidden>Disconnect</button>
+            <button class="btn small secondary" id="ytRefreshBtn" type="button">Refresh</button>
+          </div>
+        </div>
+        <div class="recommendation-status" id="ytStatusLine"></div>
+        <div class="recommendation-tabs" role="tablist" aria-label="Recommendation type">
+          <button class="recommendation-tab active" type="button" data-rec-filter="all" data-label="All" aria-selected="true">All 0</button>
+          <button class="recommendation-tab" type="button" data-rec-filter="videos" data-label="Videos" aria-selected="false">Videos 0</button>
+          <button class="recommendation-tab" type="button" data-rec-filter="shorts" data-label="Shorts" aria-selected="false">Shorts 0</button>
+        </div>
+        <div class="recommendation-list" id="ytRecommendationList">
+          <div class="recommendation-empty">Loading...</div>
+        </div>
+      </section>
+
       <section class="legacy-library side-panel" id="legacyLibraryView" aria-label="Processed YouTube library" hidden>
         <div class="panel-head">
           <h2>Processed Library</h2>
@@ -229,6 +250,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260610-stream-seek"></script>
+  <script src="/app.js?v=20260610-recs-shorts"></script>
 </body>
 </html>
