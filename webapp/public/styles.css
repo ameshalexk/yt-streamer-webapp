@@ -22,7 +22,23 @@ body {
   font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 18px;
   overflow: auto;
+  user-select: text;
+}
+button,
+.btn,
+.icon-btn,
+.mode-tab,
+.list li,
+.screen,
+.stream-seek,
+.fps-preset,
+.ch-menu-option,
+.recommendation-tab {
   user-select: none;
+}
+input,
+textarea {
+  user-select: text;
 }
 #app { display: flex; flex-direction: column; height: 100vh; }
 
@@ -62,6 +78,7 @@ body {
 }
 .layout.mode-browse,
 .layout.mode-recommended,
+.layout.mode-desktop,
 .layout.mode-saved,
 .layout.mode-library { grid-template-columns: minmax(500px, 1.15fr) minmax(360px, .85fr); }
 .col { background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
@@ -426,6 +443,53 @@ body.screen-fullscreen .player-actions {
   border-radius: var(--radius); background: var(--panel);
 }
 
+/* Desktop capture tab */
+.desktop-view {
+  min-height: 0; overflow: hidden; background: var(--bg); display: flex; flex-direction: column;
+}
+.desktop-body {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 16px;
+}
+.desktop-card {
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 14px; margin-bottom: 12px;
+}
+.desktop-card h3 {
+  margin: 0 0 10px; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px;
+}
+.desktop-status {
+  font-size: 17px; font-weight: 800; line-height: 1.35; margin-bottom: 8px;
+}
+.desktop-status.ok { color: var(--ok); }
+.desktop-status.bad { color: #ff8a8a; }
+.desktop-source {
+  color: var(--muted); font-size: 14px; line-height: 1.45; margin-bottom: 14px; white-space: pre-line;
+}
+.desktop-actions {
+  display: flex; gap: 10px; flex-wrap: wrap;
+}
+.desktop-actions .btn { flex: 1 1 180px; }
+.desktop-presets {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px;
+}
+.desktop-presets .btn {
+  min-width: 0;
+}
+.desktop-controls {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px;
+}
+.desktop-controls label {
+  display: flex; flex-direction: column; gap: 6px;
+  color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px;
+}
+.desktop-controls select {
+  width: 100%; min-height: 48px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--text); padding: 0 12px; font-size: 16px;
+}
+.desktop-notes {
+  margin: 0; padding-left: 20px; color: var(--muted); font-size: 14px; line-height: 1.5;
+}
+.desktop-notes li + li { margin-top: 6px; }
+
 /* Processed YouTube library */
 .legacy-library {
   min-height: 0; overflow: hidden; background: var(--bg); display: flex; flex-direction: column;
@@ -547,6 +611,7 @@ body.screen-fullscreen .player-actions {
 @media (max-width: 1100px) {
   .layout.mode-browse,
   .layout.mode-recommended,
+  .layout.mode-desktop,
   .layout.mode-saved,
   .layout.mode-library { grid-template-columns: minmax(440px, 1fr) minmax(340px, .9fr); }
   .saved-columns { grid-template-columns: 240px minmax(0, 1fr); }
@@ -558,6 +623,7 @@ body.screen-fullscreen .player-actions {
   .layout { display: block; overflow: visible; background: var(--bg); }
   .layout.mode-browse .player,
   .layout.mode-recommended .player,
+  .layout.mode-desktop .player,
   .layout.mode-saved .player,
   .layout.mode-library .player { display: none; }
   .layout.mode-watch .side-panel { display: none; }
@@ -580,6 +646,7 @@ body.screen-fullscreen .player-actions {
   .saved-panel,
   .channels-view,
   .recommendations-view,
+  .desktop-view,
   .legacy-library { min-height: calc(100vh - 112px); }
   .saved-columns { grid-template-columns: 1fr; grid-template-rows: minmax(170px, 36%) minmax(0, 1fr); }
   .playlists { border-bottom: 1px solid var(--line); }
@@ -616,6 +683,7 @@ body.screen-fullscreen .player-actions {
   .recommendation-row { grid-template-columns: 132px minmax(0, 1fr); }
   .legacy-actions,
   .legacy-control-row { flex-wrap: wrap; }
+  .desktop-controls { grid-template-columns: 1fr; }
   .legacy-actions .btn,
   .legacy-control-row .btn { flex: 1 1 0; }
   .ch-row {

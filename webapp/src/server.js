@@ -38,7 +38,12 @@ const asyncH = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) =
 // Health
 // ---------------------------------------------------------------------------
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, activeStreams: stream.activeStreamCount(), time: Date.now() });
+  res.json({
+    ok: true,
+    activeStreams: stream.activeStreamCount(),
+    activeAudioStreams: stream.activeAudioCount(),
+    time: Date.now(),
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -308,8 +313,91 @@ app.get("/api/probe", asyncH(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------------------
+// On-demand Mac desktop capture
+// ---------------------------------------------------------------------------
+app.get("/api/desktop/sources", asyncH(async (req, res) => {
+  res.json(await stream.listDesktopSources());
+}));
+
+app.get("/api/desktop/hls/start", asyncH(async (req, res) => {
+  const params = stream.normalizeParams(req.query);
+  res.json(await stream.startDesktopHls({ params, audio: req.query.audio }));
+}));
+
+app.post("/api/desktop/hls/:id/stop", asyncH(async (req, res) => {
+  await stream.stopDesktopHls(req.params.id);
+  res.json({ ok: true });
+}));
+
+app.get("/api/desktop/audio-hls/start", asyncH(async (req, res) => {
+  res.json(await stream.startDesktopAudioHls({ audio: req.query.audio }));
+}));
+
+app.post("/api/desktop/audio-hls/:id/stop", asyncH(async (req, res) => {
+  await stream.stopDesktopAudioHls(req.params.id);
+  res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
 // MJPEG streaming endpoints
 // ---------------------------------------------------------------------------
+app.get("/stream/desktop", asyncH(async (req, res) => {
+  const params = stream.normalizeParams(req.query);
+  return stream.streamDesktopMjpeg(req, res, { params });
+}));
+
+app.get("/stream/desktop-audio", asyncH(async (req, res) => {
+  return stream.streamDesktopAudio(req, res, { audio: req.query.audio });
+}));
+
+app.get("/stream/ts/desktop", asyncH(async (req, res) => {
+  const params = stream.normalizeParams(req.query);
+  return stream.streamDesktopTS(req, res, { params, audio: req.query.audio });
+}));
+
+app.get("/stream/mp4/desktop", asyncH(async (req, res) => {
+  const params = stream.normalizeParams(req.query);
+  return stream.streamDesktopMp4(req, res, { params, audio: req.query.audio });
+}));
+
+app.get("/stream/hls/desktop/:id/:file", (req, res) => {
+  const filePath = stream.desktopHlsFilePath(req.params.id, req.params.file);
+  if (!filePath) return res.status(404).type("text/plain").end("HLS session not found");
+  if (req.params.file.endsWith(".m3u8")) {
+    res.set({
+      "Content-Type": "application/vnd.apple.mpegurl",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "X-Accel-Buffering": "no",
+    });
+  } else {
+    res.set({
+      "Content-Type": "video/mp2t",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "X-Accel-Buffering": "no",
+    });
+  }
+  res.sendFile(filePath);
+});
+
+app.get("/stream/hls/desktop-audio/:id/:file", (req, res) => {
+  const filePath = stream.desktopAudioHlsFilePath(req.params.id, req.params.file);
+  if (!filePath) return res.status(404).type("text/plain").end("Audio HLS session not found");
+  if (req.params.file.endsWith(".m3u8")) {
+    res.set({
+      "Content-Type": "application/vnd.apple.mpegurl",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "X-Accel-Buffering": "no",
+    });
+  } else {
+    res.set({
+      "Content-Type": "video/mp2t",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "X-Accel-Buffering": "no",
+    });
+  }
+  res.sendFile(filePath);
+});
+
 // Stream a saved item by id (resolves type: m3u8 | youtube | file).
 app.get("/stream/item/:itemId", asyncH(async (req, res) => {
   const found = await store.findItem(req.params.itemId);

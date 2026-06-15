@@ -3,11 +3,25 @@
 
 const $ = (s) => document.querySelector(s);
 const api = {
-  async get(p) { const r = await fetch(p); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText); return r.json(); },
+  async parse(r) {
+    if (r.status === 204) return null;
+    const text = await r.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      const looksHtml = /^\s*</.test(text) || /html/i.test(r.headers.get("content-type") || "");
+      throw new Error(looksHtml
+        ? "Backend route is not active yet. Restart the Node webapp so the new API routes load."
+        : "Backend returned a non-JSON response.");
+    }
+    if (!r.ok) throw new Error(data?.error || r.statusText);
+    return data;
+  },
+  async get(p) { return this.parse(await fetch(p)); },
   async send(method, p, body) {
     const r = await fetch(p, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-    return r.status === 204 ? null : r.json();
+    return this.parse(r);
   },
   post(p, b) { return this.send("POST", p, b); },
   patch(p, b) { return this.send("PATCH", p, b); },
@@ -32,6 +46,7 @@ const state = {
   recommendationsLoadedAt: null,
   recommendedPlayingId: null,
   recommendationDownloads: {},
+  desktopSources: null,
 };
 
 const FPS_OPTIONS = [
@@ -43,6 +58,9 @@ const FPS_OPTIONS = [
   { value: "24", label: "24", risky: true },
   { value: "30", label: "30", risky: true },
 ];
+
+const DESKTOP_AUDIO_KEY = "ytStreamerDesktopAudio";
+const DESKTOP_AUDIO_NAME_KEY = "ytStreamerDesktopAudioName";
 
 // ---- UI helpers ----
 function toast(msg, bad = false) {
@@ -95,6 +113,7 @@ function setMode(mode) {
   layout.classList.toggle("mode-watch", mode === "watch");
   layout.classList.toggle("mode-browse", mode === "browse");
   layout.classList.toggle("mode-recommended", mode === "recommended");
+  layout.classList.toggle("mode-desktop", mode === "desktop");
   layout.classList.toggle("mode-saved", mode === "saved");
   layout.classList.toggle("mode-library", mode === "library");
   document.querySelectorAll(".mode-tab").forEach((tab) => {
@@ -105,6 +124,7 @@ function setMode(mode) {
   });
   setPanelHidden($("#channelsView"), mode !== "browse");
   setPanelHidden($("#recommendationsView"), mode !== "recommended");
+  setPanelHidden($("#desktopView"), mode !== "desktop");
   setPanelHidden($("#playlistDrawer"), mode !== "saved");
   setPanelHidden($("#legacyLibraryView"), mode !== "library");
   const player = $(".player");
@@ -275,6 +295,9 @@ let replayFn = null;     // rebuilds the current stream with the latest control 
 let mpegtsPlayer = null; // active mpegts.js player instance
 let activeCompat = null; // active MJPEG + audio fallback URLs
 let audioPrompted = false;
+let desktopStreamActive = false;
+let desktopHlsSessionId = null;
+let desktopAudioHlsSessionId = null;
 let syntheticFullscreen = false;
 let streamAttempt = 0;
 let streamWarnTimer = null;
@@ -594,7 +617,7 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const releaseCompatPlayback = () => {
     if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl || activeCompat.playbackStarted) return;
     if (!activeCompat.videoReady) return;
-    if (audioUrl && soundOn && !activeCompat.audioReady) return;
+    if (audioUrl && soundOn && !activeCompat.audioReady && !meta.looseAudioSync) return;
     activeCompat.playbackStarted = true;
     img.style.visibility = "";
     if (audioUrl && soundOn) {
@@ -616,14 +639,21 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
 
   audio.muted = !soundOn;
   if (audioUrl && soundOn) {
-    img.style.visibility = "hidden";
-    setBadge("reconnecting", "↻ Syncing A/V…");
+    if (!meta.looseAudioSync) {
+      img.style.visibility = "hidden";
+      setBadge("reconnecting", "↻ Syncing A/V…");
+    }
     const loadVideoIfAudioReady = () => {
       if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl) return;
       if (!audioReadyForSync(audio)) return;
       activeCompat.audioReady = true;
-      loadCompatVideo(attempt, mjpegUrl);
-      releaseCompatPlayback();
+      if (meta.looseAudioSync && activeCompat.playbackStarted) {
+        const play = startCompatAudio(true);
+        if (play?.catch) play.catch(() => {});
+      } else {
+        loadCompatVideo(attempt, mjpegUrl);
+        releaseCompatPlayback();
+      }
     };
     audio.onloadeddata = loadVideoIfAudioReady;
     audio.oncanplay = loadVideoIfAudioReady;
@@ -637,7 +667,12 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     };
     audio.src = audioUrl;
     try { audio.load(); } catch {}
-    loadVideoIfAudioReady();
+    if (meta.looseAudioSync) {
+      activeCompat.audioReady = true;
+      loadCompatVideo(attempt, mjpegUrl);
+    } else {
+      loadVideoIfAudioReady();
+    }
   } else {
     activeCompat.audioReady = true;
     loadCompatVideo(attempt, mjpegUrl);
@@ -697,6 +732,39 @@ async function playStream(sources, label, meta = {}) {
   video.play().catch(() => {});
 }
 
+function playNativeVideoStream({ nativeUrl, fallback }, label, meta = {}) {
+  const screen = $("#screen"), video = $("#video");
+  cleanupMedia();
+  configureStreamSeek(meta, meta.startAt || 0);
+  const attempt = streamAttempt;
+  $("#nowPlaying").textContent = label || "Playing";
+  $("#stopBtn").disabled = false;
+  $("#restreamBtn").disabled = false;
+  screen.classList.remove("mjpeg-mode");
+  screen.classList.add("playing", "loading", "video-mode");
+  setBadge("reconnecting", "↻ Connecting…");
+  startStreamWatchdog(attempt, "native video playback");
+  video.muted = !soundOn;
+  video.playsInline = true;
+  video.onplaying = () => markStreamLive(attempt);
+  video.oncanplay = () => markStreamLive(attempt);
+  video.onerror = () => {
+    if (!currentAttempt(attempt)) return;
+    meta.onNativeFallback?.();
+    if (fallback) return playStream(fallback, label, meta);
+    failStreamAttempt(attempt, "Browser video error", streamErrorDetail(video.error?.message || "video element failed"));
+  };
+  video.onstalled = () => {
+    if (currentAttempt(attempt)) setBadge("reconnecting", "Buffering...");
+  };
+  video.onwaiting = () => {
+    if (currentAttempt(attempt)) setBadge("reconnecting", "Buffering...");
+  };
+  video.src = nativeUrl;
+  try { video.load(); } catch {}
+  video.play().catch(() => {});
+}
+
 async function enrichYoutubeStreamMeta(item) {
   if (item.type !== "youtube" || item.meta?.duration) return item;
   try {
@@ -731,10 +799,13 @@ async function playItem(item) {
 }
 
 function stopPlayback() {
+  stopDesktopHlsSession();
+  stopDesktopAudioHlsSession();
   cleanupMedia();
   stopLegacyProgress();
   stopStreamSeekTimer(true);
   replayFn = null;
+  desktopStreamActive = false;
   setBadge("hidden");
   $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode");
   $("#nowPlaying").textContent = "Player";
@@ -754,6 +825,7 @@ function restreamPlayback() {
   if (!replayFn) return;
   const replay = replayFn;
   const resumeAt = streamSeek.seekable ? getStreamCurrentTime() : undefined;
+  stopDesktopAudioHlsSession();
   cleanupMedia();
   $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode");
   setBadge("reconnecting", "↻ Restreaming...");
@@ -761,7 +833,10 @@ function restreamPlayback() {
   clearTimeout(restreamTimer);
   restreamTimer = setTimeout(() => {
     restreamTimer = null;
-    if (replayFn === replay) replay(resumeAt);
+    if (replayFn === replay) {
+      const result = replay(resumeAt);
+      if (result?.catch) result.catch((e) => toast(e.message, true));
+    }
   }, 150);
 }
 
@@ -1268,7 +1343,7 @@ async function streamLegacyPlaylistVideo(video) {
       startAt,
     });
   };
-  replayFn();
+  replayFn().catch((e) => toast(e.message, true));
 }
 
 function stopLegacyProgress() {
@@ -1703,6 +1778,202 @@ async function openLegacyLibrary() {
   catch (e) { toast(e.message, true); }
 }
 
+async function openDesktop() {
+  setMode("desktop");
+  await loadDesktopSources().catch((e) => renderDesktopStatus({ error: e.message }));
+}
+
+async function loadDesktopSources() {
+  renderDesktopStatus({ loading: true });
+  const sources = await api.get("/api/desktop/sources");
+  state.desktopSources = sources;
+  renderDesktopStatus(sources);
+  renderDesktopAudioOptions(sources);
+}
+
+async function stopDesktopHlsSession() {
+  const id = desktopHlsSessionId;
+  desktopHlsSessionId = null;
+  if (!id) return;
+  await api.post(`/api/desktop/hls/${encodeURIComponent(id)}/stop`).catch(() => {});
+}
+
+async function stopDesktopAudioHlsSession() {
+  const id = desktopAudioHlsSessionId;
+  desktopAudioHlsSessionId = null;
+  if (!id) return;
+  await api.post(`/api/desktop/audio-hls/${encodeURIComponent(id)}/stop`).catch(() => {});
+}
+
+function stopDesktopAudioHlsSessionOnUnload() {
+  const id = desktopAudioHlsSessionId;
+  desktopAudioHlsSessionId = null;
+  if (!id) return;
+  const url = `/api/desktop/audio-hls/${encodeURIComponent(id)}/stop`;
+  try {
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([], { type: "text/plain" }));
+      return;
+    }
+  } catch {}
+  fetch(url, { method: "POST", keepalive: true }).catch(() => {});
+}
+
+function stopDesktopHlsSessionOnUnload() {
+  const id = desktopHlsSessionId;
+  desktopHlsSessionId = null;
+  if (!id) return;
+  const url = `/api/desktop/hls/${encodeURIComponent(id)}/stop`;
+  try {
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([], { type: "text/plain" }));
+      return;
+    }
+  } catch {}
+  fetch(url, { method: "POST", keepalive: true }).catch(() => {});
+}
+
+function supportsNativeAudioHls() {
+  const audio = $("#audio");
+  if (!audio?.canPlayType) return false;
+  return Boolean(
+    audio.canPlayType("application/vnd.apple.mpegurl") ||
+    audio.canPlayType("application/x-mpegURL") ||
+    audio.canPlayType("audio/mpegurl")
+  );
+}
+
+async function desktopAudioUrl(audio) {
+  await stopDesktopAudioHlsSession();
+  if (!audio) return "";
+  if (supportsNativeAudioHls()) {
+    const hls = await api.get(`/api/desktop/audio-hls/start?audio=${encodeURIComponent(audio)}&_=${Date.now()}`);
+    desktopAudioHlsSessionId = hls.id;
+    return hls.url;
+  }
+  return `/stream/desktop-audio?audio=${encodeURIComponent(audio)}&_=${Date.now()}`;
+}
+
+function renderDesktopStatus(sources = state.desktopSources) {
+  const status = $("#desktopStatus");
+  const source = $("#desktopSource");
+  const start = $("#desktopStartBtn");
+  if (!status || !source || !start) return;
+  status.className = "desktop-status";
+  start.disabled = false;
+  if (!sources || sources.loading) {
+    status.textContent = "Checking capture devices...";
+    source.textContent = "";
+    start.disabled = true;
+    return;
+  }
+  if (sources.error) {
+    status.textContent = "Desktop capture probe failed";
+    status.classList.add("bad");
+    source.textContent = sources.error;
+    start.disabled = false;
+    return;
+  }
+  if (sources.enabled === false) {
+    status.textContent = "Desktop streaming is disabled";
+    status.classList.add("bad");
+    source.textContent = "Set DESKTOP_STREAM_ENABLED=1 and restart the webapp to enable it.";
+    start.disabled = true;
+    return;
+  }
+  const screen = (sources.video || []).find((d) => /capture screen/i.test(d.name)) || sources.video?.[0];
+  status.textContent = screen ? "Desktop capture is ready" : "No screen capture device found";
+  status.classList.add(screen ? "ok" : "bad");
+  const names = (sources.video || []).map((d) => `${d.index}: ${d.name}`).join(" · ");
+  const recommendedAudio = (sources.audio || []).find((d) => String(d.index) === String(sources.recommendedAudio ?? ""));
+  source.textContent = [
+    `Configured input: ${sources.input || "0:none"}`,
+    names ? `Video devices: ${names}` : "Video devices: none reported",
+    recommendedAudio ? `Auto audio: ${recommendedAudio.index}: ${recommendedAudio.name}` : "Auto audio: none",
+  ].join("\n");
+  start.disabled = !screen;
+}
+
+function renderDesktopAudioOptions(sources = state.desktopSources) {
+  const select = $("#desktopAudio");
+  if (!select) return;
+  const audio = sources?.audio || [];
+  const saved = localStorage.getItem(DESKTOP_AUDIO_KEY);
+  const savedName = localStorage.getItem(DESKTOP_AUDIO_NAME_KEY);
+  const blackhole = audio.find((d) => /blackhole/i.test(d.name));
+  const savedByName = savedName ? audio.find((d) => d.name === savedName) : null;
+  const savedByIndex = saved ? audio.find((d) => String(d.index) === saved) : null;
+  const recommended = blackhole || savedByName || savedByIndex || audio.find((d) => String(d.index) === String(sources?.recommendedAudio ?? ""));
+  select.innerHTML = [
+    `<option value="">No audio</option>`,
+    ...audio.map((d) => `<option value="${esc(d.index)}">${esc(d.index)}: ${esc(d.name)}</option>`),
+  ].join("");
+  if (recommended && [...select.options].some((option) => option.value === String(recommended.index))) {
+    select.value = String(recommended.index);
+    localStorage.setItem(DESKTOP_AUDIO_KEY, String(recommended.index));
+    localStorage.setItem(DESKTOP_AUDIO_NAME_KEY, recommended.name);
+  }
+  else select.value = "";
+}
+
+function desktopStreamQuery() {
+  return new URLSearchParams({
+    height: $("#desktopHeight").value,
+    fps: $("#desktopFps").value,
+    quality: $("#desktopQuality").value,
+    _: Date.now(),
+  }).toString();
+}
+
+function selectedDesktopAudio() {
+  const select = $("#desktopAudio");
+  const audio = select?.value || "";
+  if (audio) localStorage.setItem(DESKTOP_AUDIO_KEY, audio);
+  else localStorage.removeItem(DESKTOP_AUDIO_KEY);
+  const name = select?.selectedOptions?.[0]?.textContent?.replace(/^\d+:\s*/, "") || "";
+  if (audio && name) localStorage.setItem(DESKTOP_AUDIO_NAME_KEY, name);
+  else localStorage.removeItem(DESKTOP_AUDIO_NAME_KEY);
+  return audio;
+}
+
+const DESKTOP_PRESETS = {
+  smooth: { height: "240", fps: "5", quality: "18" },
+  balanced: { height: "360", fps: "5", quality: "12" },
+  sharp: { height: "480", fps: "8", quality: "12" },
+};
+
+function applyDesktopPreset(name) {
+  const preset = DESKTOP_PRESETS[name];
+  if (!preset) return;
+  $("#desktopHeight").value = preset.height;
+  $("#desktopFps").value = preset.fps;
+  $("#desktopQuality").value = preset.quality;
+  reapplyDesktopControls();
+}
+
+function playDesktopStream() {
+  state.playingItemId = null;
+  renderItems();
+  if (isMobileMode()) setMode("watch");
+  desktopStreamActive = true;
+  replayFn = async () => {
+    const q = desktopStreamQuery();
+    const audio = selectedDesktopAudio();
+    stopDesktopHlsSession();
+    const audioUrl = await desktopAudioUrl(audio);
+    playCompatStream({
+      mjpegUrl: `/stream/desktop?${q}`,
+      audioUrl,
+    }, audio ? "Desktop + Audio" : "Desktop", { live: true, looseAudioSync: true });
+  };
+  replayFn().catch((e) => toast(e.message, true));
+}
+
+function reapplyDesktopControls() {
+  if (!desktopStreamActive || !replayFn) return;
+  restreamPlayback();
+}
+
 function sourceName(id) {
   return ch.sources.find((s) => s.id === id)?.name || (id === "country:us" ? "United States (US)" : "Custom playlist");
 }
@@ -2100,18 +2371,32 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
   tab.onclick = () => {
     if (tab.dataset.mode === "browse") openChannels();
     else if (tab.dataset.mode === "recommended") openRecommendations();
+    else if (tab.dataset.mode === "desktop") openDesktop();
     else if (tab.dataset.mode === "library") openLegacyLibrary();
     else setMode(tab.dataset.mode);
   };
 });
 $("#emptySavedBtn").onclick = () => setMode("saved");
 $("#emptyBrowseBtn").onclick = openChannels;
+$("#emptyDesktopBtn").onclick = openDesktop;
 $("#emptyPasteBtn").onclick = () => {
   setMode("watch");
   const input = $("#quickUrl");
   input.focus();
   input.select();
 };
+$("#desktopHomeBtn").onclick = () => setMode("watch");
+$("#desktopRefreshBtn").onclick = () => loadDesktopSources().catch((e) => renderDesktopStatus({ error: e.message }));
+$("#desktopStartBtn").onclick = playDesktopStream;
+$("#desktopStopBtn").onclick = stopPlayback;
+$("#playerHomeBtn").onclick = () => setMode("watch");
+document.querySelectorAll("[data-desktop-preset]").forEach((btn) => {
+  btn.onclick = () => applyDesktopPreset(btn.dataset.desktopPreset);
+});
+["#desktopHeight", "#desktopFps", "#desktopQuality", "#desktopAudio"].forEach((sel) => {
+  $(sel).addEventListener("change", reapplyDesktopControls);
+  $(sel).addEventListener("input", reapplyDesktopControls);
+});
 $("#streamSettingsBtn").onclick = () => {
   const panel = $("#streamSettingsPanel");
   const nextOpen = panel.hidden;
@@ -2485,4 +2770,8 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
   await loadPlaylists().catch((e) => toast(e.message, true));
   setInterval(pingHealth, 10000);
   window.addEventListener("resize", () => setMode(state.mode));
+  window.addEventListener("pagehide", () => {
+    stopDesktopAudioHlsSessionOnUnload();
+    stopDesktopHlsSessionOnUnload();
+  });
 })();

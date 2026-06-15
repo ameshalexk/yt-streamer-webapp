@@ -62,6 +62,16 @@ export const config = {
     audioBitrateK: int("AUDIO_BITRATE_K", 128),
   },
 
+  // On-demand Mac desktop capture. AVFoundation input "0:none" is usually
+  // "Capture screen 0" with no audio on macOS.
+  desktop: {
+    enabled: process.env.DESKTOP_STREAM_ENABLED !== "0",
+    input: process.env.DESKTOP_CAPTURE_INPUT || "0:none",
+    audioInput: process.env.DESKTOP_AUDIO_INPUT || "",
+    captureCursor: process.env.DESKTOP_CAPTURE_CURSOR !== "0",
+    captureClicks: process.env.DESKTOP_CAPTURE_CLICKS !== "0",
+  },
+
   // Safety: cap concurrent ffmpeg streams so a Mac doesn't melt
   maxConcurrentStreams: int("MAX_STREAMS", 3),
 
