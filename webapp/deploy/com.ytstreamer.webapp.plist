@@ -33,6 +33,10 @@
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>ProcessType</key>
+  <string>Interactive</string>
 
   <key>StandardOutPath</key>
   <string>/Users/amesh/Desktop/ytstreamerhabkupfin/webapp/data/server.log</string>

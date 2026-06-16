@@ -36,14 +36,20 @@ function summarizeFfmpegError(stderr) {
   return tail;
 }
 
-function pipeFfmpegOutput(req, res, ff, { headers, label, stderrLimit = 8000, onCleanup }) {
+function pipeFfmpegOutput(req, res, ff, { headers, label, stderrLimit = 8000, outputDelayMs = 0, onCleanup }) {
   let stderr = "";
   let started = false;
   let cleaned = false;
+  let stdoutEnded = false;
+  let delayTimer = null;
+  let waitingDrain = false;
+  const delayed = [];
 
   const cleanup = (kill = true) => {
     if (cleaned) return;
     cleaned = true;
+    if (delayTimer) clearTimeout(delayTimer);
+    delayed.length = 0;
     try { ff.stdout.unpipe(res); } catch {}
     if (kill && !ff.killed) ff.kill("SIGKILL");
     onCleanup?.();
@@ -54,24 +60,63 @@ function pipeFfmpegOutput(req, res, ff, { headers, label, stderrLimit = 8000, on
     if (stderr.length > stderrLimit) stderr = stderr.slice(-stderrLimit);
   });
 
-  ff.stdout.on("data", (chunk) => {
+  const writeChunk = (chunk) => {
     if (cleaned || res.destroyed) return;
     if (!started) {
       started = true;
       res.writeHead(200, headers);
     }
     if (!res.write(chunk)) {
+      waitingDrain = true;
       ff.stdout.pause();
       res.once("drain", () => {
-        if (!cleaned) ff.stdout.resume();
+        waitingDrain = false;
+        if (!cleaned) {
+          ff.stdout.resume();
+          flushDelayed();
+        }
       });
+      return false;
     }
+    return true;
+  };
+
+  const finishIfReady = () => {
+    if (stdoutEnded && delayed.length === 0 && started && !res.destroyed) {
+      try { res.end(); } catch {}
+    }
+  };
+
+  const scheduleDelayedFlush = () => {
+    if (delayTimer || delayed.length === 0 || waitingDrain) return;
+    delayTimer = setTimeout(flushDelayed, Math.max(0, delayed[0].sendAt - Date.now()));
+  };
+
+  function flushDelayed() {
+    delayTimer = null;
+    if (cleaned || waitingDrain) return;
+    const now = Date.now();
+    while (delayed.length && delayed[0].sendAt <= now) {
+      const { chunk } = delayed.shift();
+      if (!writeChunk(chunk)) break;
+    }
+    finishIfReady();
+    scheduleDelayedFlush();
+  }
+
+  ff.stdout.on("data", (chunk) => {
+    if (outputDelayMs > 0) {
+      delayed.push({ sendAt: Date.now() + outputDelayMs, chunk });
+      scheduleDelayedFlush();
+      return;
+    }
+    writeChunk(chunk);
   });
 
   ff.stdout.on("end", () => {
-    if (started && !res.destroyed) {
-      try { res.end(); } catch {}
-    }
+    stdoutEnded = true;
+    if (outputDelayMs > 0) flushDelayed();
+    else finishIfReady();
   });
 
   ff.on("error", (e) => {
@@ -233,6 +278,8 @@ function desktopAvInput(audio) {
   return `${videoInput}:${audioInput}`;
 }
 
+let desktopAudioCleanup = null;
+
 function buildDesktopAudioArgs({ audio }) {
   const input = normalizeAudioInput(audio);
   if (!input) return null;
@@ -243,7 +290,7 @@ function buildDesktopAudioArgs({ audio }) {
     "-vn",
     "-c:a", "libmp3lame",
     "-b:a", "128k",
-    "-ar", "44100",
+    "-ar", "48000",
     "-write_xing", "0",
     "-flush_packets", "1",
     "-f", "mp3",
@@ -251,7 +298,7 @@ function buildDesktopAudioArgs({ audio }) {
   ];
 }
 
-export function streamDesktopMjpeg(req, res, { params }) {
+export function streamDesktopMjpeg(req, res, { params, videoDelayMs = 0 }) {
   if (!config.desktop.enabled) {
     res.status(404).type("text/plain").end("Desktop streaming is disabled.");
     return;
@@ -274,6 +321,7 @@ export function streamDesktopMjpeg(req, res, { params }) {
     onCleanup: () => {
       active = Math.max(0, active - 1);
     },
+    outputDelayMs: Math.max(0, Math.min(5000, videoDelayMs || 0)),
   });
 }
 
@@ -287,20 +335,51 @@ export function streamDesktopAudio(req, res, { audio }) {
     res.status(404).type("text/plain").end("No desktop audio device selected.");
     return;
   }
+  desktopAudioCleanup?.();
+  desktopAudioCleanup = null;
   audioActive++;
   const ff = spawn(config.ffmpegPath, args, { stdio: ["ignore", "pipe", "pipe"] });
-  pipeFfmpegOutput(req, res, ff, {
-    label: "desktop-audio",
-    headers: {
-      "Content-Type": "audio/mpeg",
-      "Cache-Control": "no-cache, no-store, must-revalidate",
-      Connection: "close",
-      "X-Accel-Buffering": "no",
-    },
-    onCleanup: () => {
-      audioActive = Math.max(0, audioActive - 1);
-    },
+  res.socket?.setNoDelay?.(true);
+  res.writeHead(200, {
+    "Content-Type": "audio/mpeg",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    Connection: "close",
+    "X-Accel-Buffering": "no",
   });
+  ff.stdout.pipe(res);
+  let stderr = "";
+  let cleaned = false;
+  ff.stderr.on("data", (d) => {
+    stderr += d;
+    if (stderr.length > 4000) stderr = stderr.slice(-4000);
+  });
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    audioActive = Math.max(0, audioActive - 1);
+    if (desktopAudioCleanup === cleanup) desktopAudioCleanup = null;
+    try { ff.stdout.unpipe(res); } catch {}
+    if (!res.destroyed) {
+      try { res.end(); } catch {}
+    }
+    if (!ff.killed) ff.kill("SIGKILL");
+  };
+  desktopAudioCleanup = cleanup;
+  ff.on("error", (e) => {
+    console.error("[desktop-audio] ffmpeg error:", e.message);
+    cleanup();
+  });
+  ff.on("close", (code) => {
+    if (code && code !== 0 && code !== 255) {
+      console.error(`[desktop-audio] ffmpeg exited ${code}: ${summarizeFfmpegError(stderr)}`);
+    }
+    cleanup();
+  });
+  ff.stdout.on("error", cleanup);
+  res.on("error", cleanup);
+  res.socket?.on("error", cleanup);
+  req.on("close", cleanup);
+  res.on("close", cleanup);
 }
 
 function buildDesktopTSArgs({ params, audio }) {

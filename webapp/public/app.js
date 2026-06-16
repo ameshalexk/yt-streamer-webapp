@@ -597,6 +597,17 @@ function audioReadyForSync(audio) {
   return audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
 }
 
+function withUrlParam(url, key, value) {
+  const parsed = new URL(url, window.location.origin);
+  parsed.searchParams.set(key, String(value));
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+}
+
+function measuredAudioStartupDelayMs(startedAt) {
+  if (!startedAt) return 0;
+  return Math.max(0, Math.min(5000, Math.round(performance.now() - startedAt)));
+}
+
 function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const screen = $("#screen"), img = $("#mjpeg"), audio = $("#audio");
   cleanupMedia();
@@ -619,11 +630,27 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     if (!activeCompat.videoReady) return;
     if (audioUrl && soundOn && !activeCompat.audioReady && !meta.looseAudioSync) return;
     activeCompat.playbackStarted = true;
-    img.style.visibility = "";
-    if (audioUrl && soundOn) {
+    if (audioUrl && soundOn && activeCompat.audioReady) {
+      let revealed = false;
+      const revealAfterAudioStarts = () => {
+        if (revealed || !currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl) return;
+        revealed = true;
+        audio.onplaying = null;
+        img.style.visibility = "";
+        markStreamLive(attempt);
+      };
+      audio.onplaying = revealAfterAudioStarts;
       const play = startCompatAudio(true);
-      if (play?.catch) play.catch(() => {});
+      if (play?.then) {
+        play.then(revealAfterAudioStarts).catch(() => {
+          setTimeout(revealAfterAudioStarts, 1200);
+        });
+      } else {
+        setTimeout(revealAfterAudioStarts, 100);
+      }
+      return;
     }
+    img.style.visibility = "";
     markStreamLive(attempt);
   };
 
@@ -647,6 +674,13 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl) return;
       if (!audioReadyForSync(audio)) return;
       activeCompat.audioReady = true;
+      if (meta.syncVideoToAudio && !activeCompat.videoStarted) {
+        const videoDelayMs = measuredAudioStartupDelayMs(activeCompat.audioLoadStartedAt);
+        if (videoDelayMs > 0) {
+          mjpegUrl = withUrlParam(mjpegUrl, "videoDelay", videoDelayMs);
+          activeCompat.mjpegUrl = mjpegUrl;
+        }
+      }
       if (meta.looseAudioSync && activeCompat.playbackStarted) {
         const play = startCompatAudio(true);
         if (play?.catch) play.catch(() => {});
@@ -665,10 +699,10 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       loadCompatVideo(attempt, mjpegUrl);
       releaseCompatPlayback();
     };
+    activeCompat.audioLoadStartedAt = performance.now();
     audio.src = audioUrl;
     try { audio.load(); } catch {}
     if (meta.looseAudioSync) {
-      activeCompat.audioReady = true;
       loadCompatVideo(attempt, mjpegUrl);
     } else {
       loadVideoIfAudioReady();
@@ -1846,11 +1880,6 @@ function supportsNativeAudioHls() {
 async function desktopAudioUrl(audio) {
   await stopDesktopAudioHlsSession();
   if (!audio) return "";
-  if (supportsNativeAudioHls()) {
-    const hls = await api.get(`/api/desktop/audio-hls/start?audio=${encodeURIComponent(audio)}&_=${Date.now()}`);
-    desktopAudioHlsSessionId = hls.id;
-    return hls.url;
-  }
   return `/stream/desktop-audio?audio=${encodeURIComponent(audio)}&_=${Date.now()}`;
 }
 
@@ -1916,13 +1945,15 @@ function renderDesktopAudioOptions(sources = state.desktopSources) {
   else select.value = "";
 }
 
-function desktopStreamQuery() {
-  return new URLSearchParams({
+function desktopStreamQuery(videoDelayMs = 0) {
+  const params = new URLSearchParams({
     height: $("#desktopHeight").value,
     fps: $("#desktopFps").value,
     quality: $("#desktopQuality").value,
     _: Date.now(),
-  }).toString();
+  });
+  if (videoDelayMs > 0) params.set("videoDelay", String(videoDelayMs));
+  return params.toString();
 }
 
 function selectedDesktopAudio() {
@@ -1957,14 +1988,14 @@ function playDesktopStream() {
   if (isMobileMode()) setMode("watch");
   desktopStreamActive = true;
   replayFn = async () => {
-    const q = desktopStreamQuery();
     const audio = selectedDesktopAudio();
+    const q = desktopStreamQuery();
     stopDesktopHlsSession();
     const audioUrl = await desktopAudioUrl(audio);
     playCompatStream({
       mjpegUrl: `/stream/desktop?${q}`,
       audioUrl,
-    }, audio ? "Desktop + Audio" : "Desktop", { live: true, looseAudioSync: true });
+    }, audio ? "Desktop + Audio" : "Desktop", { live: true, syncVideoToAudio: Boolean(audio) });
   };
   replayFn().catch((e) => toast(e.message, true));
 }

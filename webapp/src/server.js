@@ -343,7 +343,8 @@ app.post("/api/desktop/audio-hls/:id/stop", asyncH(async (req, res) => {
 // ---------------------------------------------------------------------------
 app.get("/stream/desktop", asyncH(async (req, res) => {
   const params = stream.normalizeParams(req.query);
-  return stream.streamDesktopMjpeg(req, res, { params });
+  const videoDelayMs = Math.max(0, Math.min(5000, parseInt(req.query.videoDelay ?? "0", 10) || 0));
+  return stream.streamDesktopMjpeg(req, res, { params, videoDelayMs });
 }));
 
 app.get("/stream/desktop-audio", asyncH(async (req, res) => {
