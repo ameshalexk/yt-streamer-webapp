@@ -147,6 +147,9 @@ Override defaults with environment variables (e.g. in the launchd plist or your 
 | `MJPEG_FPS` | `12` | Default stream FPS |
 | `MJPEG_HEIGHT` | `480` | Default stream height (0 = source) |
 | `DL_MAX_HEIGHT` | `720` | Max download/stream resolution |
+| `DESKTOP_INPUT_ENABLED` | unset | Set to `1` to enable touch input for the Mac desktop stream |
+| `DESKTOP_INPUT_TOKEN` | unset | Optional shared code required before desktop input events are accepted |
+| `DESKTOP_INPUT_WIDTH` / `DESKTOP_INPUT_HEIGHT` | auto | Optional coordinate mapping override |
 | `MAX_STREAMS` | `3` | Concurrent ffmpeg streams cap |
 | `LIBRARY_DIR` | `./data/library` | Where downloads are stored |
 | `FFMPEG_PATH` / `YTDLP_PATH` | on PATH | Override binary locations |
@@ -188,6 +191,8 @@ GET    /api/youtube/info?url=
 GET    /api/youtube/playlist?url=
 POST   /api/download                         {url,playlistId} -> {jobId}
 GET    /api/download/:jobId
+GET    /api/desktop/input/status
+POST   /api/desktop/input                    {type,x,y}
 GET    /api/probe?url=
 GET    /stream/item/:itemId?height=&fps=&quality=
 GET    /stream/url?url=&live=1&height=&fps=&quality=
@@ -202,4 +207,5 @@ GET    /stream/youtube?url=&height=&fps=&quality=
 - Keep the Mac awake; if it sleeps, streams stop.
 - YouTube occasionally changes formats — keep `yt-dlp` current: `brew upgrade yt-dlp`.
 - This binds to localhost and is only reachable through your tunnel. Since there's no auth, **don't** add a `0.0.0.0` bind or expose the port directly. If you ever want a lock, Cloudflare Access (free for one user) can gate the hostname.
+- Desktop touch input is disabled by default. The app prefers `cliclick` for mouse input and falls back to a generated CoreGraphics helper; whichever executable sends input needs macOS Accessibility permission. Public/tunneled deployments should use Cloudflare Access or `DESKTOP_INPUT_TOKEN`.
 ```

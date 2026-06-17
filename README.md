@@ -33,6 +33,7 @@ The main app lives in `webapp/`. It runs a local Node/Express server, uses `ffmp
 - Legacy/fallback paths for MJPEG video and MP3 audio.
 - Clear `502 Bad Gateway` failure responses when `ffmpeg` cannot produce stream output.
 - Optional Cloudflare Tunnel deployment so the local Mac app is reachable at a public HTTPS hostname without opening inbound ports.
+- Optional gated desktop touch input for controlling the streamed Mac screen from the browser.
 
 ## Requirements
 
@@ -42,6 +43,7 @@ The main app lives in `webapp/`. It runs a local Node/Express server, uses `ffmp
 - `ffmpeg`
 - `yt-dlp`
 - `cloudflared` if exposing through Cloudflare Tunnel
+- `cliclick` if enabling desktop touch input (`clang` / Xcode Command Line Tools for the fallback helper)
 
 Install everything for the webapp:
 
@@ -161,6 +163,10 @@ Common variables:
 | `YOUTUBE_OAUTH_REDIRECT_URI` | inferred | Optional exact redirect URI, e.g. `https://stream.example.com/api/youtube-auth/callback` |
 | `VIDEO_ENCODER` | `libx264` | Use `h264_videotoolbox` on Mac for lighter CPU |
 | `AUDIO_BITRATE_K` | `128` | AAC audio bitrate for MPEG-TS |
+| `DESKTOP_INPUT_ENABLED` | unset | Set to `1` to enable browser touch input for the desktop stream |
+| `DESKTOP_INPUT_TOKEN` | unset | Optional shared code required before sending desktop input events |
+| `DESKTOP_INPUT_WIDTH` | auto | Optional override for desktop input coordinate width |
+| `DESKTOP_INPUT_HEIGHT` | auto | Optional override for desktop input coordinate height |
 | `MAX_STREAMS` | `3` | Concurrent ffmpeg stream cap |
 | `CATALOG_TTL_MS` | `21600000` | IPTV catalog cache duration |
 
@@ -185,6 +191,8 @@ Runtime data should stay out of git.
 ## Cloudflare Tunnel
 
 The app has no built-in authentication and should stay bound to localhost. Expose it through Cloudflare Tunnel rather than binding directly to `0.0.0.0`.
+
+Desktop touch input is disabled by default because it can control the Mac. If you enable it on a tunnel, put Cloudflare Access in front of the app or set `DESKTOP_INPUT_TOKEN` and keep that code private. The app prefers `cliclick` for mouse input and falls back to a generated CoreGraphics helper; whichever executable sends input needs macOS Accessibility permission.
 
 Basic tunnel flow:
 

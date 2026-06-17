@@ -61,6 +61,12 @@
           <div class="player-actions">
             <button class="btn small ghost" id="playerHomeBtn" type="button">Home</button>
             <button class="btn small ghost icon-only" id="fullscreenBtn" aria-label="Full screen" title="Full screen"><span class="fullscreen-icon" aria-hidden="true"></span></button>
+            <button class="btn small ghost" id="desktopInputBtn" type="button" aria-pressed="false" hidden>Touch</button>
+            <div class="desktop-zoom-controls" id="desktopZoomControls" hidden>
+              <button class="btn small ghost" id="desktopZoomOutBtn" type="button" aria-label="Zoom out">−</button>
+              <button class="btn small ghost" id="desktopZoomResetBtn" type="button">Fit</button>
+              <button class="btn small ghost" id="desktopZoomInBtn" type="button" aria-label="Zoom in">+</button>
+            </div>
             <button class="btn small ghost" id="muteBtn" title="Sound on/off">🔊</button>
             <button class="btn small ghost" id="restreamBtn" disabled title="Reload stream">↻ Restream</button>
             <button class="btn small ghost" id="stopBtn" disabled>■ Stop</button>
@@ -206,6 +212,10 @@
               <button class="btn" id="desktopStartBtn" type="button">Start desktop stream</button>
               <button class="btn ghost" id="desktopStopBtn" type="button">Stop</button>
             </div>
+            <div class="desktop-input-row">
+              <button class="btn small ghost" id="desktopInputToggle" type="button" aria-pressed="false">Touch control</button>
+              <span class="desktop-input-status" id="desktopInputStatus">Checking input...</span>
+            </div>
             <div class="desktop-presets" aria-label="Desktop stream presets">
               <button class="btn small ghost" type="button" data-desktop-preset="smooth">Smooth</button>
               <button class="btn small ghost" type="button" data-desktop-preset="balanced">Balanced</button>
@@ -320,6 +330,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260615-measured-desktop-av-sync"></script>
+  <script src="/app.js?v=20260616-desktop-zoom"></script>
 </body>
 </html>

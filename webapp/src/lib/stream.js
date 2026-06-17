@@ -10,6 +10,7 @@ import { config } from "../config.js";
 let active = 0;
 const hlsSessions = new Map();
 const audioHlsSessions = new Map();
+const desktopMjpegCleanups = new Set();
 
 export function activeStreamCount() {
   return active;
@@ -303,12 +304,26 @@ export function streamDesktopMjpeg(req, res, { params, videoDelayMs = 0 }) {
     res.status(404).type("text/plain").end("Desktop streaming is disabled.");
     return;
   }
+  for (const cleanup of [...desktopMjpegCleanups]) cleanup();
   if (active >= config.maxConcurrentStreams) {
     res.status(429).type("text/plain").end("Too many active streams. Stop one and retry.");
     return;
   }
   active++;
   const ff = spawn(config.ffmpegPath, buildDesktopArgs({ params }), { stdio: ["ignore", "pipe", "pipe"] });
+  const sessionCleanup = () => {
+    if (!desktopMjpegCleanups.has(sessionCleanup)) return;
+    desktopMjpegCleanups.delete(sessionCleanup);
+    active = Math.max(0, active - 1);
+    try { ff.stdout.unpipe(res); } catch {}
+    if (!res.destroyed) {
+      try { res.end(); } catch {}
+    }
+    if (!ff.killed) {
+      try { ff.kill("SIGKILL"); } catch {}
+    }
+  };
+  desktopMjpegCleanups.add(sessionCleanup);
   pipeFfmpegOutput(req, res, ff, {
     label: "desktop",
     headers: {
@@ -318,9 +333,7 @@ export function streamDesktopMjpeg(req, res, { params, videoDelayMs = 0 }) {
       Connection: "close",
       "X-Accel-Buffering": "no",
     },
-    onCleanup: () => {
-      active = Math.max(0, active - 1);
-    },
+    onCleanup: sessionCleanup,
     outputDelayMs: Math.max(0, Math.min(5000, videoDelayMs || 0)),
   });
 }

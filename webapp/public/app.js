@@ -61,6 +61,7 @@ const FPS_OPTIONS = [
 
 const DESKTOP_AUDIO_KEY = "ytStreamerDesktopAudio";
 const DESKTOP_AUDIO_NAME_KEY = "ytStreamerDesktopAudioName";
+const DESKTOP_INPUT_TOKEN_KEY = "ytStreamerDesktopInputToken";
 
 // ---- UI helpers ----
 function toast(msg, bad = false) {
@@ -298,6 +299,22 @@ let audioPrompted = false;
 let desktopStreamActive = false;
 let desktopHlsSessionId = null;
 let desktopAudioHlsSessionId = null;
+let desktopInputStatus = null;
+let desktopInputActive = false;
+let desktopInputPointerId = null;
+let desktopInputLastMoveAt = 0;
+let desktopInputLastErrorAt = 0;
+const DESKTOP_ZOOM_MIN = 1;
+const DESKTOP_ZOOM_MAX = 4;
+const DESKTOP_ZOOM_STEP = 0.25;
+const desktopZoom = {
+  scale: 1,
+  panX: 0,
+  panY: 0,
+  panPointerId: null,
+  panLastX: 0,
+  panLastY: 0,
+};
 let syntheticFullscreen = false;
 let streamAttempt = 0;
 let streamWarnTimer = null;
@@ -840,6 +857,10 @@ function stopPlayback() {
   stopStreamSeekTimer(true);
   replayFn = null;
   desktopStreamActive = false;
+  desktopInputActive = false;
+  desktopInputPointerId = null;
+  resetDesktopZoom();
+  renderDesktopInputUi();
   setBadge("hidden");
   $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode");
   $("#nowPlaying").textContent = "Player";
@@ -1815,6 +1836,16 @@ async function openLegacyLibrary() {
 async function openDesktop() {
   setMode("desktop");
   await loadDesktopSources().catch((e) => renderDesktopStatus({ error: e.message }));
+  await loadDesktopInputStatus().catch((e) => {
+    desktopInputStatus = {
+      enabled: true,
+      supported: false,
+      available: false,
+      trusted: false,
+      error: e.message || "Desktop input status failed.",
+    };
+    renderDesktopInputUi();
+  });
 }
 
 async function loadDesktopSources() {
@@ -1945,6 +1976,256 @@ function renderDesktopAudioOptions(sources = state.desktopSources) {
   else select.value = "";
 }
 
+function desktopInputReady() {
+  return Boolean(desktopInputStatus?.enabled && desktopInputStatus?.available && desktopInputStatus?.trusted);
+}
+
+function desktopInputCanPrompt() {
+  return Boolean(desktopInputStatus?.enabled && desktopInputStatus?.available && !desktopInputStatus?.trusted);
+}
+
+function clampDesktopZoomScale(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DESKTOP_ZOOM_MIN;
+  return Math.max(DESKTOP_ZOOM_MIN, Math.min(DESKTOP_ZOOM_MAX, n));
+}
+
+function desktopMediaBaseRect() {
+  const screen = $("#screen");
+  const rect = screen.getBoundingClientRect();
+  const media = activeScreenMediaElement();
+  const display = desktopInputStatus?.display || {};
+  const mediaW = media?.videoWidth || media?.naturalWidth || display.width || 16;
+  const mediaH = media?.videoHeight || media?.naturalHeight || display.height || 9;
+  const mediaAspect = mediaW > 0 && mediaH > 0 ? mediaW / mediaH : 16 / 9;
+  const screenAspect = rect.width / rect.height;
+  let left = rect.left;
+  let top = rect.top;
+  let width = rect.width;
+  let height = rect.height;
+
+  if (mediaAspect > screenAspect) {
+    height = width / mediaAspect;
+    top = rect.top + ((rect.height - height) / 2);
+  } else {
+    width = height * mediaAspect;
+    left = rect.left + ((rect.width - width) / 2);
+  }
+
+  return { left, top, width, height, screenRect: rect };
+}
+
+function desktopMediaVisualRect() {
+  const base = desktopMediaBaseRect();
+  const cx = base.screenRect.left + (base.screenRect.width / 2);
+  const cy = base.screenRect.top + (base.screenRect.height / 2);
+  const scale = desktopZoom.scale;
+  return {
+    left: cx + desktopZoom.panX + (scale * (base.left - cx)),
+    top: cy + desktopZoom.panY + (scale * (base.top - cy)),
+    width: base.width * scale,
+    height: base.height * scale,
+    screenRect: base.screenRect,
+  };
+}
+
+function clampDesktopPan() {
+  if (desktopZoom.scale <= 1) {
+    desktopZoom.panX = 0;
+    desktopZoom.panY = 0;
+    return;
+  }
+  const rect = $("#screen").getBoundingClientRect();
+  const maxX = rect.width * (desktopZoom.scale - 1) / 2;
+  const maxY = rect.height * (desktopZoom.scale - 1) / 2;
+  desktopZoom.panX = Math.max(-maxX, Math.min(maxX, desktopZoom.panX));
+  desktopZoom.panY = Math.max(-maxY, Math.min(maxY, desktopZoom.panY));
+}
+
+function renderDesktopZoomUi() {
+  const screen = $("#screen");
+  const controls = $("#desktopZoomControls");
+  const out = $("#desktopZoomOutBtn");
+  const reset = $("#desktopZoomResetBtn");
+  const inn = $("#desktopZoomInBtn");
+  const active = desktopStreamActive && desktopZoom.scale > 1;
+
+  clampDesktopPan();
+  screen.style.setProperty("--desktop-zoom-scale", String(desktopZoom.scale));
+  screen.style.setProperty("--desktop-zoom-x", `${Math.round(desktopZoom.panX)}px`);
+  screen.style.setProperty("--desktop-zoom-y", `${Math.round(desktopZoom.panY)}px`);
+  screen.classList.toggle("desktop-zoom-active", active);
+  if (!controls) return;
+  controls.hidden = !desktopStreamActive;
+  out.disabled = !desktopStreamActive || desktopZoom.scale <= DESKTOP_ZOOM_MIN;
+  inn.disabled = !desktopStreamActive || desktopZoom.scale >= DESKTOP_ZOOM_MAX;
+  reset.textContent = desktopZoom.scale <= 1 ? "Fit" : `${Math.round(desktopZoom.scale * 100)}%`;
+}
+
+function setDesktopZoom(scale, { anchorX = null, anchorY = null } = {}) {
+  const next = clampDesktopZoomScale(scale);
+  const previous = desktopZoom.scale;
+  if (next === previous) {
+    renderDesktopZoomUi();
+    return;
+  }
+  if (anchorX != null && anchorY != null && previous > 0) {
+    const rect = $("#screen").getBoundingClientRect();
+    const cx = rect.left + (rect.width / 2);
+    const cy = rect.top + (rect.height / 2);
+    desktopZoom.panX = anchorX - cx - ((next / previous) * (anchorX - cx - desktopZoom.panX));
+    desktopZoom.panY = anchorY - cy - ((next / previous) * (anchorY - cy - desktopZoom.panY));
+  }
+  desktopZoom.scale = next;
+  renderDesktopZoomUi();
+}
+
+function resetDesktopZoom() {
+  desktopZoom.scale = 1;
+  desktopZoom.panX = 0;
+  desktopZoom.panY = 0;
+  desktopZoom.panPointerId = null;
+  $("#screen").classList.remove("desktop-panning");
+  renderDesktopZoomUi();
+}
+
+function panDesktopZoom(dx, dy) {
+  if (!desktopStreamActive || desktopZoom.scale <= 1) return;
+  desktopZoom.panX += dx;
+  desktopZoom.panY += dy;
+  renderDesktopZoomUi();
+}
+
+function renderDesktopInputUi() {
+  const panelBtn = $("#desktopInputToggle");
+  const playerBtn = $("#desktopInputBtn");
+  const status = $("#desktopInputStatus");
+  const screen = $("#screen");
+  const ready = desktopInputReady();
+  const active = Boolean(desktopInputActive && desktopStreamActive && ready);
+
+  screen.classList.toggle("desktop-input-active", active);
+  renderDesktopZoomUi();
+  if (playerBtn) {
+    playerBtn.hidden = !desktopStreamActive || !ready;
+    playerBtn.textContent = active ? "Touch on" : "Touch";
+    playerBtn.classList.toggle("secondary", active);
+    playerBtn.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  if (!panelBtn || !status) return;
+
+  panelBtn.classList.toggle("secondary", active);
+  panelBtn.setAttribute("aria-pressed", active ? "true" : "false");
+  status.className = "desktop-input-status";
+
+  if (!desktopInputStatus) {
+    panelBtn.disabled = true;
+    panelBtn.textContent = "Touch control";
+    status.textContent = "Checking input...";
+    return;
+  }
+  if (!desktopInputStatus.enabled) {
+    desktopInputActive = false;
+    panelBtn.disabled = true;
+    panelBtn.textContent = "Touch control";
+    status.textContent = "Input disabled";
+    return;
+  }
+  if (!desktopInputStatus.supported || !desktopInputStatus.available) {
+    desktopInputActive = false;
+    panelBtn.disabled = true;
+    panelBtn.textContent = "Touch control";
+    status.textContent = desktopInputStatus.error || "Input unavailable";
+    status.classList.add("bad");
+    return;
+  }
+  if (!desktopInputStatus.trusted) {
+    desktopInputActive = false;
+    panelBtn.disabled = false;
+    panelBtn.textContent = "Grant input";
+    status.textContent = "Accessibility permission needed";
+    status.classList.add("bad");
+    return;
+  }
+  panelBtn.disabled = !desktopStreamActive;
+  panelBtn.textContent = active ? "Touch on" : "Touch control";
+  status.textContent = desktopStreamActive ? (active ? "Touch control active" : "Ready") : "Start stream first";
+  if (desktopStreamActive || active) status.classList.add("ok");
+}
+
+async function loadDesktopInputStatus({ prompt = false } = {}) {
+  const res = await fetch(`/api/desktop/input/status${prompt ? "?prompt=1" : ""}`, {
+    headers: prompt ? desktopInputHeaders() : {},
+  });
+  if (res.status === 401 && prompt && requestDesktopInputToken()) {
+    return loadDesktopInputStatus({ prompt: true });
+  }
+  desktopInputStatus = await api.parse(res);
+  renderDesktopInputUi();
+  return desktopInputStatus;
+}
+
+function desktopInputHeaders() {
+  const token = localStorage.getItem(DESKTOP_INPUT_TOKEN_KEY);
+  return token ? { "X-Desktop-Input-Token": token } : {};
+}
+
+function requestDesktopInputToken() {
+  const token = window.prompt("Desktop input code");
+  if (!token) return false;
+  localStorage.setItem(DESKTOP_INPUT_TOKEN_KEY, token);
+  return true;
+}
+
+async function postDesktopInput(payload, retried = false) {
+  try {
+    const res = await fetch("/api/desktop/input", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...desktopInputHeaders() },
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 401 && !retried && requestDesktopInputToken()) {
+      return postDesktopInput(payload, true);
+    }
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch {}
+    if (!res.ok) throw new Error(data?.error || res.statusText);
+    return data;
+  } catch (err) {
+    if (Date.now() - desktopInputLastErrorAt > 2500) {
+      desktopInputLastErrorAt = Date.now();
+      toast(err.message || "Desktop input failed", true);
+    }
+    if (/permission|disabled|unavailable|token/i.test(err.message || "")) {
+      desktopInputActive = false;
+      renderDesktopInputUi();
+    }
+    return null;
+  }
+}
+
+async function toggleDesktopInput() {
+  if (!desktopInputStatus) await loadDesktopInputStatus().catch(() => {});
+  if (desktopInputCanPrompt()) {
+    await loadDesktopInputStatus({ prompt: true }).catch((e) => toast(e.message, true));
+    if (!desktopInputReady()) {
+      toast("Grant Accessibility permission, then refresh input status", true);
+      return;
+    }
+  }
+  if (!desktopInputReady()) {
+    toast(desktopInputStatus?.error || "Desktop input is not ready", true);
+    return;
+  }
+  if (!desktopStreamActive) {
+    toast("Start desktop stream first", true);
+    return;
+  }
+  desktopInputActive = !desktopInputActive;
+  renderDesktopInputUi();
+}
+
 function desktopStreamQuery(videoDelayMs = 0) {
   const params = new URLSearchParams({
     height: $("#desktopHeight").value,
@@ -1987,6 +2268,8 @@ function playDesktopStream() {
   renderItems();
   if (isMobileMode()) setMode("watch");
   desktopStreamActive = true;
+  resetDesktopZoom();
+  renderDesktopInputUi();
   replayFn = async () => {
     const audio = selectedDesktopAudio();
     const q = desktopStreamQuery();
@@ -2420,7 +2703,12 @@ $("#desktopHomeBtn").onclick = () => setMode("watch");
 $("#desktopRefreshBtn").onclick = () => loadDesktopSources().catch((e) => renderDesktopStatus({ error: e.message }));
 $("#desktopStartBtn").onclick = playDesktopStream;
 $("#desktopStopBtn").onclick = stopPlayback;
+$("#desktopInputToggle").onclick = toggleDesktopInput;
 $("#playerHomeBtn").onclick = () => setMode("watch");
+$("#desktopInputBtn").onclick = toggleDesktopInput;
+$("#desktopZoomOutBtn").onclick = () => setDesktopZoom(desktopZoom.scale - DESKTOP_ZOOM_STEP);
+$("#desktopZoomResetBtn").onclick = resetDesktopZoom;
+$("#desktopZoomInBtn").onclick = () => setDesktopZoom(desktopZoom.scale + DESKTOP_ZOOM_STEP);
 document.querySelectorAll("[data-desktop-preset]").forEach((btn) => {
   btn.onclick = () => applyDesktopPreset(btn.dataset.desktopPreset);
 });
@@ -2658,6 +2946,132 @@ bindTap($("#ytRecommendationList"), async (e) => {
   await streamRecommendation(item);
 });
 
+function desktopInputActiveForScreen() {
+  return Boolean(desktopStreamActive && desktopInputActive && desktopInputReady());
+}
+
+function activeScreenMediaElement() {
+  const screen = $("#screen");
+  if (screen.classList.contains("video-mode")) return $("#video");
+  if (screen.classList.contains("mjpeg-mode")) return $("#mjpeg");
+  return null;
+}
+
+function desktopInputPointFromClient(clientX, clientY) {
+  const { left, top, width, height } = desktopMediaVisualRect();
+
+  if (clientX < left || clientX > left + width || clientY < top || clientY > top + height) return null;
+  return {
+    x: Math.max(0, Math.min(1, (clientX - left) / width)),
+    y: Math.max(0, Math.min(1, (clientY - top) / height)),
+  };
+}
+
+function desktopInputButton(e) {
+  return e.button === 2 ? 2 : 1;
+}
+
+function sendDesktopPointer(type, e) {
+  const point = desktopInputPointFromClient(e.clientX, e.clientY);
+  if (!point) return false;
+  void postDesktopInput({ type, ...point, button: desktopInputButton(e) });
+  return true;
+}
+
+function handleDesktopInputPointerDown(e) {
+  if (!desktopInputActiveForScreen()) return false;
+  if (e.pointerType === "mouse" && typeof e.button === "number" && e.button > 2) return false;
+  if (!sendDesktopPointer("down", e)) return false;
+  desktopInputPointerId = e.pointerId;
+  desktopInputLastMoveAt = 0;
+  try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
+function handleDesktopInputPointerMove(e) {
+  if (!desktopInputActiveForScreen() || desktopInputPointerId !== e.pointerId) return false;
+  const now = performance.now();
+  if (now - desktopInputLastMoveAt < 45) return true;
+  desktopInputLastMoveAt = now;
+  sendDesktopPointer("drag", e);
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
+function handleDesktopInputPointerUp(e) {
+  if (!desktopInputActiveForScreen() || desktopInputPointerId !== e.pointerId) return false;
+  sendDesktopPointer("up", e);
+  desktopInputPointerId = null;
+  try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
+function handleDesktopInputWheel(e) {
+  if (!desktopInputActiveForScreen()) return false;
+  const point = desktopInputPointFromClient(e.clientX, e.clientY);
+  if (!point) return false;
+  void postDesktopInput({
+    type: "scroll",
+    ...point,
+    dx: Math.max(-600, Math.min(600, -e.deltaX)),
+    dy: Math.max(-600, Math.min(600, -e.deltaY)),
+  });
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
+function handleDesktopZoomWheel(e) {
+  if (!desktopStreamActive || desktopInputActiveForScreen()) return false;
+  if (!e.ctrlKey && !e.metaKey) return false;
+  const direction = e.deltaY > 0 ? -1 : 1;
+  setDesktopZoom(desktopZoom.scale + (direction * DESKTOP_ZOOM_STEP), {
+    anchorX: e.clientX,
+    anchorY: e.clientY,
+  });
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
+function handleDesktopPanPointerDown(e) {
+  if (!desktopStreamActive || desktopInputActiveForScreen() || desktopZoom.scale <= 1) return false;
+  if (e.pointerType === "mouse" && typeof e.button === "number" && e.button > 0) return false;
+  desktopZoom.panPointerId = e.pointerId;
+  desktopZoom.panLastX = e.clientX;
+  desktopZoom.panLastY = e.clientY;
+  try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+  e.currentTarget.classList.add("desktop-panning");
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
+function handleDesktopPanPointerMove(e) {
+  if (desktopZoom.panPointerId !== e.pointerId) return false;
+  panDesktopZoom(e.clientX - desktopZoom.panLastX, e.clientY - desktopZoom.panLastY);
+  desktopZoom.panLastX = e.clientX;
+  desktopZoom.panLastY = e.clientY;
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
+function handleDesktopPanPointerUp(e) {
+  if (desktopZoom.panPointerId !== e.pointerId) return false;
+  desktopZoom.panPointerId = null;
+  try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+  e.currentTarget.classList.remove("desktop-panning");
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
 {
   const screen = $("#screen");
   let lastTapAt = 0;
@@ -2681,24 +3095,39 @@ bindTap($("#ytRecommendationList"), async (e) => {
   }
 
   if (window.PointerEvent) {
+    screen.addEventListener("pointerdown", handleDesktopInputPointerDown);
+    screen.addEventListener("pointerdown", handleDesktopPanPointerDown);
+    screen.addEventListener("pointermove", handleDesktopInputPointerMove);
+    screen.addEventListener("pointermove", handleDesktopPanPointerMove);
+    screen.addEventListener("pointercancel", handleDesktopInputPointerUp);
+    screen.addEventListener("pointercancel", handleDesktopPanPointerUp);
     screen.addEventListener("pointerup", (e) => {
+      if (handleDesktopInputPointerUp(e)) return;
+      if (handleDesktopPanPointerUp(e)) return;
+      if (desktopInputActiveForScreen()) return;
       if (typeof e.button === "number" && e.button > 0) return;
       if (handleTap(e.clientX, e.clientY)) e.preventDefault();
     });
   } else {
     screen.addEventListener("touchend", (e) => {
+      if (desktopInputActiveForScreen()) return;
       const touch = e.changedTouches?.[0];
       if (touch && handleTap(touch.clientX, touch.clientY)) e.preventDefault();
     }, { passive: false });
   }
 
+  screen.addEventListener("wheel", (e) => {
+    if (handleDesktopZoomWheel(e)) return;
+    handleDesktopInputWheel(e);
+  }, { passive: false });
   screen.addEventListener("dblclick", (e) => {
+    if (desktopInputActiveForScreen()) return;
     if (Date.now() < ignoreDblClickUntil) return;
     e.preventDefault();
     toggleScreenFullscreen();
   });
-  document.addEventListener("fullscreenchange", () => { setSyntheticFullscreen(false); updateFullscreenButton(); });
-  document.addEventListener("webkitfullscreenchange", () => { setSyntheticFullscreen(false); updateFullscreenButton(); });
+  document.addEventListener("fullscreenchange", () => { setSyntheticFullscreen(false); updateFullscreenButton(); renderDesktopZoomUi(); });
+  document.addEventListener("webkitfullscreenchange", () => { setSyntheticFullscreen(false); updateFullscreenButton(); renderDesktopZoomUi(); });
 }
 
 $("#quickPlayBtn").onclick = async () => {

@@ -7,6 +7,7 @@ import { config } from "./config.js";
 import * as store from "./lib/store.js";
 import * as ytdlp from "./lib/ytdlp.js";
 import * as stream from "./lib/stream.js";
+import * as desktopInput from "./lib/desktop-input.js";
 import * as catalog from "./lib/catalog.js";
 import * as processedLibrary from "./lib/processed-library.js";
 import * as youtubeOAuth from "./lib/youtube-oauth.js";
@@ -336,6 +337,16 @@ app.get("/api/desktop/audio-hls/start", asyncH(async (req, res) => {
 app.post("/api/desktop/audio-hls/:id/stop", asyncH(async (req, res) => {
   await stream.stopDesktopAudioHls(req.params.id);
   res.json({ ok: true });
+}));
+
+app.get("/api/desktop/input/status", asyncH(async (req, res) => {
+  if (req.query.prompt === "1" && !desktopInput.authorize(req)) return res.status(401).json({ error: "desktop input token required" });
+  res.json(await desktopInput.status({ prompt: req.query.prompt === "1" }));
+}));
+
+app.post("/api/desktop/input", asyncH(async (req, res) => {
+  if (!desktopInput.authorize(req)) return res.status(401).json({ error: "desktop input token required" });
+  res.json(await desktopInput.send(req.body || {}));
 }));
 
 // ---------------------------------------------------------------------------

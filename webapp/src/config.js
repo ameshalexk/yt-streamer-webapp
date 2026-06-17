@@ -70,6 +70,10 @@ export const config = {
     audioInput: process.env.DESKTOP_AUDIO_INPUT || "",
     captureCursor: process.env.DESKTOP_CAPTURE_CURSOR !== "0",
     captureClicks: process.env.DESKTOP_CAPTURE_CLICKS !== "0",
+    inputEnabled: process.env.DESKTOP_INPUT_ENABLED === "1",
+    inputToken: process.env.DESKTOP_INPUT_TOKEN || "",
+    inputWidth: int("DESKTOP_INPUT_WIDTH", 0),
+    inputHeight: int("DESKTOP_INPUT_HEIGHT", 0),
   },
 
   // Safety: cap concurrent ffmpeg streams so a Mac doesn't melt
