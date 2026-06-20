@@ -42,7 +42,8 @@ const state = {
   legacyPlaylistVideos: [],
   youtubeAuth: null,
   recommendations: [],
-  recommendationFilter: "all",
+  recommendationCategory: "all",
+  recommendationVisibleCount: 25,
   recommendationsLoadedAt: null,
   recommendedPlayingId: null,
   recommendationDownloads: {},
@@ -62,6 +63,8 @@ const FPS_OPTIONS = [
 const DESKTOP_AUDIO_KEY = "ytStreamerDesktopAudio";
 const DESKTOP_AUDIO_NAME_KEY = "ytStreamerDesktopAudioName";
 const DESKTOP_INPUT_TOKEN_KEY = "ytStreamerDesktopInputToken";
+const RECOMMENDATION_PAGE_SIZE = 25;
+const DEFAULT_EMBED_CODE = `<iframe title="Argentina vs Algeria Player" marginheight="0" marginwidth="0" src="https://embed.st/embed/admin/ppv-argentina-vs-algeria/1" scrolling="no" allowfullscreen="yes" allow="encrypted-media; picture-in-picture;" width="100%" height="100%" frameborder="0"></iframe>`;
 
 // ---- UI helpers ----
 function toast(msg, bad = false) {
@@ -115,6 +118,7 @@ function setMode(mode) {
   layout.classList.toggle("mode-browse", mode === "browse");
   layout.classList.toggle("mode-recommended", mode === "recommended");
   layout.classList.toggle("mode-desktop", mode === "desktop");
+  layout.classList.toggle("mode-embed", mode === "embed");
   layout.classList.toggle("mode-saved", mode === "saved");
   layout.classList.toggle("mode-library", mode === "library");
   document.querySelectorAll(".mode-tab").forEach((tab) => {
@@ -126,6 +130,7 @@ function setMode(mode) {
   setPanelHidden($("#channelsView"), mode !== "browse");
   setPanelHidden($("#recommendationsView"), mode !== "recommended");
   setPanelHidden($("#desktopView"), mode !== "desktop");
+  setPanelHidden($("#embedView"), mode !== "embed");
   setPanelHidden($("#playlistDrawer"), mode !== "saved");
   setPanelHidden($("#legacyLibraryView"), mode !== "library");
   const player = $(".player");
@@ -316,6 +321,8 @@ const desktopZoom = {
   panLastY: 0,
 };
 let syntheticFullscreen = false;
+let activeEmbedCode = "";
+let activeEmbedHeight = "";
 let streamAttempt = 0;
 let streamWarnTimer = null;
 let streamFailTimer = null;
@@ -563,6 +570,7 @@ function cleanupMedia() {
   clearStreamNotice();
   stopStreamSeekTimer(false);
   destroyPlayer();
+  clearEmbedFrame();
   try { video.pause(); } catch {}
   video.onplaying = null;
   video.onerror = null;
@@ -584,6 +592,117 @@ function cleanupMedia() {
   try { audio.load(); } catch {}
   activeCompat = null;
   audioPrompted = false;
+}
+
+function clearEmbedFrame(resetSize = true) {
+  const screen = $("#screen");
+  const frame = $("#embedFrame");
+  if (!frame) return;
+  frame.hidden = true;
+  frame.removeAttribute("src");
+  frame.removeAttribute("allow");
+  frame.removeAttribute("width");
+  frame.removeAttribute("height");
+  frame.removeAttribute("frameborder");
+  frame.removeAttribute("marginheight");
+  frame.removeAttribute("marginwidth");
+  frame.removeAttribute("scrolling");
+  frame.removeAttribute("referrerpolicy");
+  frame.removeAttribute("name");
+  frame.allowFullscreen = false;
+  frame.title = "Embedded player";
+  screen.classList.remove("embed-mode");
+  if (resetSize) {
+    screen.style.height = "";
+    screen.style.aspectRatio = "";
+  }
+}
+
+function parseEmbedIframe(code) {
+  const doc = new DOMParser().parseFromString(code, "text/html");
+  const source = doc.querySelector("iframe");
+  if (!source) throw new Error("Paste iframe embed code first");
+  const src = (source.getAttribute("src") || "").trim();
+  if (!/^https?:\/\//i.test(src)) throw new Error("Iframe src must start with http or https");
+  return source;
+}
+
+function normalizedEmbedHeight(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "70vh";
+  if (/^\d+$/.test(raw)) return `${raw}px`;
+  if (/^\d+(?:\.\d+)?(px|vh|vw|vmin|vmax|rem|em|%)$/i.test(raw)) return raw;
+  return "70vh";
+}
+
+function copyEmbedIframeAttributes(source, frame) {
+  const allowed = ["title", "src", "scrolling", "allow", "width", "height", "frameborder", "marginheight", "marginwidth", "referrerpolicy", "name"];
+  for (const attr of allowed) {
+    const value = source.getAttribute(attr);
+    if (value != null) frame.setAttribute(attr, value);
+  }
+  const fullscreenValue = source.getAttribute("allowfullscreen");
+  frame.allowFullscreen = source.hasAttribute("allowfullscreen") && fullscreenValue !== "false";
+  if (frame.allowFullscreen) frame.setAttribute("allowfullscreen", fullscreenValue || "true");
+  frame.title = source.getAttribute("title") || "Embedded player";
+}
+
+function renderEmbedCode(code, heightValue) {
+  const source = parseEmbedIframe(code);
+  stopDesktopHlsSession();
+  stopDesktopAudioHlsSession();
+  cleanupMedia();
+  stopLegacyProgress();
+  stopStreamSeekTimer(true);
+  desktopStreamActive = false;
+  desktopInputActive = false;
+  desktopInputPointerId = null;
+  resetDesktopZoom();
+  renderDesktopInputUi();
+
+  const screen = $("#screen");
+  const frame = $("#embedFrame");
+  copyEmbedIframeAttributes(source, frame);
+  frame.hidden = false;
+  screen.style.height = normalizedEmbedHeight(heightValue || $("#embedHeight")?.value);
+  screen.style.aspectRatio = "auto";
+  screen.classList.remove("loading", "video-mode", "mjpeg-mode");
+  screen.classList.add("playing", "embed-mode");
+  activeEmbedCode = code;
+  activeEmbedHeight = heightValue || $("#embedHeight")?.value || "";
+  replayFn = () => renderEmbedCode(activeEmbedCode, activeEmbedHeight);
+  $("#nowPlaying").textContent = frame.title || "Embed Player";
+  $("#stopBtn").disabled = false;
+  $("#restreamBtn").disabled = false;
+  setBadge("live", "EMBED");
+  $("#embedStatus").textContent = "Loaded";
+  if (isMobileMode()) setMode("watch");
+}
+
+function loadEmbedFromInput() {
+  const input = $("#embedCodeInput");
+  const code = input.value.trim();
+  if (!code) {
+    toast("Paste iframe embed code first", true);
+    input.focus();
+    return;
+  }
+  try {
+    renderEmbedCode(code, $("#embedHeight").value);
+  } catch (e) {
+    $("#embedStatus").textContent = e.message;
+    toast(e.message, true);
+  }
+}
+
+function openEmbed() {
+  setMode("embed");
+  const input = $("#embedCodeInput");
+  if (input && !input.value.trim()) input.value = DEFAULT_EMBED_CODE;
+  requestAnimationFrame(() => {
+    input?.focus();
+    input?.select();
+  });
 }
 
 function startCompatAudio(notify = false) {
@@ -862,13 +981,17 @@ function stopPlayback() {
   resetDesktopZoom();
   renderDesktopInputUi();
   setBadge("hidden");
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "embed-mode");
+  $("#screen").style.height = "";
+  $("#screen").style.aspectRatio = "";
   $("#nowPlaying").textContent = "Player";
   $("#stopBtn").disabled = true;
   $("#restreamBtn").disabled = true;
   state.playingItemId = null;
   state.legacyPlayingId = null;
   state.recommendedPlayingId = null;
+  activeEmbedCode = "";
+  activeEmbedHeight = "";
   legacy.playing = null;
   legacy.resolution = null;
   renderItems();
@@ -882,7 +1005,7 @@ function restreamPlayback() {
   const resumeAt = streamSeek.seekable ? getStreamCurrentTime() : undefined;
   stopDesktopAudioHlsSession();
   cleanupMedia();
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "embed-mode");
   setBadge("reconnecting", "↻ Restreaming...");
   toast("Reloading stream");
   clearTimeout(restreamTimer);
@@ -1517,7 +1640,7 @@ function publishedLabel(value) {
 
 function recommendationMeta(item) {
   const parts = [item.channelTitle];
-  if (isRecommendationShort(item)) parts.push("Short");
+  if (item.categoryTitle) parts.push(item.categoryTitle);
   if (item.isLive) parts.push("Live");
   else if (item.isUpcoming) parts.push("Upcoming");
   else if (item.duration) parts.push(fmtDur(item.duration));
@@ -1533,37 +1656,33 @@ function setRecommendationStatus(text, bad = false) {
   el.classList.toggle("bad", bad);
 }
 
-function isRecommendationShort(item) {
-  return !item?.isLive && !item?.isUpcoming && Number(item?.duration || 0) > 0 && Number(item.duration) <= 180;
-}
-
 function recommendationMatchesFilter(item) {
-  if (state.recommendationFilter === "shorts") return isRecommendationShort(item);
-  if (state.recommendationFilter === "videos") return !isRecommendationShort(item);
-  return true;
+  return state.recommendationCategory === "all" || item.categoryId === state.recommendationCategory;
 }
 
 function filteredRecommendations() {
   return state.recommendations.filter(recommendationMatchesFilter);
 }
 
-function renderRecommendationTabs() {
-  const tabs = document.querySelectorAll(".recommendation-tab");
-  if (!tabs.length) return;
-  const counts = state.recommendations.reduce((acc, item) => {
-    acc.all += 1;
-    if (isRecommendationShort(item)) acc.shorts += 1;
-    else acc.videos += 1;
-    return acc;
-  }, { all: 0, videos: 0, shorts: 0 });
-  tabs.forEach((tab) => {
-    const filter = tab.dataset.recFilter;
-    const active = filter === state.recommendationFilter;
-    const label = tab.dataset.label || tab.textContent.replace(/\s+\d+$/, "");
-    tab.classList.toggle("active", active);
-    tab.setAttribute("aria-selected", active ? "true" : "false");
-    tab.textContent = `${label} ${counts[filter] || 0}`;
+function renderRecommendationCategories() {
+  const select = $("#ytCategoryFilter");
+  if (!select) return;
+  const categories = new Map();
+  state.recommendations.forEach((item) => {
+    const id = String(item.categoryId || "other");
+    const current = categories.get(id) || { title: item.categoryTitle || "Other", count: 0 };
+    current.count += 1;
+    categories.set(id, current);
   });
+  const options = [...categories.entries()].sort((a, b) => a[1].title.localeCompare(b[1].title));
+  if (state.recommendationCategory !== "all" && !categories.has(state.recommendationCategory)) {
+    state.recommendationCategory = "all";
+  }
+  select.innerHTML = `<option value="all">All categories (${state.recommendations.length})</option>${options.map(([id, value]) =>
+    `<option value="${esc(id)}">${esc(value.title)} (${value.count})</option>`
+  ).join("")}`;
+  select.value = state.recommendationCategory;
+  select.disabled = !state.recommendations.length;
 }
 
 function renderYoutubeAuth() {
@@ -1578,13 +1697,17 @@ function renderYoutubeAuth() {
   }
   const configured = Boolean(auth?.configured);
   const connected = Boolean(auth?.connected);
-  $("#ytConnectBtn").hidden = connected;
+  const renewalRequired = Boolean(auth?.renewalRequired);
+  $("#ytConnectBtn").hidden = !configured;
   $("#ytConnectBtn").disabled = !configured;
-  $("#ytDisconnectBtn").hidden = !connected;
+  $("#ytConnectBtn").textContent = connected || renewalRequired ? "Renew" : "Connect";
+  $("#ytDisconnectBtn").hidden = !auth?.hasCredentials;
   $("#ytRefreshBtn").disabled = !connected;
 
   if (!configured) {
     setRecommendationStatus(`Set YOUTUBE_OAUTH_CLIENT_ID and YOUTUBE_OAUTH_CLIENT_SECRET. Redirect: ${auth?.redirectUri || "/api/youtube-auth/callback"}`, true);
+  } else if (renewalRequired) {
+    setRecommendationStatus("YouTube authorization expired or was revoked. Tap Renew.", true);
   } else if (!connected) {
     setRecommendationStatus("YouTube not connected.");
   } else if (state.recommendationsLoadedAt) {
@@ -1596,9 +1719,11 @@ function renderYoutubeAuth() {
 
 function renderRecommendations() {
   renderYoutubeAuth();
-  renderRecommendationTabs();
+  renderRecommendationCategories();
   const list = $("#ytRecommendationList");
+  const more = $("#ytMoreRecommendations");
   if (!list) return;
+  if (more) more.hidden = true;
   if (!state.youtubeAuth) {
     list.innerHTML = `<div class="recommendation-empty">Loading...</div>`;
     return;
@@ -1608,18 +1733,24 @@ function renderRecommendations() {
     return;
   }
   if (!state.youtubeAuth?.connected) {
-    list.innerHTML = `<div class="recommendation-empty">Connect YouTube to load this tab.</div>`;
+    const action = state.youtubeAuth?.renewalRequired ? "Renew YouTube authorization to refresh recommendations." : "Connect YouTube to load this tab.";
+    list.innerHTML = `<div class="recommendation-empty">${esc(action)}</div>`;
     return;
   }
   if (!state.recommendations.length) {
     list.innerHTML = `<div class="recommendation-empty">No videos loaded. Tap Refresh.</div>`;
     return;
   }
-  const items = filteredRecommendations();
-  if (!items.length) {
-    const label = state.recommendationFilter === "shorts" ? "Shorts" : "videos";
-    list.innerHTML = `<div class="recommendation-empty">No ${label} in this refresh.</div>`;
+  const filteredItems = filteredRecommendations();
+  if (!filteredItems.length) {
+    list.innerHTML = `<div class="recommendation-empty">No videos match these filters.</div>`;
     return;
+  }
+  const items = filteredItems.slice(0, state.recommendationVisibleCount);
+  if (more && items.length < filteredItems.length) {
+    const remaining = filteredItems.length - items.length;
+    more.hidden = false;
+    more.textContent = `Load more (${Math.min(RECOMMENDATION_PAGE_SIZE, remaining)} of ${remaining})`;
   }
   list.innerHTML = items.map((item) => {
     const download = state.recommendationDownloads[item.id] || null;
@@ -1662,12 +1793,14 @@ async function loadRecommendations() {
     const data = await api.get(`/api/youtube/recommendations?_=${Date.now()}`);
     state.recommendations = data.items || [];
     state.recommendationsLoadedAt = data.generatedAt || Date.now();
-    const hasCurrentFilterItems = state.recommendationFilter === "all" || state.recommendations.some(recommendationMatchesFilter);
-    if (!hasCurrentFilterItems) state.recommendationFilter = "all";
+    state.recommendationVisibleCount = RECOMMENDATION_PAGE_SIZE;
+    if (state.recommendations.length && !state.recommendations.some(recommendationMatchesFilter)) {
+      state.recommendationCategory = "all";
+    }
     renderRecommendations();
   } catch (e) {
     setRecommendationStatus(e.message, true);
-    if (/not connected/i.test(e.message)) await loadYoutubeAuthStatus().catch(() => {});
+    if (/not connected|authorization|expired|revoked|token/i.test(e.message)) await loadYoutubeAuthStatus().catch(() => {});
     toast(e.message, true);
   } finally {
     btn.disabled = !state.youtubeAuth?.connected;
@@ -1687,6 +1820,8 @@ async function openRecommendations() {
 }
 
 function connectYoutube() {
+  $("#ytConnectBtn").disabled = true;
+  setRecommendationStatus("Opening Google authorization...");
   const popup = window.open("/api/youtube-auth/start", "ytstreamer_youtube_oauth");
   if (!popup) window.location.href = "/api/youtube-auth/start";
   let tries = 0;
@@ -1699,7 +1834,10 @@ function connectYoutube() {
         await loadRecommendations();
       }
     } catch {}
-    if (tries > 60) clearInterval(timer);
+    if (tries > 60) {
+      clearInterval(timer);
+      renderYoutubeAuth();
+    }
   }, 2000);
 }
 
@@ -2686,6 +2824,7 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
     if (tab.dataset.mode === "browse") openChannels();
     else if (tab.dataset.mode === "recommended") openRecommendations();
     else if (tab.dataset.mode === "desktop") openDesktop();
+    else if (tab.dataset.mode === "embed") openEmbed();
     else if (tab.dataset.mode === "library") openLegacyLibrary();
     else setMode(tab.dataset.mode);
   };
@@ -2693,6 +2832,7 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
 $("#emptySavedBtn").onclick = () => setMode("saved");
 $("#emptyBrowseBtn").onclick = openChannels;
 $("#emptyDesktopBtn").onclick = openDesktop;
+$("#emptyEmbedBtn").onclick = openEmbed;
 $("#emptyPasteBtn").onclick = () => {
   setMode("watch");
   const input = $("#quickUrl");
@@ -2704,6 +2844,20 @@ $("#desktopRefreshBtn").onclick = () => loadDesktopSources().catch((e) => render
 $("#desktopStartBtn").onclick = playDesktopStream;
 $("#desktopStopBtn").onclick = stopPlayback;
 $("#desktopInputToggle").onclick = toggleDesktopInput;
+$("#embedHomeBtn").onclick = () => setMode("watch");
+$("#embedLoadBtn").onclick = loadEmbedFromInput;
+$("#embedClearBtn").onclick = () => {
+  $("#embedCodeInput").value = "";
+  $("#embedStatus").textContent = "";
+  stopPlayback();
+  setMode("embed");
+  $("#embedCodeInput").focus();
+};
+$("#embedCodeInput").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+  e.preventDefault();
+  loadEmbedFromInput();
+});
 $("#playerHomeBtn").onclick = () => setMode("watch");
 $("#desktopInputBtn").onclick = toggleDesktopInput;
 $("#desktopZoomOutBtn").onclick = () => setDesktopZoom(desktopZoom.scale - DESKTOP_ZOOM_STEP);
@@ -2788,12 +2942,15 @@ $("#legacyResolutionSelect").onchange = () => {
 $("#ytConnectBtn").onclick = connectYoutube;
 $("#ytDisconnectBtn").onclick = disconnectYoutube;
 $("#ytRefreshBtn").onclick = loadRecommendations;
-document.querySelectorAll(".recommendation-tab").forEach((tab) => {
-  tab.onclick = () => {
-    state.recommendationFilter = tab.dataset.recFilter || "all";
-    renderRecommendations();
-  };
-});
+$("#ytCategoryFilter").onchange = () => {
+  state.recommendationCategory = $("#ytCategoryFilter").value || "all";
+  state.recommendationVisibleCount = RECOMMENDATION_PAGE_SIZE;
+  renderRecommendations();
+};
+$("#ytMoreRecommendations").onclick = () => {
+  state.recommendationVisibleCount += RECOMMENDATION_PAGE_SIZE;
+  renderRecommendations();
+};
 window.addEventListener("message", async (event) => {
   if (event.origin !== location.origin || event.data?.type !== "ytstreamer-youtube-connected") return;
   await loadYoutubeAuthStatus().catch(() => {});

@@ -50,9 +50,9 @@ export const config = {
     clientSecret: process.env.YOUTUBE_OAUTH_CLIENT_SECRET || "",
     redirectUri: process.env.YOUTUBE_OAUTH_REDIRECT_URI || "",
     tokenFile: process.env.YOUTUBE_OAUTH_TOKEN_FILE || path.join(ROOT, "data", "youtube-oauth.json"),
-    maxChannels: int("YOUTUBE_RECOMMEND_MAX_CHANNELS", 24),
-    perChannel: int("YOUTUBE_RECOMMEND_PER_CHANNEL", 3),
-    maxVideos: int("YOUTUBE_RECOMMEND_MAX_VIDEOS", 60),
+    maxChannels: int("YOUTUBE_RECOMMEND_MAX_CHANNELS", 32),
+    perChannel: int("YOUTUBE_RECOMMEND_PER_CHANNEL", 6),
+    maxVideos: int("YOUTUBE_RECOMMEND_MAX_VIDEOS", 150),
   },
 
   // Live player: single synced H.264+AAC MPEG-TS stream (via mpegts.js / MSE).

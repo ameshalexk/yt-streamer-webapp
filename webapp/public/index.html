@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b0d10" />
   <title>YT Streamer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e10600'/><polygon points='40,30 72,50 40,70' fill='white'/></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=20260615-blackhole-auto" />
+  <link rel="stylesheet" href="/styles.css?v=20260619-rec-pagination" />
 </head>
 <body>
   <div id="app">
@@ -20,6 +20,7 @@
         <button class="mode-tab" type="button" data-mode="browse">Browse</button>
         <button class="mode-tab" type="button" data-mode="recommended">Recs</button>
         <button class="mode-tab" type="button" data-mode="desktop">Desktop</button>
+        <button class="mode-tab" type="button" data-mode="embed">Embed</button>
         <button class="mode-tab" type="button" data-mode="saved">Saved</button>
         <button class="mode-tab" type="button" data-mode="library">Library</button>
       </nav>
@@ -85,6 +86,7 @@
           </div>
           <video id="video" playsinline></video>
           <img id="mjpeg" alt="" />
+          <iframe id="embedFrame" title="Embedded player" allowfullscreen hidden></iframe>
           <audio id="audio" playsinline></audio>
           <div class="screen-empty" id="screenEmpty">
             <div class="big">▶</div>
@@ -93,6 +95,7 @@
               <button class="btn small secondary" type="button" id="emptySavedBtn">Saved Channels</button>
               <button class="btn small" type="button" id="emptyBrowseBtn">Browse Live Channels</button>
               <button class="btn small ghost" type="button" id="emptyDesktopBtn">Desktop</button>
+              <button class="btn small ghost" type="button" id="emptyEmbedBtn">Embed Code</button>
               <button class="btn small ghost" type="button" id="emptyPasteBtn">Paste URL</button>
             </div>
           </div>
@@ -186,13 +189,17 @@
           </div>
         </div>
         <div class="recommendation-status" id="ytStatusLine"></div>
-        <div class="recommendation-tabs" role="tablist" aria-label="Recommendation type">
-          <button class="recommendation-tab active" type="button" data-rec-filter="all" data-label="All" aria-selected="true">All 0</button>
-          <button class="recommendation-tab" type="button" data-rec-filter="videos" data-label="Videos" aria-selected="false">Videos 0</button>
-          <button class="recommendation-tab" type="button" data-rec-filter="shorts" data-label="Shorts" aria-selected="false">Shorts 0</button>
+        <div class="recommendation-category-filter">
+          <label for="ytCategoryFilter">Category</label>
+          <select id="ytCategoryFilter" disabled>
+            <option value="all">All categories (0)</option>
+          </select>
         </div>
         <div class="recommendation-list" id="ytRecommendationList">
           <div class="recommendation-empty">Loading...</div>
+        </div>
+        <div class="recommendation-pagination">
+          <button class="btn secondary" id="ytMoreRecommendations" type="button" hidden>Load more</button>
         </div>
       </section>
 
@@ -267,6 +274,30 @@
         </div>
       </section>
 
+      <section class="embed-view side-panel" id="embedView" aria-label="Embed code player" hidden>
+        <div class="panel-head">
+          <h2>Embed Code</h2>
+          <div class="panel-actions">
+            <button class="btn small ghost" id="embedHomeBtn" type="button">Home</button>
+          </div>
+        </div>
+        <div class="embed-body">
+          <section class="embed-card">
+            <label for="embedCodeInput">Iframe code</label>
+            <textarea id="embedCodeInput" spellcheck="false"></textarea>
+            <div class="embed-controls">
+              <label for="embedHeight">Height</label>
+              <input id="embedHeight" type="text" value="70vh" inputmode="text" />
+            </div>
+            <div class="embed-actions">
+              <button class="btn" id="embedLoadBtn" type="button">Load</button>
+              <button class="btn ghost" id="embedClearBtn" type="button">Clear</button>
+            </div>
+            <div class="embed-status" id="embedStatus"></div>
+          </section>
+        </div>
+      </section>
+
       <section class="legacy-library side-panel" id="legacyLibraryView" aria-label="Processed YouTube library" hidden>
         <div class="panel-head">
           <h2>Processed Library</h2>
@@ -330,6 +361,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260616-desktop-zoom"></script>
+  <script src="/app.js?v=20260619-rec-pagination"></script>
 </body>
 </html>
