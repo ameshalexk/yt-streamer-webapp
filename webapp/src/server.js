@@ -10,6 +10,7 @@ import * as stream from "./lib/stream.js";
 import * as desktopInput from "./lib/desktop-input.js";
 import * as catalog from "./lib/catalog.js";
 import * as processedLibrary from "./lib/processed-library.js";
+import * as preparedCache from "./lib/prepared-cache.js";
 import * as youtubeOAuth from "./lib/youtube-oauth.js";
 
 const app = express();
@@ -18,6 +19,8 @@ app.use(express.json({ limit: "256kb" }));
 
 // In-memory download job tracker (single user, ephemeral is fine).
 const jobs = new Map();
+const preparedJobs = new Map();
+let preparedQueue = Promise.resolve();
 function newJob() {
   const id = Math.random().toString(36).slice(2, 10);
   const job = { id, status: "running", pct: 0, error: null, item: null, createdAt: Date.now() };
@@ -29,6 +32,51 @@ function newJob() {
   }
   return job;
 }
+
+function preparedJobStatus(id) {
+  const job = preparedJobs.get(preparedCache.normalizeId(id));
+  if (!job) return null;
+  return { status: job.status, pct: job.pct, error: job.error || null };
+}
+
+async function startPreparedJob(payload) {
+  const id = preparedCache.normalizeId(payload.id);
+  if (!id) throw new Error("video id required");
+  const existing = await preparedCache.get(id);
+  if (existing) return { status: "ready", pct: 100 };
+  const active = preparedJobs.get(id);
+  if (active?.status === "preparing") return preparedJobStatus(id);
+
+  const job = { id, status: "preparing", pct: 0, error: null, createdAt: Date.now() };
+  preparedJobs.set(id, job);
+  preparedQueue = preparedQueue.then(async () => {
+    try {
+      await preparedCache.prepare({
+        ...payload,
+        id,
+        onProgress: (pct) => { job.pct = Math.max(0, Math.min(100, Number(pct) || 0)); },
+      });
+      job.status = "ready";
+      job.pct = 100;
+      preparedJobs.delete(id);
+    } catch (err) {
+      job.status = "error";
+      job.error = err.message;
+      console.error("[prepared]", id, "-", err.message);
+    }
+  });
+  return preparedJobStatus(id);
+}
+
+preparedCache.cleanupExpired().then((removed) => {
+  if (removed.length) console.log(`[prepared] removed ${removed.length} expired video(s)`);
+}).catch((err) => console.error("[prepared] cleanup -", err.message));
+const preparedCleanupTimer = setInterval(() => {
+  preparedCache.cleanupExpired().then((removed) => {
+    if (removed.length) console.log(`[prepared] removed ${removed.length} expired video(s)`);
+  }).catch((err) => console.error("[prepared] cleanup -", err.message));
+}, 24 * 60 * 60 * 1000);
+preparedCleanupTimer.unref?.();
 
 const asyncH = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) => {
   console.error("[api]", req.method, req.path, "-", err.message);
@@ -139,6 +187,26 @@ app.post("/api/youtube-auth/logout", asyncH(async (req, res) => {
 
 app.get("/api/youtube/recommendations", asyncH(async (req, res) => {
   res.json(await youtubeOAuth.recommendations());
+}));
+
+app.post("/api/prepared/status", asyncH(async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.slice(0, 250) : [];
+  const items = await preparedCache.statuses(ids);
+  for (const rawId of ids) {
+    const id = preparedCache.normalizeId(rawId);
+    if (!id || items[id]) continue;
+    const job = preparedJobStatus(id);
+    if (job) items[id] = job;
+  }
+  res.json({ items, retentionDays: preparedCache.RETENTION_DAYS });
+}));
+
+app.post("/api/prepared", asyncH(async (req, res) => {
+  const { id, url, title, duration, thumbnail } = req.body || {};
+  if (!id) return res.status(400).json({ error: "video id required" });
+  if (!url) return res.status(400).json({ error: "video url required" });
+  const status = await startPreparedJob({ id, url, title, duration, thumbnail });
+  res.status(status.status === "ready" ? 200 : 202).json(status);
 }));
 
 // Expand a YouTube playlist URL into entries (for bulk-add).
@@ -458,6 +526,17 @@ app.get("/stream/youtube", asyncH(async (req, res) => {
   return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp });
 }));
 
+app.get("/stream/prepared/:id", asyncH(async (req, res) => {
+  const item = await preparedCache.get(req.params.id);
+  if (!item) return res.status(404).json({ error: "prepared video not found" });
+  return stream.streamMjpeg(req, res, {
+    input: item.filePath,
+    params: stream.normalizeParams(req.query),
+    isLive: false,
+    startAt: req.query.timestamp,
+  });
+}));
+
 // Stream a processed-library video. This mirrors the old saved-video path:
 // audio is served separately, while video is converted to MJPEG on demand.
 app.get("/stream/legacy/:id/:resolution", asyncH(async (req, res) => {
@@ -518,6 +597,17 @@ app.get("/stream/ts/youtube", asyncH(async (req, res) => {
   return stream.streamTS(req, res, { input: videoUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp });
 }));
 
+app.get("/stream/ts/prepared/:id", asyncH(async (req, res) => {
+  const item = await preparedCache.get(req.params.id);
+  if (!item) return res.status(404).json({ error: "prepared video not found" });
+  return stream.streamTS(req, res, {
+    input: item.filePath,
+    params: stream.normalizeParams(req.query),
+    isLive: false,
+    startAt: req.query.timestamp,
+  });
+}));
+
 // ---- Audio (separate mp3 stream — legacy MJPEG path) ----
 app.get("/stream/audio/item/:itemId", asyncH(async (req, res) => {
   const found = await store.findItem(req.params.itemId);
@@ -547,6 +637,12 @@ app.get("/stream/audio/youtube", asyncH(async (req, res) => {
   if (!url) return res.status(400).json({ error: "url required" });
   const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(url, config.download.maxHeight);
   return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp });
+}));
+
+app.get("/stream/audio/prepared/:id", asyncH(async (req, res) => {
+  const item = await preparedCache.get(req.params.id);
+  if (!item) return res.status(404).json({ error: "prepared video not found" });
+  return stream.streamAudio(req, res, { input: item.filePath, startAt: req.query.timestamp });
 }));
 
 // ---------------------------------------------------------------------------

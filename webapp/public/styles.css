@@ -80,7 +80,19 @@ textarea {
 .layout.mode-desktop,
 .layout.mode-embed,
 .layout.mode-saved,
-.layout.mode-library { grid-template-columns: minmax(500px, 1.15fr) minmax(360px, .85fr); }
+.layout.mode-library { grid-template-columns: minmax(360px, .85fr) minmax(500px, 1.15fr); }
+.layout.mode-browse .player,
+.layout.mode-recommended .player,
+.layout.mode-desktop .player,
+.layout.mode-embed .player,
+.layout.mode-saved .player,
+.layout.mode-library .player { grid-column: 2; }
+.layout.mode-browse .side-panel,
+.layout.mode-recommended .side-panel,
+.layout.mode-desktop .side-panel,
+.layout.mode-embed .side-panel,
+.layout.mode-saved .side-panel,
+.layout.mode-library .side-panel { grid-column: 1; grid-row: 1; }
 .col { background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
 .col-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .col-head h2 { margin: 0; font-size: 17px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -208,6 +220,15 @@ body.screen-fullscreen .player-actions {
   --desktop-zoom-x: 0px;
   --desktop-zoom-y: 0px;
 }
+#fullscreenBtn.fullscreen-overlay {
+  position: absolute; top: 16px; left: 16px; z-index: 30;
+  width: 76px; min-width: 76px; height: 76px; min-height: 76px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 18px; background: rgba(11,13,16,.78); border: 2px solid rgba(255,255,255,.5);
+  box-shadow: 0 6px 22px rgba(0,0,0,.48); backdrop-filter: blur(6px);
+}
+.fullscreen-overlay .fullscreen-icon { transform: scale(1.65); }
+.fullscreen-overlay:active { background: rgba(45,140,255,.9); }
 .screen.desktop-input-active {
   touch-action: none;
   cursor: crosshair;
@@ -227,7 +248,7 @@ body.screen-fullscreen .player-actions {
   padding: 6px 10px; border-radius: 999px; font-size: 13px; font-weight: 800;
   background: rgba(45,140,255,.9); color: #fff; pointer-events: none;
 }
-.screen video, .screen img {
+.screen video, .screen img, .screen canvas {
   width: 100%; height: 100%; object-fit: contain; display: none; background: #000;
   transform: translate(var(--desktop-zoom-x), var(--desktop-zoom-y)) scale(var(--desktop-zoom-scale));
   transform-origin: center center;
@@ -236,6 +257,8 @@ body.screen-fullscreen .player-actions {
   width: 100%; height: 100%; display: none; border: 0; background: #000;
 }
 .screen.playing.video-mode video, .screen.playing.mjpeg-mode img { display: block; }
+.screen.playback-paused.mjpeg-mode img { display: none; }
+.screen.playback-paused.mjpeg-mode #pauseFrame { display: block; }
 .screen.playing.embed-mode iframe { display: block; }
 .screen.playing .screen-empty { display: none; }
 .screen:fullscreen,
@@ -440,32 +463,43 @@ body.screen-fullscreen .player-actions {
   display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: center;
   padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--bg);
 }
-.recommendation-category-filter label {
+.recommendation-category-label {
   color: var(--muted); font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px;
 }
-.recommendation-category-filter select {
-  min-width: 0; min-height: 40px; border: 1px solid var(--line); border-radius: 9px;
-  background: var(--panel); color: var(--text); padding: 0 10px; font-size: 15px;
+.recommendation-category-menu { min-width: 0; width: 100%; }
+.recommendation-category-menu .ch-menu-btn { min-height: 44px; font-size: 15px; }
+.recommendation-category-menu .ch-menu-panel {
+  width: 100%; max-height: min(420px, calc(100vh - 230px));
 }
-.recommendation-category-filter select:disabled { opacity: .55; }
+.recommendation-category-menu .ch-menu-btn:disabled { opacity: .55; cursor: default; }
 .recommendation-list {
   flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  display: grid; grid-template-columns: 1fr; gap: 10px; align-content: start; padding: 12px 16px;
+  display: block; padding: 4px 16px 12px;
 }
 .recommendation-row {
-  display: grid; grid-template-columns: 148px minmax(0, 1fr); gap: 12px;
-  min-height: 112px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--panel);
+  display: flex; align-items: flex-start; gap: 10px;
+  min-height: 132px; padding: 12px 8px; border: 0; border-bottom: 1px solid var(--line);
+  border-radius: 0; background: transparent;
 }
-.recommendation-row.active { border-color: var(--accent); background: var(--panel-2); }
+.recommendation-row:last-child { border-bottom: 0; }
+.recommendation-row.active {
+  border-bottom-color: var(--line); background: var(--panel-2);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
 .recommendation-thumb {
-  width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: #000;
+  position: relative; flex: 0 0 128px; width: 128px; height: 72px; border-radius: 7px; overflow: hidden; background: #000;
 }
 .recommendation-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.prepared-check {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+  background: rgba(46,194,106,.96); color: #07150c; border: 2px solid rgba(255,255,255,.9);
+  box-shadow: 0 3px 10px rgba(0,0,0,.45); font-size: 18px; font-weight: 900;
+}
 .recommendation-thumb.placeholder {
   display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 28px;
 }
-.recommendation-info { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.recommendation-info { flex: 1 1 auto; min-width: 0; min-height: 108px; display: flex; flex-direction: column; gap: 5px; }
 .recommendation-title {
   font-size: 16px; font-weight: 800; line-height: 1.25;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -473,8 +507,10 @@ body.screen-fullscreen .player-actions {
 .recommendation-meta {
   color: var(--muted); font-size: 13px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.recommendation-actions { display: flex; gap: 8px; margin-top: auto; }
-.recommendation-actions .btn { flex: 1; min-width: 0; }
+.recommendation-actions { display: flex; gap: 6px; margin-top: auto; }
+.recommendation-actions .btn {
+  flex: 1 1 0; min-width: 0; min-height: 40px; padding: 0 8px; border-radius: 9px; font-size: 14px;
+}
 .recommendation-empty {
   color: var(--muted); text-align: center; padding: 38px 18px; border: 1px solid var(--line);
   border-radius: var(--radius); background: var(--panel);
@@ -698,7 +734,7 @@ body.screen-fullscreen .player-actions {
   .layout.mode-desktop,
   .layout.mode-embed,
   .layout.mode-saved,
-  .layout.mode-library { grid-template-columns: minmax(440px, 1fr) minmax(340px, .9fr); }
+  .layout.mode-library { grid-template-columns: minmax(340px, .9fr) minmax(440px, 1fr); }
   .saved-columns { grid-template-columns: 240px minmax(0, 1fr); }
 }
 
@@ -767,7 +803,9 @@ body.screen-fullscreen .player-actions {
     grid-template-columns: 1fr;
   }
   .legacy-resolutions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .recommendation-row { grid-template-columns: 132px minmax(0, 1fr); }
+  .recommendation-row { min-height: 125px; }
+  .recommendation-thumb { flex-basis: 120px; width: 120px; height: 68px; }
+  .recommendation-info { min-height: 101px; }
   .legacy-actions,
   .legacy-control-row { flex-wrap: wrap; }
   .desktop-controls { grid-template-columns: 1fr; }
@@ -861,11 +899,10 @@ body.screen-fullscreen .player-actions {
   .ch-list { padding: 10px; }
   .legacy-body { padding: 10px; }
   .embed-body { padding: 10px; }
-  .recommendation-list { padding: 10px; }
-  .recommendation-row {
-    grid-template-columns: 1fr;
-    min-height: 0;
-  }
+  .recommendation-list { padding: 4px 10px 10px; }
+  .recommendation-row { min-height: 120px; padding-left: 6px; padding-right: 6px; }
+  .recommendation-thumb { flex-basis: 112px; width: 112px; height: 63px; }
+  .recommendation-info { min-height: 96px; }
   .recommendation-actions .btn { flex: 1 1 0; }
   .legacy-download,
   .legacy-playlists,

@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b0d10" />
   <title>YT Streamer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e10600'/><polygon points='40,30 72,50 40,70' fill='white'/></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=20260619-rec-pagination" />
+  <link rel="stylesheet" href="/styles.css?v=20260620-prepared-cache" />
 </head>
 <body>
   <div id="app">
@@ -61,7 +61,6 @@
           <h2 id="nowPlaying">Player</h2>
           <div class="player-actions">
             <button class="btn small ghost" id="playerHomeBtn" type="button">Home</button>
-            <button class="btn small ghost icon-only" id="fullscreenBtn" aria-label="Full screen" title="Full screen"><span class="fullscreen-icon" aria-hidden="true"></span></button>
             <button class="btn small ghost" id="desktopInputBtn" type="button" aria-pressed="false" hidden>Touch</button>
             <div class="desktop-zoom-controls" id="desktopZoomControls" hidden>
               <button class="btn small ghost" id="desktopZoomOutBtn" type="button" aria-label="Zoom out">−</button>
@@ -69,12 +68,14 @@
               <button class="btn small ghost" id="desktopZoomInBtn" type="button" aria-label="Zoom in">+</button>
             </div>
             <button class="btn small ghost" id="muteBtn" title="Sound on/off">🔊</button>
+            <button class="btn small ghost" id="pauseBtn" type="button" disabled aria-pressed="false">Ⅱ Pause</button>
             <button class="btn small ghost" id="restreamBtn" disabled title="Reload stream">↻ Restream</button>
             <button class="btn small ghost" id="stopBtn" disabled>■ Stop</button>
           </div>
         </div>
 
         <div class="screen" id="screen">
+          <button class="btn ghost fullscreen-overlay" id="fullscreenBtn" type="button" aria-label="Full screen" title="Full screen"><span class="fullscreen-icon" aria-hidden="true"></span></button>
           <div class="stream-badge" id="streamBadge" hidden></div>
           <div class="stream-notice" id="streamNotice" hidden>
             <div class="notice-title" id="streamNoticeTitle"></div>
@@ -86,6 +87,7 @@
           </div>
           <video id="video" playsinline></video>
           <img id="mjpeg" alt="" />
+          <canvas id="pauseFrame" aria-hidden="true"></canvas>
           <iframe id="embedFrame" title="Embedded player" allowfullscreen hidden></iframe>
           <audio id="audio" playsinline></audio>
           <div class="screen-empty" id="screenEmpty">
@@ -190,10 +192,11 @@
         </div>
         <div class="recommendation-status" id="ytStatusLine"></div>
         <div class="recommendation-category-filter">
-          <label for="ytCategoryFilter">Category</label>
-          <select id="ytCategoryFilter" disabled>
-            <option value="all">All categories (0)</option>
-          </select>
+          <span class="recommendation-category-label" id="ytCategoryLabel">Category</span>
+          <div class="ch-menu recommendation-category-menu" id="ytCategoryMenu">
+            <button class="ch-menu-btn" id="ytCategoryBtn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="ytCategoryLabel ytCategoryBtn" disabled>All videos (0)</button>
+            <div class="ch-menu-panel" id="ytCategoryPanel" role="listbox" aria-labelledby="ytCategoryLabel" hidden></div>
+          </div>
         </div>
         <div class="recommendation-list" id="ytRecommendationList">
           <div class="recommendation-empty">Loading...</div>
@@ -338,6 +341,7 @@
           <section class="legacy-player-controls" id="legacyControls">
             <div class="legacy-control-row">
               <select id="legacyResolutionSelect" aria-label="Playback resolution"></select>
+              <button class="btn small secondary" id="legacyPauseBtn" type="button" disabled aria-pressed="false">Ⅱ Pause</button>
               <button class="btn small ghost" id="legacyBackBtn" type="button" disabled>-5s</button>
               <button class="btn small ghost" id="legacyForwardBtn" type="button" disabled>+5s</button>
             </div>
@@ -361,6 +365,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260619-rec-pagination"></script>
+  <script src="/app.js?v=20260620-tap-pause"></script>
 </body>
 </html>

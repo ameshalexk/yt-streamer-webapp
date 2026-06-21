@@ -44,6 +44,12 @@ export const config = {
     maxHeight: int("DL_MAX_HEIGHT", 720),
   },
 
+  // Temporary background-prepared recommendation videos.
+  prepared: {
+    maxHeight: int("PREPARED_MAX_HEIGHT", 480),
+    retentionDays: 30,
+  },
+
   // Optional YouTube OAuth for the isolated Recommended tab.
   youtubeOAuth: {
     clientId: process.env.YOUTUBE_OAUTH_CLIENT_ID || "",

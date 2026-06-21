@@ -47,6 +47,7 @@ const state = {
   recommendationsLoadedAt: null,
   recommendedPlayingId: null,
   recommendationDownloads: {},
+  recommendationPrepared: {},
   desktopSources: null,
 };
 
@@ -301,6 +302,8 @@ let replayFn = null;     // rebuilds the current stream with the latest control 
 let mpegtsPlayer = null; // active mpegts.js player instance
 let activeCompat = null; // active MJPEG + audio fallback URLs
 let audioPrompted = false;
+let playbackPaused = false;
+let pausedResumeAt = 0;
 let desktopStreamActive = false;
 let desktopHlsSessionId = null;
 let desktopAudioHlsSessionId = null;
@@ -511,7 +514,107 @@ function failStreamAttempt(attempt, title, detail) {
   audio.removeAttribute("src");
   try { audio.load(); } catch {}
   activeCompat = null;
+  resetPauseControl(true);
   toast(title, true);
+}
+
+function setPauseButtonState(text, pressed) {
+  [$("#pauseBtn"), $("#legacyPauseBtn")].forEach((btn) => {
+    if (!btn) return;
+    btn.textContent = text;
+    btn.setAttribute("aria-pressed", pressed ? "true" : "false");
+  });
+}
+
+function resetPauseControl(disabled = false, libraryEnabled = false) {
+  playbackPaused = false;
+  pausedResumeAt = 0;
+  const btn = $("#pauseBtn");
+  const legacyBtn = $("#legacyPauseBtn");
+  const frame = $("#pauseFrame");
+  $("#screen")?.classList.remove("playback-paused");
+  if (frame) {
+    frame.hidden = true;
+    const context = frame.getContext("2d");
+    context?.clearRect(0, 0, frame.width, frame.height);
+  }
+  if (btn) {
+    btn.disabled = disabled;
+  }
+  if (legacyBtn) legacyBtn.disabled = disabled || !libraryEnabled;
+  setPauseButtonState("Ⅱ Pause", false);
+}
+
+function freezeMjpegFrame() {
+  const img = $("#mjpeg");
+  const frame = $("#pauseFrame");
+  if (!img || !frame) return;
+  const width = img.naturalWidth || img.clientWidth || 1280;
+  const height = img.naturalHeight || img.clientHeight || 720;
+  frame.width = width;
+  frame.height = height;
+  try { frame.getContext("2d")?.drawImage(img, 0, 0, width, height); } catch {}
+  frame.hidden = false;
+}
+
+function pausePlayback() {
+  if (playbackPaused || $("#pauseBtn")?.disabled) return;
+  const screen = $("#screen");
+  const video = $("#video");
+  const img = $("#mjpeg");
+  const audio = $("#audio");
+  pausedResumeAt = legacy.playing ? (audio.currentTime || 0) : getStreamCurrentTime();
+  try { video.pause(); } catch {}
+  try { audio.pause(); } catch {}
+  if (screen.classList.contains("mjpeg-mode")) {
+    freezeMjpegFrame();
+    streamAttempt++;
+    clearStreamTimers();
+    img.onload = null;
+    img.onerror = null;
+    img.removeAttribute("src");
+    clearInterval(legacy.progressTimer);
+    legacy.progressTimer = null;
+  }
+  clearInterval(streamSeek.timer);
+  streamSeek.timer = null;
+  if (streamSeek.seekable && screen.classList.contains("mjpeg-mode")) {
+    streamSeek.startAt = pausedResumeAt;
+    streamSeek.liveAtMs = 0;
+    updateStreamSeekUi(pausedResumeAt);
+  } else if (streamSeek.seekable) {
+    updateStreamSeekUi(pausedResumeAt);
+  }
+  playbackPaused = true;
+  screen.classList.add("playback-paused");
+  setPauseButtonState("▶ Resume", true);
+  setBadge("paused", "Ⅱ PAUSED");
+}
+
+function resumePlayback() {
+  if (!playbackPaused) return;
+  const screen = $("#screen");
+  const wasMjpeg = screen.classList.contains("mjpeg-mode");
+  const resumeAt = pausedResumeAt;
+  playbackPaused = false;
+  screen.classList.remove("playback-paused");
+  $("#pauseFrame").hidden = true;
+  setPauseButtonState("Ⅱ Pause", false);
+  if (wasMjpeg && replayFn) {
+    const result = replayFn(streamSeek.seekable || legacy.playing ? resumeAt : undefined);
+    if (result?.catch) result.catch((e) => toast(e.message, true));
+    return;
+  }
+  const video = $("#video");
+  const audio = $("#audio");
+  video.play().catch(() => {});
+  if (soundOn && audio.src) audio.play().catch(() => toast("Tap sound to resume audio"));
+  markStreamLive(streamAttempt);
+}
+
+function togglePlaybackPause() {
+  if (playbackPaused) resumePlayback();
+  else pausePlayback();
 }
 
 function startStreamWatchdog(attempt, mode, { warnMs = STREAM_WARN_MS, failMs = STREAM_FAIL_MS } = {}) {
@@ -652,6 +755,7 @@ function renderEmbedCode(code, heightValue) {
   stopDesktopHlsSession();
   stopDesktopAudioHlsSession();
   cleanupMedia();
+  resetPauseControl(true);
   stopLegacyProgress();
   stopStreamSeekTimer(true);
   desktopStreamActive = false;
@@ -747,6 +851,7 @@ function measuredAudioStartupDelayMs(startedAt) {
 function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const screen = $("#screen"), img = $("#mjpeg"), audio = $("#audio");
   cleanupMedia();
+  resetPauseControl(false);
   configureStreamSeek(meta, meta.startAt || 0);
   const attempt = streamAttempt;
   $("#nowPlaying").textContent = label || "Playing";
@@ -857,6 +962,7 @@ async function playStream(sources, label, meta = {}) {
   $("#stopBtn").disabled = false;
   $("#restreamBtn").disabled = false;
   cleanupMedia();
+  resetPauseControl(false);
   configureStreamSeek(meta, meta.startAt || 0);
   const attempt = streamAttempt;
   if (mjpegUrl && !canTryMpegts()) return playCompatStream({ mjpegUrl, audioUrl }, label, meta);
@@ -905,6 +1011,7 @@ async function playStream(sources, label, meta = {}) {
 function playNativeVideoStream({ nativeUrl, fallback }, label, meta = {}) {
   const screen = $("#screen"), video = $("#video");
   cleanupMedia();
+  resetPauseControl(false);
   configureStreamSeek(meta, meta.startAt || 0);
   const attempt = streamAttempt;
   $("#nowPlaying").textContent = label || "Playing";
@@ -974,6 +1081,7 @@ function stopPlayback() {
   cleanupMedia();
   stopLegacyProgress();
   stopStreamSeekTimer(true);
+  resetPauseControl(true);
   replayFn = null;
   desktopStreamActive = false;
   desktopInputActive = false;
@@ -1588,6 +1696,7 @@ function playLegacyItem(item, resolution = null, startAt = 0) {
   state.playingItemId = null;
   state.legacyPlayingId = item.id;
   legacy.playing = item;
+  resetPauseControl(false, true);
   legacy.resolution = resolution || item.resolutions?.[0];
   renderItems();
   renderLegacyLibrary();
@@ -1619,7 +1728,7 @@ function playLegacyItem(item, resolution = null, startAt = 0) {
   audio.oncanplay = () => {
     if (soundOn) audio.play().catch(() => {});
   };
-  replayFn = () => playLegacyItem(item, legacy.resolution, $("#audio").currentTime || startAt || 0);
+  replayFn = (resumeAt = $("#audio").currentTime || startAt || 0) => playLegacyItem(item, legacy.resolution, resumeAt);
 }
 
 window.__closeModal = closeModal;
@@ -1665,8 +1774,9 @@ function filteredRecommendations() {
 }
 
 function renderRecommendationCategories() {
-  const select = $("#ytCategoryFilter");
-  if (!select) return;
+  const btn = $("#ytCategoryBtn");
+  const panel = $("#ytCategoryPanel");
+  if (!btn || !panel) return;
   const categories = new Map();
   state.recommendations.forEach((item) => {
     const id = String(item.categoryId || "other");
@@ -1678,11 +1788,41 @@ function renderRecommendationCategories() {
   if (state.recommendationCategory !== "all" && !categories.has(state.recommendationCategory)) {
     state.recommendationCategory = "all";
   }
-  select.innerHTML = `<option value="all">All categories (${state.recommendations.length})</option>${options.map(([id, value]) =>
-    `<option value="${esc(id)}">${esc(value.title)} (${value.count})</option>`
-  ).join("")}`;
-  select.value = state.recommendationCategory;
-  select.disabled = !state.recommendations.length;
+  const allSelected = state.recommendationCategory === "all";
+  panel.innerHTML = `<button class="ch-menu-option ${allSelected ? "active" : ""}" type="button" role="option" data-value="all" aria-selected="${allSelected ? "true" : "false"}">All videos (${state.recommendations.length})</button>${options.map(([id, value]) => {
+    const selected = id === state.recommendationCategory;
+    return `<button class="ch-menu-option ${selected ? "active" : ""}" type="button" role="option" data-value="${esc(id)}" aria-selected="${selected ? "true" : "false"}">${esc(value.title)} (${value.count})</button>`;
+  }).join("")}`;
+  const selectedCategory = categories.get(state.recommendationCategory);
+  btn.textContent = selectedCategory
+    ? `${selectedCategory.title} (${selectedCategory.count})`
+    : `All videos (${state.recommendations.length})`;
+  btn.disabled = !state.recommendations.length;
+  if (btn.disabled) closeRecommendationCategoryMenu();
+}
+
+function toggleRecommendationCategoryMenu() {
+  const btn = $("#ytCategoryBtn");
+  const panel = $("#ytCategoryPanel");
+  if (!btn || !panel || btn.disabled) return;
+  const nextOpen = panel.hidden;
+  panel.hidden = !nextOpen;
+  btn.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+}
+
+function closeRecommendationCategoryMenu() {
+  const btn = $("#ytCategoryBtn");
+  const panel = $("#ytCategoryPanel");
+  if (!btn || !panel) return;
+  panel.hidden = true;
+  btn.setAttribute("aria-expanded", "false");
+}
+
+function selectRecommendationCategory(category) {
+  state.recommendationCategory = category || "all";
+  state.recommendationVisibleCount = RECOMMENDATION_PAGE_SIZE;
+  closeRecommendationCategoryMenu();
+  renderRecommendations();
 }
 
 function renderYoutubeAuth() {
@@ -1754,9 +1894,13 @@ function renderRecommendations() {
   }
   list.innerHTML = items.map((item) => {
     const download = state.recommendationDownloads[item.id] || null;
+    const prepared = state.recommendationPrepared[item.id] || null;
+    const preparedMark = prepared?.status === "ready"
+      ? `<span class="prepared-check" title="Prepared for offline-fast playback" aria-label="Prepared">✓</span>`
+      : "";
     const thumb = item.thumbnail
-      ? `<div class="recommendation-thumb"><img src="${esc(item.thumbnail)}" alt="" loading="lazy" /></div>`
-      : `<div class="recommendation-thumb placeholder">▶</div>`;
+      ? `<div class="recommendation-thumb"><img src="${esc(item.thumbnail)}" alt="" loading="lazy" />${preparedMark}</div>`
+      : `<div class="recommendation-thumb placeholder">▶${preparedMark}</div>`;
     const downloadLabel = download?.status === "done"
       ? "Downloaded"
       : download?.status === "error"
@@ -1798,6 +1942,7 @@ async function loadRecommendations() {
       state.recommendationCategory = "all";
     }
     renderRecommendations();
+    void refreshPreparedRecommendationStatuses();
   } catch (e) {
     setRecommendationStatus(e.message, true);
     if (/not connected|authorization|expired|revoked|token/i.test(e.message)) await loadYoutubeAuthStatus().catch(() => {});
@@ -1867,11 +2012,12 @@ async function streamRecommendation(item) {
   if (isMobileMode()) setMode("watch");
   replayFn = (startAt = getStreamCurrentTime()) => {
     const q = streamQuery(startAt);
+    const prepared = state.recommendationPrepared[item.id]?.status === "ready";
     const u = encodeURIComponent(item.url);
     playStream({
-      tsUrl: `/stream/ts/youtube?url=${u}&${q}`,
-      mjpegUrl: `/stream/youtube?url=${u}&${q}`,
-      audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
+      tsUrl: prepared ? `/stream/ts/prepared/${encodeURIComponent(item.id)}?${q}` : `/stream/ts/youtube?url=${u}&${q}`,
+      mjpegUrl: prepared ? `/stream/prepared/${encodeURIComponent(item.id)}?${q}` : `/stream/youtube?url=${u}&${q}`,
+      audioUrl: prepared ? `/stream/audio/prepared/${encodeURIComponent(item.id)}?${audioQuery(startAt)}` : `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
     }, item.title || "YouTube", {
       seekable: !item.isLive && !item.isUpcoming,
       duration: item.duration,
@@ -1879,6 +2025,58 @@ async function streamRecommendation(item) {
     });
   };
   replayFn();
+  if (!item.isLive && !item.isUpcoming) void prepareRecommendationInBackground(item);
+}
+
+async function refreshPreparedRecommendationStatuses() {
+  const ids = state.recommendations
+    .filter((item) => !item.isLive && !item.isUpcoming)
+    .map((item) => item.id)
+    .filter(Boolean);
+  if (!ids.length) return;
+  try {
+    const data = await api.post("/api/prepared/status", { ids });
+    state.recommendationPrepared = data.items || {};
+    renderRecommendations();
+  } catch (e) {
+    console.warn("prepared status failed:", e.message);
+  }
+}
+
+async function pollPreparedRecommendation(id) {
+  try {
+    const data = await api.post("/api/prepared/status", { ids: [id] });
+    const status = data.items?.[id] || null;
+    if (status) state.recommendationPrepared[id] = status;
+    else delete state.recommendationPrepared[id];
+    renderRecommendations();
+    if (status?.status === "preparing") setTimeout(() => pollPreparedRecommendation(id), 3000);
+  } catch (e) {
+    console.warn("prepared polling failed:", e.message);
+  }
+}
+
+async function prepareRecommendationInBackground(item) {
+  const current = state.recommendationPrepared[item.id];
+  if (!item?.id || !item.url || current?.status === "ready" || current?.status === "preparing") return;
+  state.recommendationPrepared[item.id] = { status: "preparing", pct: 0 };
+  renderRecommendations();
+  try {
+    const status = await api.post("/api/prepared", {
+      id: item.id,
+      url: item.url,
+      title: item.title,
+      duration: item.duration,
+      thumbnail: item.thumbnail,
+    });
+    state.recommendationPrepared[item.id] = status;
+    renderRecommendations();
+    if (status.status === "preparing") setTimeout(() => pollPreparedRecommendation(item.id), 3000);
+  } catch (e) {
+    state.recommendationPrepared[item.id] = { status: "error" };
+    renderRecommendations();
+    console.warn("background preparation failed:", e.message);
+  }
 }
 
 async function getOrCreateRecommendedDownloadsPlaylist() {
@@ -2942,11 +3140,14 @@ $("#legacyResolutionSelect").onchange = () => {
 $("#ytConnectBtn").onclick = connectYoutube;
 $("#ytDisconnectBtn").onclick = disconnectYoutube;
 $("#ytRefreshBtn").onclick = loadRecommendations;
-$("#ytCategoryFilter").onchange = () => {
-  state.recommendationCategory = $("#ytCategoryFilter").value || "all";
-  state.recommendationVisibleCount = RECOMMENDATION_PAGE_SIZE;
-  renderRecommendations();
+$("#ytCategoryBtn").onclick = toggleRecommendationCategoryMenu;
+$("#ytCategoryPanel").onclick = (e) => {
+  const opt = e.target.closest(".ch-menu-option");
+  if (opt) selectRecommendationCategory(opt.dataset.value);
 };
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#ytCategoryMenu")) closeRecommendationCategoryMenu();
+});
 $("#ytMoreRecommendations").onclick = () => {
   state.recommendationVisibleCount += RECOMMENDATION_PAGE_SIZE;
   renderRecommendations();
@@ -3007,7 +3208,7 @@ $("#legacySeek").addEventListener("keydown", (e) => {
 });
 $("#muteBtn").onclick = () => {
   const a = $("#audio");
-  if (soundOn && activeCompat?.audioUrl && a.paused) {
+  if (!playbackPaused && soundOn && activeCompat?.audioUrl && a.paused) {
     startCompatAudio(true);
     return;
   }
@@ -3017,9 +3218,11 @@ $("#muteBtn").onclick = () => {
   v.muted = !soundOn;
   a.muted = !soundOn;
   if (!soundOn) { try { a.pause(); } catch {} }
-  if (soundOn) v.play().catch(() => {});
-  if (soundOn && activeCompat?.audioUrl) startCompatAudio(true);
+  if (soundOn && !playbackPaused) v.play().catch(() => {});
+  if (soundOn && !playbackPaused && activeCompat?.audioUrl) startCompatAudio(true);
 };
+$("#pauseBtn").onclick = togglePlaybackPause;
+$("#legacyPauseBtn").onclick = togglePlaybackPause;
 
 bindTap($("#playlistList"), async (e) => {
   const li = e.target.closest("li"); if (!li) return;
@@ -3137,6 +3340,7 @@ function sendDesktopPointer(type, e) {
 
 function handleDesktopInputPointerDown(e) {
   if (!desktopInputActiveForScreen()) return false;
+  if (e.target.closest("button, input, select, textarea, a")) return false;
   if (e.pointerType === "mouse" && typeof e.button === "number" && e.button > 2) return false;
   if (!sendDesktopPointer("down", e)) return false;
   desktopInputPointerId = e.pointerId;
@@ -3198,6 +3402,7 @@ function handleDesktopZoomWheel(e) {
 
 function handleDesktopPanPointerDown(e) {
   if (!desktopStreamActive || desktopInputActiveForScreen() || desktopZoom.scale <= 1) return false;
+  if (e.target.closest("button, input, select, textarea, a")) return false;
   if (e.pointerType === "mouse" && typeof e.button === "number" && e.button > 0) return false;
   desktopZoom.panPointerId = e.pointerId;
   desktopZoom.panLastX = e.clientX;
@@ -3234,12 +3439,22 @@ function handleDesktopPanPointerUp(e) {
   let lastTapAt = 0;
   let lastTapX = 0;
   let lastTapY = 0;
+  let singleTapTimer = null;
   let ignoreDblClickUntil = 0;
 
-  function handleTap(x, y) {
+  function canTogglePlaybackFromTap(target) {
+    if (!screen.classList.contains("playing") || screen.classList.contains("embed-mode")) return false;
+    if ($("#pauseBtn")?.disabled) return false;
+    return !target?.closest("button, input, select, textarea, a, .stream-notice, .stream-seek");
+  }
+
+  function handleTap(x, y, target) {
+    if (!canTogglePlaybackFromTap(target)) return false;
     const now = Date.now();
     const moved = Math.hypot(x - lastTapX, y - lastTapY) > 40;
     if (now - lastTapAt < 350 && !moved) {
+      clearTimeout(singleTapTimer);
+      singleTapTimer = null;
       lastTapAt = 0;
       ignoreDblClickUntil = now + 500;
       toggleScreenFullscreen();
@@ -3248,6 +3463,12 @@ function handleDesktopPanPointerUp(e) {
     lastTapAt = now;
     lastTapX = x;
     lastTapY = y;
+    clearTimeout(singleTapTimer);
+    singleTapTimer = setTimeout(() => {
+      singleTapTimer = null;
+      lastTapAt = 0;
+      if (canTogglePlaybackFromTap(target)) togglePlaybackPause();
+    }, 350);
     return false;
   }
 
@@ -3263,13 +3484,13 @@ function handleDesktopPanPointerUp(e) {
       if (handleDesktopPanPointerUp(e)) return;
       if (desktopInputActiveForScreen()) return;
       if (typeof e.button === "number" && e.button > 0) return;
-      if (handleTap(e.clientX, e.clientY)) e.preventDefault();
+      if (handleTap(e.clientX, e.clientY, e.target)) e.preventDefault();
     });
   } else {
     screen.addEventListener("touchend", (e) => {
       if (desktopInputActiveForScreen()) return;
       const touch = e.changedTouches?.[0];
-      if (touch && handleTap(touch.clientX, touch.clientY)) e.preventDefault();
+      if (touch && handleTap(touch.clientX, touch.clientY, e.target)) e.preventDefault();
     }, { passive: false });
   }
 
