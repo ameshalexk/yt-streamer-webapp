@@ -33,6 +33,8 @@ const state = {
   selectedPlaylistId: null,
   playingItemId: null,
   mode: "watch",
+  savedDrawerOpen: false,
+  downloadsDrawerOpen: false,
   manageSaved: false,
   lastSavedPlaylistId: null,
   legacyItems: [],
@@ -60,6 +62,12 @@ const FPS_OPTIONS = [
   { value: "24", label: "24", risky: true },
   { value: "30", label: "30", risky: true },
 ];
+
+const DEFAULT_STREAM_SETTINGS = {
+  height: "480",
+  fps: "12",
+  quality: "7",
+};
 
 const DESKTOP_AUDIO_KEY = "ytStreamerDesktopAudio";
 const DESKTOP_AUDIO_NAME_KEY = "ytStreamerDesktopAudioName";
@@ -112,15 +120,46 @@ function setPanelHidden(el, hidden) {
   el.setAttribute("aria-hidden", hidden ? "true" : "false");
 }
 
+function syncSavedDrawer() {
+  const drawer = $("#playlistDrawer");
+  const backdrop = $("#savedDrawerBackdrop");
+  const open = state.mode === "browse" && state.savedDrawerOpen;
+  drawer.classList.toggle("open", open);
+  drawer.inert = !open;
+  drawer.setAttribute("aria-hidden", open ? "false" : "true");
+  backdrop.hidden = !open;
+}
+
+function setSavedDrawerOpen(open) {
+  state.savedDrawerOpen = Boolean(open);
+  syncSavedDrawer();
+}
+
+function syncDownloadsDrawer() {
+  const drawer = $("#downloadsDrawer");
+  const backdrop = $("#downloadsDrawerBackdrop");
+  const open = state.mode === "library" && state.downloadsDrawerOpen;
+  drawer.classList.toggle("open", open);
+  drawer.inert = !open;
+  drawer.setAttribute("aria-hidden", open ? "false" : "true");
+  backdrop.hidden = !open;
+}
+
+function setDownloadsDrawerOpen(open) {
+  state.downloadsDrawerOpen = Boolean(open);
+  syncDownloadsDrawer();
+}
+
 function setMode(mode) {
   state.mode = mode;
+  if (mode !== "browse") state.savedDrawerOpen = false;
+  if (mode !== "library") state.downloadsDrawerOpen = false;
   const layout = $("#layout");
   layout.classList.toggle("mode-watch", mode === "watch");
   layout.classList.toggle("mode-browse", mode === "browse");
   layout.classList.toggle("mode-recommended", mode === "recommended");
   layout.classList.toggle("mode-desktop", mode === "desktop");
   layout.classList.toggle("mode-embed", mode === "embed");
-  layout.classList.toggle("mode-saved", mode === "saved");
   layout.classList.toggle("mode-library", mode === "library");
   document.querySelectorAll(".mode-tab").forEach((tab) => {
     const active = tab.dataset.mode === mode;
@@ -132,15 +171,18 @@ function setMode(mode) {
   setPanelHidden($("#recommendationsView"), mode !== "recommended");
   setPanelHidden($("#desktopView"), mode !== "desktop");
   setPanelHidden($("#embedView"), mode !== "embed");
-  setPanelHidden($("#playlistDrawer"), mode !== "saved");
   setPanelHidden($("#legacyLibraryView"), mode !== "library");
+  syncSavedDrawer();
+  syncDownloadsDrawer();
   const player = $(".player");
   const hideMobilePlayer = isMobileMode() && mode !== "watch";
   player.inert = hideMobilePlayer;
   player.setAttribute("aria-hidden", hideMobilePlayer ? "true" : "false");
 }
 
-function closePlaylistDrawer() { if (state.mode === "saved") setMode("watch"); }
+function closePlaylistDrawer() {
+  setSavedDrawerOpen(false);
+}
 function revealDrawerItems() {
   if (!isMobileMode()) return;
   const itemsHead = $("#itemsTitle");
@@ -153,7 +195,8 @@ function revealDrawerItems() {
 
 function openSavedPlaylist(playlistId) {
   if (playlistId) state.selectedPlaylistId = playlistId;
-  setMode("saved");
+  if (state.mode !== "browse") openChannels();
+  setSavedDrawerOpen(true);
   renderPlaylists();
   renderItems();
   revealDrawerItems();
@@ -349,6 +392,21 @@ function currentSettingsLabel() {
   return `${hl} · ${$("#ctlFps").value}fps · ${q}`;
 }
 
+function resetStreamSettings() {
+  $("#ctlHeight").value = DEFAULT_STREAM_SETTINGS.height;
+  $("#ctlFps").value = DEFAULT_STREAM_SETTINGS.fps;
+  $("#ctlQuality").value = DEFAULT_STREAM_SETTINGS.quality;
+}
+
+function renderQuickQuality() {
+  const current = $("#ctlQuality").value;
+  document.querySelectorAll("#qualityQuick [data-quality]").forEach((btn) => {
+    const active = btn.dataset.quality === current;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
 function renderFpsPresets() {
   const wrap = $("#ctlFpsPresets");
   if (!wrap) return;
@@ -436,6 +494,7 @@ function getStreamCurrentTime() {
   if (!streamSeek.seekable) return 0;
   const videoTime = $("#video").currentTime || 0;
   const audioTime = $("#audio").currentTime || 0;
+  if (legacy.playing && audioTime > 0) return clampStreamSeekTime(audioTime);
   const mediaTime = Math.max(videoTime, audioTime);
   if (mediaTime > 0) return clampStreamSeekTime(streamSeek.startAt + mediaTime);
   if (streamSeek.liveAtMs) {
@@ -519,18 +578,16 @@ function failStreamAttempt(attempt, title, detail) {
 }
 
 function setPauseButtonState(text, pressed) {
-  [$("#pauseBtn"), $("#legacyPauseBtn")].forEach((btn) => {
-    if (!btn) return;
-    btn.textContent = text;
-    btn.setAttribute("aria-pressed", pressed ? "true" : "false");
-  });
+  const btn = $("#pauseBtn");
+  if (!btn) return;
+  btn.textContent = text;
+  btn.setAttribute("aria-pressed", pressed ? "true" : "false");
 }
 
-function resetPauseControl(disabled = false, libraryEnabled = false) {
+function resetPauseControl(disabled = false) {
   playbackPaused = false;
   pausedResumeAt = 0;
   const btn = $("#pauseBtn");
-  const legacyBtn = $("#legacyPauseBtn");
   const frame = $("#pauseFrame");
   $("#screen")?.classList.remove("playback-paused");
   if (frame) {
@@ -541,7 +598,6 @@ function resetPauseControl(disabled = false, libraryEnabled = false) {
   if (btn) {
     btn.disabled = disabled;
   }
-  if (legacyBtn) legacyBtn.disabled = disabled || !libraryEnabled;
   setPauseButtonState("Ⅱ Pause", false);
 }
 
@@ -573,8 +629,6 @@ function pausePlayback() {
     img.onload = null;
     img.onerror = null;
     img.removeAttribute("src");
-    clearInterval(legacy.progressTimer);
-    legacy.progressTimer = null;
   }
   clearInterval(streamSeek.timer);
   streamSeek.timer = null;
@@ -756,7 +810,6 @@ function renderEmbedCode(code, heightValue) {
   stopDesktopAudioHlsSession();
   cleanupMedia();
   resetPauseControl(true);
-  stopLegacyProgress();
   stopStreamSeekTimer(true);
   desktopStreamActive = false;
   desktopInputActive = false;
@@ -958,6 +1011,12 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
 async function playStream(sources, label, meta = {}) {
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
   const screen = $("#screen"), video = $("#video");
+  if (legacy.playing) {
+    state.legacyPlayingId = null;
+    legacy.playing = null;
+    legacy.resolution = null;
+    renderLegacyLibrary();
+  }
   $("#nowPlaying").textContent = label || "Playing";
   $("#stopBtn").disabled = false;
   $("#restreamBtn").disabled = false;
@@ -1079,7 +1138,6 @@ function stopPlayback() {
   stopDesktopHlsSession();
   stopDesktopAudioHlsSession();
   cleanupMedia();
-  stopLegacyProgress();
   stopStreamSeekTimer(true);
   resetPauseControl(true);
   replayFn = null;
@@ -1184,7 +1242,17 @@ function toggleScreenFullscreen() {
 // Re-apply controls live: restart whatever is currently playing with new params.
 function reapplyControls() {
   renderFpsPresets();
+  renderQuickQuality();
   updateBwHint();
+  if (legacy.playing) {
+    const requested = parseInt($("#ctlHeight").value, 10);
+    if (!legacy.playing.resolutions?.includes(requested)) {
+      $("#ctlHeight").value = String(legacy.resolution);
+      toast("That resolution was not downloaded for this video", true);
+      return;
+    }
+    legacy.resolution = requested;
+  }
   if (!replayFn) return;
   toast("Restarting at " + currentSettingsLabel());
   replayFn(streamSeek.seekable ? getStreamCurrentTime() : undefined);
@@ -1210,6 +1278,7 @@ function lowerPlaybackSettings() {
   if (parseInt(fps.value, 10) > 12) fps.value = "12";
   if (parseInt(quality.value, 10) < 12) quality.value = "12";
   renderFpsPresets();
+  renderQuickQuality();
   updateBwHint();
 }
 
@@ -1363,7 +1432,6 @@ function pollDownload(jobId) {
 const legacy = {
   playing: null,
   resolution: null,
-  progressTimer: null,
   downloading: false,
 };
 
@@ -1486,7 +1554,6 @@ function renderLegacyLibrary() {
   if (!list) return;
   if (!state.legacyItems.length) {
     list.innerHTML = `<div class="legacy-empty">No processed videos yet.</div>`;
-    updateLegacyResolutionSelect();
     return;
   }
   list.innerHTML = state.legacyItems.map((item) => `
@@ -1500,27 +1567,6 @@ function renderLegacyLibrary() {
         <button class="btn small ghost" data-act="delete" type="button">Delete</button>
       </div>
     </div>`).join("");
-  updateLegacyResolutionSelect();
-}
-
-function currentLegacyItem() {
-  return state.legacyItems.find((item) => item.id === state.legacyPlayingId) || legacy.playing || null;
-}
-
-function updateLegacyResolutionSelect() {
-  const select = $("#legacyResolutionSelect");
-  if (!select) return;
-  const item = currentLegacyItem();
-  if (!item) {
-    select.innerHTML = `<option>No video selected</option>`;
-    select.disabled = true;
-    return;
-  }
-  const current = legacy.resolution || item.resolutions?.[0];
-  select.disabled = false;
-  select.innerHTML = (item.resolutions || []).map((res) => (
-    `<option value="${res}" ${res === current ? "selected" : ""}>${res}p</option>`
-  )).join("");
 }
 
 async function probeLegacyFormats() {
@@ -1615,6 +1661,7 @@ async function streamLegacyPlaylistVideo(video) {
   state.legacyPlayingId = null;
   renderItems();
   renderLegacyLibrary();
+  if (isMobileMode()) setMode("watch");
   showAttemptedUrl(url);
   replayFn = (startAt = getStreamCurrentTime()) => {
     const q = streamQuery(startAt);
@@ -1632,40 +1679,6 @@ async function streamLegacyPlaylistVideo(video) {
   replayFn().catch((e) => toast(e.message, true));
 }
 
-function stopLegacyProgress() {
-  clearInterval(legacy.progressTimer);
-  legacy.progressTimer = null;
-  const fill = $("#legacySeekFill");
-  const thumb = $("#legacySeekThumb");
-  const time = $("#legacyTime");
-  if (fill) fill.style.width = "0%";
-  if (thumb) thumb.style.left = "0%";
-  if (time) time.textContent = "0:00 / 0:00";
-  ["#legacyBackBtn", "#legacyForwardBtn"].forEach((sel) => {
-    const btn = $(sel);
-    if (btn) btn.disabled = true;
-  });
-}
-
-function startLegacyProgress() {
-  stopLegacyProgress();
-  const audio = $("#audio");
-  const tick = () => {
-    const duration = audio.duration || legacy.playing?.duration || 0;
-    const current = audio.currentTime || 0;
-    const pct = duration ? Math.max(0, Math.min(100, (current / duration) * 100)) : 0;
-    $("#legacySeekFill").style.width = `${pct}%`;
-    $("#legacySeekThumb").style.left = `${pct}%`;
-    $("#legacySeek").setAttribute("aria-valuenow", String(Math.round(pct)));
-    $("#legacyTime").textContent = `${clock(current)} / ${clock(duration)}`;
-    const ready = Boolean(legacy.playing && duration);
-    $("#legacyBackBtn").disabled = !ready;
-    $("#legacyForwardBtn").disabled = !ready;
-  };
-  tick();
-  legacy.progressTimer = setInterval(tick, 250);
-}
-
 function legacyStreamUrl(startAt = 0) {
   const item = legacy.playing;
   const resolution = legacy.resolution || item?.resolutions?.[0];
@@ -1679,16 +1692,6 @@ function legacyStreamUrl(startAt = 0) {
   return `/stream/legacy/${encodeURIComponent(item.id)}/${resolution}?${params}`;
 }
 
-function seekLegacy(time) {
-  if (!legacy.playing) return;
-  const audio = $("#audio");
-  const duration = audio.duration || legacy.playing.duration || 0;
-  const target = Math.max(0, duration ? Math.min(time, duration) : time);
-  $("#mjpeg").src = legacyStreamUrl(target);
-  try { audio.currentTime = target; } catch {}
-  if (soundOn) audio.play().catch(() => toast("Tap sound to resume audio"));
-}
-
 function playLegacyItem(item, resolution = null, startAt = 0) {
   const screen = $("#screen"), img = $("#mjpeg"), audio = $("#audio");
   cleanupMedia();
@@ -1696,11 +1699,13 @@ function playLegacyItem(item, resolution = null, startAt = 0) {
   state.playingItemId = null;
   state.legacyPlayingId = item.id;
   legacy.playing = item;
-  resetPauseControl(false, true);
+  resetPauseControl(false);
   legacy.resolution = resolution || item.resolutions?.[0];
+  $("#ctlHeight").value = String(legacy.resolution);
+  configureStreamSeek({ seekable: true, duration: item.duration }, startAt);
   renderItems();
   renderLegacyLibrary();
-  updateLegacyResolutionSelect();
+  setDownloadsDrawerOpen(false);
   if (isMobileMode()) setMode("watch");
   $("#nowPlaying").textContent = item.title || "Processed video";
   $("#stopBtn").disabled = false;
@@ -1723,7 +1728,6 @@ function playLegacyItem(item, resolution = null, startAt = 0) {
   audio.onloadedmetadata = () => {
     try { audio.currentTime = startAt || 0; } catch {}
     if (soundOn) audio.play().catch(() => toast("Tap sound to start audio"));
-    startLegacyProgress();
   };
   audio.oncanplay = () => {
     if (soundOn) audio.play().catch(() => {});
@@ -2943,6 +2947,9 @@ document.addEventListener("click", (e) => {
 });
 $("#chMore").onclick = () => { ch.offset += ch.limit; loadChannels(false); };
 $("#chOpenSaved").onclick = () => openSavedPlaylist(state.lastSavedPlaylistId);
+$("#browseSavedBtn").onclick = () => openSavedPlaylist(state.selectedPlaylistId || state.lastSavedPlaylistId);
+$("#closeSavedDrawerBtn").onclick = closePlaylistDrawer;
+$("#savedDrawerBackdrop").onclick = closePlaylistDrawer;
 let chSearchTimer;
 $("#chSearch").addEventListener("input", (e) => {
   clearTimeout(chSearchTimer);
@@ -3027,7 +3034,7 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
     else setMode(tab.dataset.mode);
   };
 });
-$("#emptySavedBtn").onclick = () => setMode("saved");
+$("#emptySavedBtn").onclick = () => openSavedPlaylist(state.selectedPlaylistId || state.lastSavedPlaylistId);
 $("#emptyBrowseBtn").onclick = openChannels;
 $("#emptyDesktopBtn").onclick = openDesktop;
 $("#emptyEmbedBtn").onclick = openEmbed;
@@ -3074,8 +3081,17 @@ $("#streamSettingsBtn").onclick = () => {
   panel.hidden = !nextOpen;
   $("#streamSettingsBtn").setAttribute("aria-expanded", nextOpen ? "true" : "false");
 };
+$("#qualityQuick").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-quality]");
+  if (!btn || $("#ctlQuality").value === btn.dataset.quality) return;
+  $("#ctlQuality").value = btn.dataset.quality;
+  reapplyControls();
+});
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && state.mode !== "watch") setMode("watch");
+  if (e.key !== "Escape") return;
+  if (state.downloadsDrawerOpen) setDownloadsDrawerOpen(false);
+  else if (state.savedDrawerOpen) closePlaylistDrawer();
+  else if (state.mode !== "watch") setMode("watch");
 });
 $("#stopBtn").onclick = stopPlayback;
 $("#restreamBtn").onclick = restreamPlayback;
@@ -3099,6 +3115,9 @@ $("#legacyRefreshBtn").onclick = async () => {
     toast(e.message, true);
   }
 };
+$("#openDownloadsDrawerBtn").onclick = () => setDownloadsDrawerOpen(true);
+$("#closeDownloadsDrawerBtn").onclick = () => setDownloadsDrawerOpen(false);
+$("#downloadsDrawerBackdrop").onclick = () => setDownloadsDrawerOpen(false);
 $("#legacyProbeBtn").onclick = probeLegacyFormats;
 $("#legacyDownloadBtn").onclick = startLegacyDownload;
 $("#legacyPlaylistSelect").onchange = async (e) => {
@@ -3130,12 +3149,6 @@ $("#legacyDeletePlaylistBtn").onclick = async () => {
   } catch (e) {
     toast(e.message, true);
   }
-};
-$("#legacyResolutionSelect").onchange = () => {
-  const item = currentLegacyItem();
-  if (!item) return;
-  const next = parseInt($("#legacyResolutionSelect").value, 10);
-  playLegacyItem(item, next, $("#audio").currentTime || 0);
 };
 $("#ytConnectBtn").onclick = connectYoutube;
 $("#ytDisconnectBtn").onclick = disconnectYoutube;
@@ -3183,29 +3196,6 @@ $("#streamSeekTrack").addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") { e.preventDefault(); seekStreamTo(getStreamCurrentTime() - 10); }
   if (e.key === "ArrowRight") { e.preventDefault(); seekStreamTo(getStreamCurrentTime() + 10); }
 });
-$("#legacyBackBtn").onclick = () => seekLegacy(($("#audio").currentTime || 0) - 5);
-$("#legacyForwardBtn").onclick = () => seekLegacy(($("#audio").currentTime || 0) + 5);
-$("#legacySeek").addEventListener("pointerdown", (e) => {
-  if (!legacy.playing) return;
-  const seek = (clientX) => {
-    const rect = $("#legacySeek").getBoundingClientRect();
-    const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const duration = $("#audio").duration || legacy.playing.duration || 0;
-    seekLegacy(pos * duration);
-  };
-  seek(e.clientX);
-  const move = (ev) => seek(ev.clientX);
-  const up = () => {
-    document.removeEventListener("pointermove", move);
-    document.removeEventListener("pointerup", up);
-  };
-  document.addEventListener("pointermove", move);
-  document.addEventListener("pointerup", up);
-});
-$("#legacySeek").addEventListener("keydown", (e) => {
-  if (e.key === "ArrowLeft") { e.preventDefault(); seekLegacy(($("#audio").currentTime || 0) - 5); }
-  if (e.key === "ArrowRight") { e.preventDefault(); seekLegacy(($("#audio").currentTime || 0) + 5); }
-});
 $("#muteBtn").onclick = () => {
   const a = $("#audio");
   if (!playbackPaused && soundOn && activeCompat?.audioUrl && a.paused) {
@@ -3222,7 +3212,6 @@ $("#muteBtn").onclick = () => {
   if (soundOn && !playbackPaused && activeCompat?.audioUrl) startCompatAudio(true);
 };
 $("#pauseBtn").onclick = togglePlaybackPause;
-$("#legacyPauseBtn").onclick = togglePlaybackPause;
 
 bindTap($("#playlistList"), async (e) => {
   const li = e.target.closest("li"); if (!li) return;
@@ -3254,6 +3243,7 @@ bindTap($("#itemList"), async (e) => {
   }
   if (item) {
     closePlaylistDrawer();
+    if (isMobileMode()) setMode("watch");
     playItem(item);
   }
 });
@@ -3602,7 +3592,9 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
 // ---- Init ----
 (async function init() {
   setMode("watch");
+  resetStreamSettings();
   renderFpsPresets();
+  renderQuickQuality();
   updateBwHint();
   await pingHealth();
   await loadPlaylists().catch((e) => toast(e.message, true));

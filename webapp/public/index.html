@@ -21,7 +21,6 @@
         <button class="mode-tab" type="button" data-mode="recommended">Recs</button>
         <button class="mode-tab" type="button" data-mode="desktop">Desktop</button>
         <button class="mode-tab" type="button" data-mode="embed">Embed</button>
-        <button class="mode-tab" type="button" data-mode="saved">Saved</button>
         <button class="mode-tab" type="button" data-mode="library">Library</button>
       </nav>
       <div class="topbar-right">
@@ -30,12 +29,14 @@
     </header>
 
     <main class="layout mode-watch" id="layout">
-      <aside class="saved-panel side-panel" id="playlistDrawer" aria-label="Saved channels" hidden>
+      <div class="saved-drawer-backdrop" id="savedDrawerBackdrop" hidden></div>
+      <aside class="saved-panel side-panel browse-saved-drawer" id="playlistDrawer" aria-label="Saved channels" aria-hidden="true" inert>
         <div class="panel-head">
           <h2>Saved Channels</h2>
           <div class="panel-actions">
             <button class="btn small ghost" id="manageSavedBtn" type="button" aria-pressed="false">Manage</button>
             <button class="btn small manage-only" id="addPlaylistBtn">+ New</button>
+            <button class="btn small ghost" id="closeSavedDrawerBtn" type="button">Close</button>
           </div>
         </div>
         <div class="saved-columns">
@@ -121,7 +122,14 @@
         </div>
 
         <section class="stream-settings" id="streamSettings">
-          <button class="settings-toggle" id="streamSettingsBtn" type="button" aria-expanded="false" aria-controls="streamSettingsPanel">Stream settings</button>
+          <div class="stream-settings-head">
+            <button class="settings-toggle" id="streamSettingsBtn" type="button" aria-expanded="false" aria-controls="streamSettingsPanel">Stream settings</button>
+            <div class="quality-quick" id="qualityQuick" role="group" aria-label="Quick stream quality">
+              <button type="button" data-quality="12">Low</button>
+              <button type="button" data-quality="7">Med</button>
+              <button type="button" data-quality="4">High</button>
+            </div>
+          </div>
           <div class="controls" id="streamSettingsPanel" hidden>
             <label>Resolution
               <select id="ctlHeight">
@@ -158,6 +166,9 @@
       <section class="channels-view side-panel" id="channelsView" aria-label="Browse live channels" hidden>
         <div class="panel-head">
           <h2>Live Channels</h2>
+          <div class="panel-actions">
+            <button class="btn small secondary" id="browseSavedBtn" type="button">Saved Channels</button>
+          </div>
         </div>
         <div class="save-feedback" id="chSaveFeedback" hidden>
           <span id="chSaveMessage"></span>
@@ -301,10 +312,13 @@
         </div>
       </section>
 
-      <section class="legacy-library side-panel" id="legacyLibraryView" aria-label="Processed YouTube library" hidden>
+      <section class="legacy-library side-panel" id="legacyLibraryView" aria-label="YouTube library" hidden>
         <div class="panel-head">
-          <h2>Processed Library</h2>
-          <button class="btn small ghost" id="legacyRefreshBtn" type="button">Refresh</button>
+          <h2>Library</h2>
+          <div class="panel-actions">
+            <button class="btn small ghost" id="legacyRefreshBtn" type="button">Refresh</button>
+            <button class="btn small secondary" id="openDownloadsDrawerBtn" type="button">Downloaded Videos</button>
+          </div>
         </div>
         <div class="legacy-body">
           <section class="legacy-download">
@@ -338,20 +352,16 @@
             </div>
           </section>
 
-          <section class="legacy-player-controls" id="legacyControls">
-            <div class="legacy-control-row">
-              <select id="legacyResolutionSelect" aria-label="Playback resolution"></select>
-              <button class="btn small secondary" id="legacyPauseBtn" type="button" disabled aria-pressed="false">Ⅱ Pause</button>
-              <button class="btn small ghost" id="legacyBackBtn" type="button" disabled>-5s</button>
-              <button class="btn small ghost" id="legacyForwardBtn" type="button" disabled>+5s</button>
-            </div>
-            <div class="legacy-seek" id="legacySeek" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
-              <div class="legacy-seek-fill" id="legacySeekFill"></div>
-              <div class="legacy-seek-thumb" id="legacySeekThumb"></div>
-            </div>
-            <div class="legacy-time" id="legacyTime">0:00 / 0:00</div>
-          </section>
+        </div>
+      </section>
 
+      <div class="downloads-drawer-backdrop" id="downloadsDrawerBackdrop" hidden></div>
+      <section class="downloads-drawer side-panel" id="downloadsDrawer" aria-label="Downloaded videos" aria-hidden="true" inert>
+        <div class="panel-head">
+          <h2>Downloaded Videos</h2>
+          <button class="btn small ghost" id="closeDownloadsDrawerBtn" type="button">Close</button>
+        </div>
+        <div class="legacy-body">
           <div class="legacy-list" id="legacyList"></div>
         </div>
       </section>
@@ -365,6 +375,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260620-tap-pause"></script>
+  <script src="/app.js?v=20260620-downloads-drawer"></script>
 </body>
 </html>
