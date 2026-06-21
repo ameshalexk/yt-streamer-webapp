@@ -44,11 +44,42 @@ export const config = {
     maxHeight: int("DL_MAX_HEIGHT", 720),
   },
 
+  // Temporary background-prepared recommendation videos.
+  prepared: {
+    maxHeight: int("PREPARED_MAX_HEIGHT", 480),
+    retentionDays: 30,
+  },
+
+  // Optional YouTube OAuth for the isolated Recommended tab.
+  youtubeOAuth: {
+    clientId: process.env.YOUTUBE_OAUTH_CLIENT_ID || "",
+    clientSecret: process.env.YOUTUBE_OAUTH_CLIENT_SECRET || "",
+    redirectUri: process.env.YOUTUBE_OAUTH_REDIRECT_URI || "",
+    tokenFile: process.env.YOUTUBE_OAUTH_TOKEN_FILE || path.join(ROOT, "data", "youtube-oauth.json"),
+    maxChannels: int("YOUTUBE_RECOMMEND_MAX_CHANNELS", 32),
+    perChannel: int("YOUTUBE_RECOMMEND_PER_CHANNEL", 6),
+    maxVideos: int("YOUTUBE_RECOMMEND_MAX_VIDEOS", 150),
+  },
+
   // Live player: single synced H.264+AAC MPEG-TS stream (via mpegts.js / MSE).
   video: {
     // "libx264" (portable, CPU) or "h264_videotoolbox" (Mac hardware, far lighter CPU).
     encoder: process.env.VIDEO_ENCODER || "libx264",
     audioBitrateK: int("AUDIO_BITRATE_K", 128),
+  },
+
+  // On-demand Mac desktop capture. AVFoundation input "0:none" is usually
+  // "Capture screen 0" with no audio on macOS.
+  desktop: {
+    enabled: process.env.DESKTOP_STREAM_ENABLED !== "0",
+    input: process.env.DESKTOP_CAPTURE_INPUT || "0:none",
+    audioInput: process.env.DESKTOP_AUDIO_INPUT || "",
+    captureCursor: process.env.DESKTOP_CAPTURE_CURSOR !== "0",
+    captureClicks: process.env.DESKTOP_CAPTURE_CLICKS !== "0",
+    inputEnabled: process.env.DESKTOP_INPUT_ENABLED === "1",
+    inputToken: process.env.DESKTOP_INPUT_TOKEN || "",
+    inputWidth: int("DESKTOP_INPUT_WIDTH", 0),
+    inputHeight: int("DESKTOP_INPUT_HEIGHT", 0),
   },
 
   // Safety: cap concurrent ffmpeg streams so a Mac doesn't melt

@@ -6,35 +6,42 @@
   <meta name="theme-color" content="#0b0d10" />
   <title>YT Streamer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e10600'/><polygon points='40,30 72,50 40,70' fill='white'/></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=20260609-playlist-tapfix" />
+  <link rel="stylesheet" href="/styles.css?v=20260620-prepared-cache" />
 </head>
 <body>
   <div id="app">
     <!-- Top bar -->
     <header class="topbar">
       <div class="topbar-left">
-        <button class="menu-btn" id="playlistMenuBtn" aria-label="Open playlists" aria-controls="playlistDrawer" aria-expanded="false" title="Playlists"><span class="hamburger-icon" aria-hidden="true"></span></button>
         <div class="brand"><span class="dot"></span> YT Streamer</div>
       </div>
+      <nav class="mode-tabs" aria-label="App mode">
+        <button class="mode-tab active" type="button" data-mode="watch" aria-current="page">Watch</button>
+        <button class="mode-tab" type="button" data-mode="browse">Browse</button>
+        <button class="mode-tab" type="button" data-mode="recommended">Recs</button>
+        <button class="mode-tab" type="button" data-mode="desktop">Desktop</button>
+        <button class="mode-tab" type="button" data-mode="embed">Embed</button>
+        <button class="mode-tab" type="button" data-mode="saved">Saved</button>
+        <button class="mode-tab" type="button" data-mode="library">Library</button>
+      </nav>
       <div class="topbar-right">
-        <button class="btn small" id="channelsBtn">📺 Channels</button>
         <div class="status" id="status">connecting…</div>
       </div>
     </header>
 
-    <main class="layout">
-      <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
-
-      <aside class="playlist-drawer" id="playlistDrawer" aria-label="Playlist menu" aria-hidden="true">
-        <div class="drawer-head">
-          <h2>Playlist menu</h2>
-          <button class="icon-btn" id="playlistCloseBtn" aria-label="Close playlists" title="Close"><span class="close-icon" aria-hidden="true"></span></button>
+    <main class="layout mode-watch" id="layout">
+      <aside class="saved-panel side-panel" id="playlistDrawer" aria-label="Saved channels" hidden>
+        <div class="panel-head">
+          <h2>Saved Channels</h2>
+          <div class="panel-actions">
+            <button class="btn small ghost" id="manageSavedBtn" type="button" aria-pressed="false">Manage</button>
+            <button class="btn small manage-only" id="addPlaylistBtn">+ New</button>
+          </div>
         </div>
-        <div class="drawer-columns">
+        <div class="saved-columns">
           <section class="col playlists">
             <div class="col-head">
               <h2>Playlists</h2>
-              <button class="btn small" id="addPlaylistBtn">+ New</button>
             </div>
             <ul class="list" id="playlistList"></ul>
           </section>
@@ -42,7 +49,7 @@
           <section class="col items">
             <div class="col-head">
               <h2 id="itemsTitle">Select a playlist</h2>
-              <button class="btn small" id="addItemBtn" disabled>+ Add</button>
+              <button class="btn small manage-only" id="addItemBtn" disabled>+ Add</button>
             </div>
             <ul class="list" id="itemList"></ul>
           </section>
@@ -53,14 +60,22 @@
         <div class="col-head">
           <h2 id="nowPlaying">Player</h2>
           <div class="player-actions">
-            <button class="btn small ghost icon-only" id="fullscreenBtn" aria-label="Full screen" title="Full screen"><span class="fullscreen-icon" aria-hidden="true"></span></button>
+            <button class="btn small ghost" id="playerHomeBtn" type="button">Home</button>
+            <button class="btn small ghost" id="desktopInputBtn" type="button" aria-pressed="false" hidden>Touch</button>
+            <div class="desktop-zoom-controls" id="desktopZoomControls" hidden>
+              <button class="btn small ghost" id="desktopZoomOutBtn" type="button" aria-label="Zoom out">−</button>
+              <button class="btn small ghost" id="desktopZoomResetBtn" type="button">Fit</button>
+              <button class="btn small ghost" id="desktopZoomInBtn" type="button" aria-label="Zoom in">+</button>
+            </div>
             <button class="btn small ghost" id="muteBtn" title="Sound on/off">🔊</button>
+            <button class="btn small ghost" id="pauseBtn" type="button" disabled aria-pressed="false">Ⅱ Pause</button>
             <button class="btn small ghost" id="restreamBtn" disabled title="Reload stream">↻ Restream</button>
             <button class="btn small ghost" id="stopBtn" disabled>■ Stop</button>
           </div>
         </div>
 
         <div class="screen" id="screen">
+          <button class="btn ghost fullscreen-overlay" id="fullscreenBtn" type="button" aria-label="Full screen" title="Full screen"><span class="fullscreen-icon" aria-hidden="true"></span></button>
           <div class="stream-badge" id="streamBadge" hidden></div>
           <div class="stream-notice" id="streamNotice" hidden>
             <div class="notice-title" id="streamNoticeTitle"></div>
@@ -72,71 +87,272 @@
           </div>
           <video id="video" playsinline></video>
           <img id="mjpeg" alt="" />
+          <canvas id="pauseFrame" aria-hidden="true"></canvas>
+          <iframe id="embedFrame" title="Embedded player" allowfullscreen hidden></iframe>
           <audio id="audio" playsinline></audio>
           <div class="screen-empty" id="screenEmpty">
             <div class="big">▶</div>
-            <p>Tap any item to start streaming</p>
+            <p>Choose how to start watching</p>
+            <div class="empty-actions">
+              <button class="btn small secondary" type="button" id="emptySavedBtn">Saved Channels</button>
+              <button class="btn small" type="button" id="emptyBrowseBtn">Browse Live Channels</button>
+              <button class="btn small ghost" type="button" id="emptyDesktopBtn">Desktop</button>
+              <button class="btn small ghost" type="button" id="emptyEmbedBtn">Embed Code</button>
+              <button class="btn small ghost" type="button" id="emptyPasteBtn">Paste URL</button>
+            </div>
           </div>
         </div>
+
+        <section class="stream-seek" id="streamSeek" aria-label="Stream seek controls" hidden>
+          <div class="stream-seek-row">
+            <button class="btn small ghost" id="streamBackBtn" type="button">-10s</button>
+            <div class="stream-seek-track" id="streamSeekTrack" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
+              <div class="stream-seek-fill" id="streamSeekFill"></div>
+              <div class="stream-seek-thumb" id="streamSeekThumb"></div>
+            </div>
+            <button class="btn small ghost" id="streamForwardBtn" type="button">+10s</button>
+          </div>
+          <div class="stream-seek-time" id="streamSeekTime">0:00 / 0:00</div>
+        </section>
 
         <div class="quick">
           <input id="quickUrl" type="text" inputmode="url" placeholder="Paste a channel URL, M3U playlist, or YouTube link…" />
           <button class="btn" id="quickPlayBtn">Go</button>
         </div>
 
-        <div class="controls">
-          <label>Resolution
-            <select id="ctlHeight">
-              <option value="240">240p</option>
-              <option value="360">360p</option>
-              <option value="480" selected>480p</option>
-              <option value="720">720p</option>
-              <option value="1080">1080p</option>
-              <option value="0">Source</option>
-            </select>
-          </label>
-          <label>FPS
-            <select id="ctlFps" title="Higher FPS can stutter on Tesla/Cloudflare streams">
-              <option value="5">5</option><option value="8">8</option><option value="12" selected>12</option><option value="15">15</option>
-              <option class="risky" value="20">20 risky</option>
-              <option class="risky" value="24">24 risky</option>
-              <option class="risky" value="30">30 risky</option>
-            </select>
-            <div class="fps-presets" id="ctlFpsPresets" role="group" aria-label="FPS presets"></div>
-          </label>
-          <label>Quality
-            <select id="ctlQuality" title="Lower = sharper but more bandwidth">
-              <option value="4">High</option>
-              <option value="7" selected>Medium</option>
-              <option value="12">Low (4G)</option>
-              <option value="18">Min</option>
-            </select>
-          </label>
-          <span class="hint" id="bwHint"></span>
-        </div>
+        <section class="stream-settings" id="streamSettings">
+          <button class="settings-toggle" id="streamSettingsBtn" type="button" aria-expanded="false" aria-controls="streamSettingsPanel">Stream settings</button>
+          <div class="controls" id="streamSettingsPanel" hidden>
+            <label>Resolution
+              <select id="ctlHeight">
+                <option value="240">240p</option>
+                <option value="360">360p</option>
+                <option value="480" selected>480p</option>
+                <option value="720">720p</option>
+                <option value="1080">1080p</option>
+                <option value="0">Source</option>
+              </select>
+            </label>
+            <label>FPS
+              <select id="ctlFps" title="Higher FPS can stutter on Tesla/Cloudflare streams">
+                <option value="5">5</option><option value="8">8</option><option value="12" selected>12</option><option value="15">15</option>
+                <option class="risky" value="20">20 risky</option>
+                <option class="risky" value="24">24 risky</option>
+                <option class="risky" value="30">30 risky</option>
+              </select>
+              <div class="fps-presets" id="ctlFpsPresets" role="group" aria-label="FPS presets"></div>
+            </label>
+            <label>Quality
+              <select id="ctlQuality" title="Lower = sharper but more bandwidth">
+                <option value="4">High</option>
+                <option value="7" selected>Medium</option>
+                <option value="12">Low (4G)</option>
+                <option value="18">Min</option>
+              </select>
+            </label>
+            <span class="hint" id="bwHint"></span>
+          </div>
+        </section>
+      </section>
 
-        <!-- Channels browser (inline home panel) -->
-        <div class="channels-view" id="channelsView" hidden>
-          <div class="ch-head">
-            <h2>📺 Live Channels</h2>
-            <button class="btn small ghost" id="chClose">Hide</button>
+      <section class="channels-view side-panel" id="channelsView" aria-label="Browse live channels" hidden>
+        <div class="panel-head">
+          <h2>Live Channels</h2>
+        </div>
+        <div class="save-feedback" id="chSaveFeedback" hidden>
+          <span id="chSaveMessage"></span>
+          <button class="btn small secondary" id="chOpenSaved" type="button">Open</button>
+        </div>
+        <div class="ch-filters">
+          <div class="ch-menu" id="chSourceMenu">
+            <button class="ch-menu-btn" id="chSourceBtn" type="button" aria-haspopup="listbox" aria-expanded="false">United States (US)</button>
+            <div class="ch-menu-panel" id="chSourcePanel" role="listbox" hidden></div>
           </div>
-          <div class="ch-filters">
-            <div class="ch-menu" id="chSourceMenu">
-              <button class="ch-menu-btn" id="chSourceBtn" type="button" aria-haspopup="listbox" aria-expanded="false">United States (US)</button>
-              <div class="ch-menu-panel" id="chSourcePanel" role="listbox" hidden></div>
+          <input id="chSearch" type="text" inputmode="search" placeholder="Search channels…" />
+          <div class="ch-menu group" id="chGroupMenu">
+            <button class="ch-menu-btn" id="chGroupBtn" type="button" aria-haspopup="listbox" aria-expanded="false">All groups</button>
+            <div class="ch-menu-panel" id="chGroupPanel" role="listbox" hidden></div>
+          </div>
+          <span class="ch-count" id="chCount"></span>
+        </div>
+        <div class="ch-list" id="chList"></div>
+        <div class="ch-foot" id="chFoot" hidden>
+          <button class="btn ghost" id="chMore">Load more</button>
+        </div>
+      </section>
+
+      <section class="recommendations-view side-panel" id="recommendationsView" aria-label="Recommended YouTube videos" hidden>
+        <div class="panel-head">
+          <h2>Recommended</h2>
+          <div class="panel-actions">
+            <button class="btn small ghost" id="ytConnectBtn" type="button">Connect</button>
+            <button class="btn small ghost" id="ytDisconnectBtn" type="button" hidden>Disconnect</button>
+            <button class="btn small secondary" id="ytRefreshBtn" type="button">Refresh</button>
+          </div>
+        </div>
+        <div class="recommendation-status" id="ytStatusLine"></div>
+        <div class="recommendation-category-filter">
+          <span class="recommendation-category-label" id="ytCategoryLabel">Category</span>
+          <div class="ch-menu recommendation-category-menu" id="ytCategoryMenu">
+            <button class="ch-menu-btn" id="ytCategoryBtn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="ytCategoryLabel ytCategoryBtn" disabled>All videos (0)</button>
+            <div class="ch-menu-panel" id="ytCategoryPanel" role="listbox" aria-labelledby="ytCategoryLabel" hidden></div>
+          </div>
+        </div>
+        <div class="recommendation-list" id="ytRecommendationList">
+          <div class="recommendation-empty">Loading...</div>
+        </div>
+        <div class="recommendation-pagination">
+          <button class="btn secondary" id="ytMoreRecommendations" type="button" hidden>Load more</button>
+        </div>
+      </section>
+
+      <section class="desktop-view side-panel" id="desktopView" aria-label="Desktop stream" hidden>
+        <div class="panel-head">
+          <h2>Desktop</h2>
+          <div class="panel-actions">
+            <button class="btn small ghost" id="desktopHomeBtn" type="button">Home</button>
+            <button class="btn small ghost" id="desktopRefreshBtn" type="button">Refresh</button>
+          </div>
+        </div>
+        <div class="desktop-body">
+          <section class="desktop-card">
+            <div class="desktop-status" id="desktopStatus">Checking capture devices...</div>
+            <div class="desktop-source" id="desktopSource"></div>
+            <div class="desktop-actions">
+              <button class="btn" id="desktopStartBtn" type="button">Start desktop stream</button>
+              <button class="btn ghost" id="desktopStopBtn" type="button">Stop</button>
             </div>
-            <input id="chSearch" type="text" inputmode="search" placeholder="Search channels…" />
-            <div class="ch-menu group" id="chGroupMenu">
-              <button class="ch-menu-btn" id="chGroupBtn" type="button" aria-haspopup="listbox" aria-expanded="false">All groups</button>
-              <div class="ch-menu-panel" id="chGroupPanel" role="listbox" hidden></div>
+            <div class="desktop-input-row">
+              <button class="btn small ghost" id="desktopInputToggle" type="button" aria-pressed="false">Touch control</button>
+              <span class="desktop-input-status" id="desktopInputStatus">Checking input...</span>
             </div>
-            <span class="ch-count" id="chCount"></span>
+            <div class="desktop-presets" aria-label="Desktop stream presets">
+              <button class="btn small ghost" type="button" data-desktop-preset="smooth">Smooth</button>
+              <button class="btn small ghost" type="button" data-desktop-preset="balanced">Balanced</button>
+              <button class="btn small ghost" type="button" data-desktop-preset="sharp">Sharp</button>
+            </div>
+            <div class="desktop-controls" aria-label="Desktop stream controls">
+              <label>Resolution
+                <select id="desktopHeight">
+                  <option value="240">240p</option>
+                  <option value="360" selected>360p</option>
+                  <option value="480">480p</option>
+                  <option value="720">720p</option>
+                  <option value="1080">1080p</option>
+                  <option value="0">Source</option>
+                </select>
+              </label>
+              <label>FPS
+                <select id="desktopFps">
+                  <option value="5" selected>5</option>
+                  <option value="8">8</option>
+                  <option value="12">12</option>
+                  <option value="15">15</option>
+                  <option value="20">20</option>
+                  <option value="24">24</option>
+                  <option value="30">30</option>
+                </select>
+              </label>
+              <label>Quality
+                <select id="desktopQuality">
+                  <option value="4">High</option>
+                  <option value="7">Medium</option>
+                  <option value="12" selected>Low</option>
+                  <option value="18">Min</option>
+                </select>
+              </label>
+              <label>Audio
+                <select id="desktopAudio"></select>
+              </label>
+            </div>
+          </section>
+          <section class="desktop-card">
+            <h3>Capture notes</h3>
+            <ul class="desktop-notes">
+              <li>macOS may ask for Screen Recording permission the first time.</li>
+              <li>Audio auto-selects BlackHole when available; macOS sound output must also be routed to that device.</li>
+              <li>The stream starts on demand and stops when playback stops or the browser disconnects.</li>
+            </ul>
+          </section>
+        </div>
+      </section>
+
+      <section class="embed-view side-panel" id="embedView" aria-label="Embed code player" hidden>
+        <div class="panel-head">
+          <h2>Embed Code</h2>
+          <div class="panel-actions">
+            <button class="btn small ghost" id="embedHomeBtn" type="button">Home</button>
           </div>
-          <div class="ch-list" id="chList"></div>
-          <div class="ch-foot" id="chFoot" hidden>
-            <button class="btn ghost" id="chMore">Load more</button>
-          </div>
+        </div>
+        <div class="embed-body">
+          <section class="embed-card">
+            <label for="embedCodeInput">Iframe code</label>
+            <textarea id="embedCodeInput" spellcheck="false"></textarea>
+            <div class="embed-controls">
+              <label for="embedHeight">Height</label>
+              <input id="embedHeight" type="text" value="70vh" inputmode="text" />
+            </div>
+            <div class="embed-actions">
+              <button class="btn" id="embedLoadBtn" type="button">Load</button>
+              <button class="btn ghost" id="embedClearBtn" type="button">Clear</button>
+            </div>
+            <div class="embed-status" id="embedStatus"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="legacy-library side-panel" id="legacyLibraryView" aria-label="Processed YouTube library" hidden>
+        <div class="panel-head">
+          <h2>Processed Library</h2>
+          <button class="btn small ghost" id="legacyRefreshBtn" type="button">Refresh</button>
+        </div>
+        <div class="legacy-body">
+          <section class="legacy-download">
+            <label for="legacyUrl">YouTube URL</label>
+            <input id="legacyUrl" type="text" inputmode="url" placeholder="https://www.youtube.com/watch?v=…" />
+            <div class="legacy-resolutions" id="legacyResolutions" aria-label="Download resolutions">
+              <label><input type="checkbox" value="720" checked /> 720p</label>
+              <label><input type="checkbox" value="480" checked /> 480p</label>
+              <label><input type="checkbox" value="360" /> 360p</label>
+              <label><input type="checkbox" value="240" /> 240p</label>
+            </div>
+            <div class="legacy-actions">
+              <button class="btn small ghost" id="legacyProbeBtn" type="button">Check</button>
+              <button class="btn small" id="legacyDownloadBtn" type="button">Download & Process</button>
+            </div>
+            <div class="legacy-progress" id="legacyProgress" hidden><i></i></div>
+            <div class="legacy-status" id="legacyStatus"></div>
+          </section>
+
+          <section class="legacy-playlists">
+            <div class="legacy-section-head">
+              <h3>YouTube Playlists</h3>
+              <div class="legacy-actions compact">
+                <button class="btn small ghost" id="legacyAddPlaylistBtn" type="button">Add</button>
+                <button class="btn small ghost" id="legacyDeletePlaylistBtn" type="button">Delete</button>
+              </div>
+            </div>
+            <select id="legacyPlaylistSelect" aria-label="YouTube playlist"></select>
+            <div class="legacy-playlist-videos" id="legacyPlaylistVideos">
+              <div class="legacy-empty">Loading playlist...</div>
+            </div>
+          </section>
+
+          <section class="legacy-player-controls" id="legacyControls">
+            <div class="legacy-control-row">
+              <select id="legacyResolutionSelect" aria-label="Playback resolution"></select>
+              <button class="btn small secondary" id="legacyPauseBtn" type="button" disabled aria-pressed="false">Ⅱ Pause</button>
+              <button class="btn small ghost" id="legacyBackBtn" type="button" disabled>-5s</button>
+              <button class="btn small ghost" id="legacyForwardBtn" type="button" disabled>+5s</button>
+            </div>
+            <div class="legacy-seek" id="legacySeek" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
+              <div class="legacy-seek-fill" id="legacySeekFill"></div>
+              <div class="legacy-seek-thumb" id="legacySeekThumb"></div>
+            </div>
+            <div class="legacy-time" id="legacyTime">0:00 / 0:00</div>
+          </section>
+
+          <div class="legacy-list" id="legacyList"></div>
         </div>
       </section>
     </main>
@@ -149,6 +365,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260609-playlist-tapfix"></script>
+  <script src="/app.js?v=20260620-tap-pause"></script>
 </body>
 </html>

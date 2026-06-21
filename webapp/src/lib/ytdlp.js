@@ -1,5 +1,6 @@
 // Thin wrapper around yt-dlp for: metadata, playlist expansion, direct stream URL, and downloads.
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.js";
 
@@ -82,9 +83,16 @@ export async function getStreamUrls(url, maxHeight = config.download.maxHeight) 
 }
 
 // Download a video to the library. Returns { filePath, info }. onProgress(pct, line) optional.
-export function download(url, { maxHeight = config.download.maxHeight, onProgress } = {}) {
+export async function downloadToDirectory(url, {
+  directory,
+  maxHeight = config.download.maxHeight,
+  onProgress,
+  outputTemplate = "%(title).200B [%(id)s].%(ext)s",
+} = {}) {
+  if (!directory) throw new Error("download directory required");
+  await fs.mkdir(directory, { recursive: true });
   return new Promise((resolve, reject) => {
-    const outTmpl = path.join(config.libraryDir, "%(title).200B [%(id)s].%(ext)s");
+    const outTmpl = path.join(directory, outputTemplate);
     const fmt = `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]`;
     const args = [
       "-f", fmt,
@@ -105,7 +113,7 @@ export function download(url, { maxHeight = config.download.maxHeight, onProgres
         const m = line.match(/\[download\]\s+([\d.]+)%/);
         if (m && onProgress) onProgress(parseFloat(m[1]), line.trim());
         // The --print line is the final resolved filepath.
-        if (line.trim() && !line.startsWith("[") && line.includes(config.libraryDir)) {
+        if (line.trim() && !line.startsWith("[") && path.isAbsolute(line.trim())) {
           filePath = line.trim();
         }
       }
@@ -116,5 +124,13 @@ export function download(url, { maxHeight = config.download.maxHeight, onProgres
       if (code === 0 && filePath) resolve({ filePath });
       else reject(new Error(err.trim() || `download failed (exit ${code})`));
     });
+  });
+}
+
+export function download(url, { maxHeight = config.download.maxHeight, onProgress } = {}) {
+  return downloadToDirectory(url, {
+    directory: config.libraryDir,
+    maxHeight,
+    onProgress,
   });
 }
