@@ -72,6 +72,8 @@ const DEFAULT_STREAM_SETTINGS = {
 const DESKTOP_AUDIO_KEY = "ytStreamerDesktopAudio";
 const DESKTOP_AUDIO_NAME_KEY = "ytStreamerDesktopAudioName";
 const DESKTOP_INPUT_TOKEN_KEY = "ytStreamerDesktopInputToken";
+const SAVED_EMBEDS_KEY = "ytStreamerSavedEmbeds";
+const THEME_KEY = "ytStreamerTheme";
 const RECOMMENDATION_PAGE_SIZE = 25;
 const DEFAULT_EMBED_CODE = `<iframe title="Argentina vs Algeria Player" marginheight="0" marginwidth="0" src="https://embed.st/embed/admin/ppv-argentina-vs-algeria/1" scrolling="no" allowfullscreen="yes" allow="encrypted-media; picture-in-picture;" width="100%" height="100%" frameborder="0"></iframe>`;
 
@@ -83,6 +85,32 @@ function toast(msg, bad = false) {
   t.hidden = false;
   clearTimeout(toast._t);
   toast._t = setTimeout(() => (t.hidden = true), 3200);
+}
+
+function applyTheme(theme, persist = true) {
+  const day = theme === "day";
+  if (day) document.documentElement.dataset.theme = "day";
+  else delete document.documentElement.dataset.theme;
+  document.documentElement.style.colorScheme = day ? "light" : "dark";
+  const button = $("#themeToggleBtn");
+  if (button) {
+    const nextLabel = day ? "Night" : "Day";
+    button.querySelector(".theme-toggle-icon").textContent = day ? "☾" : "☀";
+    button.querySelector(".theme-toggle-label").textContent = nextLabel;
+    button.setAttribute("aria-label", `Switch to ${nextLabel.toLowerCase()} mode`);
+    button.title = `Switch to ${nextLabel.toLowerCase()} mode`;
+  }
+  const themeColor = document.querySelector('meta[name="theme-color"]');
+  if (themeColor) themeColor.content = day ? "#f4f6f8" : "#0b0d10";
+  if (persist) {
+    try { localStorage.setItem(THEME_KEY, day ? "day" : "night"); } catch {}
+  }
+}
+
+function initTheme() {
+  let savedTheme = "night";
+  try { savedTheme = localStorage.getItem(THEME_KEY) || "night"; } catch {}
+  applyTheme(savedTheme, false);
 }
 function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 function fmtDur(sec) {
@@ -150,8 +178,19 @@ function setDownloadsDrawerOpen(open) {
   syncDownloadsDrawer();
 }
 
+function setMobileNavOpen(open) {
+  const menu = $("#modeTabs");
+  const toggle = $("#menuToggle");
+  if (!menu || !toggle) return;
+  const nextOpen = Boolean(open) && isMobileMode();
+  menu.classList.toggle("open", nextOpen);
+  toggle.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+  toggle.setAttribute("aria-label", nextOpen ? "Close navigation" : "Open navigation");
+}
+
 function setMode(mode) {
   state.mode = mode;
+  setMobileNavOpen(false);
   if (mode !== "browse") state.savedDrawerOpen = false;
   if (mode !== "library") state.downloadsDrawerOpen = false;
   const layout = $("#layout");
@@ -852,8 +891,103 @@ function loadEmbedFromInput() {
   }
 }
 
+function getSavedEmbeds() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SAVED_EMBEDS_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((item) => item && typeof item.code === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function setSavedEmbeds(saved) {
+  localStorage.setItem(SAVED_EMBEDS_KEY, JSON.stringify(saved));
+}
+
+function formatEmbedSavedDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Saved date unavailable";
+  return `Saved ${date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`;
+}
+
+function renderSavedEmbeds() {
+  const list = $("#embedSavedList");
+  if (!list) return;
+  const saved = getSavedEmbeds();
+  $("#embedSavedCount").textContent = `${saved.length} saved`;
+  if (!saved.length) {
+    list.innerHTML = '<div class="embed-saved-empty">No saved iframe codes yet.</div>';
+    return;
+  }
+  list.innerHTML = saved.map((item) => `
+    <article class="embed-saved-row" data-embed-id="${esc(item.id)}">
+      <div class="embed-saved-info">
+        <strong>${esc(item.title || "Embedded player")}</strong>
+        <span class="embed-saved-src">${esc(item.src || "Iframe code")}</span>
+        <time datetime="${esc(item.savedAt || "")}">${esc(formatEmbedSavedDate(item.savedAt))}</time>
+      </div>
+      <div class="embed-saved-actions">
+        <button class="btn small" type="button" data-embed-action="load">Load</button>
+        <button class="btn small danger" type="button" data-embed-action="delete">Delete</button>
+      </div>
+    </article>`).join("");
+}
+
+function saveEmbedFromInput() {
+  const code = $("#embedCodeInput").value.trim();
+  if (!code) {
+    toast("Paste iframe embed code first", true);
+    $("#embedCodeInput").focus();
+    return;
+  }
+  try {
+    const source = parseEmbedIframe(code);
+    const saved = getSavedEmbeds();
+    saved.unshift({
+      id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      title: source.getAttribute("title") || "Embedded player",
+      src: source.getAttribute("src") || "",
+      code,
+      height: $("#embedHeight").value.trim(),
+      savedAt: new Date().toISOString(),
+    });
+    setSavedEmbeds(saved);
+    renderSavedEmbeds();
+    $("#embedStatus").textContent = "Saved";
+    toast("Iframe code saved");
+  } catch (e) {
+    $("#embedStatus").textContent = e.message;
+    toast(e.message, true);
+  }
+}
+
+function handleSavedEmbedClick(e) {
+  const button = e.target.closest("[data-embed-action]");
+  const row = button?.closest("[data-embed-id]");
+  if (!button || !row) return;
+  const saved = getSavedEmbeds();
+  const item = saved.find((entry) => entry.id === row.dataset.embedId);
+  if (!item) return;
+  if (button.dataset.embedAction === "delete") {
+    setSavedEmbeds(saved.filter((entry) => entry.id !== item.id));
+    renderSavedEmbeds();
+    $("#embedStatus").textContent = "Saved iframe deleted";
+    toast("Saved iframe deleted");
+    return;
+  }
+  $("#embedCodeInput").value = item.code;
+  $("#embedHeight").value = item.height || "70vh";
+  try {
+    renderEmbedCode(item.code, item.height);
+  } catch (error) {
+    $("#embedStatus").textContent = error.message;
+    toast(error.message, true);
+  }
+}
+
 function openEmbed() {
   setMode("embed");
+  renderSavedEmbeds();
   const input = $("#embedCodeInput");
   if (input && !input.value.trim()) input.value = DEFAULT_EMBED_CODE;
   requestAnimationFrame(() => {
@@ -3034,6 +3168,16 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
     else setMode(tab.dataset.mode);
   };
 });
+$("#menuToggle").onclick = () => setMobileNavOpen(!$("#modeTabs").classList.contains("open"));
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".topbar")) setMobileNavOpen(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && $("#modeTabs").classList.contains("open")) {
+    setMobileNavOpen(false);
+    $("#menuToggle").focus();
+  }
+});
 $("#emptySavedBtn").onclick = () => openSavedPlaylist(state.selectedPlaylistId || state.lastSavedPlaylistId);
 $("#emptyBrowseBtn").onclick = openChannels;
 $("#emptyDesktopBtn").onclick = openDesktop;
@@ -3051,6 +3195,8 @@ $("#desktopStopBtn").onclick = stopPlayback;
 $("#desktopInputToggle").onclick = toggleDesktopInput;
 $("#embedHomeBtn").onclick = () => setMode("watch");
 $("#embedLoadBtn").onclick = loadEmbedFromInput;
+$("#embedSaveBtn").onclick = saveEmbedFromInput;
+$("#embedSavedList").onclick = handleSavedEmbedClick;
 $("#embedClearBtn").onclick = () => {
   $("#embedCodeInput").value = "";
   $("#embedStatus").textContent = "";
@@ -3591,6 +3737,10 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
 
 // ---- Init ----
 (async function init() {
+  initTheme();
+  $("#themeToggleBtn").onclick = () => {
+    applyTheme(document.documentElement.dataset.theme === "day" ? "night" : "day");
+  };
   setMode("watch");
   resetStreamSettings();
   renderFpsPresets();

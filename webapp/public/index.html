@@ -5,17 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <meta name="theme-color" content="#0b0d10" />
   <title>YT Streamer</title>
+  <script>
+    (() => {
+      try {
+        const theme = localStorage.getItem("ytStreamerTheme");
+        if (theme === "day") document.documentElement.dataset.theme = "day";
+      } catch {}
+    })();
+  </script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e10600'/><polygon points='40,30 72,50 40,70' fill='white'/></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=20260620-prepared-cache" />
+  <link rel="stylesheet" href="/styles.css?v=20260621-player-toolbar" />
 </head>
 <body>
   <div id="app">
     <!-- Top bar -->
     <header class="topbar">
       <div class="topbar-left">
-        <div class="brand"><span class="dot"></span> YT Streamer</div>
+        <a class="brand" href="/" aria-label="YT Streamer home"><span class="dot"></span> YT Streamer</a>
       </div>
-      <nav class="mode-tabs" aria-label="App mode">
+      <nav class="mode-tabs" id="modeTabs" aria-label="App mode">
         <button class="mode-tab active" type="button" data-mode="watch" aria-current="page">Watch</button>
         <button class="mode-tab" type="button" data-mode="browse">Browse</button>
         <button class="mode-tab" type="button" data-mode="recommended">Recs</button>
@@ -24,6 +32,13 @@
         <button class="mode-tab" type="button" data-mode="library">Library</button>
       </nav>
       <div class="topbar-right">
+        <button class="theme-toggle" id="themeToggleBtn" type="button" aria-label="Switch to day mode" title="Switch to day mode">
+          <span class="theme-toggle-icon" aria-hidden="true">☀</span>
+          <span class="theme-toggle-label">Day</span>
+        </button>
+        <button class="menu-toggle" id="menuToggle" type="button" aria-label="Open navigation" aria-controls="modeTabs" aria-expanded="false">
+          <span aria-hidden="true"></span>
+        </button>
         <div class="status" id="status">connecting…</div>
       </div>
     </header>
@@ -68,11 +83,14 @@
               <button class="btn small ghost" id="desktopZoomResetBtn" type="button">Fit</button>
               <button class="btn small ghost" id="desktopZoomInBtn" type="button" aria-label="Zoom in">+</button>
             </div>
-            <button class="btn small ghost" id="muteBtn" title="Sound on/off">🔊</button>
-            <button class="btn small ghost" id="pauseBtn" type="button" disabled aria-pressed="false">Ⅱ Pause</button>
-            <button class="btn small ghost" id="restreamBtn" disabled title="Reload stream">↻ Restream</button>
-            <button class="btn small ghost" id="stopBtn" disabled>■ Stop</button>
           </div>
+        </div>
+
+        <div class="player-toolbar" aria-label="Playback controls">
+          <button class="btn small ghost" id="muteBtn" title="Sound on/off">🔊</button>
+          <button class="btn small ghost" id="pauseBtn" type="button" disabled aria-pressed="false">Ⅱ Pause</button>
+          <button class="btn small ghost" id="restreamBtn" disabled title="Reload stream">↻ Restream</button>
+          <button class="btn small ghost" id="stopBtn" disabled>■ Stop</button>
         </div>
 
         <div class="screen" id="screen">
@@ -305,9 +323,17 @@
             </div>
             <div class="embed-actions">
               <button class="btn" id="embedLoadBtn" type="button">Load</button>
+              <button class="btn secondary" id="embedSaveBtn" type="button">Save</button>
               <button class="btn ghost" id="embedClearBtn" type="button">Clear</button>
             </div>
             <div class="embed-status" id="embedStatus"></div>
+          </section>
+          <section class="embed-card embed-saved-card">
+            <div class="embed-saved-head">
+              <h3>Saved iframe codes</h3>
+              <span id="embedSavedCount">0 saved</span>
+            </div>
+            <div class="embed-saved-list" id="embedSavedList"></div>
           </section>
         </div>
       </section>
@@ -375,6 +401,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260620-downloads-drawer"></script>
+  <script src="/app.js?v=20260621-player-toolbar"></script>
 </body>
 </html>
