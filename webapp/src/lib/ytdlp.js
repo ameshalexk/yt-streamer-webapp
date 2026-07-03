@@ -61,6 +61,45 @@ export async function getPlaylistEntries(url) {
   };
 }
 
+function bestThumbnail(entry) {
+  const thumbs = Array.isArray(entry.thumbnails) ? entry.thumbnails : [];
+  const sorted = thumbs
+    .filter((thumb) => thumb?.url)
+    .sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)));
+  return sorted[0]?.url || entry.thumbnail || null;
+}
+
+// Search YouTube without requiring OAuth. Returns flat video entries that can be streamed later.
+export async function searchVideos(query, { limit = 20 } = {}) {
+  const q = String(query || "").trim();
+  if (!q) throw new Error("search query required");
+  const count = Math.max(1, Math.min(50, parseInt(limit, 10) || 20));
+  const json = await run(["-J", "--flat-playlist", "--no-warnings", `ytsearch${count}:${q}`], { timeoutMs: 90000 });
+  const info = JSON.parse(json);
+  const entries = Array.isArray(info.entries) ? info.entries : [];
+  return {
+    query: q,
+    items: entries
+      .filter((entry) => entry && entry.id)
+      .map((entry) => {
+        const url = entry.webpage_url || (entry.url && entry.url.startsWith("http") ? entry.url : `https://www.youtube.com/watch?v=${entry.id}`);
+        const liveStatus = String(entry.live_status || "").toLowerCase();
+        return {
+          id: entry.id,
+          title: entry.title || entry.id,
+          url,
+          duration: entry.duration || null,
+          thumbnail: bestThumbnail(entry),
+          channelTitle: entry.uploader || entry.channel || entry.channel_name || null,
+          publishedAt: entry.timestamp ? new Date(entry.timestamp * 1000).toISOString() : null,
+          viewCount: entry.view_count || null,
+          isLive: Boolean(entry.is_live) || liveStatus === "is_live",
+          isUpcoming: liveStatus === "is_upcoming",
+        };
+      }),
+  };
+}
+
 // Resolve a direct, ffmpeg-playable URL for a video at or below maxHeight.
 // Returns { videoUrl, audioUrl|null }. Prefers a single muxed stream when available.
 export async function getStreamUrls(url, maxHeight = config.download.maxHeight) {

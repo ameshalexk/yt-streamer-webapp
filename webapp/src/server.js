@@ -8,10 +8,13 @@ import * as store from "./lib/store.js";
 import * as ytdlp from "./lib/ytdlp.js";
 import * as stream from "./lib/stream.js";
 import * as desktopInput from "./lib/desktop-input.js";
+import * as browserRenderer from "./lib/browser-renderer.js";
+import * as realChromeRenderer from "./lib/real-chrome-renderer.js";
 import * as catalog from "./lib/catalog.js";
 import * as processedLibrary from "./lib/processed-library.js";
 import * as preparedCache from "./lib/prepared-cache.js";
 import * as youtubeOAuth from "./lib/youtube-oauth.js";
+import * as moneyDashboard from "./lib/money-dashboard.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -83,6 +86,14 @@ const asyncH = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) =
   if (!res.headersSent) res.status(err.status || 500).json({ error: err.message });
 });
 
+function requireDesktopEnabled(req, res, next) {
+  if (config.desktop.enabled) return next();
+  if (req.originalUrl.startsWith("/api/")) {
+    return res.status(404).json({ error: "Desktop streaming is disabled." });
+  }
+  return res.status(404).type("text/plain").end("Desktop streaming is disabled.");
+}
+
 // ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
@@ -91,9 +102,73 @@ app.get("/api/health", (req, res) => {
     ok: true,
     activeStreams: stream.activeStreamCount(),
     activeAudioStreams: stream.activeAudioCount(),
+    activeBrowserSessions: browserRenderer.activeSessionCount(),
+    activeRealChromeSessions: realChromeRenderer.activeSessionCount(),
     time: Date.now(),
   });
 });
+
+app.get("/api/sessions", (req, res) => {
+  const browserSessions = browserRenderer.listSessions();
+  const realChromeSessions = realChromeRenderer.listSessions();
+  res.json({
+    browser: browserSessions,
+    realChrome: realChromeSessions,
+    counts: {
+      streams: stream.activeStreamCount(),
+      audioStreams: stream.activeAudioCount(),
+      browserSessions: browserSessions.length,
+      realChromeSessions: realChromeSessions.length,
+    },
+    limits: {
+      browserIdleCloseMs: 60_000,
+      browserSessionTtlMs: 15 * 60 * 1000,
+    },
+    time: Date.now(),
+  });
+});
+
+app.post("/api/sessions/cleanup", asyncH(async (req, res) => {
+  const stoppedBrowser = await browserRenderer.stopAll("remote-cleanup");
+  const stoppedRealChrome = await realChromeRenderer.stopAll("remote-cleanup");
+  res.json({
+    ok: true,
+    stoppedBrowser,
+    stoppedRealChrome,
+    stopped: stoppedBrowser + stoppedRealChrome,
+  });
+}));
+
+// ---------------------------------------------------------------------------
+// Private money dashboard
+// ---------------------------------------------------------------------------
+const moneyPage = asyncH(async (req, res) => {
+  if (!(await moneyDashboard.authorize(req))) return moneyDashboard.sendUnauthorizedPage(res);
+  const { token } = await moneyDashboard.accessToken();
+  moneyDashboard.setAccessCookie(req, res, token);
+  res.sendFile(path.join(config.publicDir, "money.html"));
+});
+
+app.get("/money", moneyPage);
+app.get("/", (req, res, next) => {
+  if (req.hostname !== "money.ameshalex.com") return next();
+  return moneyPage(req, res);
+});
+
+app.get("/api/money-dashboard", asyncH(async (req, res) => {
+  if (!(await moneyDashboard.authorize(req))) return res.status(401).json({ error: "money dashboard token required" });
+  const { token } = await moneyDashboard.accessToken();
+  moneyDashboard.setAccessCookie(req, res, token);
+  res.json(await moneyDashboard.dashboardData());
+}));
+
+app.post("/api/money-dashboard", asyncH(async (req, res) => {
+  if (!(await moneyDashboard.authorize(req))) return res.status(401).json({ error: "money dashboard token required" });
+  const { token } = await moneyDashboard.accessToken();
+  moneyDashboard.setAccessCookie(req, res, token);
+  await moneyDashboard.updateTrackedData(req.body || {});
+  res.json(await moneyDashboard.dashboardData());
+}));
 
 // ---------------------------------------------------------------------------
 // Playlists CRUD
@@ -150,6 +225,73 @@ app.delete("/api/playlists/:id/items/:itemId", asyncH(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------------------
+// Saved iframe embeds
+// ---------------------------------------------------------------------------
+app.get("/api/saved-embeds", asyncH(async (req, res) => {
+  res.json(await store.listSavedEmbeds());
+}));
+
+app.post("/api/saved-embeds", asyncH(async (req, res) => {
+  const { title, src, code, height, savedAt } = req.body || {};
+  if (!code || !String(code).trim()) return res.status(400).json({ error: "iframe code required" });
+  if (!src || !/^https?:\/\//i.test(String(src).trim())) return res.status(400).json({ error: "valid iframe src required" });
+  const embed = await store.addSavedEmbed({ title, src, code, height, savedAt });
+  res.status(embed.duplicate ? 200 : 201).json(embed);
+}));
+
+app.delete("/api/saved-embeds/:id", asyncH(async (req, res) => {
+  const ok = await store.deleteSavedEmbed(req.params.id);
+  if (!ok) return res.status(404).json({ error: "saved iframe not found" });
+  res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// YouTube watch history recorded by this web app
+// ---------------------------------------------------------------------------
+app.get("/api/watch-history", asyncH(async (req, res) => {
+  res.json(await store.listWatchHistory());
+}));
+
+app.post("/api/watch-history", asyncH(async (req, res) => {
+  const entry = await store.recordWatchHistory(req.body || {});
+  res.status(201).json(entry);
+}));
+
+app.delete("/api/watch-history/:id", asyncH(async (req, res) => {
+  const ok = await store.deleteWatchHistoryEntry(req.params.id);
+  if (!ok) return res.status(404).json({ error: "history entry not found" });
+  res.json({ ok: true });
+}));
+
+app.delete("/api/watch-history", asyncH(async (req, res) => {
+  await store.clearWatchHistory();
+  res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// Browser renderer history
+// ---------------------------------------------------------------------------
+app.get("/api/browser-history", asyncH(async (req, res) => {
+  res.json(await store.listBrowserHistory());
+}));
+
+app.post("/api/browser-history", asyncH(async (req, res) => {
+  const entry = await store.recordBrowserHistory(req.body || {});
+  res.status(201).json(entry);
+}));
+
+app.delete("/api/browser-history/:id", asyncH(async (req, res) => {
+  const ok = await store.deleteBrowserHistoryEntry(req.params.id);
+  if (!ok) return res.status(404).json({ error: "browser history entry not found" });
+  res.json({ ok: true });
+}));
+
+app.delete("/api/browser-history", asyncH(async (req, res) => {
+  await store.clearBrowserHistory();
+  res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
 // YouTube helpers
 // ---------------------------------------------------------------------------
 app.get("/api/youtube-auth/status", asyncH(async (req, res) => {
@@ -187,6 +329,13 @@ app.post("/api/youtube-auth/logout", asyncH(async (req, res) => {
 
 app.get("/api/youtube/recommendations", asyncH(async (req, res) => {
   res.json(await youtubeOAuth.recommendations());
+}));
+
+app.get("/api/youtube/search", asyncH(async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (!q) return res.status(400).json({ error: "q required" });
+  const limit = Math.min(40, parseInt(req.query.limit, 10) || 20);
+  res.json(await ytdlp.searchVideos(q, { limit }));
 }));
 
 app.post("/api/prepared/status", asyncH(async (req, res) => {
@@ -384,6 +533,16 @@ app.get("/api/probe", asyncH(async (req, res) => {
 // ---------------------------------------------------------------------------
 // On-demand Mac desktop capture
 // ---------------------------------------------------------------------------
+app.use([
+  "/api/desktop",
+  "/stream/desktop",
+  "/stream/desktop-audio",
+  "/stream/ts/desktop",
+  "/stream/mp4/desktop",
+  "/stream/hls/desktop",
+  "/stream/hls/desktop-audio",
+], requireDesktopEnabled);
+
 app.get("/api/desktop/sources", asyncH(async (req, res) => {
   res.json(await stream.listDesktopSources());
 }));
@@ -399,7 +558,7 @@ app.post("/api/desktop/hls/:id/stop", asyncH(async (req, res) => {
 }));
 
 app.get("/api/desktop/audio-hls/start", asyncH(async (req, res) => {
-  res.json(await stream.startDesktopAudioHls({ audio: req.query.audio }));
+  res.json(await stream.startDesktopAudioHls({ audio: req.query.audio, bitrateK: req.query.bitrate }));
 }));
 
 app.post("/api/desktop/audio-hls/:id/stop", asyncH(async (req, res) => {
@@ -418,6 +577,75 @@ app.post("/api/desktop/input", asyncH(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------------------
+// Isolated browser renderer
+// ---------------------------------------------------------------------------
+app.post("/api/browser/start", asyncH(async (req, res) => {
+  res.status(201).json(await browserRenderer.start(req.body || {}));
+}));
+
+app.post("/api/browser/:id/navigate", asyncH(async (req, res) => {
+  res.json(await browserRenderer.navigate(req.params.id, req.body || {}));
+}));
+
+app.patch("/api/browser/:id/settings", asyncH(async (req, res) => {
+  res.json(await browserRenderer.updateSettings(req.params.id, req.body || {}));
+}));
+
+app.post("/api/browser/:id/input", asyncH(async (req, res) => {
+  res.json(await browserRenderer.input(req.params.id, req.body || {}));
+}));
+
+app.get("/api/browser/audio-sources", asyncH(async (req, res) => {
+  res.json(await stream.listDesktopSources(5000, { requireDesktopEnabled: false }));
+}));
+
+app.get("/api/browser/audio-hls/start", asyncH(async (req, res) => {
+  res.json(await stream.startDesktopAudioHls({
+    audio: req.query.audio,
+    bitrateK: req.query.bitrate,
+    requireDesktopEnabled: false,
+    urlPrefix: "/stream/hls/browser-audio",
+  }));
+}));
+
+app.post("/api/browser/audio-hls/:id/stop", asyncH(async (req, res) => {
+  await stream.stopDesktopAudioHls(req.params.id);
+  res.json({ ok: true });
+}));
+
+app.post("/api/browser/:id/stop", asyncH(async (req, res) => {
+  const ok = await browserRenderer.stop(req.params.id);
+  if (!ok) return res.status(404).json({ error: "Browser session not found" });
+  res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// Real Chrome renderer: dedicated Chrome profile streamed through DevTools
+// ---------------------------------------------------------------------------
+app.post("/api/real-chrome/start", asyncH(async (req, res) => {
+  res.status(201).json(await realChromeRenderer.start(req.body || {}));
+}));
+
+app.post("/api/real-chrome/stop", asyncH(async (req, res) => {
+  const stopped = await realChromeRenderer.stopAll("manual");
+  res.json({ ok: true, stopped });
+}));
+
+app.post("/api/real-chrome/:id/navigate", asyncH(async (req, res) => {
+  res.json(await realChromeRenderer.navigate(req.params.id, req.body || {}));
+}));
+
+app.post("/api/real-chrome/:id/input", asyncH(async (req, res) => {
+  res.json(await realChromeRenderer.input(req.params.id, req.body || {}));
+}));
+
+app.post("/api/real-chrome/:id/stop", asyncH(async (req, res) => {
+  const ok = await realChromeRenderer.stop(req.params.id);
+  if (!ok) return res.status(404).json({ error: "Real Chrome session not found" });
+  res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
 // MJPEG streaming endpoints
 // ---------------------------------------------------------------------------
 app.get("/stream/desktop", asyncH(async (req, res) => {
@@ -427,7 +655,23 @@ app.get("/stream/desktop", asyncH(async (req, res) => {
 }));
 
 app.get("/stream/desktop-audio", asyncH(async (req, res) => {
-  return stream.streamDesktopAudio(req, res, { audio: req.query.audio });
+  return stream.streamDesktopAudio(req, res, { audio: req.query.audio, bitrateK: req.query.bitrate });
+}));
+
+app.get("/stream/browser/:id", (req, res) => {
+  return browserRenderer.stream(req, res, req.params.id);
+});
+
+app.get("/stream/real-chrome/:id", (req, res) => {
+  return realChromeRenderer.stream(req, res, req.params.id);
+});
+
+app.get("/stream/browser-audio", asyncH(async (req, res) => {
+  return stream.streamCapturedAudio(req, res, { audio: req.query.audio, bitrateK: req.query.bitrate });
+}));
+
+app.get("/stream/browser-pcm", asyncH(async (req, res) => {
+  return stream.streamCapturedPcm(req, res, { audio: req.query.audio, sampleRate: req.query.rate });
 }));
 
 app.get("/stream/ts/desktop", asyncH(async (req, res) => {
@@ -462,6 +706,25 @@ app.get("/stream/hls/desktop/:id/:file", (req, res) => {
 app.get("/stream/hls/desktop-audio/:id/:file", (req, res) => {
   const filePath = stream.desktopAudioHlsFilePath(req.params.id, req.params.file);
   if (!filePath) return res.status(404).type("text/plain").end("Audio HLS session not found");
+  if (req.params.file.endsWith(".m3u8")) {
+    res.set({
+      "Content-Type": "application/vnd.apple.mpegurl",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "X-Accel-Buffering": "no",
+    });
+  } else {
+    res.set({
+      "Content-Type": "video/mp2t",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "X-Accel-Buffering": "no",
+    });
+  }
+  res.sendFile(filePath);
+});
+
+app.get("/stream/hls/browser-audio/:id/:file", (req, res) => {
+  const filePath = stream.desktopAudioHlsFilePath(req.params.id, req.params.file);
+  if (!filePath) return res.status(404).type("text/plain").end("Browser audio HLS session not found");
   if (req.params.file.endsWith(".m3u8")) {
     res.set({
       "Content-Type": "application/vnd.apple.mpegurl",

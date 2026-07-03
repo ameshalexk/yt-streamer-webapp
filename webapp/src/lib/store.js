@@ -7,7 +7,10 @@ import { config } from "../config.js";
 
 const STORE_FILE = path.join(config.dataDir, "store.json");
 
-const DEFAULT_DATA = { version: 1, playlists: [] };
+const DEFAULT_DATA = { version: 3, playlists: [], savedEmbeds: [], watchHistory: [], browserHistory: [] };
+const MAX_WATCH_HISTORY = 300;
+const MAX_BROWSER_HISTORY = 100;
+const GENERIC_BROWSER_TITLES = new Set(["real chrome", "chrome", "browser", "about:blank"]);
 
 let cache = null;
 let writeChain = Promise.resolve();
@@ -18,6 +21,38 @@ function id() {
 
 function canonicalUrl(url) {
   return String(url || "").trim();
+}
+
+function hostnameFromUrl(url) {
+  try {
+    return new URL(String(url || "")).hostname.replace(/^www\./, "") || "";
+  } catch {
+    return "";
+  }
+}
+
+function browserHistoryTitle(entry = {}, previous = null, url = "") {
+  const title = String(entry?.title || "").trim();
+  const previousTitle = String(previous?.title || "").trim();
+  if (title && !GENERIC_BROWSER_TITLES.has(title.toLowerCase())) return title.slice(0, 300);
+  if (previousTitle && !GENERIC_BROWSER_TITLES.has(previousTitle.toLowerCase())) return previousTitle.slice(0, 300);
+  return (hostnameFromUrl(url) || url || "Website").slice(0, 300);
+}
+
+function youtubeIdFromUrl(url) {
+  try {
+    const u = new URL(String(url || ""));
+    if (u.hostname.includes("youtu.be")) return u.pathname.split("/").filter(Boolean)[0] || "";
+    if (u.searchParams.get("v")) return u.searchParams.get("v");
+    const parts = u.pathname.split("/").filter(Boolean);
+    const marker = parts.findIndex((part) => ["embed", "shorts", "live"].includes(part));
+    if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+  } catch {}
+  return "";
+}
+
+function canonicalYoutubeId(entry = {}) {
+  return String(entry.youtubeId || entry.id || youtubeIdFromUrl(entry.url) || "").trim();
 }
 
 function canonicalCategory(meta = {}) {
@@ -71,6 +106,10 @@ async function load() {
     const parsed = JSON.parse(raw);
     cache = { ...DEFAULT_DATA, ...parsed };
     if (!Array.isArray(cache.playlists)) cache.playlists = [];
+    if (!Array.isArray(cache.savedEmbeds)) cache.savedEmbeds = [];
+    if (!Array.isArray(cache.watchHistory)) cache.watchHistory = [];
+    if (!Array.isArray(cache.browserHistory)) cache.browserHistory = [];
+    cache.version = DEFAULT_DATA.version;
     if (dedupeItems(cache)) await persist();
   } catch (err) {
     if (err.code !== "ENOENT") {
@@ -193,4 +232,135 @@ export async function findItem(itemId) {
     if (item) return { playlist: p, item };
   }
   return null;
+}
+
+// ---- Saved iframe embeds ----
+
+export async function listSavedEmbeds() {
+  const data = await load();
+  return data.savedEmbeds;
+}
+
+export async function addSavedEmbed({ title, src, code, height, savedAt }) {
+  const data = await load();
+  const normalizedCode = String(code || "").trim();
+  const existing = data.savedEmbeds.find((embed) => embed.code === normalizedCode);
+  if (existing) return { ...existing, duplicate: true };
+  const embed = {
+    id: id(),
+    title: String(title || "Embedded player").slice(0, 300),
+    src: String(src || "").slice(0, 4096),
+    code: normalizedCode.slice(0, 65536),
+    height: String(height || "70vh").slice(0, 64),
+    savedAt: Number.isFinite(Date.parse(savedAt)) ? new Date(savedAt).toISOString() : new Date().toISOString(),
+  };
+  data.savedEmbeds.unshift(embed);
+  await persist();
+  return embed;
+}
+
+export async function deleteSavedEmbed(embedId) {
+  const data = await load();
+  const before = data.savedEmbeds.length;
+  data.savedEmbeds = data.savedEmbeds.filter((embed) => embed.id !== embedId);
+  if (data.savedEmbeds.length === before) return false;
+  await persist();
+  return true;
+}
+
+// ---- YouTube watch history recorded by this web app ----
+
+export async function listWatchHistory() {
+  const data = await load();
+  return data.watchHistory;
+}
+
+export async function recordWatchHistory(entry) {
+  const data = await load();
+  const url = canonicalUrl(entry?.url);
+  const youtubeId = canonicalYoutubeId(entry);
+  if (!url && !youtubeId) throw new Error("video url required");
+  const now = Date.now();
+  const key = youtubeId || url;
+  const existingIndex = data.watchHistory.findIndex((item) => (item.youtubeId || item.url) === key || (youtubeId && item.youtubeId === youtubeId));
+  const previous = existingIndex >= 0 ? data.watchHistory.splice(existingIndex, 1)[0] : null;
+  const item = {
+    id: youtubeId || previous?.id || id(),
+    youtubeId,
+    title: String(entry?.title || previous?.title || "YouTube").slice(0, 300),
+    url: url || previous?.url || (youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : ""),
+    thumbnail: String(entry?.thumbnail || previous?.thumbnail || "").slice(0, 4096),
+    channelTitle: String(entry?.channelTitle || entry?.uploader || previous?.channelTitle || "").slice(0, 300),
+    duration: Number.isFinite(Number(entry?.duration)) ? Number(entry.duration) : previous?.duration || null,
+    isLive: Boolean(entry?.isLive),
+    source: String(entry?.source || previous?.source || "webapp").slice(0, 80),
+    firstPlayedAt: previous?.firstPlayedAt || now,
+    lastPlayedAt: now,
+    playCount: (previous?.playCount || 0) + 1,
+  };
+  data.watchHistory.unshift(item);
+  data.watchHistory = data.watchHistory.slice(0, MAX_WATCH_HISTORY);
+  await persist();
+  return item;
+}
+
+export async function deleteWatchHistoryEntry(entryId) {
+  const data = await load();
+  const before = data.watchHistory.length;
+  data.watchHistory = data.watchHistory.filter((entry) => entry.id !== entryId && entry.youtubeId !== entryId);
+  if (data.watchHistory.length === before) return false;
+  await persist();
+  return true;
+}
+
+export async function clearWatchHistory() {
+  const data = await load();
+  data.watchHistory = [];
+  await persist();
+}
+
+// ---- Browser renderer history ----
+
+export async function listBrowserHistory() {
+  const data = await load();
+  return data.browserHistory.map((item) => ({
+    ...item,
+    title: browserHistoryTitle(item, null, item.url),
+  }));
+}
+
+export async function recordBrowserHistory(entry) {
+  const data = await load();
+  const url = canonicalUrl(entry?.url);
+  if (!url) throw new Error("browser url required");
+  const now = Date.now();
+  const existingIndex = data.browserHistory.findIndex((item) => canonicalUrl(item.url) === url);
+  const previous = existingIndex >= 0 ? data.browserHistory.splice(existingIndex, 1)[0] : null;
+  const item = {
+    id: previous?.id || id(),
+    title: browserHistoryTitle(entry, previous, url),
+    url,
+    firstOpenedAt: previous?.firstOpenedAt || now,
+    lastOpenedAt: now,
+    openCount: (previous?.openCount || 0) + 1,
+  };
+  data.browserHistory.unshift(item);
+  data.browserHistory = data.browserHistory.slice(0, MAX_BROWSER_HISTORY);
+  await persist();
+  return item;
+}
+
+export async function deleteBrowserHistoryEntry(entryId) {
+  const data = await load();
+  const before = data.browserHistory.length;
+  data.browserHistory = data.browserHistory.filter((entry) => entry.id !== entryId);
+  if (data.browserHistory.length === before) return false;
+  await persist();
+  return true;
+}
+
+export async function clearBrowserHistory() {
+  const data = await load();
+  data.browserHistory = [];
+  await persist();
 }

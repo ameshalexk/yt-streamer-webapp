@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#07111f">
+  <title>Money Dashboard</title>
+  <link rel="stylesheet" href="/money.css?v=20260625-track">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Private household snapshot</p>
+        <h1>Money Dashboard</h1>
+        <p class="sub" id="sourceLine">Loading corrected net worth figures…</p>
+      </div>
+      <div class="hero-actions">
+        <div class="hero-pill" id="asOf">Protected</div>
+        <button class="action-btn" id="editBtn" type="button" hidden>Edit exact data</button>
+        <button class="action-btn primary" id="saveBtn" type="button" hidden>Save snapshot</button>
+        <button class="action-btn ghost" id="cancelBtn" type="button" hidden>Cancel</button>
+      </div>
+    </header>
+
+    <section class="lock" id="lockPanel" hidden>
+      <h2>Dashboard locked</h2>
+      <p>Open the private link with the token generated on this Mac.</p>
+    </section>
+
+    <section class="summary-grid" id="summaryGrid" aria-label="Financial summary"></section>
+
+    <section class="panel math-panel" id="mathPanel" hidden>
+      <div>
+        <p class="label">Net worth calculation</p>
+        <h2 id="netWorthMath"></h2>
+      </div>
+      <p id="netWorthNote"></p>
+    </section>
+
+    <section class="panel tracker-panel" id="trackerPanel" hidden>
+      <div>
+        <p class="label">Exact tracking mode</p>
+        <h2>Update from real balances, then save</h2>
+        <p id="trackerNote"></p>
+      </div>
+      <label class="date-field">As-of date
+        <input id="asOfInput" type="date">
+      </label>
+    </section>
+
+    <section class="grid two">
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="label">Assets</p>
+            <h2 id="assetTotal">—</h2>
+          </div>
+        </div>
+        <div class="bars" id="assetBars"></div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="label">Liabilities</p>
+            <h2 id="liabilityTotal">—</h2>
+          </div>
+        </div>
+        <div class="bars" id="liabilityBars"></div>
+      </article>
+    </section>
+
+    <section class="grid two tables">
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="label">Asset list</p>
+            <h2>What is included</h2>
+          </div>
+          <button class="action-btn small edit-only" id="addAssetBtn" type="button" hidden>Add asset</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Asset</th><th>Category/source</th><th>Value</th><th class="edit-only-col"></th></tr></thead>
+            <tbody id="assetRows"></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="label">Debt list</p>
+            <h2>What is subtracted</h2>
+          </div>
+          <button class="action-btn small edit-only" id="addLiabilityBtn" type="button" hidden>Add debt</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Liability</th><th>Category/source</th><th>Balance</th><th class="edit-only-col"></th></tr></thead>
+            <tbody id="liabilityRows"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid two">
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="label">Equity</p>
+            <h2>Value minus attached debt</h2>
+          </div>
+        </div>
+        <div class="mini-list" id="equityList"></div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="label">Context</p>
+            <h2>Average vs this snapshot</h2>
+          </div>
+        </div>
+        <div class="mini-list" id="benchmarkList"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="label">Plain-English readout</p>
+          <h2>What this means</h2>
+        </div>
+      </div>
+      <ul class="takeaways" id="takeaways"></ul>
+      <p class="fine" id="disclaimer"></p>
+    </section>
+  </main>
+
+  <script src="/money.js?v=20260625-track"></script>
+</body>
+</html>

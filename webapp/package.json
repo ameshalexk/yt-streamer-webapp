@@ -10,11 +10,12 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "check": "node --check src/server.js && node --check src/lib/store.js && node --check src/lib/ytdlp.js && node --check src/lib/stream.js && node --check src/lib/desktop-input.js && node --check src/lib/processed-library.js && node --check src/lib/youtube-oauth.js && node --check public/app.js",
+    "check": "node --check src/server.js && node --check src/lib/store.js && node --check src/lib/ytdlp.js && node --check src/lib/stream.js && node --check src/lib/desktop-input.js && node --check src/lib/browser-renderer.js && node --check src/lib/real-chrome-renderer.js && node --check src/lib/processed-library.js && node --check src/lib/youtube-oauth.js && node --check src/lib/money-dashboard.js && node --check public/app.js && node --check public/money.js",
     "setup": "node scripts/check-deps.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "mpegts.js": "^1.7.3"
+    "mpegts.js": "^1.7.3",
+    "playwright-core": "^1.55.0"
   }
 }

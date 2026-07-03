@@ -71,7 +71,7 @@ export const config = {
   // On-demand Mac desktop capture. AVFoundation input "0:none" is usually
   // "Capture screen 0" with no audio on macOS.
   desktop: {
-    enabled: process.env.DESKTOP_STREAM_ENABLED !== "0",
+    enabled: process.env.DESKTOP_STREAM_ENABLED === "1",
     input: process.env.DESKTOP_CAPTURE_INPUT || "0:none",
     audioInput: process.env.DESKTOP_AUDIO_INPUT || "",
     captureCursor: process.env.DESKTOP_CAPTURE_CURSOR !== "0",

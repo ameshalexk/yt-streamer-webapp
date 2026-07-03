@@ -281,20 +281,51 @@ function desktopAvInput(audio) {
 
 let desktopAudioCleanup = null;
 
-function buildDesktopAudioArgs({ audio }) {
+function normalizeAudioBitrateK(value) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n)) return config.video.audioBitrateK;
+  return Math.max(48, Math.min(192, n));
+}
+
+function buildDesktopAudioArgs({ audio, bitrateK }) {
   const input = normalizeAudioInput(audio);
   if (!input) return null;
+  const bitrate = normalizeAudioBitrateK(bitrateK);
   return [
     "-hide_banner", "-loglevel", "error",
     "-f", "avfoundation",
     "-i", input,
     "-vn",
     "-c:a", "libmp3lame",
-    "-b:a", "128k",
+    "-b:a", `${bitrate}k`,
+    "-ac", "2",
     "-ar", "48000",
     "-write_xing", "0",
     "-flush_packets", "1",
     "-f", "mp3",
+    "pipe:1",
+  ];
+}
+
+function normalizeAudioSampleRate(value) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n)) return 48000;
+  return Math.max(24000, Math.min(48000, n));
+}
+
+function buildCapturedPcmArgs({ audio, sampleRate }) {
+  const input = normalizeAudioInput(audio);
+  if (!input) return null;
+  const rate = normalizeAudioSampleRate(sampleRate);
+  return [
+    "-hide_banner", "-loglevel", "error",
+    "-thread_queue_size", "1024",
+    "-f", "avfoundation",
+    "-i", input,
+    "-vn",
+    "-ac", "2",
+    "-ar", String(rate),
+    "-f", "s16le",
     "pipe:1",
   ];
 }
@@ -338,14 +369,10 @@ export function streamDesktopMjpeg(req, res, { params, videoDelayMs = 0 }) {
   });
 }
 
-export function streamDesktopAudio(req, res, { audio }) {
-  if (!config.desktop.enabled) {
-    res.status(404).type("text/plain").end("Desktop streaming is disabled.");
-    return;
-  }
-  const args = buildDesktopAudioArgs({ audio });
+export function streamCapturedAudio(req, res, { audio, bitrateK }) {
+  const args = buildDesktopAudioArgs({ audio, bitrateK });
   if (!args) {
-    res.status(404).type("text/plain").end("No desktop audio device selected.");
+    res.status(404).type("text/plain").end("No audio capture device selected.");
     return;
   }
   desktopAudioCleanup?.();
@@ -393,6 +420,71 @@ export function streamDesktopAudio(req, res, { audio }) {
   res.socket?.on("error", cleanup);
   req.on("close", cleanup);
   res.on("close", cleanup);
+}
+
+export function streamCapturedPcm(req, res, { audio, sampleRate }) {
+  const args = buildCapturedPcmArgs({ audio, sampleRate });
+  const rate = normalizeAudioSampleRate(sampleRate);
+  if (!args) {
+    res.status(404).type("text/plain").end("No audio capture device selected.");
+    return;
+  }
+  desktopAudioCleanup?.();
+  desktopAudioCleanup = null;
+  audioActive++;
+  const ff = spawn(config.ffmpegPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+  res.socket?.setNoDelay?.(true);
+  res.writeHead(200, {
+    "Content-Type": "application/octet-stream",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    Connection: "close",
+    "X-Accel-Buffering": "no",
+    "X-Audio-Format": "s16le",
+    "X-Audio-Sample-Rate": String(rate),
+    "X-Audio-Channels": "2",
+  });
+  ff.stdout.pipe(res);
+  let stderr = "";
+  let cleaned = false;
+  ff.stderr.on("data", (d) => {
+    stderr += d;
+    if (stderr.length > 4000) stderr = stderr.slice(-4000);
+  });
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    audioActive = Math.max(0, audioActive - 1);
+    if (desktopAudioCleanup === cleanup) desktopAudioCleanup = null;
+    try { ff.stdout.unpipe(res); } catch {}
+    if (!res.destroyed) {
+      try { res.end(); } catch {}
+    }
+    if (!ff.killed) ff.kill("SIGKILL");
+  };
+  desktopAudioCleanup = cleanup;
+  ff.on("error", (e) => {
+    console.error("[browser-pcm-audio] ffmpeg error:", e.message);
+    cleanup();
+  });
+  ff.on("close", (code) => {
+    if (code && code !== 0 && code !== 255) {
+      console.error(`[browser-pcm-audio] ffmpeg exited ${code}: ${summarizeFfmpegError(stderr)}`);
+    }
+    cleanup();
+  });
+  ff.stdout.on("error", cleanup);
+  res.on("error", cleanup);
+  res.socket?.on("error", cleanup);
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+}
+
+export function streamDesktopAudio(req, res, { audio }) {
+  if (!config.desktop.enabled) {
+    res.status(404).type("text/plain").end("Desktop streaming is disabled.");
+    return;
+  }
+  return streamCapturedAudio(req, res, { audio });
 }
 
 function buildDesktopTSArgs({ params, audio }) {
@@ -760,29 +852,30 @@ async function removeAudioHlsSession(session) {
   await fs.rm(session.dir, { recursive: true, force: true }).catch(() => {});
 }
 
-function buildDesktopAudioHlsArgs({ audio, playlistPath, segmentPattern }) {
+function buildDesktopAudioHlsArgs({ audio, bitrateK, playlistPath, segmentPattern }) {
   const input = normalizeAudioInput(audio);
   if (!input) return null;
+  const bitrate = normalizeAudioBitrateK(bitrateK);
   return [
     "-hide_banner", "-loglevel", "error",
     "-f", "avfoundation",
     "-i", input,
     "-vn",
     "-c:a", "aac",
-    "-b:a", `${config.video.audioBitrateK}k`,
+    "-b:a", `${bitrate}k`,
     "-ac", "2",
-    "-ar", "44100",
+    "-ar", "48000",
     "-f", "hls",
-    "-hls_time", "1",
-    "-hls_list_size", "6",
+    "-hls_time", "0.5",
+    "-hls_list_size", "4",
     "-hls_flags", "delete_segments+omit_endlist",
     "-hls_segment_filename", segmentPattern,
     playlistPath,
   ];
 }
 
-export async function startDesktopAudioHls({ audio }) {
-  if (!config.desktop.enabled) throw httpError(404, "Desktop streaming is disabled.");
+export async function startDesktopAudioHls({ audio, bitrateK, requireDesktopEnabled = true, urlPrefix = "/stream/hls/desktop-audio" }) {
+  if (requireDesktopEnabled && !config.desktop.enabled) throw httpError(404, "Desktop streaming is disabled.");
   const argsInput = normalizeAudioInput(audio);
   if (!argsInput) throw httpError(400, "No desktop audio device selected.");
   if (audioActive >= config.maxConcurrentStreams) throw httpError(429, "Too many active audio streams. Stop one and retry.");
@@ -796,7 +889,7 @@ export async function startDesktopAudioHls({ audio }) {
   const session = {
     id, dir, playlistPath, stderr: "", closed: false, cleaned: false, ff: null, timer: null,
   };
-  const args = buildDesktopAudioHlsArgs({ audio, playlistPath, segmentPattern });
+  const args = buildDesktopAudioHlsArgs({ audio, bitrateK, playlistPath, segmentPattern });
   audioActive++;
   session.ff = spawn(config.ffmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
   audioHlsSessions.set(id, session);
@@ -819,7 +912,7 @@ export async function startDesktopAudioHls({ audio }) {
   });
   try {
     await waitForAudioHlsReady(session);
-    return { id, url: `/stream/hls/desktop-audio/${id}/live.m3u8` };
+    return { id, url: `${urlPrefix}/${id}/live.m3u8` };
   } catch (err) {
     await removeAudioHlsSession(session);
     throw err;
@@ -857,9 +950,9 @@ function recommendedDesktopAudio(audioDevices) {
   return preferred ? String(preferred.index) : (configuredDevice ? String(configuredDevice.index) : configured);
 }
 
-export function listDesktopSources(timeoutMs = 5000) {
+export function listDesktopSources(timeoutMs = 5000, { requireDesktopEnabled = true } = {}) {
   return new Promise((resolve) => {
-    if (!config.desktop.enabled) {
+    if (requireDesktopEnabled && !config.desktop.enabled) {
       resolve({ enabled: false, input: config.desktop.input, video: [], audio: [] });
       return;
     }
@@ -869,7 +962,7 @@ export function listDesktopSources(timeoutMs = 5000) {
     let stderr = "";
     const timer = setTimeout(() => {
       ff.kill("SIGKILL");
-      resolve({ enabled: true, input: config.desktop.input, video: [], audio: [], error: "device probe timed out" });
+      resolve({ enabled: config.desktop.enabled, input: config.desktop.input, video: [], audio: [], error: "device probe timed out" });
     }, timeoutMs);
     ff.stderr.on("data", (d) => {
       stderr += d;
@@ -877,13 +970,13 @@ export function listDesktopSources(timeoutMs = 5000) {
     });
     ff.on("error", (e) => {
       clearTimeout(timer);
-      resolve({ enabled: true, input: config.desktop.input, video: [], audio: [], error: e.message });
+      resolve({ enabled: config.desktop.enabled, input: config.desktop.input, video: [], audio: [], error: e.message });
     });
     ff.on("close", () => {
       clearTimeout(timer);
       const audio = parseAvfoundationDevices(stderr, "audio");
       resolve({
-        enabled: true,
+        enabled: config.desktop.enabled,
         input: config.desktop.input,
         video: parseAvfoundationDevices(stderr, "video"),
         audio,
