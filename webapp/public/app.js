@@ -78,6 +78,8 @@ const FPS_OPTIONS = [
   { value: "20", label: "20", risky: true },
   { value: "24", label: "24", risky: true },
   { value: "30", label: "30", risky: true },
+  { value: "45", label: "45", risky: true },
+  { value: "60", label: "60", risky: true },
 ];
 
 const DEFAULT_STREAM_SETTINGS = {
@@ -94,6 +96,8 @@ const BROWSER_AUDIO_KEY = "ytStreamerBrowserAudio";
 const BROWSER_AUDIO_NAME_KEY = "ytStreamerBrowserAudioName";
 const BROWSER_AUDIO_FORMAT_KEY = "ytStreamerBrowserAudioFormat";
 const BROWSER_AUDIO_BITRATE_KEY = "ytStreamerBrowserAudioBitrate";
+const BROWSER_AUDIO_DEFAULT_KEY = "ytStreamerBrowserAudioDefaultV2";
+const BROWSER_QUALITY_KEY = "ytStreamerBrowserMjpegQuality";
 const DESKTOP_INPUT_TOKEN_KEY = "ytStreamerDesktopInputToken";
 const SAVED_EMBEDS_KEY = "ytStreamerSavedEmbeds";
 const THEME_KEY = "ytStreamerTheme";
@@ -102,7 +106,8 @@ const WATCH_HISTORY_LIMIT = 300;
 const RECOMMENDATION_PAGE_SIZE = 25;
 const DEFAULT_EMBED_CODE = `<iframe title="Argentina vs Algeria Player" marginheight="0" marginwidth="0" src="https://embed.st/embed/admin/ppv-argentina-vs-algeria/1" scrolling="no" allowfullscreen="yes" allow="encrypted-media; picture-in-picture;" width="100%" height="100%" frameborder="0"></iframe>`;
 const BROWSER_AUDIO_FORMATS = ["auto", "hls", "mp3"];
-const BROWSER_AUDIO_BITRATES = ["64", "96", "128", "192"];
+const BROWSER_AUDIO_BITRATES = ["32", "64", "96", "128", "192"];
+const DEFAULT_BROWSER_AUDIO_FORMAT = "mp3";
 const TOAST_OK_DURATION_MS = 3200;
 const SESSION_POLL_MS = 10000;
 
@@ -1472,30 +1477,88 @@ function appendPcmChunk(session, value) {
   while (session.queuedFrames > session.maxFrames && session.chunks.length > 1) {
     const dropped = session.chunks.shift();
     session.queuedFrames -= (dropped.frames - dropped.offset);
+    session.discontinuity = true;
   }
+}
+
+function fillPcmSilence(session, leftOut, rightOut, start = 0) {
+  const fadeFrames = Math.min(session.fadeFrames, leftOut.length - start);
+  const needsFade = Math.abs(session.lastLeft || 0) > 0.0001 || Math.abs(session.lastRight || 0) > 0.0001;
+  let index = start;
+  if (needsFade && fadeFrames > 0) {
+    for (let i = 0; i < fadeFrames; i += 1) {
+      const gain = 1 - ((i + 1) / fadeFrames);
+      leftOut[index] = (session.lastLeft || 0) * gain;
+      if (rightOut !== leftOut) rightOut[index] = (session.lastRight || 0) * gain;
+      index += 1;
+    }
+  }
+  leftOut.fill(0, index);
+  if (rightOut !== leftOut) rightOut.fill(0, index);
+  session.lastLeft = 0;
+  session.lastRight = 0;
+  session.starved = true;
+}
+
+function copyPcmFrames(session, chunk, leftOut, rightOut, start, count) {
+  let offset = chunk.offset;
+  let written = 0;
+  if (session.discontinuity || session.fadeInRemaining > 0) {
+    if (!session.fadeInRemaining) {
+      session.fadeInRemaining = session.fadeFrames;
+      session.fadeStartLeft = session.lastLeft || 0;
+      session.fadeStartRight = session.lastRight || 0;
+      session.discontinuity = false;
+    }
+    const fadeCount = Math.min(count, session.fadeInRemaining);
+    for (let i = 0; i < fadeCount; i += 1) {
+      const t = (session.fadeFrames - session.fadeInRemaining + i + 1) / session.fadeFrames;
+      const left = chunk.left[offset + i];
+      const right = chunk.right[offset + i];
+      leftOut[start + i] = session.fadeStartLeft + ((left - session.fadeStartLeft) * t);
+      if (rightOut !== leftOut) rightOut[start + i] = session.fadeStartRight + ((right - session.fadeStartRight) * t);
+      session.fadeInRemaining -= 1;
+    }
+    written = fadeCount;
+    offset += fadeCount;
+  }
+  if (written < count) {
+    leftOut.set(chunk.left.subarray(offset, offset + count - written), start + written);
+    if (rightOut !== leftOut) rightOut.set(chunk.right.subarray(offset, offset + count - written), start + written);
+  }
+  const lastIndex = chunk.offset + count - 1;
+  session.lastLeft = chunk.left[lastIndex] || 0;
+  session.lastRight = chunk.right[lastIndex] || 0;
 }
 
 function renderPcmAudio(session, event) {
   const leftOut = event.outputBuffer.getChannelData(0);
   const rightOut = event.outputBuffer.numberOfChannels > 1 ? event.outputBuffer.getChannelData(1) : leftOut;
+  if (session.starved && session.queuedFrames < session.targetFrames) {
+    fillPcmSilence(session, leftOut, rightOut);
+    return;
+  }
+  if (session.starved) {
+    session.starved = false;
+    session.discontinuity = true;
+  }
   if (session.queuedFrames > session.maxFrames) {
     while (session.queuedFrames > session.targetFrames && session.chunks.length > 1) {
       const dropped = session.chunks.shift();
       session.queuedFrames -= (dropped.frames - dropped.offset);
+      session.discontinuity = true;
     }
   }
   let written = 0;
   while (written < leftOut.length) {
     const chunk = session.chunks[0];
     if (!chunk) {
-      leftOut.fill(0, written);
-      if (rightOut !== leftOut) rightOut.fill(0, written);
+      fillPcmSilence(session, leftOut, rightOut, written);
       break;
     }
     const available = chunk.frames - chunk.offset;
     const count = Math.min(available, leftOut.length - written);
-    leftOut.set(chunk.left.subarray(chunk.offset, chunk.offset + count), written);
-    if (rightOut !== leftOut) rightOut.set(chunk.right.subarray(chunk.offset, chunk.offset + count), written);
+    copyPcmFrames(session, chunk, leftOut, rightOut, written, count);
     chunk.offset += count;
     session.queuedFrames -= count;
     written += count;
@@ -1535,6 +1598,14 @@ async function startBrowserPcmAudio(audioUrl, notify = false) {
     queuedFrames: 0,
     targetFrames: Math.round(ctx.sampleRate * 0.08),
     maxFrames: Math.round(ctx.sampleRate * 0.18),
+    fadeFrames: Math.max(64, Math.round(ctx.sampleRate * 0.003)),
+    fadeInRemaining: 0,
+    fadeStartLeft: 0,
+    fadeStartRight: 0,
+    lastLeft: 0,
+    lastRight: 0,
+    starved: true,
+    discontinuity: false,
     carry: null,
     closed: false,
   };
@@ -3542,17 +3613,28 @@ function isHlsUrl(url) {
 }
 
 function validBrowserAudioFormat(value) {
-  return BROWSER_AUDIO_FORMATS.includes(String(value)) ? String(value) : "auto";
+  return BROWSER_AUDIO_FORMATS.includes(String(value)) ? String(value) : DEFAULT_BROWSER_AUDIO_FORMAT;
 }
 
 function validBrowserAudioBitrate(value) {
   return BROWSER_AUDIO_BITRATES.includes(String(value)) ? String(value) : "128";
 }
 
+function storedBrowserAudioFormat() {
+  const storedFormat = localStorage.getItem(BROWSER_AUDIO_FORMAT_KEY);
+  const migrated = localStorage.getItem(BROWSER_AUDIO_DEFAULT_KEY) === "1";
+  if (!migrated && (!storedFormat || storedFormat === "auto")) {
+    localStorage.setItem(BROWSER_AUDIO_FORMAT_KEY, DEFAULT_BROWSER_AUDIO_FORMAT);
+    localStorage.setItem(BROWSER_AUDIO_DEFAULT_KEY, "1");
+    return DEFAULT_BROWSER_AUDIO_FORMAT;
+  }
+  return storedFormat;
+}
+
 function browserAudioFormatValue() {
   const active = $("#browserAudioFormat [data-browser-audio-format].active")
     || $("#browserPlayerAudioFormat [data-browser-audio-format].active");
-  return validBrowserAudioFormat(active?.dataset.browserAudioFormat || localStorage.getItem(BROWSER_AUDIO_FORMAT_KEY));
+  return validBrowserAudioFormat(storedBrowserAudioFormat() || active?.dataset.browserAudioFormat);
 }
 
 function browserAudioBitrateValue() {
@@ -3584,7 +3666,7 @@ function setBrowserAudioBitrate(bitrate, { persist = true } = {}) {
 }
 
 function syncBrowserAudioControls() {
-  setBrowserAudioFormat(localStorage.getItem(BROWSER_AUDIO_FORMAT_KEY) || browserAudioFormatValue());
+  setBrowserAudioFormat(storedBrowserAudioFormat() || browserAudioFormatValue());
   setBrowserAudioBitrate(localStorage.getItem(BROWSER_AUDIO_BITRATE_KEY) || browserAudioBitrateValue());
 }
 
@@ -3756,6 +3838,8 @@ function syncBrowserSettingsControls(source = "main") {
   const playerViewport = $("#browserPlayerViewport");
   const mainFps = $("#browserFps");
   const playerFps = $("#browserPlayerFps");
+  const mainQuality = $("#browserQuality");
+  const playerQuality = $("#browserPlayerQuality");
   const mainAudio = $("#browserAudio");
   const playerAudio = $("#browserPlayerAudio");
   const sourceFormat = source === "player"
@@ -3767,15 +3851,18 @@ function syncBrowserSettingsControls(source = "main") {
   if (source === "player") {
     if (mainViewport && playerViewport) mainViewport.value = playerViewport.value;
     if (mainFps && playerFps) mainFps.value = playerFps.value;
+    if (mainQuality && playerQuality) mainQuality.value = playerQuality.value;
     if (mainAudio && playerAudio) mainAudio.value = playerAudio.value;
   } else {
     if (mainViewport && playerViewport) playerViewport.value = mainViewport.value;
     if (mainFps && playerFps) playerFps.value = mainFps.value;
+    if (mainQuality && playerQuality) playerQuality.value = mainQuality.value;
     if (mainAudio && playerAudio) playerAudio.value = mainAudio.value;
   }
   if (sourceFormat) setBrowserAudioFormat(sourceFormat);
   if (sourceBitrate) setBrowserAudioBitrate(sourceBitrate);
   browserFpsValue();
+  browserQualityValue();
 }
 
 function desktopInputReady() {
@@ -4145,8 +4232,12 @@ function selectedBrowserAudio() {
   return audio;
 }
 
-function reapplyBrowserAudioStream() {
+function reapplyBrowserAudioStream({ restreamVideo = false } = {}) {
   if (!browserStreamActive || !replayFn) return;
+  if (restreamVideo) {
+    clearBrowserAudioRetry();
+    toast("Restarting audio and video");
+  }
   const result = replayFn();
   if (result?.catch) result.catch((e) => toast(e.message, true));
 }
@@ -4156,7 +4247,7 @@ function handleBrowserAudioFormatClick(event, source = "main") {
   if (!btn) return;
   setBrowserAudioFormat(btn.dataset.browserAudioFormat);
   syncBrowserSettingsControls(source);
-  reapplyBrowserAudioStream();
+  reapplyBrowserAudioStream({ restreamVideo: true });
 }
 
 function handleBrowserAudioQualityClick(event, source = "main") {
@@ -4164,7 +4255,7 @@ function handleBrowserAudioQualityClick(event, source = "main") {
   if (!btn) return;
   setBrowserAudioBitrate(btn.dataset.browserAudioBitrate);
   syncBrowserSettingsControls(source);
-  reapplyBrowserAudioStream();
+  reapplyBrowserAudioStream({ restreamVideo: true });
 }
 
 const DESKTOP_PRESETS = {
@@ -4384,7 +4475,7 @@ function parseBrowserViewport() {
 
 function browserFpsValue() {
   const input = $("#browserFps");
-  const n = Math.max(3, Math.min(30, parseInt(input?.value || "6", 10) || 6));
+  const n = Math.max(3, Math.min(60, parseInt(input?.value || "6", 10) || 6));
   if (input) input.value = String(n);
   const playerInput = $("#browserPlayerFps");
   if (playerInput) playerInput.value = String(n);
@@ -4392,6 +4483,24 @@ function browserFpsValue() {
   if (out) out.textContent = `${n} FPS`;
   const playerOut = $("#browserPlayerFpsValue");
   if (playerOut) playerOut.textContent = `${n} FPS`;
+  return String(n);
+}
+
+function browserQualityValue() {
+  const input = $("#browserQuality");
+  const stored = localStorage.getItem(BROWSER_QUALITY_KEY);
+  if (input && stored && input.dataset.ready !== "true") input.value = stored;
+  const raw = input?.value || stored || "70";
+  const n = Math.max(20, Math.min(90, parseInt(raw, 10) || 70));
+  if (input) input.value = String(n);
+  if (input) input.dataset.ready = "true";
+  const playerInput = $("#browserPlayerQuality");
+  if (playerInput) playerInput.value = String(n);
+  const out = $("#browserQualityValue");
+  if (out) out.textContent = `${n}%`;
+  const playerOut = $("#browserPlayerQualityValue");
+  if (playerOut) playerOut.textContent = `${n}%`;
+  localStorage.setItem(BROWSER_QUALITY_KEY, String(n));
   return String(n);
 }
 
@@ -4684,11 +4793,14 @@ async function applyBrowserSettingsNow() {
   if (!browserSessionId) return;
   const viewport = parseBrowserViewport();
   const fps = browserFpsValue();
+  const quality = browserQualityValue();
   browserSettingsInFlight = true;
   try {
-    const session = await api.patch(`/api/browser/${encodeURIComponent(browserSessionId)}/settings`, {
+    const base = realChromeActive ? "/api/real-chrome" : "/api/browser";
+    const session = await api.patch(`${base}/${encodeURIComponent(browserSessionId)}/settings`, {
       ...viewport,
       fps,
+      quality,
     });
     browserViewport = { width: session.width || viewport.width, height: session.height || viewport.height };
     setBrowserStatus(session.title || session.url || "Browser running", "ok");
@@ -4705,6 +4817,7 @@ async function applyBrowserSettingsNow() {
 
 function queueBrowserSettingsUpdate({ immediate = false } = {}) {
   browserFpsValue();
+  browserQualityValue();
   if (!browserStreamActive || !browserSessionId) return;
   if (browserSettingsInFlight) {
     browserSettingsPending = true;
@@ -4726,11 +4839,12 @@ async function playBrowserStream() {
   }
   const viewport = parseBrowserViewport();
   const fps = browserFpsValue();
+  const quality = browserQualityValue();
   setBrowserStatus("Starting browser...", "");
   await ensureBrowserAudioSourcesReady();
   await stopBrowserSession();
   resetBrowserZoom();
-  const session = await api.post("/api/browser/start", { url, ...viewport, fps });
+  const session = await api.post("/api/browser/start", { url, ...viewport, fps, quality });
   browserSessionId = session.id;
   browserViewport = { width: session.width || viewport.width, height: session.height || viewport.height };
   $("#browserUrl").value = session.url || url;
@@ -4762,7 +4876,8 @@ async function playBrowserStream() {
 
 async function playRealChromeStream() {
   const viewport = parseBrowserViewport();
-  const fps = Math.min(15, browserFpsValue());
+  const fps = browserFpsValue();
+  const quality = browserQualityValue();
   const rawUrl = $("#browserUrl").value.trim();
   const startUrl = !rawUrl || /^https?:\/\/(www\.)?example\.com\/?$/i.test(rawUrl)
     ? "https://www.google.com/"
@@ -4771,7 +4886,7 @@ async function playRealChromeStream() {
   await ensureBrowserAudioSourcesReady();
   await stopBrowserSession({ stopRealChromeOrphans: true });
   resetBrowserZoom();
-  const session = await api.post("/api/real-chrome/start", { url: startUrl, ...viewport, fps });
+  const session = await api.post("/api/real-chrome/start", { url: startUrl, ...viewport, fps, quality });
   browserSessionId = session.id;
   realChromeActive = true;
   browserViewport = { width: session.width || viewport.width, height: session.height || viewport.height };
@@ -4864,6 +4979,8 @@ function openBrowser() {
   setMode("browser");
   renderBrowserInputUi();
   browserFpsValue();
+  browserQualityValue();
+  syncBrowserAudioControls();
   if (state.desktopSources?.audio?.length) renderBrowserAudioOptions(state.desktopSources);
   else loadBrowserAudioSources().catch((e) => {
     renderBrowserAudioOptions({ audio: [] });
@@ -5357,6 +5474,10 @@ $("#browserFps").addEventListener("input", () => {
   syncBrowserSettingsControls("main");
   queueBrowserSettingsUpdate();
 });
+$("#browserQuality").addEventListener("input", () => {
+  syncBrowserSettingsControls("main");
+  queueBrowserSettingsUpdate();
+});
 $("#browserViewport").addEventListener("change", () => {
   syncBrowserSettingsControls("main");
   queueBrowserSettingsUpdate({ immediate: true });
@@ -5364,11 +5485,15 @@ $("#browserViewport").addEventListener("change", () => {
 $("#browserAudio").addEventListener("change", () => {
   syncBrowserSettingsControls("main");
   selectedBrowserAudio();
-  reapplyBrowserAudioStream();
+  reapplyBrowserAudioStream({ restreamVideo: true });
 });
 $("#browserAudioFormat").addEventListener("click", (e) => handleBrowserAudioFormatClick(e, "main"));
 $("#browserAudioQuality").addEventListener("click", (e) => handleBrowserAudioQualityClick(e, "main"));
 $("#browserPlayerFps").addEventListener("input", () => {
+  syncBrowserSettingsControls("player");
+  queueBrowserSettingsUpdate();
+});
+$("#browserPlayerQuality").addEventListener("input", () => {
   syncBrowserSettingsControls("player");
   queueBrowserSettingsUpdate();
 });
@@ -5379,7 +5504,7 @@ $("#browserPlayerViewport").addEventListener("change", () => {
 $("#browserPlayerAudio").addEventListener("change", () => {
   syncBrowserSettingsControls("player");
   selectedBrowserAudio();
-  reapplyBrowserAudioStream();
+  reapplyBrowserAudioStream({ restreamVideo: true });
 });
 $("#browserPlayerAudioFormat").addEventListener("click", (e) => handleBrowserAudioFormatClick(e, "player"));
 $("#browserPlayerAudioQuality").addEventListener("click", (e) => handleBrowserAudioQualityClick(e, "player"));

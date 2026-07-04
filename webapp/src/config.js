@@ -33,7 +33,7 @@ export const config = {
     // target height; 0 = source height. 480 is a good 4G default.
     height: int("MJPEG_HEIGHT", 480),
     minFps: 3,
-    maxFps: int("MAX_FPS", 30),
+    maxFps: int("MAX_FPS", 60),
     minQuality: 2,
     maxQuality: 31,
     allowedHeights: [240, 360, 480, 720, 1080, 0],

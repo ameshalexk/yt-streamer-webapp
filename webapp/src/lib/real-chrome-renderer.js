@@ -12,7 +12,7 @@ const MAX_WIDTH = 1920;
 const MAX_HEIGHT = 1080;
 const DEFAULT_FPS = 6;
 const MIN_FPS = 3;
-const MAX_FPS = 15;
+const MAX_FPS = 60;
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const IDLE_CLOSE_MS = 60 * 1000;
 const BOUNDARY = "realchromeframe";
@@ -38,6 +38,10 @@ function clampInt(value, min, max, fallback) {
   const n = parseInt(value, 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
+}
+
+function screenshotQuality(value, fallback = 72) {
+  return clampInt(value, 20, 90, fallback);
 }
 
 function normalizeUrl(raw) {
@@ -217,6 +221,7 @@ export async function start(payload = {}) {
   const width = clampInt(payload.width, MIN_WIDTH, MAX_WIDTH, DEFAULT_WIDTH);
   const height = clampInt(payload.height, MIN_HEIGHT, MAX_HEIGHT, DEFAULT_HEIGHT);
   const fps = clampInt(payload.fps, MIN_FPS, MAX_FPS, DEFAULT_FPS);
+  const quality = screenshotQuality(payload.quality);
   const port = await findFreePort();
   const profile = chromeProfileDir();
   await fs.mkdir(profile, { recursive: true });
@@ -241,6 +246,7 @@ export async function start(payload = {}) {
     width,
     height,
     fps,
+    quality,
     port,
     profile,
     proc,
@@ -292,6 +298,7 @@ function sessionInfo(session) {
     width: session.width,
     height: session.height,
     fps: session.fps,
+    quality: session.quality,
     profile: session.profile,
     clients: session.clients.size,
     createdAt: session.createdAt,
@@ -313,7 +320,7 @@ async function capture(session) {
   try {
     const result = await session.cdp.call("Page.captureScreenshot", {
       format: "jpeg",
-      quality: 72,
+      quality: screenshotQuality(session.quality),
       fromSurface: true,
     });
     const frame = Buffer.from(result.data || "", "base64");
@@ -343,9 +350,46 @@ async function capture(session) {
 
 function ensureCaptureLoop(session) {
   if (session.timer) return;
-  session.timer = setInterval(() => capture(session), Math.round(1000 / session.fps));
+  session.timer = setInterval(() => capture(session), Math.max(16, Math.round(1000 / session.fps)));
   session.timer.unref?.();
   capture(session).catch(() => {});
+}
+
+function restartCaptureLoop(session) {
+  if (session.timer) {
+    clearInterval(session.timer);
+    session.timer = null;
+  }
+  if (session.clients.size > 0) ensureCaptureLoop(session);
+}
+
+export async function updateSettings(id, payload = {}) {
+  const session = get(id);
+  if (!session) throw httpError(404, "Real Chrome session not found.");
+  session.lastUsedAt = Date.now();
+  const nextFps = payload.fps == null ? session.fps : clampInt(payload.fps, MIN_FPS, MAX_FPS, session.fps);
+  const nextQuality = payload.quality == null ? session.quality : screenshotQuality(payload.quality, session.quality);
+  const nextWidth = payload.width == null ? session.width : clampInt(payload.width, MIN_WIDTH, MAX_WIDTH, session.width);
+  const nextHeight = payload.height == null ? session.height : clampInt(payload.height, MIN_HEIGHT, MAX_HEIGHT, session.height);
+  const viewportChanged = nextWidth !== session.width || nextHeight !== session.height;
+  const fpsChanged = nextFps !== session.fps;
+  const qualityChanged = nextQuality !== session.quality;
+  if (viewportChanged) {
+    session.width = nextWidth;
+    session.height = nextHeight;
+    await preparePage(session);
+  }
+  if (fpsChanged) {
+    session.fps = nextFps;
+    restartCaptureLoop(session);
+  }
+  if (qualityChanged) {
+    session.quality = nextQuality;
+  }
+  if (!fpsChanged && (viewportChanged || qualityChanged)) {
+    capture(session).catch(() => {});
+  }
+  return sessionInfo(session);
 }
 
 export function stream(req, res, id) {

@@ -276,6 +276,10 @@ function clampInt(value, min, max, fallback) {
   return Math.max(min, Math.min(max, n));
 }
 
+function screenshotQuality(value, fallback = 70) {
+  return clampInt(value, 20, 90, fallback);
+}
+
 function normalizeUrl(raw) {
   const value = String(raw || "").trim();
   if (!value) throw httpError(400, "url required");
@@ -378,6 +382,7 @@ function sessionInfo(session) {
     width: session.width,
     height: session.height,
     fps: session.fps,
+    quality: session.quality,
     clients: session.clients.size,
     createdAt: session.createdAt,
     lastUsedAt: session.lastUsedAt,
@@ -451,6 +456,7 @@ export async function start(payload = {}) {
   const width = clampInt(payload.width, MIN_WIDTH, MAX_WIDTH, DEFAULT_WIDTH);
   const height = clampInt(payload.height, MIN_HEIGHT, MAX_HEIGHT, DEFAULT_HEIGHT);
   const fps = clampInt(payload.fps, config.mjpeg.minFps, config.mjpeg.maxFps, 6);
+  const quality = screenshotQuality(payload.quality);
   const { chromium } = await loadPlaywright();
   const browser = await chromium.launch({
     executablePath: await executablePath(),
@@ -478,6 +484,7 @@ export async function start(payload = {}) {
     width,
     height,
     fps,
+    quality,
     browser,
     context,
     page,
@@ -514,7 +521,7 @@ async function capture(session) {
   try {
     const frame = await session.page.screenshot({
       type: "jpeg",
-      quality: 70,
+      quality: screenshotQuality(session.quality),
       timeout: 5000,
       animations: "disabled",
     });
@@ -545,7 +552,7 @@ async function capture(session) {
 
 function ensureCaptureLoop(session) {
   if (session.timer) return;
-  const interval = Math.max(1000 / session.fps, 80);
+  const interval = Math.max(1000 / session.fps, 16);
   session.timer = setInterval(() => {
     capture(session).catch(() => {});
   }, interval);
@@ -566,10 +573,12 @@ export async function updateSettings(id, payload = {}) {
   if (!session) throw httpError(404, "Browser session not found.");
   session.lastUsedAt = Date.now();
   const nextFps = payload.fps == null ? session.fps : clampInt(payload.fps, config.mjpeg.minFps, config.mjpeg.maxFps, session.fps);
+  const nextQuality = payload.quality == null ? session.quality : screenshotQuality(payload.quality, session.quality);
   const nextWidth = payload.width == null ? session.width : clampInt(payload.width, MIN_WIDTH, MAX_WIDTH, session.width);
   const nextHeight = payload.height == null ? session.height : clampInt(payload.height, MIN_HEIGHT, MAX_HEIGHT, session.height);
   const viewportChanged = nextWidth !== session.width || nextHeight !== session.height;
   const fpsChanged = nextFps !== session.fps;
+  const qualityChanged = nextQuality !== session.quality;
   if (viewportChanged) {
     await session.page.setViewportSize({ width: nextWidth, height: nextHeight });
     session.width = nextWidth;
@@ -578,7 +587,11 @@ export async function updateSettings(id, payload = {}) {
   if (fpsChanged) {
     session.fps = nextFps;
     restartCaptureLoop(session);
-  } else if (viewportChanged) {
+  }
+  if (qualityChanged) {
+    session.quality = nextQuality;
+  }
+  if (!fpsChanged && (viewportChanged || qualityChanged)) {
     capture(session).catch(() => {});
   }
   return sessionInfo(session);

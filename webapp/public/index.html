@@ -161,8 +161,14 @@
           </label>
           <label>FPS
             <div class="browser-fps-control">
-              <input id="browserPlayerFps" type="range" min="3" max="30" step="1" value="6" />
+              <input id="browserPlayerFps" type="range" min="3" max="60" step="1" value="6" />
               <output id="browserPlayerFpsValue" for="browserPlayerFps">6 FPS</output>
+            </div>
+          </label>
+          <label>MJPEG
+            <div class="browser-fps-control">
+              <input id="browserPlayerQuality" type="range" min="20" max="90" step="5" value="70" />
+              <output id="browserPlayerQualityValue" for="browserPlayerQuality">70%</output>
             </div>
           </label>
           <label>Audio
@@ -170,13 +176,14 @@
           </label>
           <label>Format
             <div class="browser-segmented" id="browserPlayerAudioFormat" role="group" aria-label="Browser audio format">
-              <button type="button" data-browser-audio-format="auto" class="active" aria-pressed="true">Auto</button>
+              <button type="button" data-browser-audio-format="auto" aria-pressed="false">Auto</button>
               <button type="button" data-browser-audio-format="hls" aria-pressed="false">HLS</button>
-              <button type="button" data-browser-audio-format="mp3" aria-pressed="false">MP3</button>
+              <button type="button" data-browser-audio-format="mp3" class="active" aria-pressed="true">MP3</button>
             </div>
           </label>
           <label>Quality
             <div class="browser-segmented" id="browserPlayerAudioQuality" role="group" aria-label="Browser audio quality">
+              <button type="button" data-browser-audio-bitrate="32" aria-pressed="false">32k</button>
               <button type="button" data-browser-audio-bitrate="64" aria-pressed="false">64k</button>
               <button type="button" data-browser-audio-bitrate="96" aria-pressed="false">96k</button>
               <button type="button" data-browser-audio-bitrate="128" class="active" aria-pressed="true">128k</button>
@@ -274,6 +281,8 @@
                 <option class="risky" value="20">20 risky</option>
                 <option class="risky" value="24">24 risky</option>
                 <option class="risky" value="30">30 risky</option>
+                <option class="risky" value="45">45 risky</option>
+                <option class="risky" value="60">60 risky</option>
               </select>
               <div class="fps-presets" id="ctlFpsPresets" role="group" aria-label="FPS presets"></div>
             </label>
@@ -540,8 +549,14 @@
                 </label>
                 <label>FPS
                   <div class="browser-fps-control">
-                    <input id="browserFps" type="range" min="3" max="30" step="1" value="6" />
+                    <input id="browserFps" type="range" min="3" max="60" step="1" value="6" />
                     <output id="browserFpsValue" for="browserFps">6 FPS</output>
+                  </div>
+                </label>
+                <label>MJPEG
+                  <div class="browser-fps-control">
+                    <input id="browserQuality" type="range" min="20" max="90" step="5" value="70" />
+                    <output id="browserQualityValue" for="browserQuality">70%</output>
                   </div>
                 </label>
                 <label>Audio
@@ -549,13 +564,14 @@
                 </label>
                 <label>Format
                   <div class="browser-segmented" id="browserAudioFormat" role="group" aria-label="Browser audio format">
-                    <button type="button" data-browser-audio-format="auto" class="active" aria-pressed="true">Auto</button>
+                    <button type="button" data-browser-audio-format="auto" aria-pressed="false">Auto</button>
                     <button type="button" data-browser-audio-format="hls" aria-pressed="false">HLS</button>
-                    <button type="button" data-browser-audio-format="mp3" aria-pressed="false">MP3</button>
+                    <button type="button" data-browser-audio-format="mp3" class="active" aria-pressed="true">MP3</button>
                   </div>
                 </label>
                 <label>Quality
                   <div class="browser-segmented" id="browserAudioQuality" role="group" aria-label="Browser audio quality">
+                    <button type="button" data-browser-audio-bitrate="32" aria-pressed="false">32k</button>
                     <button type="button" data-browser-audio-bitrate="64" aria-pressed="false">64k</button>
                     <button type="button" data-browser-audio-bitrate="96" aria-pressed="false">96k</button>
                     <button type="button" data-browser-audio-bitrate="128" class="active" aria-pressed="true">128k</button>
@@ -706,6 +722,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260702-session-manager-2"></script>
+  <script src="/app.js?v=20260703-browser-audio-mp3-sync"></script>
 </body>
 </html>

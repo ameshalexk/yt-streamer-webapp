@@ -284,7 +284,7 @@ let desktopAudioCleanup = null;
 function normalizeAudioBitrateK(value) {
   const n = parseInt(value, 10);
   if (!Number.isFinite(n)) return config.video.audioBitrateK;
-  return Math.max(48, Math.min(192, n));
+  return Math.max(32, Math.min(192, n));
 }
 
 function buildDesktopAudioArgs({ audio, bitrateK }) {

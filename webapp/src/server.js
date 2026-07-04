@@ -635,6 +635,10 @@ app.post("/api/real-chrome/:id/navigate", asyncH(async (req, res) => {
   res.json(await realChromeRenderer.navigate(req.params.id, req.body || {}));
 }));
 
+app.patch("/api/real-chrome/:id/settings", asyncH(async (req, res) => {
+  res.json(await realChromeRenderer.updateSettings(req.params.id, req.body || {}));
+}));
+
 app.post("/api/real-chrome/:id/input", asyncH(async (req, res) => {
   res.json(await realChromeRenderer.input(req.params.id, req.body || {}));
 }));
