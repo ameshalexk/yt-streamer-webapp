@@ -96,7 +96,10 @@ const BROWSER_AUDIO_KEY = "ytStreamerBrowserAudio";
 const BROWSER_AUDIO_NAME_KEY = "ytStreamerBrowserAudioName";
 const BROWSER_AUDIO_FORMAT_KEY = "ytStreamerBrowserAudioFormat";
 const BROWSER_AUDIO_BITRATE_KEY = "ytStreamerBrowserAudioBitrate";
+const BROWSER_AUDIO_BITRATE_DEFAULT_KEY = "ytStreamerBrowserAudioBitrateDefaultV2";
 const BROWSER_AUDIO_DEFAULT_KEY = "ytStreamerBrowserAudioDefaultV2";
+const BROWSER_STREAM_MODE_KEY = "ytStreamerBrowserStreamMode";
+const BROWSER_STREAM_MODE_DEFAULT_KEY = "ytStreamerBrowserStreamModeDefaultV2";
 const BROWSER_QUALITY_KEY = "ytStreamerBrowserMjpegQuality";
 const DESKTOP_INPUT_TOKEN_KEY = "ytStreamerDesktopInputToken";
 const SAVED_EMBEDS_KEY = "ytStreamerSavedEmbeds";
@@ -107,7 +110,18 @@ const RECOMMENDATION_PAGE_SIZE = 25;
 const DEFAULT_EMBED_CODE = `<iframe title="Argentina vs Algeria Player" marginheight="0" marginwidth="0" src="https://embed.st/embed/admin/ppv-argentina-vs-algeria/1" scrolling="no" allowfullscreen="yes" allow="encrypted-media; picture-in-picture;" width="100%" height="100%" frameborder="0"></iframe>`;
 const BROWSER_AUDIO_FORMATS = ["auto", "hls", "mp3"];
 const BROWSER_AUDIO_BITRATES = ["32", "64", "96", "128", "192"];
-const DEFAULT_BROWSER_AUDIO_FORMAT = "mp3";
+const DEFAULT_BROWSER_AUDIO_FORMAT = "auto";
+const DEFAULT_BROWSER_AUDIO_BITRATE = "32";
+const DEFAULT_BROWSER_STREAM_MODE = "split-mjpeg-pcm";
+const BROWSER_STREAM_MODES = {
+  "split-mjpeg-mp3": { audio: "mp3", video: true, audioOnly: false, combined: false, format: "mp3" },
+  "split-mjpeg-pcm": { audio: "pcm", video: true, audioOnly: false, combined: false, format: "auto" },
+  "split-mjpeg-hls": { audio: "hls", video: true, audioOnly: false, combined: false, format: "mp3" },
+  "video-only": { audio: "", video: true, audioOnly: false, combined: false, format: "mp3" },
+  "audio-only-mp3": { audio: "mp3", video: false, audioOnly: true, combined: false, format: "mp3" },
+  "audio-only-pcm": { audio: "pcm", video: false, audioOnly: true, combined: false, format: "auto" },
+  "combined-ts": { audio: "aac", video: true, audioOnly: false, combined: true, format: "mp3" },
+};
 const TOAST_OK_DURATION_MS = 3200;
 const SESSION_POLL_MS = 10000;
 
@@ -674,6 +688,13 @@ function formatMpegtsError(type, detail, info) {
   return streamErrorDetail(parts.join(" "));
 }
 
+function browserCombinedMpegtsError(type, detail, info) {
+  const parts = [type, detail, info?.msg, info?.code, info?.reason].filter(Boolean).map(String);
+  const raw = parts.join(" ").trim();
+  if (raw) console.warn("[browser-combined-ts] mpegts.js rejected stream:", raw);
+  return "The experimental combined Browser stream was rejected by the MPEG-TS player. Use Split MJPEG + PCM for now, or lower Browser FPS/MJPEG quality and retry.";
+}
+
 function markStreamLive(attempt) {
   if (!currentAttempt(attempt)) return;
   clearStreamTimers();
@@ -1018,7 +1039,7 @@ function togglePlaybackPause() {
   else pausePlayback();
 }
 
-function startStreamWatchdog(attempt, mode, { warnMs = STREAM_WARN_MS, failMs = STREAM_FAIL_MS } = {}) {
+function startStreamWatchdog(attempt, mode, { warnMs = STREAM_WARN_MS, failMs = STREAM_FAIL_MS, failTitle = "No video frames received", failDetail = "" } = {}) {
   clearStreamTimers();
   streamWarnTimer = setTimeout(() => {
     if (!currentAttempt(attempt)) return;
@@ -1032,8 +1053,8 @@ function startStreamWatchdog(attempt, mode, { warnMs = STREAM_WARN_MS, failMs = 
   streamFailTimer = setTimeout(() => {
     failStreamAttempt(
       attempt,
-      "No video frames received",
-      `The stream connection stayed open, but no playable video arrived after ${Math.round(failMs / 1000)} seconds. Try Retry, Lower quality, another channel, or check VPN/geo restrictions.`
+      failTitle,
+      failDetail || `The stream connection stayed open, but no playable video arrived after ${Math.round(failMs / 1000)} seconds. Try Retry, Lower quality, another channel, or check VPN/geo restrictions.`
     );
   }, failMs);
 }
@@ -1094,11 +1115,17 @@ function canTryMpegts() {
   return Boolean(window.MediaSource || window.ManagedMediaSource || window.mpegts);
 }
 
+function absoluteMediaUrl(url) {
+  return new URL(url, window.location.origin).toString();
+}
+
 function cleanupMedia() {
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), audio = $("#audio");
   setDesktopStreamActive(false);
   setBrowserStreamActive(false);
-  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active");
+  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "audio-only-mode");
+  const emptyIcon = $("#screenEmpty .big");
+  if (emptyIcon) emptyIcon.textContent = "▶";
   streamAttempt++;
   clearStreamTimers();
   clearStreamNotice();
@@ -1220,7 +1247,7 @@ function renderEmbedCode(code, heightValue) {
   frame.hidden = false;
   screen.style.height = normalizedEmbedHeight(heightValue || $("#embedHeight")?.value);
   screen.style.aspectRatio = "auto";
-  screen.classList.remove("loading", "video-mode", "mjpeg-mode", "browser-mode", "browser-input-active");
+  screen.classList.remove("loading", "video-mode", "mjpeg-mode", "browser-mode", "browser-input-active", "audio-only-mode");
   screen.classList.add("playing", "embed-mode");
   activeEmbedCode = code;
   activeEmbedHeight = heightValue || $("#embedHeight")?.value || "";
@@ -1453,6 +1480,7 @@ function pcmUrlWithRate(url, rate) {
 
 function appendPcmChunk(session, value) {
   if (!value?.byteLength || session.closed) return;
+  session.receivedFrames = (session.receivedFrames || 0) + Math.floor(value.byteLength / 4);
   let bytes = value;
   if (session.carry?.byteLength) {
     const merged = new Uint8Array(session.carry.byteLength + value.byteLength);
@@ -1553,6 +1581,10 @@ function renderPcmAudio(session, event) {
   while (written < leftOut.length) {
     const chunk = session.chunks[0];
     if (!chunk) {
+      session.underruns += 1;
+      if (session.underruns <= 4) {
+        session.targetFrames = Math.min(session.maxTargetFrames, session.targetFrames + session.processFrames);
+      }
       fillPcmSilence(session, leftOut, rightOut, written);
       break;
     }
@@ -1589,6 +1621,7 @@ async function startBrowserPcmAudio(audioUrl, notify = false) {
     ctx = new AudioCtx();
   }
   const processor = ctx.createScriptProcessor(2048, 0, 2);
+  const processFrames = processor.bufferSize || 2048;
   const session = {
     url: audioUrl,
     ctx,
@@ -1596,8 +1629,10 @@ async function startBrowserPcmAudio(audioUrl, notify = false) {
     controller: new AbortController(),
     chunks: [],
     queuedFrames: 0,
-    targetFrames: Math.round(ctx.sampleRate * 0.08),
-    maxFrames: Math.round(ctx.sampleRate * 0.18),
+    processFrames,
+    targetFrames: Math.round(ctx.sampleRate * 0.12),
+    maxTargetFrames: Math.round(ctx.sampleRate * 0.22),
+    maxFrames: Math.round(ctx.sampleRate * 0.36),
     fadeFrames: Math.max(64, Math.round(ctx.sampleRate * 0.003)),
     fadeInRemaining: 0,
     fadeStartLeft: 0,
@@ -1607,6 +1642,8 @@ async function startBrowserPcmAudio(audioUrl, notify = false) {
     starved: true,
     discontinuity: false,
     carry: null,
+    receivedFrames: 0,
+    underruns: 0,
     closed: false,
   };
   browserPcmAudio = session;
@@ -1778,6 +1815,76 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   }
 }
 
+function browserStreamModeLabel(mode = browserStreamModeValue()) {
+  const value = validBrowserStreamMode(mode);
+  const option = [...document.querySelectorAll("#browserStreamMode option, #browserPlayerStreamMode option")]
+    .find((item) => item.value === value);
+  return option?.textContent?.trim() || "Browser stream";
+}
+
+function markBrowserAudioOnlyLive(attempt, mode) {
+  markStreamLive(attempt);
+  if (currentAttempt(attempt)) setBadge("live", `AUDIO · ${browserStreamModeLabel(mode)}`);
+}
+
+function playBrowserAudioOnlyStream(audioUrl, label, meta = {}) {
+  const screen = $("#screen"), audio = $("#audio");
+  cleanupMedia();
+  resetPauseControl(false);
+  setAutoplayContext();
+  configureStreamSeek(meta, 0);
+  const attempt = streamAttempt;
+  const emptyIcon = $("#screenEmpty .big");
+  if (emptyIcon) emptyIcon.textContent = "Audio";
+  $("#nowPlaying").textContent = label || "Browser audio";
+  $("#stopBtn").disabled = false;
+  $("#restreamBtn").disabled = false;
+  screen.classList.remove("video-mode", "mjpeg-mode", "embed-mode");
+  screen.classList.add("playing", "loading", "audio-only-mode");
+  setBadge("reconnecting", "↻ Connecting audio…");
+  activeCompat = {
+    mjpegUrl: "",
+    audioUrl,
+    audioReady: false,
+    videoReady: false,
+    videoStarted: false,
+    playbackStarted: false,
+    browserAudio: Boolean(meta.browserAudio),
+    browserPcm: Boolean(meta.browserPcm),
+    audioOnly: true,
+  };
+  audio.onended = handleAutoplayEnd;
+  audio.muted = !soundOn;
+  const mode = meta.browserMode || browserStreamModeValue();
+  const markReady = () => {
+    if (!currentAttempt(attempt) || activeCompat?.audioUrl !== audioUrl) return;
+    activeCompat.audioReady = true;
+    activeCompat.playbackStarted = true;
+    markBrowserAudioOnlyLive(attempt, mode);
+  };
+  audio.onloadeddata = markReady;
+  audio.oncanplay = markReady;
+  audio.oncanplaythrough = markReady;
+  audio.onplaying = markReady;
+  audio.onerror = () => {
+    if (currentAttempt(attempt)) failStreamAttempt(attempt, "Browser audio failed", streamErrorDetail(audio.error?.message || "audio element failed"));
+  };
+  setCompatAudioSource(audio, audioUrl).then(() => {
+    if (!currentAttempt(attempt) || activeCompat?.audioUrl !== audioUrl) return;
+    const play = startCompatAudio(true);
+    if (play?.then) {
+      play.then(markReady).catch(() => {
+        if (currentAttempt(attempt)) setBadge("reconnecting", "Tap sound to start audio");
+      });
+    } else {
+      setTimeout(markReady, 100);
+    }
+    scheduleBrowserAudioRetry(attempt, true);
+  }).catch((e) => {
+    if (currentAttempt(attempt)) failStreamAttempt(attempt, "Browser audio failed", streamErrorDetail(e.message));
+  });
+}
+
 // Play one synced MPEG-TS stream (H.264+AAC) via mpegts.js / MSE.
 async function playStream(sources, label, meta = {}) {
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
@@ -1804,7 +1911,10 @@ async function playStream(sources, label, meta = {}) {
   screen.classList.remove("mjpeg-mode");
   screen.classList.add("playing", "loading", "video-mode");
   setBadge("reconnecting", "↻ Connecting…");
-  startStreamWatchdog(attempt, "MPEG-TS playback");
+  startStreamWatchdog(attempt, meta.browserCombined ? "Browser combined MPEG-TS A/V" : "MPEG-TS playback", meta.browserCombined ? {
+    failTitle: "Combined A/V did not start",
+    failDetail: "The experimental combined Browser stream did not become playable. Use Split MJPEG + PCM for now, or lower Browser FPS/MJPEG quality and retry.",
+  } : {});
   try { await ensureMpegts(); } catch (e) {
     if (mjpegUrl) return playCompatStream({ mjpegUrl, audioUrl }, label, meta);
     failStreamAttempt(attempt, "Player failed to load", streamErrorDetail(e.message)); return;
@@ -1812,10 +1922,17 @@ async function playStream(sources, label, meta = {}) {
   if (!currentAttempt(attempt)) return;
   if (!window.mpegts || !mpegts.isSupported()) {
     if (mjpegUrl) return playCompatStream({ mjpegUrl, audioUrl }, label, meta);
-    failStreamAttempt(attempt, "Unsupported browser player", "This browser cannot play MPEG-TS/MSE video for this stream."); return;
+    failStreamAttempt(
+      attempt,
+      meta.browserCombined ? "Combined A/V unavailable" : "Unsupported browser player",
+      meta.browserCombined
+        ? "This browser cannot use the MPEG-TS player needed by combined Browser A/V. Use Split MJPEG + PCM."
+        : "This browser cannot play MPEG-TS/MSE video for this stream."
+    );
+    return;
   }
 
-  mpegtsPlayer = mpegts.createPlayer({ type: "mpegts", isLive: true, url: tsUrl }, {
+  mpegtsPlayer = mpegts.createPlayer({ type: "mpegts", isLive: true, url: absoluteMediaUrl(tsUrl) }, {
     enableWorker: true,
     enableStashBuffer: true,
     liveBufferLatencyChasing: false,
@@ -1828,10 +1945,20 @@ async function playStream(sources, label, meta = {}) {
   mpegtsPlayer.on(mpegts.Events.ERROR, (type, detail, info) => {
     if (!currentAttempt(attempt)) return;
     if (mjpegUrl) return playCompatStream({ mjpegUrl, audioUrl }, label, meta);
+    if (meta.browserCombined) {
+      failStreamAttempt(attempt, "Combined A/V failed", browserCombinedMpegtsError(type, detail, info));
+      return;
+    }
     failStreamAttempt(attempt, "Stream playback failed", formatMpegtsError(type, detail, info));
   });
   video.onplaying = () => markStreamLive(attempt);
-  video.onerror = () => failStreamAttempt(attempt, "Browser video error", streamErrorDetail(video.error?.message || "video element failed"));
+  video.onerror = () => failStreamAttempt(
+    attempt,
+    meta.browserCombined ? "Combined A/V failed" : "Browser video error",
+    meta.browserCombined
+      ? "The browser video element rejected the experimental combined stream. Use Split MJPEG + PCM for now."
+      : streamErrorDetail(video.error?.message || "video element failed")
+  );
   video.onstalled = () => {
     if (currentAttempt(attempt)) setBadge("reconnecting", "Buffering...");
   };
@@ -1942,7 +2069,7 @@ function stopPlayback() {
   resetBrowserZoom();
   renderDesktopInputUi();
   setBadge("hidden");
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "embed-mode", "browser-mode");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "embed-mode", "browser-mode", "audio-only-mode");
   $("#screen").style.height = "";
   $("#screen").style.aspectRatio = "";
   $("#nowPlaying").textContent = "Player";
@@ -1969,7 +2096,7 @@ function restreamPlayback() {
   stopDesktopAudioHlsSession();
   clearBrowserAudioRetry();
   cleanupMedia();
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "embed-mode", "browser-mode");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "embed-mode", "browser-mode", "audio-only-mode");
   setBadge("reconnecting", "↻ Restreaming...");
   toast("Reloading stream");
   clearTimeout(restreamTimer);
@@ -3616,8 +3743,24 @@ function validBrowserAudioFormat(value) {
   return BROWSER_AUDIO_FORMATS.includes(String(value)) ? String(value) : DEFAULT_BROWSER_AUDIO_FORMAT;
 }
 
+function validBrowserStreamMode(value) {
+  const mode = String(value || "");
+  return BROWSER_STREAM_MODES[mode] ? mode : DEFAULT_BROWSER_STREAM_MODE;
+}
+
+function browserStreamModeForAudioFormat(format) {
+  const value = validBrowserAudioFormat(format);
+  if (value === "hls") return "split-mjpeg-hls";
+  if (value === "auto") return "split-mjpeg-pcm";
+  return "split-mjpeg-mp3";
+}
+
+function browserStreamModeInfo(mode = browserStreamModeValue()) {
+  return BROWSER_STREAM_MODES[validBrowserStreamMode(mode)] || BROWSER_STREAM_MODES[DEFAULT_BROWSER_STREAM_MODE];
+}
+
 function validBrowserAudioBitrate(value) {
-  return BROWSER_AUDIO_BITRATES.includes(String(value)) ? String(value) : "128";
+  return BROWSER_AUDIO_BITRATES.includes(String(value)) ? String(value) : DEFAULT_BROWSER_AUDIO_BITRATE;
 }
 
 function storedBrowserAudioFormat() {
@@ -3631,6 +3774,29 @@ function storedBrowserAudioFormat() {
   return storedFormat;
 }
 
+function storedBrowserStreamMode() {
+  const storedMode = localStorage.getItem(BROWSER_STREAM_MODE_KEY);
+  const migrated = localStorage.getItem(BROWSER_STREAM_MODE_DEFAULT_KEY) === "1";
+  if (!migrated && (!storedMode || storedMode === "split-mjpeg-mp3")) {
+    localStorage.setItem(BROWSER_STREAM_MODE_KEY, DEFAULT_BROWSER_STREAM_MODE);
+    localStorage.setItem(BROWSER_STREAM_MODE_DEFAULT_KEY, "1");
+    return DEFAULT_BROWSER_STREAM_MODE;
+  }
+  if (storedMode && BROWSER_STREAM_MODES[storedMode]) return storedMode;
+  localStorage.setItem(BROWSER_STREAM_MODE_DEFAULT_KEY, "1");
+  return DEFAULT_BROWSER_STREAM_MODE;
+}
+
+function browserStreamModeValue() {
+  const main = $("#browserStreamMode");
+  const player = $("#browserPlayerStreamMode");
+  if (main?.dataset.ready === "true") return validBrowserStreamMode(main.value);
+  if (player?.dataset.ready === "true") return validBrowserStreamMode(player.value);
+  if (main?.value && main.value !== DEFAULT_BROWSER_STREAM_MODE) return validBrowserStreamMode(main.value);
+  if (player?.value && player.value !== DEFAULT_BROWSER_STREAM_MODE) return validBrowserStreamMode(player.value);
+  return validBrowserStreamMode(storedBrowserStreamMode() || main?.value || player?.value);
+}
+
 function browserAudioFormatValue() {
   const active = $("#browserAudioFormat [data-browser-audio-format].active")
     || $("#browserPlayerAudioFormat [data-browser-audio-format].active");
@@ -3640,7 +3806,7 @@ function browserAudioFormatValue() {
 function browserAudioBitrateValue() {
   const active = $("#browserAudioQuality [data-browser-audio-bitrate].active")
     || $("#browserPlayerAudioQuality [data-browser-audio-bitrate].active");
-  return validBrowserAudioBitrate(active?.dataset.browserAudioBitrate || localStorage.getItem(BROWSER_AUDIO_BITRATE_KEY));
+  return validBrowserAudioBitrate(active?.dataset.browserAudioBitrate || storedBrowserAudioBitrate());
 }
 
 function setBrowserAudioFormat(format, { persist = true } = {}) {
@@ -3652,6 +3818,31 @@ function setBrowserAudioFormat(format, { persist = true } = {}) {
   });
   if (persist) localStorage.setItem(BROWSER_AUDIO_FORMAT_KEY, value);
   return value;
+}
+
+function setBrowserStreamMode(mode, { persist = true, syncFormat = true } = {}) {
+  const value = validBrowserStreamMode(mode);
+  const main = $("#browserStreamMode");
+  const player = $("#browserPlayerStreamMode");
+  if (main) main.value = value;
+  if (player) player.value = value;
+  if (main) main.dataset.ready = "true";
+  if (player) player.dataset.ready = "true";
+  if (persist) localStorage.setItem(BROWSER_STREAM_MODE_KEY, value);
+  const format = browserStreamModeInfo(value).format;
+  if (syncFormat && format) setBrowserAudioFormat(format);
+  return value;
+}
+
+function storedBrowserAudioBitrate() {
+  const stored = localStorage.getItem(BROWSER_AUDIO_BITRATE_KEY);
+  const migrated = localStorage.getItem(BROWSER_AUDIO_BITRATE_DEFAULT_KEY) === "1";
+  if (!migrated && (!stored || stored === "128")) {
+    localStorage.setItem(BROWSER_AUDIO_BITRATE_KEY, DEFAULT_BROWSER_AUDIO_BITRATE);
+    localStorage.setItem(BROWSER_AUDIO_BITRATE_DEFAULT_KEY, "1");
+    return DEFAULT_BROWSER_AUDIO_BITRATE;
+  }
+  return stored || DEFAULT_BROWSER_AUDIO_BITRATE;
 }
 
 function setBrowserAudioBitrate(bitrate, { persist = true } = {}) {
@@ -3666,8 +3857,11 @@ function setBrowserAudioBitrate(bitrate, { persist = true } = {}) {
 }
 
 function syncBrowserAudioControls() {
-  setBrowserAudioFormat(storedBrowserAudioFormat() || browserAudioFormatValue());
-  setBrowserAudioBitrate(localStorage.getItem(BROWSER_AUDIO_BITRATE_KEY) || browserAudioBitrateValue());
+  const mode = setBrowserStreamMode(storedBrowserStreamMode() || browserStreamModeValue());
+  const format = browserStreamModeInfo(mode).format;
+  if (format) setBrowserAudioFormat(format);
+  else setBrowserAudioFormat(storedBrowserAudioFormat() || browserAudioFormatValue());
+  setBrowserAudioBitrate(storedBrowserAudioBitrate() || browserAudioBitrateValue());
 }
 
 async function canUseAudioHls() {
@@ -3712,13 +3906,13 @@ async function desktopAudioUrl(audio) {
   return `/stream/desktop-audio?audio=${encodeURIComponent(audio)}&_=${Date.now()}`;
 }
 
-async function browserAudioUrl(audio) {
+async function browserAudioUrl(audio, mode = browserStreamModeValue()) {
   await stopDesktopAudioHlsSession();
-  if (!audio) return "";
-  const format = browserAudioFormatValue();
+  const info = browserStreamModeInfo(mode);
+  if (!audio || !info.audio || info.combined) return "";
   const bitrate = browserAudioBitrateValue();
   const bitrateQuery = `bitrate=${encodeURIComponent(bitrate)}`;
-  if (format === "hls" && await canUseAudioHls()) {
+  if (info.audio === "hls" && await canUseAudioHls()) {
     try {
       const hls = await api.get(`/api/browser/audio-hls/start?audio=${encodeURIComponent(audio)}&${bitrateQuery}&_=${Date.now()}`);
       if (hls?.id && hls?.url) {
@@ -3730,8 +3924,9 @@ async function browserAudioUrl(audio) {
       throw e;
     }
   }
-  if (format === "hls") throw new Error("HLS audio is not supported in this browser.");
-  if (format === "auto" && canUseBrowserPcmAudio()) {
+  if (info.audio === "hls") throw new Error("HLS audio is not supported in this browser.");
+  if (info.audio === "pcm") {
+    if (!canUseBrowserPcmAudio()) throw new Error("PCM Browser audio is not supported in this browser.");
     return `/stream/browser-pcm?audio=${encodeURIComponent(audio)}&_=${Date.now()}`;
   }
   return `/stream/browser-audio?audio=${encodeURIComponent(audio)}&${bitrateQuery}&_=${Date.now()}`;
@@ -3842,6 +4037,9 @@ function syncBrowserSettingsControls(source = "main") {
   const playerQuality = $("#browserPlayerQuality");
   const mainAudio = $("#browserAudio");
   const playerAudio = $("#browserPlayerAudio");
+  const mainMode = $("#browserStreamMode");
+  const playerMode = $("#browserPlayerStreamMode");
+  const sourceMode = source === "player" ? playerMode?.value : mainMode?.value;
   const sourceFormat = source === "player"
     ? $("#browserPlayerAudioFormat [data-browser-audio-format].active")?.dataset.browserAudioFormat
     : $("#browserAudioFormat [data-browser-audio-format].active")?.dataset.browserAudioFormat;
@@ -3853,13 +4051,16 @@ function syncBrowserSettingsControls(source = "main") {
     if (mainFps && playerFps) mainFps.value = playerFps.value;
     if (mainQuality && playerQuality) mainQuality.value = playerQuality.value;
     if (mainAudio && playerAudio) mainAudio.value = playerAudio.value;
+    if (mainMode && playerMode) mainMode.value = playerMode.value;
   } else {
     if (mainViewport && playerViewport) playerViewport.value = mainViewport.value;
     if (mainFps && playerFps) playerFps.value = mainFps.value;
     if (mainQuality && playerQuality) playerQuality.value = mainQuality.value;
     if (mainAudio && playerAudio) playerAudio.value = mainAudio.value;
+    if (mainMode && playerMode) playerMode.value = mainMode.value;
   }
-  if (sourceFormat) setBrowserAudioFormat(sourceFormat);
+  if (sourceMode) setBrowserStreamMode(sourceMode);
+  if (!sourceMode && sourceFormat) setBrowserAudioFormat(sourceFormat);
   if (sourceBitrate) setBrowserAudioBitrate(sourceBitrate);
   browserFpsValue();
   browserQualityValue();
@@ -4242,10 +4443,17 @@ function reapplyBrowserAudioStream({ restreamVideo = false } = {}) {
   if (result?.catch) result.catch((e) => toast(e.message, true));
 }
 
+function handleBrowserStreamModeChange(event, source = "main") {
+  setBrowserStreamMode(event.target?.value);
+  syncBrowserSettingsControls(source);
+  reapplyBrowserAudioStream({ restreamVideo: true });
+}
+
 function handleBrowserAudioFormatClick(event, source = "main") {
   const btn = event.target.closest("[data-browser-audio-format]");
   if (!btn) return;
   setBrowserAudioFormat(btn.dataset.browserAudioFormat);
+  setBrowserStreamMode(browserStreamModeForAudioFormat(btn.dataset.browserAudioFormat));
   syncBrowserSettingsControls(source);
   reapplyBrowserAudioStream({ restreamVideo: true });
 }
@@ -4475,7 +4683,7 @@ function parseBrowserViewport() {
 
 function browserFpsValue() {
   const input = $("#browserFps");
-  const n = Math.max(3, Math.min(60, parseInt(input?.value || "6", 10) || 6));
+  const n = Math.max(3, Math.min(60, parseInt(input?.value || "12", 10) || 12));
   if (input) input.value = String(n);
   const playerInput = $("#browserPlayerFps");
   if (playerInput) playerInput.value = String(n);
@@ -4789,6 +4997,64 @@ function realChromeStreamUrl(id) {
   return `/stream/real-chrome/${encodeURIComponent(id)}?_=${Date.now()}`;
 }
 
+function browserCombinedStreamUrl(id, audio, realChrome = false) {
+  const params = new URLSearchParams({
+    bitrate: browserAudioBitrateValue(),
+    _: Date.now(),
+  });
+  if (audio) params.set("audio", audio);
+  const base = realChrome ? "/stream/real-chrome-ts" : "/stream/browser-ts";
+  return `${base}/${encodeURIComponent(id)}?${params.toString()}`;
+}
+
+async function playActiveBrowserTransport({ label, realChrome = false }) {
+  if (!browserSessionId) return;
+  const mode = browserStreamModeValue();
+  const info = browserStreamModeInfo(mode);
+  const audio = selectedBrowserAudio();
+  if (info.audioOnly && !audio) throw new Error("Choose a Browser audio device for audio-only mode.");
+  if (info.combined && !audio) throw new Error("Choose a Browser audio device for combined A/V mode.");
+
+  if (info.combined) {
+    await stopDesktopAudioHlsSession();
+    await playStream({
+      tsUrl: browserCombinedStreamUrl(browserSessionId, audio, realChrome),
+    }, `${label} · ${browserStreamModeLabel(mode)}`, {
+      live: true,
+      browserStream: true,
+      browserCombined: true,
+    });
+  } else if (info.audioOnly) {
+    const audioUrl = await browserAudioUrl(audio, mode);
+    if (!audioUrl) throw new Error("Choose a Browser audio device for audio-only mode.");
+    playBrowserAudioOnlyStream(audioUrl, `${label} · ${browserStreamModeLabel(mode)}`, {
+      live: true,
+      browserStream: true,
+      browserAudio: true,
+      browserPcm: isBrowserPcmUrl(audioUrl),
+      browserMode: mode,
+    });
+  } else {
+    const audioUrl = await browserAudioUrl(audio, mode);
+    const streamUrl = realChrome ? realChromeStreamUrl(browserSessionId) : browserStreamUrl(browserSessionId);
+    playCompatStream({
+      mjpegUrl: streamUrl,
+      audioUrl,
+    }, label, {
+      live: true,
+      browserStream: true,
+      browserAudio: Boolean(audioUrl),
+      browserPcm: isBrowserPcmUrl(audioUrl),
+      looseAudioSync: true,
+    });
+  }
+
+  $("#screen").classList.add("browser-mode");
+  setBrowserStreamActive(true);
+  browserInputActive = !info.audioOnly;
+  renderBrowserInputUi();
+}
+
 async function applyBrowserSettingsNow() {
   if (!browserSessionId) return;
   const viewport = parseBrowserViewport();
@@ -4850,22 +5116,9 @@ async function playBrowserStream() {
   $("#browserUrl").value = session.url || url;
   replayFn = async () => {
     if (!browserSessionId) return;
-    const audio = selectedBrowserAudio();
-    const audioUrl = await browserAudioUrl(audio);
-    playCompatStream({
-      mjpegUrl: browserStreamUrl(browserSessionId),
-      audioUrl,
-    }, `Private browser: ${session.title || session.url || url}`, {
-      live: true,
-      browserStream: true,
-      browserAudio: Boolean(audioUrl),
-      browserPcm: isBrowserPcmUrl(audioUrl),
-      looseAudioSync: true,
+    await playActiveBrowserTransport({
+      label: `Private browser: ${session.title || session.url || url}`,
     });
-    $("#screen").classList.add("browser-mode");
-    setBrowserStreamActive(true);
-    browserInputActive = true;
-    renderBrowserInputUi();
   };
   if (isMobileMode()) setPlayerDropdownOpen(true);
   await replayFn();
@@ -4893,22 +5146,10 @@ async function playRealChromeStream() {
   $("#browserUrl").value = session.url || startUrl;
   replayFn = async () => {
     if (!browserSessionId) return;
-    const audio = selectedBrowserAudio();
-    const audioUrl = await browserAudioUrl(audio);
-    playCompatStream({
-      mjpegUrl: realChromeStreamUrl(browserSessionId),
-      audioUrl,
-    }, `Chrome: ${session.title || session.url || startUrl}`, {
-      live: true,
-      browserStream: true,
-      browserAudio: Boolean(audioUrl),
-      browserPcm: isBrowserPcmUrl(audioUrl),
-      looseAudioSync: true,
+    await playActiveBrowserTransport({
+      label: `Chrome: ${session.title || session.url || startUrl}`,
+      realChrome: true,
     });
-    $("#screen").classList.add("browser-mode");
-    setBrowserStreamActive(true);
-    browserInputActive = true;
-    renderBrowserInputUi();
   };
   if (isMobileMode()) setPlayerDropdownOpen(true);
   await replayFn();
@@ -5487,6 +5728,7 @@ $("#browserAudio").addEventListener("change", () => {
   selectedBrowserAudio();
   reapplyBrowserAudioStream({ restreamVideo: true });
 });
+$("#browserStreamMode").addEventListener("change", (e) => handleBrowserStreamModeChange(e, "main"));
 $("#browserAudioFormat").addEventListener("click", (e) => handleBrowserAudioFormatClick(e, "main"));
 $("#browserAudioQuality").addEventListener("click", (e) => handleBrowserAudioQualityClick(e, "main"));
 $("#browserPlayerFps").addEventListener("input", () => {
@@ -5506,6 +5748,7 @@ $("#browserPlayerAudio").addEventListener("change", () => {
   selectedBrowserAudio();
   reapplyBrowserAudioStream({ restreamVideo: true });
 });
+$("#browserPlayerStreamMode").addEventListener("change", (e) => handleBrowserStreamModeChange(e, "player"));
 $("#browserPlayerAudioFormat").addEventListener("click", (e) => handleBrowserAudioFormatClick(e, "player"));
 $("#browserPlayerAudioQuality").addEventListener("click", (e) => handleBrowserAudioQualityClick(e, "player"));
 $("#browserHistoryList").onclick = handleBrowserHistoryClick;

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { config } from "../config.js";
+import { streamBrowserFrameTS } from "./stream.js";
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
@@ -10,7 +11,7 @@ const MIN_WIDTH = 640;
 const MIN_HEIGHT = 360;
 const MAX_WIDTH = 1920;
 const MAX_HEIGHT = 1080;
-const DEFAULT_FPS = 6;
+const DEFAULT_FPS = 30;
 const MIN_FPS = 3;
 const MAX_FPS = 60;
 const SESSION_TTL_MS = 15 * 60 * 1000;
@@ -204,7 +205,7 @@ function startCleanupTimer() {
     for (const session of sessions.values()) {
       if (now - session.createdAt > SESSION_TTL_MS) {
         stop(session.id, "ttl").catch(() => {});
-      } else if (session.clients.size === 0 && now - session.lastUsedAt > IDLE_CLOSE_MS) {
+      } else if (sessionClientCount(session) === 0 && now - session.lastUsedAt > IDLE_CLOSE_MS) {
         stop(session.id, "idle").catch(() => {});
       }
     }
@@ -252,6 +253,7 @@ export async function start(payload = {}) {
     proc,
     cdp: null,
     clients: new Set(),
+    transports: new Set(),
     timer: null,
     capturing: false,
     captureErrors: 0,
@@ -269,7 +271,11 @@ export async function start(payload = {}) {
     for (const client of session.clients) {
       try { client.end(); } catch {}
     }
+    for (const client of session.transports) {
+      try { client.end(); } catch {}
+    }
     session.clients.clear();
+    session.transports.clear();
   });
 
   try {
@@ -300,12 +306,16 @@ function sessionInfo(session) {
     fps: session.fps,
     quality: session.quality,
     profile: session.profile,
-    clients: session.clients.size,
+    clients: sessionClientCount(session),
     createdAt: session.createdAt,
     lastUsedAt: session.lastUsedAt,
     ageMs: now - session.createdAt,
     idleMs: now - session.lastUsedAt,
   };
+}
+
+function sessionClientCount(session) {
+  return (session.clients?.size || 0) + (session.transports?.size || 0);
 }
 
 function get(id) {
@@ -318,12 +328,7 @@ async function capture(session) {
   if (session.capturing || session.closed || !session.clients.size) return;
   session.capturing = true;
   try {
-    const result = await session.cdp.call("Page.captureScreenshot", {
-      format: "jpeg",
-      quality: screenshotQuality(session.quality),
-      fromSurface: true,
-    });
-    const frame = Buffer.from(result.data || "", "base64");
+    const frame = await captureJpegFrame(session);
     if (!frame.length) return;
     const header = Buffer.from(`--${BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.length}\r\n\r\n`);
     const tail = Buffer.from("\r\n");
@@ -346,6 +351,16 @@ async function capture(session) {
   } finally {
     session.capturing = false;
   }
+}
+
+async function captureJpegFrame(session) {
+  if (!session || session.closed || !session.cdp) throw httpError(404, "Real Chrome session not found.");
+  const result = await session.cdp.call("Page.captureScreenshot", {
+    format: "jpeg",
+    quality: screenshotQuality(session.quality),
+    fromSurface: true,
+  });
+  return Buffer.from(result.data || "", "base64");
 }
 
 function ensureCaptureLoop(session) {
@@ -418,6 +433,37 @@ export function stream(req, res, id) {
   };
   req.on("close", cleanup);
   res.on("close", cleanup);
+}
+
+export function streamTs(req, res, id, { audio, bitrateK } = {}) {
+  const session = get(id);
+  if (!session) {
+    res.status(404).type("text/plain").end("Real Chrome session not found.");
+    return;
+  }
+  session.lastUsedAt = Date.now();
+  session.transports.add(res);
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    session.transports.delete(res);
+    session.lastUsedAt = Date.now();
+  };
+  streamBrowserFrameTS(req, res, {
+    fps: session.fps,
+    width: session.width,
+    height: session.height,
+    quality: session.quality,
+    audio,
+    bitrateK,
+    label: "real-chrome-ts",
+    captureFrame: async () => {
+      session.lastUsedAt = Date.now();
+      return captureJpegFrame(session);
+    },
+    onCleanup: cleanup,
+  });
 }
 
 function point(payload, session) {
@@ -645,7 +691,11 @@ export async function stop(id, reason = "manual") {
   for (const client of session.clients) {
     try { client.end(); } catch {}
   }
+  for (const client of session.transports) {
+    try { client.end(); } catch {}
+  }
   session.clients.clear();
+  session.transports.clear();
   console.log(`[real-chrome] closed ${session.id} (${reason}) ${session.url}`);
   return true;
 }

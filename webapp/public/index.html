@@ -161,8 +161,8 @@
           </label>
           <label>FPS
             <div class="browser-fps-control">
-              <input id="browserPlayerFps" type="range" min="3" max="60" step="1" value="6" />
-              <output id="browserPlayerFpsValue" for="browserPlayerFps">6 FPS</output>
+              <input id="browserPlayerFps" type="range" min="3" max="60" step="1" value="12" />
+              <output id="browserPlayerFpsValue" for="browserPlayerFps">12 FPS</output>
             </div>
           </label>
           <label>MJPEG
@@ -171,22 +171,33 @@
               <output id="browserPlayerQualityValue" for="browserPlayerQuality">70%</output>
             </div>
           </label>
+          <label>Mode
+            <select id="browserPlayerStreamMode">
+              <option value="split-mjpeg-mp3">Split MJPEG + MP3</option>
+              <option value="split-mjpeg-pcm" selected>Split MJPEG + PCM</option>
+              <option value="split-mjpeg-hls">Split MJPEG + HLS Audio</option>
+              <option value="video-only">Video Only</option>
+              <option value="audio-only-mp3">Audio Only MP3</option>
+              <option value="audio-only-pcm">Audio Only PCM</option>
+              <option value="combined-ts">Combined MPEG-TS A/V</option>
+            </select>
+          </label>
           <label>Audio
             <select id="browserPlayerAudio"></select>
           </label>
           <label>Format
             <div class="browser-segmented" id="browserPlayerAudioFormat" role="group" aria-label="Browser audio format">
-              <button type="button" data-browser-audio-format="auto" aria-pressed="false">Auto</button>
+              <button type="button" data-browser-audio-format="auto" class="active" aria-pressed="true">Auto</button>
               <button type="button" data-browser-audio-format="hls" aria-pressed="false">HLS</button>
-              <button type="button" data-browser-audio-format="mp3" class="active" aria-pressed="true">MP3</button>
+              <button type="button" data-browser-audio-format="mp3" aria-pressed="false">MP3</button>
             </div>
           </label>
           <label>Quality
             <div class="browser-segmented" id="browserPlayerAudioQuality" role="group" aria-label="Browser audio quality">
-              <button type="button" data-browser-audio-bitrate="32" aria-pressed="false">32k</button>
+              <button type="button" data-browser-audio-bitrate="32" class="active" aria-pressed="true">32k</button>
               <button type="button" data-browser-audio-bitrate="64" aria-pressed="false">64k</button>
               <button type="button" data-browser-audio-bitrate="96" aria-pressed="false">96k</button>
-              <button type="button" data-browser-audio-bitrate="128" class="active" aria-pressed="true">128k</button>
+              <button type="button" data-browser-audio-bitrate="128" aria-pressed="false">128k</button>
               <button type="button" data-browser-audio-bitrate="192" aria-pressed="false">192k</button>
             </div>
           </label>
@@ -549,8 +560,8 @@
                 </label>
                 <label>FPS
                   <div class="browser-fps-control">
-                    <input id="browserFps" type="range" min="3" max="60" step="1" value="6" />
-                    <output id="browserFpsValue" for="browserFps">6 FPS</output>
+                    <input id="browserFps" type="range" min="3" max="60" step="1" value="12" />
+                    <output id="browserFpsValue" for="browserFps">12 FPS</output>
                   </div>
                 </label>
                 <label>MJPEG
@@ -559,22 +570,33 @@
                     <output id="browserQualityValue" for="browserQuality">70%</output>
                   </div>
                 </label>
+                <label>Mode
+                  <select id="browserStreamMode">
+                    <option value="split-mjpeg-mp3">Split MJPEG + MP3</option>
+                    <option value="split-mjpeg-pcm" selected>Split MJPEG + PCM</option>
+                    <option value="split-mjpeg-hls">Split MJPEG + HLS Audio</option>
+                    <option value="video-only">Video Only</option>
+                    <option value="audio-only-mp3">Audio Only MP3</option>
+                    <option value="audio-only-pcm">Audio Only PCM</option>
+                    <option value="combined-ts">Combined MPEG-TS A/V</option>
+                  </select>
+                </label>
                 <label>Audio
                   <select id="browserAudio"></select>
                 </label>
                 <label>Format
                   <div class="browser-segmented" id="browserAudioFormat" role="group" aria-label="Browser audio format">
-                    <button type="button" data-browser-audio-format="auto" aria-pressed="false">Auto</button>
+                    <button type="button" data-browser-audio-format="auto" class="active" aria-pressed="true">Auto</button>
                     <button type="button" data-browser-audio-format="hls" aria-pressed="false">HLS</button>
-                    <button type="button" data-browser-audio-format="mp3" class="active" aria-pressed="true">MP3</button>
+                    <button type="button" data-browser-audio-format="mp3" aria-pressed="false">MP3</button>
                   </div>
                 </label>
                 <label>Quality
                   <div class="browser-segmented" id="browserAudioQuality" role="group" aria-label="Browser audio quality">
-                    <button type="button" data-browser-audio-bitrate="32" aria-pressed="false">32k</button>
+                    <button type="button" data-browser-audio-bitrate="32" class="active" aria-pressed="true">32k</button>
                     <button type="button" data-browser-audio-bitrate="64" aria-pressed="false">64k</button>
                     <button type="button" data-browser-audio-bitrate="96" aria-pressed="false">96k</button>
-                    <button type="button" data-browser-audio-bitrate="128" class="active" aria-pressed="true">128k</button>
+                    <button type="button" data-browser-audio-bitrate="128" aria-pressed="false">128k</button>
                     <button type="button" data-browser-audio-bitrate="192" aria-pressed="false">192k</button>
                   </div>
                 </label>
@@ -722,6 +744,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260703-browser-audio-mp3-sync"></script>
+  <script src="/app.js?v=20260704-browser-pcm-default-stability"></script>
 </body>
 </html>

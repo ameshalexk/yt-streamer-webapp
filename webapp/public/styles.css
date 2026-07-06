@@ -156,7 +156,7 @@ textarea {
   padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
 }
 .browser-player-settings {
-  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px;
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px;
   padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
 }
 .browser-player-settings[hidden] { display: none; }
@@ -572,6 +572,7 @@ body.fullscreen-controls-idle #fullscreenBtn.fullscreen-overlay {
 .screen.playback-paused.mjpeg-mode img { display: none; }
 .screen.playback-paused.mjpeg-mode #pauseFrame { display: block; }
 .screen.playing.embed-mode iframe { display: block; }
+.screen.playing.audio-only-mode .screen-empty { display: block; }
 .screen.playing .screen-empty { display: none; }
 .screen:fullscreen,
 .screen:-webkit-full-screen,

@@ -1,9 +1,11 @@
 import dns from "node:dns/promises";
 import net from "node:net";
 import { config } from "../config.js";
+import { streamBrowserFrameTS } from "./stream.js";
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
+const DEFAULT_FPS = 30;
 const MAX_WIDTH = 1920;
 const MAX_HEIGHT = 1080;
 const MIN_WIDTH = 320;
@@ -383,12 +385,16 @@ function sessionInfo(session) {
     height: session.height,
     fps: session.fps,
     quality: session.quality,
-    clients: session.clients.size,
+    clients: sessionClientCount(session),
     createdAt: session.createdAt,
     lastUsedAt: session.lastUsedAt,
     ageMs: now - session.createdAt,
     idleMs: now - session.lastUsedAt,
   };
+}
+
+function sessionClientCount(session) {
+  return (session.clients?.size || 0) + (session.transports?.size || 0);
 }
 
 async function wakeMedia(session) {
@@ -425,7 +431,7 @@ function startCleanupTimer() {
     for (const session of sessions.values()) {
       if (now - session.createdAt > SESSION_TTL_MS) {
         stop(session.id, "ttl").catch(() => {});
-      } else if (session.clients.size === 0 && now - session.lastUsedAt > IDLE_CLOSE_MS) {
+      } else if (sessionClientCount(session) === 0 && now - session.lastUsedAt > IDLE_CLOSE_MS) {
         stop(session.id, "idle").catch(() => {});
       }
     }
@@ -455,7 +461,7 @@ export async function start(payload = {}) {
   await assertPublicUrl(url);
   const width = clampInt(payload.width, MIN_WIDTH, MAX_WIDTH, DEFAULT_WIDTH);
   const height = clampInt(payload.height, MIN_HEIGHT, MAX_HEIGHT, DEFAULT_HEIGHT);
-  const fps = clampInt(payload.fps, config.mjpeg.minFps, config.mjpeg.maxFps, 6);
+  const fps = clampInt(payload.fps, config.mjpeg.minFps, config.mjpeg.maxFps, DEFAULT_FPS);
   const quality = screenshotQuality(payload.quality);
   const { chromium } = await loadPlaywright();
   const browser = await chromium.launch({
@@ -490,6 +496,7 @@ export async function start(payload = {}) {
     page,
     title: "",
     clients: new Set(),
+    transports: new Set(),
     timer: null,
     capturing: false,
     captureErrors: 0,
@@ -519,12 +526,7 @@ async function capture(session) {
   if (session.closed || session.capturing || session.clients.size === 0) return;
   session.capturing = true;
   try {
-    const frame = await session.page.screenshot({
-      type: "jpeg",
-      quality: screenshotQuality(session.quality),
-      timeout: 5000,
-      animations: "disabled",
-    });
+    const frame = await captureJpegFrame(session);
     const header = Buffer.from(`--${BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.length}\r\n\r\n`);
     const footer = Buffer.from("\r\n");
     for (const res of [...session.clients]) {
@@ -548,6 +550,16 @@ async function capture(session) {
   } finally {
     session.capturing = false;
   }
+}
+
+function captureJpegFrame(session) {
+  if (!session || session.closed || !session.page) throw httpError(404, "Browser session not found.");
+  return session.page.screenshot({
+    type: "jpeg",
+    quality: screenshotQuality(session.quality),
+    timeout: 5000,
+    animations: "disabled",
+  });
 }
 
 function ensureCaptureLoop(session) {
@@ -623,6 +635,37 @@ export function stream(req, res, id) {
   };
   req.on("close", cleanup);
   res.on("close", cleanup);
+}
+
+export function streamTs(req, res, id, { audio, bitrateK } = {}) {
+  const session = get(id);
+  if (!session) {
+    res.status(404).type("text/plain").end("Browser session not found.");
+    return;
+  }
+  session.lastUsedAt = Date.now();
+  session.transports.add(res);
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    session.transports.delete(res);
+    session.lastUsedAt = Date.now();
+  };
+  streamBrowserFrameTS(req, res, {
+    fps: session.fps,
+    width: session.width,
+    height: session.height,
+    quality: session.quality,
+    audio,
+    bitrateK,
+    label: "browser-ts",
+    captureFrame: async () => {
+      session.lastUsedAt = Date.now();
+      return captureJpegFrame(session);
+    },
+    onCleanup: cleanup,
+  });
 }
 
 function point(payload, session) {
@@ -784,7 +827,11 @@ export async function stop(id, reason = "manual") {
   for (const res of [...session.clients]) {
     try { res.end(); } catch {}
   }
+  for (const res of [...session.transports]) {
+    try { res.end(); } catch {}
+  }
   session.clients.clear();
+  session.transports.clear();
   await session.context?.close().catch(() => {});
   await session.browser?.close().catch(() => {});
   console.log(`[browser-renderer] closed ${session.id} (${reason}) ${session.url}`);

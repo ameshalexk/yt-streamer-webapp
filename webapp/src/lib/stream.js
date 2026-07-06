@@ -319,12 +319,14 @@ function buildCapturedPcmArgs({ audio, sampleRate }) {
   const rate = normalizeAudioSampleRate(sampleRate);
   return [
     "-hide_banner", "-loglevel", "error",
-    "-thread_queue_size", "1024",
+    "-thread_queue_size", "2048",
     "-f", "avfoundation",
     "-i", input,
     "-vn",
+    "-af", "aresample=async=1000:first_pts=0",
     "-ac", "2",
     "-ar", String(rate),
+    "-flush_packets", "1",
     "-f", "s16le",
     "pipe:1",
   ];
@@ -628,6 +630,151 @@ export function streamDesktopMp4(req, res, { params, audio }) {
     },
     onCleanup: () => {
       active = Math.max(0, active - 1);
+    },
+  });
+}
+
+function browserFrameRateK({ height, quality }) {
+  const h = clampInt(height, 240, 2160, 720);
+  const q = clampInt(quality, 20, 90, 70);
+  const base = h >= 1080 ? 6000 : h >= 720 ? 3500 : h >= 480 ? 1600 : h >= 360 ? 900 : 500;
+  const qualityMul = 0.65 + ((q - 20) / 70) * 0.85;
+  return Math.max(500, Math.round(base * qualityMul));
+}
+
+function buildBrowserFrameTSArgs({ fps, width, height, quality, audio, bitrateK }) {
+  const audioInput = normalizeAudioInput(audio);
+  const rateK = browserFrameRateK({ height, quality });
+  const rate = `${rateK}k`;
+  const bufsize = `${rateK * 2}k`;
+  const frameRate = clampInt(fps, config.mjpeg.minFps, config.mjpeg.maxFps, config.mjpeg.fps);
+  const evenWidth = Math.max(2, Math.floor(clampInt(width, 320, 3840, 1280) / 2) * 2);
+  const evenHeight = Math.max(2, Math.floor(clampInt(height, 240, 2160, 720) / 2) * 2);
+  const gop = Math.max(2, frameRate);
+  const args = [
+    "-hide_banner", "-loglevel", "error",
+    "-fflags", "nobuffer",
+    "-flags", "low_delay",
+    "-thread_queue_size", "512",
+    "-f", "mjpeg",
+    "-vcodec", "mjpeg",
+    "-framerate", String(frameRate),
+    "-i", "pipe:0",
+    "-thread_queue_size", "1024",
+    "-f", "avfoundation",
+    "-i", audioInput,
+    "-map", "0:v:0",
+    "-map", "1:a:0?",
+    "-vf", `scale=${evenWidth}:${evenHeight},format=yuv420p`,
+  ];
+
+  if (config.video.encoder === "h264_videotoolbox") {
+    args.push(
+      "-c:v", "h264_videotoolbox", "-realtime", "1", "-pix_fmt", "yuv420p",
+      "-b:v", rate, "-maxrate", rate, "-bufsize", bufsize
+    );
+  } else {
+    args.push(
+      "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+      "-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
+      "-crf", "24", "-maxrate", rate, "-bufsize", bufsize
+    );
+  }
+
+  args.push(
+    "-g", String(gop), "-keyint_min", String(frameRate), "-sc_threshold", "0",
+    "-c:a", "aac", "-b:a", `${normalizeAudioBitrateK(bitrateK)}k`, "-ac", "2", "-ar", "48000",
+    "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1"
+  );
+  return args;
+}
+
+function waitForDrain(stream, timeoutMs = 1000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const cleanup = () => {
+      stream.off("drain", onDone);
+      stream.off("error", onDone);
+    };
+    const onDone = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      cleanup();
+      resolve();
+    };
+    const timer = setTimeout(onDone, timeoutMs);
+    stream.once("drain", onDone);
+    stream.once("error", onDone);
+  });
+}
+
+export function streamBrowserFrameTS(req, res, { fps, width, height, quality, audio, bitrateK, captureFrame, label = "browser-ts", onCleanup }) {
+  const audioInput = normalizeAudioInput(audio);
+  if (!audioInput) {
+    onCleanup?.();
+    res.status(400).type("text/plain").end("No audio capture device selected.");
+    return;
+  }
+  if (active >= config.maxConcurrentStreams) {
+    onCleanup?.();
+    res.status(429).type("text/plain").end("Too many active streams. Stop one and retry.");
+    return;
+  }
+  active++;
+  const frameRate = clampInt(fps, config.mjpeg.minFps, config.mjpeg.maxFps, config.mjpeg.fps);
+  const ff = spawn(config.ffmpegPath, buildBrowserFrameTSArgs({ fps: frameRate, width, height, quality, audio, bitrateK }), {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let closed = false;
+  let capturing = false;
+  let captureErrors = 0;
+  const closeInput = () => {
+    try { ff.stdin.end(); } catch {}
+    try { ff.stdin.destroy(); } catch {}
+  };
+  const writeFrame = async () => {
+    if (closed || capturing || !ff.stdin.writable) return;
+    capturing = true;
+    try {
+      const frame = await captureFrame();
+      if (!closed && frame?.length && ff.stdin.writable) {
+        if (!ff.stdin.write(frame)) await waitForDrain(ff.stdin);
+      }
+      captureErrors = 0;
+    } catch (err) {
+      captureErrors += 1;
+      if (captureErrors === 1 || captureErrors % 10 === 0) {
+        console.error(`[${label}] frame capture failed:`, err.message);
+      }
+      if (captureErrors >= 30 && !ff.killed) ff.kill("SIGKILL");
+    } finally {
+      capturing = false;
+    }
+  };
+  const timer = setInterval(writeFrame, Math.max(16, Math.round(1000 / frameRate)));
+  timer.unref?.();
+  writeFrame().catch(() => {});
+  ff.stdin.on("error", (err) => {
+    if (!["EPIPE", "ERR_STREAM_DESTROYED"].includes(err.code)) {
+      console.error(`[${label}] ffmpeg stdin error:`, err.message);
+    }
+  });
+  pipeFfmpegOutput(req, res, ff, {
+    label,
+    headers: {
+      "Content-Type": "video/mp2t",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      Connection: "close",
+      "X-Accel-Buffering": "no",
+    },
+    onCleanup: () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(timer);
+      closeInput();
+      active = Math.max(0, active - 1);
+      onCleanup?.();
     },
   });
 }

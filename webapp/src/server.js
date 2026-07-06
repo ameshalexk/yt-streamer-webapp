@@ -670,6 +670,20 @@ app.get("/stream/real-chrome/:id", (req, res) => {
   return realChromeRenderer.stream(req, res, req.params.id);
 });
 
+app.get("/stream/browser-ts/:id", (req, res) => {
+  return browserRenderer.streamTs(req, res, req.params.id, {
+    audio: req.query.audio,
+    bitrateK: req.query.bitrate,
+  });
+});
+
+app.get("/stream/real-chrome-ts/:id", (req, res) => {
+  return realChromeRenderer.streamTs(req, res, req.params.id, {
+    audio: req.query.audio,
+    bitrateK: req.query.bitrate,
+  });
+});
+
 app.get("/stream/browser-audio", asyncH(async (req, res) => {
   return stream.streamCapturedAudio(req, res, { audio: req.query.audio, bitrateK: req.query.bitrate });
 }));
