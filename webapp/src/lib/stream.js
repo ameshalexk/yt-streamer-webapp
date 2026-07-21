@@ -11,6 +11,7 @@ let active = 0;
 const hlsSessions = new Map();
 const audioHlsSessions = new Map();
 const desktopMjpegCleanups = new Set();
+const AUDIO_HLS_IDLE_MS = 90 * 1000;
 
 export function activeStreamCount() {
   return active;
@@ -852,6 +853,32 @@ async function removeAudioHlsSession(session) {
   await fs.rm(session.dir, { recursive: true, force: true }).catch(() => {});
 }
 
+function scheduleAudioHlsIdleCleanup(session) {
+  if (session.timer) clearTimeout(session.timer);
+  session.timer = setTimeout(() => {
+    const idleMs = Date.now() - (session.lastUsedAt || session.createdAt || Date.now());
+    if (idleMs >= AUDIO_HLS_IDLE_MS) {
+      removeAudioHlsSession(session).catch(() => {});
+      return;
+    }
+    scheduleAudioHlsIdleCleanup(session);
+  }, AUDIO_HLS_IDLE_MS);
+  session.timer.unref?.();
+}
+
+export async function stopAllDesktopAudioHls() {
+  const sessions = [...audioHlsSessions.values()];
+  const results = await Promise.all(sessions.map((session) => removeAudioHlsSession(session).then(() => true).catch(() => false)));
+  return results.filter(Boolean).length;
+}
+
+export async function cleanupStaleHlsFiles() {
+  await Promise.all([
+    fs.rm(hlsRoot(), { recursive: true, force: true }),
+    fs.rm(audioHlsRoot(), { recursive: true, force: true }),
+  ]);
+}
+
 function buildDesktopAudioHlsArgs({ audio, bitrateK, playlistPath, segmentPattern }) {
   const input = normalizeAudioInput(audio);
   if (!input) return null;
@@ -888,14 +915,13 @@ export async function startDesktopAudioHls({ audio, bitrateK, requireDesktopEnab
   const segmentPattern = path.join(dir, "seg-%05d.ts");
   const session = {
     id, dir, playlistPath, stderr: "", closed: false, cleaned: false, ff: null, timer: null,
+    createdAt: Date.now(), lastUsedAt: Date.now(),
   };
   const args = buildDesktopAudioHlsArgs({ audio, bitrateK, playlistPath, segmentPattern });
   audioActive++;
   session.ff = spawn(config.ffmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
   audioHlsSessions.set(id, session);
-  session.timer = setTimeout(() => {
-    removeAudioHlsSession(session).catch(() => {});
-  }, 30 * 60 * 1000);
+  scheduleAudioHlsIdleCleanup(session);
   session.ff.stderr.on("data", (d) => {
     session.stderr += d;
     if (session.stderr.length > 8000) session.stderr = session.stderr.slice(-8000);
@@ -934,6 +960,7 @@ export function desktopAudioHlsFilePath(id, file) {
   const resolved = path.resolve(session.dir, file);
   if (!resolved.startsWith(path.resolve(session.dir) + path.sep)) return null;
   if (!fssync.existsSync(resolved)) return null;
+  session.lastUsedAt = Date.now();
   return resolved;
 }
 

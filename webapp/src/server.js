@@ -129,13 +129,17 @@ app.get("/api/sessions", (req, res) => {
 });
 
 app.post("/api/sessions/cleanup", asyncH(async (req, res) => {
+  const stoppedAudioHls = await stream.stopAllDesktopAudioHls();
   const stoppedBrowser = await browserRenderer.stopAll("remote-cleanup");
   const stoppedRealChrome = await realChromeRenderer.stopAll("remote-cleanup");
+  const stoppedRealChromeOrphans = await realChromeRenderer.cleanupOrphans("remote-cleanup");
   res.json({
     ok: true,
+    stoppedAudioHls,
     stoppedBrowser,
     stoppedRealChrome,
-    stopped: stoppedBrowser + stoppedRealChrome,
+    stoppedRealChromeOrphans,
+    stopped: stoppedAudioHls + stoppedBrowser + stoppedRealChrome + stoppedRealChromeOrphans,
   });
 }));
 
@@ -580,6 +584,7 @@ app.post("/api/desktop/input", asyncH(async (req, res) => {
 // Isolated browser renderer
 // ---------------------------------------------------------------------------
 app.post("/api/browser/start", asyncH(async (req, res) => {
+  await stream.stopAllDesktopAudioHls();
   res.status(201).json(await browserRenderer.start(req.body || {}));
 }));
 
@@ -623,6 +628,7 @@ app.post("/api/browser/:id/stop", asyncH(async (req, res) => {
 // Real Chrome renderer: dedicated Chrome profile streamed through DevTools
 // ---------------------------------------------------------------------------
 app.post("/api/real-chrome/start", asyncH(async (req, res) => {
+  await stream.stopAllDesktopAudioHls();
   res.status(201).json(await realChromeRenderer.start(req.body || {}));
 }));
 
@@ -925,6 +931,11 @@ app.use((req, res, next) => {
 });
 app.use(express.static(config.publicDir, { extensions: ["html"] }));
 app.get("*", (req, res) => res.sendFile(path.join(config.publicDir, "index.html")));
+
+await Promise.all([
+  stream.cleanupStaleHlsFiles().catch((err) => console.error("[startup] hls cleanup -", err.message)),
+  realChromeRenderer.cleanupOrphans("startup").catch((err) => console.error("[startup] real chrome cleanup -", err.message)),
+]);
 
 app.listen(config.port, config.host, () => {
   console.log(`\n  YT Streamer webapp`);

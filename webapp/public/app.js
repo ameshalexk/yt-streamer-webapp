@@ -569,6 +569,7 @@ const STREAM_WARN_MS = 12000;
 const STREAM_FAIL_MS = 30000;
 const COMPAT_STREAM_WARN_MS = 25000;
 const COMPAT_STREAM_FAIL_MS = 60000;
+const STREAM_END_GUARD_SECONDS = 2;
 
 function currentSettingsLabel() {
   const h = $("#ctlHeight");
@@ -691,6 +692,23 @@ function clampStreamSeekTime(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, streamSeek.duration ? Math.min(n, streamSeek.duration) : n);
+}
+
+function isStreamAtEnd(value = getStreamCurrentTime()) {
+  if (!streamSeek.seekable || !streamSeek.duration) return false;
+  const current = clampStreamSeekTime(value);
+  return current >= Math.max(0, streamSeek.duration - STREAM_END_GUARD_SECONDS);
+}
+
+function streamReplayTime(value = getStreamCurrentTime()) {
+  const current = clampStreamSeekTime(value);
+  return isStreamAtEnd(current) ? 0 : current;
+}
+
+function streamSeekTarget(value) {
+  const target = clampStreamSeekTime(value);
+  if (!streamSeek.seekable || !streamSeek.duration) return target;
+  return Math.min(target, Math.max(0, streamSeek.duration - STREAM_END_GUARD_SECONDS));
 }
 
 function getStreamCurrentTime() {
@@ -892,7 +910,7 @@ function configureStreamSeek(meta = {}, startAt = 0) {
 
 function seekStreamTo(time) {
   if (!streamSeek.seekable || !replayFn) return;
-  const target = clampStreamSeekTime(time);
+  const target = streamSeekTarget(time);
   streamSeek.startAt = target;
   streamSeek.liveAtMs = 0;
   updateStreamSeekUi(target);
@@ -995,7 +1013,7 @@ function resumePlayback() {
   if (!playbackPaused) return;
   const screen = $("#screen");
   const wasMjpeg = screen.classList.contains("mjpeg-mode");
-  const resumeAt = pausedResumeAt;
+  const resumeAt = streamReplayTime(pausedResumeAt);
   playbackPaused = false;
   screen.classList.remove("playback-paused");
   $("#pauseFrame").hidden = true;
@@ -1679,7 +1697,7 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     if (!activeCompat.videoReady) return;
     if (audioUrl && soundOn && !activeCompat.audioReady && !meta.looseAudioSync) return;
     activeCompat.playbackStarted = true;
-    if (audioUrl && soundOn && activeCompat.audioReady) {
+    if (audioUrl && soundOn && activeCompat.audioReady && !meta.looseAudioSync) {
       let revealed = false;
       const revealAfterAudioStarts = () => {
         if (revealed || !currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl) return;
@@ -1710,6 +1728,18 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   };
   img.onerror = () => {
     if (activeCompat?.mjpegUrl !== mjpegUrl) return;
+    if (activeCompat.videoReady && isStreamAtEnd()) {
+      clearStreamTimers();
+      stopStreamSeekTimer(false);
+      streamSeek.startAt = streamSeek.duration;
+      streamSeek.liveAtMs = 0;
+      updateStreamSeekUi(streamSeek.duration);
+      screen.classList.remove("loading");
+      setBadge("paused", "■ ENDED");
+      resetPauseControl(true);
+      void handleAutoplayEnd();
+      return;
+    }
     if (meta.browserStream) {
       void stopBrowserSession();
       failStreamAttempt(attempt, "Browser stream failed", "The headless browser session stopped before it produced usable MJPEG frames. Try Reload, lower FPS, or open the site in Desktop mode.");
@@ -1904,7 +1934,7 @@ async function playItem(item) {
   renderRecommendations();
   if (isMobileMode()) setPlayerDropdownOpen(true);
   showAttemptedUrl(item.url);
-  replayFn = (startAt = getStreamCurrentTime()) => {
+  replayFn = (startAt = 0) => {
     const q = streamQuery(startAt);
     playStream({
       tsUrl: `/stream/ts/item/${item.id}?${q}`,
@@ -1916,7 +1946,7 @@ async function playItem(item) {
       startAt,
     });
   };
-  replayFn();
+  replayFn(0);
   if (item.type === "youtube") void recordWatchHistory(item, "saved");
 }
 
@@ -1965,7 +1995,7 @@ function stopPlayback() {
 function restreamPlayback() {
   if (!replayFn) return;
   const replay = replayFn;
-  const resumeAt = streamSeek.seekable ? getStreamCurrentTime() : undefined;
+  const resumeAt = streamSeek.seekable ? streamReplayTime() : undefined;
   stopDesktopAudioHlsSession();
   clearBrowserAudioRetry();
   cleanupMedia();
@@ -2061,7 +2091,7 @@ function reapplyControls() {
   }
   if (!replayFn) return;
   toast("Restarting at " + currentSettingsLabel());
-  replayFn(streamSeek.seekable ? getStreamCurrentTime() : undefined);
+  replayFn(streamSeek.seekable ? streamReplayTime() : undefined);
 }
 
 function updateBwHint() {
@@ -2489,7 +2519,7 @@ async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
   renderYoutubeHistory();
   if (isMobileMode()) setPlayerDropdownOpen(true);
   showAttemptedUrl(url);
-  replayFn = (startAt = getStreamCurrentTime()) => {
+  replayFn = (startAt = 0) => {
     const q = streamQuery(startAt);
     const u = encodeURIComponent(url);
     playStream({
@@ -2507,7 +2537,7 @@ async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
       } : null,
     });
   };
-  replayFn().catch((e) => toast(e.message, true));
+  replayFn(0).catch((e) => toast(e.message, true));
   void recordWatchHistory(video, "library-playlist");
 }
 
@@ -2868,7 +2898,7 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
   renderYoutubeHistory();
   showAttemptedUrl(item.url);
   if (isMobileMode()) setPlayerDropdownOpen(true);
-  replayFn = (startAt = getStreamCurrentTime()) => {
+  replayFn = (startAt = 0) => {
     const q = streamQuery(startAt);
     const u = encodeURIComponent(item.url);
     playStream({
@@ -2886,7 +2916,7 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
       } : null,
     });
   };
-  replayFn();
+  replayFn(0);
   void recordWatchHistory(item, "search");
 }
 
@@ -2916,7 +2946,7 @@ async function streamYoutubeHistoryItem(item) {
   renderYoutubeHistory();
   showAttemptedUrl(item.url);
   if (isMobileMode()) setPlayerDropdownOpen(true);
-  replayFn = (startAt = getStreamCurrentTime()) => {
+  replayFn = (startAt = 0) => {
     const q = streamQuery(startAt);
     const u = encodeURIComponent(item.url);
     playStream({
@@ -2929,7 +2959,7 @@ async function streamYoutubeHistoryItem(item) {
       startAt,
     });
   };
-  replayFn();
+  replayFn(0);
   void recordWatchHistory(item, "history");
 }
 
@@ -3250,7 +3280,7 @@ async function streamRecommendation(item, autoplayQueue = null) {
   renderYoutubeHistory();
   showAttemptedUrl(item.url);
   if (isMobileMode()) setPlayerDropdownOpen(true);
-  replayFn = (startAt = getStreamCurrentTime()) => {
+  replayFn = (startAt = 0) => {
     const q = streamQuery(startAt);
     const prepared = state.recommendationPrepared[item.id]?.status === "ready";
     const u = encodeURIComponent(item.url);
@@ -3271,7 +3301,7 @@ async function streamRecommendation(item, autoplayQueue = null) {
       } : null,
     });
   };
-  replayFn();
+  replayFn(0);
   void recordWatchHistory(item, "recommended");
   if (!item.isLive && !item.isUpcoming) void prepareRecommendationInBackground(item);
 }
@@ -4433,7 +4463,18 @@ async function closeRemoteBrowserSessions() {
     clearBrowserLocalPlayback();
     await refreshSessionManager({ notify: false });
     const stopped = Number(result?.stopped || 0);
-    toast(stopped ? `Closed ${stopped} browser session${stopped === 1 ? "" : "s"}` : "No browser sessions to close");
+    if (!stopped) {
+      toast("No browser sessions to close");
+      return;
+    }
+    const details = [];
+    const browserSessions = Number(result?.stoppedBrowser || 0) + Number(result?.stoppedRealChrome || 0);
+    const audioHls = Number(result?.stoppedAudioHls || 0);
+    const chromeOrphans = Number(result?.stoppedRealChromeOrphans || 0);
+    if (browserSessions) details.push(`${browserSessions} browser session${browserSessions === 1 ? "" : "s"}`);
+    if (audioHls) details.push(`${audioHls} audio stream${audioHls === 1 ? "" : "s"}`);
+    if (chromeOrphans) details.push(`${chromeOrphans} Chrome orphan${chromeOrphans === 1 ? "" : "s"}`);
+    toast(`Closed ${details.join(", ")}`);
   } catch (err) {
     setBrowserStatus(err.message, "bad");
     toast(err.message, true);
@@ -5608,13 +5649,13 @@ $("#fullscreenBtn").onclick = toggleScreenFullscreen;
 $("#streamRetryBtn").onclick = () => {
   if (!replayFn) return;
   toast("Retrying stream");
-  replayFn(streamSeek.seekable ? getStreamCurrentTime() : undefined);
+  replayFn(streamSeek.seekable ? streamReplayTime() : undefined);
 };
 $("#streamLowerBtn").onclick = () => {
   if (!replayFn) return;
   lowerPlaybackSettings();
   toast("Retrying at " + currentSettingsLabel());
-  replayFn(streamSeek.seekable ? getStreamCurrentTime() : undefined);
+  replayFn(streamSeek.seekable ? streamReplayTime() : undefined);
 };
 $("#legacyRefreshBtn").onclick = async () => {
   try {
@@ -6399,7 +6440,7 @@ $("#quickPlayBtn").onclick = async () => {
     renderRecommendations();
     renderYoutubeSearch();
     renderYoutubeHistory();
-    replayFn = (startAt = getStreamCurrentTime()) => {
+    replayFn = (startAt = 0) => {
       const q = streamQuery(startAt);
       const u = encodeURIComponent(url);
       playStream({
@@ -6412,7 +6453,7 @@ $("#quickPlayBtn").onclick = async () => {
         startAt,
       });
     };
-    replayFn();
+    replayFn(0);
     void recordWatchHistory({
       id: info?.id,
       url: info?.webpage_url || url,

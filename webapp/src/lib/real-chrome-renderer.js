@@ -62,6 +62,71 @@ function chromeProfileDir() {
   return process.env.REAL_CHROME_PROFILE_DIR || path.join(config.dataDir, "real-chrome-profile");
 }
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function psOutput() {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ps", ["-axo", "pid=,command="], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d) => { stdout += d; });
+    proc.stderr.on("data", (d) => { stderr += d; });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code) reject(new Error(stderr.trim() || `ps exited ${code}`));
+      else resolve(stdout);
+    });
+  });
+}
+
+async function profileProcessPids(profile) {
+  const profileArg = `--user-data-dir=${profile}`;
+  const lines = (await psOutput()).split("\n");
+  const pids = [];
+  for (const line of lines) {
+    const match = line.match(/^\s*(\d+)\s+(.+)$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const command = match[2] || "";
+    if (pid && pid !== process.pid && command.includes(profileArg)) pids.push(pid);
+  }
+  return [...new Set(pids)];
+}
+
+async function cleanupProfileLocks(profile) {
+  await Promise.all([
+    "SingletonLock",
+    "SingletonSocket",
+    "SingletonCookie",
+    "DevToolsActivePort",
+  ].map((name) => fs.rm(path.join(profile, name), { force: true }).catch(() => {})));
+}
+
+async function signalPids(pids, signal) {
+  for (const pid of pids) {
+    try { process.kill(pid, signal); } catch {}
+  }
+}
+
+export async function cleanupOrphans(reason = "manual") {
+  if (sessions.size > 0) return 0;
+  const profile = chromeProfileDir();
+  const pids = await profileProcessPids(profile).catch(() => []);
+  if (!pids.length) {
+    await cleanupProfileLocks(profile);
+    return 0;
+  }
+  await signalPids(pids, "SIGTERM");
+  await wait(900);
+  const remaining = await profileProcessPids(profile).catch(() => []);
+  await signalPids(remaining, "SIGKILL");
+  await cleanupProfileLocks(profile);
+  console.log(`[real-chrome] cleaned ${pids.length} orphan process${pids.length === 1 ? "" : "es"} (${reason})`);
+  return pids.length;
+}
+
 async function executablePath() {
   for (const candidate of CHROME_PATHS) {
     try {
@@ -218,6 +283,7 @@ function startCleanupTimer() {
 
 export async function start(payload = {}) {
   if (sessions.size >= 1) throw httpError(429, "Real Chrome is already running. Stop it first.");
+  await cleanupOrphans("pre-start");
   const width = clampInt(payload.width, MIN_WIDTH, MAX_WIDTH, DEFAULT_WIDTH);
   const height = clampInt(payload.height, MIN_HEIGHT, MAX_HEIGHT, DEFAULT_HEIGHT);
   const fps = clampInt(payload.fps, MIN_FPS, MAX_FPS, DEFAULT_FPS);
@@ -280,6 +346,7 @@ export async function start(payload = {}) {
     await preparePage(session);
   } catch (err) {
     try { proc.kill("SIGKILL"); } catch {}
+    await cleanupOrphans("failed-start").catch(() => {});
     throw err;
   }
 
