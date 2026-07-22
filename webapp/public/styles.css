@@ -745,7 +745,7 @@ body.browser-streaming #streamSettings { display: none; }
 .hint.warn { color: #ff8a8f; }
 
 /* Modal */
-.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 300; padding: 20px; }
 .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; width: min(620px, 100%); max-height: 90vh; overflow-y: auto; padding: 24px; }
 .modal h3 { margin: 0 0 16px; font-size: 22px; }
 .modal label { display: block; font-size: 14px; color: var(--muted); margin: 14px 0 6px; }
@@ -762,6 +762,85 @@ body.browser-streaming #streamSettings { display: none; }
 .modal .progress { height: 10px; border-radius: 999px; background: var(--panel-2); overflow: hidden; margin-top: 16px; }
 .modal .progress > i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .3s; }
 .modal .note { font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.4; }
+body.modal-open { overflow: hidden; }
+
+/* Fixed restart and recovery controls */
+.restart-menu-trigger {
+  position: fixed;
+  left: max(16px, env(safe-area-inset-left));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 180;
+  min-width: 126px;
+  min-height: 52px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--panel-2);
+  color: var(--text);
+  box-shadow: 0 8px 28px var(--shadow);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.restart-menu-trigger:active { filter: brightness(.86); }
+.restart-menu-trigger:focus-visible { outline: 3px solid var(--accent-2); outline-offset: 3px; }
+.restart-menu-icon { font-size: 24px; line-height: 1; }
+body.screen-fullscreen .restart-menu-trigger { display: none; }
+.restart-dialog-copy { margin: -6px 0 18px; color: var(--muted); font-size: 15px; line-height: 1.5; }
+.restart-options { display: grid; gap: 10px; }
+.restart-option {
+  width: 100%;
+  min-height: 76px;
+  padding: 13px 16px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 13px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.restart-option:hover { border-color: var(--accent-2); }
+.restart-option:focus-visible { outline: 3px solid var(--accent-2); outline-offset: 2px; }
+.restart-option:disabled { opacity: .45; cursor: default; }
+.restart-option-icon {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  background: rgba(45,140,255,.14);
+  color: var(--accent-2);
+  font-size: 24px;
+  font-weight: 900;
+}
+.restart-option.danger .restart-option-icon { background: rgba(225,6,0,.14); color: #ff8a8f; }
+.restart-option-title { display: block; font-size: 17px; font-weight: 800; }
+.restart-option-copy { display: block; margin-top: 3px; color: var(--muted); font-size: 13px; line-height: 1.35; }
+.restart-owner-code { margin-top: 18px; }
+.restart-owner-code .note { margin-top: 7px; }
+.restart-error { margin: 12px 0 0; color: #ff8a8f; font-size: 14px; font-weight: 700; line-height: 1.4; }
+.restart-waiting { padding: 12px 0 2px; text-align: center; }
+.restart-spinner {
+  width: 42px;
+  height: 42px;
+  margin: 0 auto 16px;
+  border: 4px solid var(--line);
+  border-top-color: var(--accent-2);
+  border-radius: 50%;
+  animation: restart-spin .8s linear infinite;
+}
+@keyframes restart-spin { to { transform: rotate(360deg); } }
 
 /* Channels browser */
 .channels-view {
@@ -1760,7 +1839,7 @@ body.browser-streaming #streamSettings { display: none; }
   .modal {
     width: 100%;
     max-height: 88vh;
-    padding: 18px 16px;
+    padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
     border-radius: 18px 18px 0 0;
   }
   .modal-actions {
@@ -1770,11 +1849,18 @@ body.browser-streaming #streamSettings { display: none; }
   .toast {
     left: 10px;
     right: 10px;
-    bottom: 12px;
+    bottom: calc(max(12px, env(safe-area-inset-bottom)) + 66px);
     transform: none;
     width: auto;
     max-width: none;
     padding: 10px 12px 10px 14px;
     font-size: 14px;
+  }
+  .restart-menu-trigger {
+    left: max(12px, env(safe-area-inset-left));
+    bottom: max(12px, env(safe-area-inset-bottom));
+    min-width: 116px;
+    min-height: 50px;
+    padding: 0 15px;
   }
 }

@@ -817,6 +817,12 @@ export async function stopDesktopHls(id) {
   return true;
 }
 
+export async function stopAllDesktopHls() {
+  const sessions = [...hlsSessions.values()];
+  const results = await Promise.all(sessions.map((session) => removeHlsSession(session).then(() => true).catch(() => false)));
+  return results.filter(Boolean).length;
+}
+
 export function desktopHlsFilePath(id, file) {
   if (!/^[a-f0-9-]{12}$/i.test(String(id || ""))) return null;
   if (!/^(live\.m3u8|seg-\d+\.ts)$/.test(String(file || ""))) return null;

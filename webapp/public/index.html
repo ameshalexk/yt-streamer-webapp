@@ -14,7 +14,7 @@
     })();
   </script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e10600'/><polygon points='40,30 72,50 40,70' fill='white'/></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=20260702-home-tiles-grid" />
+  <link rel="stylesheet" href="/styles.css?v=20260720-restart-controls" />
 </head>
 <body>
   <div id="app">
@@ -713,15 +713,20 @@
         </div>
       </section>
     </main>
+
+    <button class="restart-menu-trigger" id="restartMenuBtn" type="button" aria-label="Open restart options" aria-haspopup="dialog" aria-controls="modal" aria-expanded="false">
+      <span class="restart-menu-icon" aria-hidden="true">↻</span>
+      <span>Restart</span>
+    </button>
   </div>
 
   <!-- Modal -->
   <div class="modal-backdrop" id="modalBackdrop" hidden>
-    <div class="modal" id="modal"></div>
+    <div class="modal" id="modal" role="dialog" aria-modal="true" tabindex="-1"></div>
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260720-stream-end-guard"></script>
+  <script src="/app.js?v=20260720-restart-controls"></script>
 </body>
 </html>

@@ -20,6 +20,15 @@ const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "256kb" }));
 
+const SERVER_STARTED_AT = Date.now();
+const SERVER_INSTANCE_ID = `${SERVER_STARTED_AT.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const LAUNCHD_SERVICE_NAME = "com.ytstreamer.webapp";
+const RESTART_AUTH_WINDOW_MS = 10 * 60 * 1000;
+const RESTART_AUTH_MAX_FAILURES = 5;
+const restartAuthFailures = new Map();
+let restartPending = false;
+let httpServer = null;
+
 // In-memory download job tracker (single user, ephemeral is fine).
 const jobs = new Map();
 const preparedJobs = new Map();
@@ -86,6 +95,78 @@ const asyncH = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) =
   if (!res.headersSent) res.status(err.status || 500).json({ error: err.message });
 });
 
+function firstForwardedValue(value) {
+  return String(value || "").split(",")[0].trim();
+}
+
+function isSameOriginRequest(req) {
+  const fetchSite = String(req.get("sec-fetch-site") || "").toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin") return false;
+  const origin = String(req.get("origin") || "");
+  if (!origin) return false;
+  try {
+    const parsed = new URL(origin);
+    const host = firstForwardedValue(req.get("x-forwarded-host")) || String(req.get("host") || "");
+    const protocol = firstForwardedValue(req.get("x-forwarded-proto")) || req.protocol;
+    return parsed.host === host && parsed.protocol === `${protocol}:`;
+  } catch {
+    return false;
+  }
+}
+
+function restartAuthKey(req) {
+  return firstForwardedValue(req.get("cf-connecting-ip"))
+    || firstForwardedValue(req.get("x-forwarded-for"))
+    || req.ip
+    || "unknown";
+}
+
+function restartAuthRetryAfter(req) {
+  const key = restartAuthKey(req);
+  const now = Date.now();
+  const recent = (restartAuthFailures.get(key) || []).filter((timestamp) => now - timestamp < RESTART_AUTH_WINDOW_MS);
+  if (recent.length) restartAuthFailures.set(key, recent);
+  else restartAuthFailures.delete(key);
+  if (recent.length < RESTART_AUTH_MAX_FAILURES) return 0;
+  return Math.max(1, Math.ceil((RESTART_AUTH_WINDOW_MS - (now - recent[0])) / 1000));
+}
+
+function recordRestartAuthFailure(req) {
+  const key = restartAuthKey(req);
+  const now = Date.now();
+  const recent = (restartAuthFailures.get(key) || []).filter((timestamp) => now - timestamp < RESTART_AUTH_WINDOW_MS);
+  recent.push(now);
+  restartAuthFailures.set(key, recent);
+}
+
+function activeBackgroundJobCount() {
+  const downloads = [...jobs.values()].filter((job) => job.status === "running").length;
+  const preparations = [...preparedJobs.values()].filter((job) => job.status === "preparing").length;
+  return downloads + preparations;
+}
+
+async function shutdownForRestart() {
+  const forceExit = setTimeout(() => process.exit(0), 3500);
+  try {
+    httpServer?.close();
+    httpServer?.closeAllConnections?.();
+    await Promise.race([
+      Promise.allSettled([
+        stream.stopAllDesktopHls(),
+        stream.stopAllDesktopAudioHls(),
+        desktopInput.stop(),
+        browserRenderer.stopAll("app-restart"),
+        realChromeRenderer.stopAll("app-restart"),
+        realChromeRenderer.cleanupOrphans("app-restart"),
+      ]),
+      new Promise((resolve) => setTimeout(resolve, 2800)),
+    ]);
+  } finally {
+    clearTimeout(forceExit);
+    process.exit(0);
+  }
+}
+
 function requireDesktopEnabled(req, res, next) {
   if (config.desktop.enabled) return next();
   if (req.originalUrl.startsWith("/api/")) {
@@ -100,6 +181,9 @@ function requireDesktopEnabled(req, res, next) {
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
+    instanceId: SERVER_INSTANCE_ID,
+    startedAt: SERVER_STARTED_AT,
+    restartAvailable: process.env.XPC_SERVICE_NAME === LAUNCHD_SERVICE_NAME,
     activeStreams: stream.activeStreamCount(),
     activeAudioStreams: stream.activeAudioCount(),
     activeBrowserSessions: browserRenderer.activeSessionCount(),
@@ -141,6 +225,41 @@ app.post("/api/sessions/cleanup", asyncH(async (req, res) => {
     stoppedRealChromeOrphans,
     stopped: stoppedAudioHls + stoppedBrowser + stoppedRealChrome + stoppedRealChromeOrphans,
   });
+}));
+
+app.post("/api/app/restart", asyncH(async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (process.env.XPC_SERVICE_NAME !== LAUNCHD_SERVICE_NAME) {
+    return res.status(503).json({ error: "App restart is available only when YT Streamer is supervised by launchd." });
+  }
+  if (!isSameOriginRequest(req)) return res.status(403).json({ error: "Same-origin request required." });
+  if (!req.is("application/json") || req.body?.confirm !== "restart-app") {
+    return res.status(400).json({ error: "Restart confirmation is required." });
+  }
+  const retryAfter = restartAuthRetryAfter(req);
+  if (retryAfter) {
+    res.set("Retry-After", String(retryAfter));
+    return res.status(429).json({ error: "Too many owner-code attempts. Try again later." });
+  }
+  if (!(await moneyDashboard.authorizeOwnerControl(req))) {
+    recordRestartAuthFailure(req);
+    return res.status(401).json({ error: "Owner access code required." });
+  }
+  restartAuthFailures.delete(restartAuthKey(req));
+  const { token } = await moneyDashboard.accessToken();
+  moneyDashboard.setAccessCookie(req, res, token);
+  const activeJobs = activeBackgroundJobCount();
+  if (activeJobs) {
+    return res.status(409).json({ error: `Wait for ${activeJobs} active download or preparation job${activeJobs === 1 ? "" : "s"} to finish before restarting.` });
+  }
+  if (restartPending) return res.status(409).json({ error: "App restart is already in progress." });
+
+  restartPending = true;
+  res.once("finish", () => {
+    const timer = setTimeout(() => { void shutdownForRestart(); }, 150);
+    timer.unref?.();
+  });
+  res.status(202).json({ ok: true, restarting: true, instanceId: SERVER_INSTANCE_ID });
 }));
 
 // ---------------------------------------------------------------------------
@@ -937,7 +1056,7 @@ await Promise.all([
   realChromeRenderer.cleanupOrphans("startup").catch((err) => console.error("[startup] real chrome cleanup -", err.message)),
 ]);
 
-app.listen(config.port, config.host, () => {
+httpServer = app.listen(config.port, config.host, () => {
   console.log(`\n  YT Streamer webapp`);
   console.log(`  → http://${config.host}:${config.port}`);
   console.log(`  → library: ${config.libraryDir}`);

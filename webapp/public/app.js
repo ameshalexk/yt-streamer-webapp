@@ -187,9 +187,68 @@ function categorySort(a, b) {
   return (ar < 0 ? 99 : ar) - (br < 0 ? 99 : br) || String(a || "").localeCompare(String(b || ""));
 }
 
-function closeModal() { $("#modalBackdrop").hidden = true; $("#modal").innerHTML = ""; }
-function openModal(html) { $("#modal").innerHTML = html; $("#modalBackdrop").hidden = false; }
+let modalReturnFocus = null;
+let modalDismissLocked = false;
+function closeModal() {
+  const backdrop = $("#modalBackdrop");
+  if (backdrop.hidden) return;
+  if (modalDismissLocked) return;
+  backdrop.hidden = true;
+  $("#modal").innerHTML = "";
+  $("#modal").removeAttribute("aria-labelledby");
+  $("#app").inert = false;
+  document.body.classList.remove("modal-open");
+  $("#restartMenuBtn")?.setAttribute("aria-expanded", "false");
+  const returnFocus = modalReturnFocus;
+  modalReturnFocus = null;
+  if (returnFocus?.isConnected && typeof returnFocus.focus === "function") returnFocus.focus();
+}
+function openModal(html, { locked = false } = {}) {
+  const backdrop = $("#modalBackdrop");
+  const modal = $("#modal");
+  if (backdrop.hidden) modalReturnFocus = document.activeElement;
+  modalDismissLocked = locked;
+  modal.innerHTML = html;
+  const title = modal.querySelector("h3");
+  if (title) {
+    title.id ||= "modalTitle";
+    modal.setAttribute("aria-labelledby", title.id);
+  } else {
+    modal.removeAttribute("aria-labelledby");
+  }
+  backdrop.hidden = false;
+  $("#app").inert = true;
+  document.body.classList.add("modal-open");
+  requestAnimationFrame(() => {
+    const target = modal.querySelector("[autofocus], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])");
+    (target || modal).focus();
+  });
+}
 $("#modalBackdrop").addEventListener("click", (e) => { if (e.target.id === "modalBackdrop") closeModal(); });
+$("#modal").addEventListener("keydown", (e) => {
+  if (e.key !== "Tab") return;
+  const focusable = [...$("#modal").querySelectorAll("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex='-1'])")]
+    .filter((element) => !element.hidden && element.getClientRects().length);
+  if (!focusable.length) {
+    e.preventDefault();
+    $("#modal").focus();
+    return;
+  }
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || $("#modalBackdrop").hidden) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  closeModal();
+}, true);
 
 function isMobileMode() { return window.matchMedia("(max-width: 900px)").matches; }
 
@@ -2010,6 +2069,202 @@ function restreamPlayback() {
       if (result?.catch) result.catch((e) => toast(e.message, true));
     }
   }, 150);
+}
+
+const RESTART_ACTIONS = {
+  stream: {
+    title: "Restart current stream?",
+    confirmLabel: "Restart stream",
+    description: "Video and audio will reconnect at the current position. The app itself will keep running.",
+  },
+  reload: {
+    title: "Reload this screen?",
+    confirmLabel: "Reload screen",
+    description: "This browser page will refresh. Any video playing on this screen will stop and can be started again afterward.",
+  },
+  app: {
+    title: "Restart YT Streamer app?",
+    confirmLabel: "Restart app",
+    description: "YT Streamer on the Mac will restart. Streams and browser sessions will disconnect briefly, then this screen will reconnect.",
+  },
+};
+
+function openRestartChooser() {
+  const streamDisabled = !replayFn;
+  openModal(`
+    <h3>Restart &amp; recovery</h3>
+    <p class="restart-dialog-copy">Choose what you want to restart. You will confirm the action on the next screen.</p>
+    <div class="restart-options" id="restartOptions">
+      <button class="restart-option" type="button" data-restart-action="stream" ${streamDisabled ? "disabled" : ""}>
+        <span class="restart-option-icon" aria-hidden="true">↻</span>
+        <span><span class="restart-option-title">Restart current stream</span><span class="restart-option-copy">${streamDisabled ? "Start a video first to use this option." : "Reconnect video and audio without restarting the app."}</span></span>
+      </button>
+      <button class="restart-option" type="button" data-restart-action="reload">
+        <span class="restart-option-icon" aria-hidden="true">⟳</span>
+        <span><span class="restart-option-title">Reload this screen</span><span class="restart-option-copy">Refresh this browser page; the Mac app keeps running.</span></span>
+      </button>
+      <button class="restart-option danger" type="button" data-restart-action="app">
+        <span class="restart-option-icon" aria-hidden="true">⏻</span>
+        <span><span class="restart-option-title">Restart app</span><span class="restart-option-copy">Restart YT Streamer on the Mac and reconnect when it is ready.</span></span>
+      </button>
+    </div>
+    <div class="modal-actions"><button class="btn ghost" id="restartChooserCancel" type="button">Cancel</button></div>
+  `);
+  $("#restartMenuBtn").setAttribute("aria-expanded", "true");
+  $("#restartOptions").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-restart-action]");
+    if (!button || button.disabled) return;
+    openRestartConfirmation(button.dataset.restartAction);
+  });
+  $("#restartChooserCancel").onclick = closeModal;
+}
+
+function openRestartConfirmation(actionName) {
+  const action = RESTART_ACTIONS[actionName];
+  if (!action) return openRestartChooser();
+  const ownerCode = actionName === "app" ? `
+    <div class="restart-owner-code">
+      <label for="restartOwnerCode">Owner access code</label>
+      <input id="restartOwnerCode" form="restartConfirmForm" type="password" inputmode="text" autocomplete="current-password" autocapitalize="none" spellcheck="false" placeholder="Leave blank if this browser is trusted" />
+      <div class="note">Use the same private code as the Money dashboard. It is required only once on each browser.</div>
+    </div>
+  ` : "";
+  openModal(`
+    <h3>${esc(action.title)}</h3>
+    <p class="restart-dialog-copy">${esc(action.description)}</p>
+    ${ownerCode}
+    <p class="restart-error" id="restartActionError" role="alert" hidden></p>
+    <form id="restartConfirmForm">
+      <div class="modal-actions">
+        <button class="btn ghost" id="restartConfirmBack" type="button">Back</button>
+        <button class="btn ${actionName === "app" ? "danger" : "secondary"}" id="restartConfirmBtn" type="submit">${esc(action.confirmLabel)}</button>
+      </div>
+    </form>
+  `);
+  $("#restartConfirmBack").onclick = openRestartChooser;
+  $("#restartConfirmForm").onsubmit = (event) => {
+    event.preventDefault();
+    void runRestartAction(actionName);
+  };
+}
+
+function restartActionError(message) {
+  const error = $("#restartActionError");
+  if (!error) return;
+  error.textContent = message;
+  error.hidden = !message;
+}
+
+async function requestAppRestart(ownerCode) {
+  const headers = { "Content-Type": "application/json" };
+  if (ownerCode) headers["X-YT-Streamer-Owner-Code"] = ownerCode;
+  const response = await fetch("/api/app/restart", {
+    method: "POST",
+    headers,
+    credentials: "same-origin",
+    cache: "no-store",
+    body: JSON.stringify({ confirm: "restart-app" }),
+  });
+  let data = null;
+  try { data = await response.json(); } catch {}
+  if (!response.ok) throw new Error(data?.error || `Restart request failed (${response.status})`);
+  if (response.status !== 202 || data?.restarting !== true || !String(data?.instanceId || "")) {
+    throw new Error("The app did not return a valid restart response.");
+  }
+  return data;
+}
+
+function renderRestartWaiting() {
+  openModal(`
+    <div class="restart-waiting" role="status" aria-live="polite">
+      <div class="restart-spinner" aria-hidden="true"></div>
+      <h3>Restarting YT Streamer…</h3>
+      <p class="restart-dialog-copy">Waiting for the Mac app to come back online. This screen will reload automatically.</p>
+    </div>
+  `, { locked: true });
+}
+
+async function waitForAppRestart(previousInstanceId, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    try {
+      const response = await fetch(`/api/health?_=${Date.now()}`, { cache: "no-store" });
+      if (!response.ok) continue;
+      const health = await response.json();
+      if (health.instanceId && health.instanceId !== previousInstanceId) return health;
+    } catch {}
+  }
+  throw new Error("YT Streamer is taking longer than expected to restart.");
+}
+
+function showRestartTimeout(previousInstanceId, message) {
+  openModal(`
+    <h3>Still waiting for YT Streamer</h3>
+    <p class="restart-dialog-copy">${esc(message)}</p>
+    <div class="modal-actions">
+      <button class="btn ghost" id="restartWaitClose" type="button">Close</button>
+      <button class="btn secondary" id="restartWaitRetry" type="button">Check again</button>
+    </div>
+  `);
+  $("#restartWaitClose").onclick = closeModal;
+  $("#restartWaitRetry").onclick = async () => {
+    renderRestartWaiting();
+    try {
+      await waitForAppRestart(previousInstanceId);
+      window.location.reload();
+    } catch (error) {
+      showRestartTimeout(previousInstanceId, error.message);
+    }
+  };
+}
+
+async function runRestartAction(actionName) {
+  const button = $("#restartConfirmBtn");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  restartActionError("");
+  if (actionName === "stream") {
+    closeModal();
+    if (replayFn) restreamPlayback();
+    else toast("Start a stream first", true);
+    return;
+  }
+  if (actionName === "reload") {
+    button.textContent = "Reloading…";
+    window.location.reload();
+    return;
+  }
+  if (actionName !== "app") return;
+
+  modalDismissLocked = true;
+  const backButton = $("#restartConfirmBack");
+  const codeInput = $("#restartOwnerCode");
+  if (backButton) backButton.disabled = true;
+  if (codeInput) codeInput.disabled = true;
+  button.textContent = "Restarting…";
+  const ownerCode = codeInput?.value.trim() || "";
+  try {
+    const result = await requestAppRestart(ownerCode);
+    renderRestartWaiting();
+    try {
+      await waitForAppRestart(result.instanceId);
+      window.location.reload();
+    } catch (error) {
+      showRestartTimeout(result.instanceId, error.message);
+    }
+  } catch (error) {
+    modalDismissLocked = false;
+    button.disabled = false;
+    button.textContent = RESTART_ACTIONS.app.confirmLabel;
+    if (backButton) backButton.disabled = false;
+    if (codeInput) codeInput.disabled = false;
+    restartActionError(error.message);
+    if (codeInput && /code|required|unauthorized/i.test(error.message)) {
+      codeInput.focus();
+      codeInput.select();
+    }
+  }
 }
 
 function fullscreenElement() {
@@ -5642,6 +5897,7 @@ document.addEventListener("keydown", (e) => {
   else if (state.savedDrawerOpen) closePlaylistDrawer();
   else if (state.mode !== "watch") setPlayerDropdownOpen(true);
 });
+$("#restartMenuBtn").onclick = openRestartChooser;
 $("#stopBtn").onclick = stopPlayback;
 $("#autoplayBtn").onclick = () => setAutoplayEnabled(!autoplayEnabled);
 $("#restreamBtn").onclick = restreamPlayback;

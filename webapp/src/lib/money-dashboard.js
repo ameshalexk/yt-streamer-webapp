@@ -286,6 +286,14 @@ export async function authorize(req) {
   return safeEqual(supplied, token) || safeEqual(suppliedCode, code);
 }
 
+export async function authorizeOwnerControl(req) {
+  const { token } = await accessToken();
+  const { code } = await accessCode();
+  const suppliedToken = String(cookieToken(req) || "");
+  const suppliedCode = String(req.get("x-yt-streamer-owner-code") || "");
+  return safeEqual(suppliedToken, token) || safeEqual(suppliedCode, code);
+}
+
 export function setAccessCookie(req, res, token) {
   const forwardedProto = String(req.headers["x-forwarded-proto"] || "");
   const secure = req.secure || forwardedProto.includes("https");

@@ -379,3 +379,33 @@ export async function send(payload = {}) {
   await helperCommand([action, point.x, point.y, button]);
   return { ok: true };
 }
+
+export async function stop() {
+  const proc = helper;
+  helper = null;
+  helperBuffer = "";
+  statusCache = null;
+  failPending(new Error("Desktop input helper stopped for app restart"));
+  if (!proc) return false;
+  return new Promise((resolve) => {
+    let settled = false;
+    let finalTimer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(forceTimer);
+      if (finalTimer) clearTimeout(finalTimer);
+      resolve(true);
+    };
+    proc.once("close", finish);
+    const forceTimer = setTimeout(() => {
+      if (proc.exitCode === null && proc.signalCode === null) {
+        try { proc.kill("SIGKILL"); } catch {}
+      }
+      finalTimer = setTimeout(finish, 300);
+    }, 500);
+    try { proc.stdin.end(); } catch {}
+    try { proc.kill("SIGTERM"); } catch { finish(); }
+    if (proc.exitCode !== null || proc.signalCode !== null) finish();
+  });
+}
