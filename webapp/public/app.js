@@ -734,6 +734,20 @@ function formatMpegtsError(type, detail, info) {
   return streamErrorDetail(parts.join(" "));
 }
 
+function isAutoplayRejection(error) {
+  return error?.name === "NotAllowedError" || /autoplay|user gesture|user interaction/i.test(String(error?.message || ""));
+}
+
+function handleVideoPlayRejection(attempt, error) {
+  if (!currentAttempt(attempt)) return;
+  if (isAutoplayRejection(error)) {
+    setBadge("reconnecting", "▶ Tap to play");
+    showStreamNotice("warning", "Playback needs a tap", "The browser blocked autoplay. Tap the video or Resume to start playback.");
+    return;
+  }
+  failStreamAttempt(attempt, "Playback could not start", error?.message || "The browser could not start video playback.");
+}
+
 function markStreamLive(attempt) {
   if (!currentAttempt(attempt)) return;
   clearStreamTimers();
@@ -772,6 +786,8 @@ function streamSeekTarget(value) {
 
 function getStreamCurrentTime() {
   if (!streamSeek.seekable) return 0;
+  const bufferedTime = activeCompat?.bufferedPlayer?.currentTime?.();
+  if (Number.isFinite(bufferedTime)) return clampStreamSeekTime(streamSeek.startAt + bufferedTime);
   const videoTime = $("#video").currentTime || 0;
   const audioTime = $("#audio").currentTime || 0;
   if (legacy.playing && audioTime > 0) return clampStreamSeekTime(audioTime);
@@ -979,22 +995,28 @@ function seekStreamTo(time) {
 
 function failStreamAttempt(attempt, title, detail) {
   if (!currentAttempt(attempt)) return;
+  try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
   streamAttempt++;
   clearStreamTimers();
   stopStreamSeekTimer(false);
   destroyPlayer();
-  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), audio = $("#audio");
-  screen.classList.remove("loading");
+  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), audio = $("#audio");
+  screen.classList.remove("loading", "mjpeg-buffered-mode");
   setBadge("error", "Stream failed");
   showStreamNotice("error", title, detail);
   try { video.pause(); } catch {}
   video.removeAttribute("src");
   try { video.load(); } catch {}
   img.removeAttribute("src");
+  if (canvas) {
+    const context = canvas.getContext("2d");
+    context?.clearRect(0, 0, canvas.width, canvas.height);
+  }
   try { audio.pause(); } catch {}
   audio.removeAttribute("src");
   try { audio.load(); } catch {}
   activeCompat = null;
+  updateBufferedMjpegDebug(null);
   resetPauseControl(true);
   toast(title, true);
 }
@@ -1045,7 +1067,9 @@ function pausePlayback() {
   try { video.pause(); } catch {}
   try { audio.pause(); } catch {}
   try { browserPcmAudio?.ctx?.suspend?.(); } catch {}
-  if (screen.classList.contains("mjpeg-mode")) {
+  if (screen.classList.contains("mjpeg-buffered-mode") && activeCompat?.bufferedPlayer) {
+    activeCompat.bufferedPlayer.pauseUser();
+  } else if (screen.classList.contains("mjpeg-mode")) {
     freezeMjpegFrame();
     streamAttempt++;
     clearStreamTimers();
@@ -1055,7 +1079,7 @@ function pausePlayback() {
   }
   clearInterval(streamSeek.timer);
   streamSeek.timer = null;
-  if (streamSeek.seekable && screen.classList.contains("mjpeg-mode")) {
+  if (streamSeek.seekable && (screen.classList.contains("mjpeg-mode") || screen.classList.contains("mjpeg-buffered-mode"))) {
     streamSeek.startAt = pausedResumeAt;
     streamSeek.liveAtMs = 0;
     updateStreamSeekUi(pausedResumeAt);
@@ -1071,12 +1095,17 @@ function pausePlayback() {
 function resumePlayback() {
   if (!playbackPaused) return;
   const screen = $("#screen");
+  const wasBufferedMjpeg = screen.classList.contains("mjpeg-buffered-mode") && activeCompat?.bufferedPlayer;
   const wasMjpeg = screen.classList.contains("mjpeg-mode");
   const resumeAt = streamReplayTime(pausedResumeAt);
   playbackPaused = false;
   screen.classList.remove("playback-paused");
   $("#pauseFrame").hidden = true;
   setPauseButtonState("Ⅱ Pause", false);
+  if (wasBufferedMjpeg) {
+    activeCompat.bufferedPlayer.resumeUser();
+    return;
+  }
   if (wasMjpeg && replayFn) {
     const result = replayFn(streamSeek.seekable || legacy.playing ? resumeAt : undefined);
     if (result?.catch) result.catch((e) => toast(e.message, true));
@@ -1084,10 +1113,11 @@ function resumePlayback() {
   }
   const video = $("#video");
   const audio = $("#audio");
-  video.play().catch(() => {});
+  const attempt = streamAttempt;
+  video.play().catch((error) => handleVideoPlayRejection(attempt, error));
   if (soundOn && activeCompat?.browserPcm) startBrowserPcmAudio(activeCompat.audioUrl, true);
   if (soundOn && audio.src) audio.play().catch(() => toast("Tap sound to resume audio"));
-  markStreamLive(streamAttempt);
+  markStreamLive(attempt);
 }
 
 function togglePlaybackPause() {
@@ -1172,10 +1202,11 @@ function canTryMpegts() {
 }
 
 function cleanupMedia() {
-  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), audio = $("#audio");
+  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), audio = $("#audio");
   setDesktopStreamActive(false);
   setBrowserStreamActive(false);
-  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active");
+  try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
+  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "mjpeg-buffered-mode");
   streamAttempt++;
   clearStreamTimers();
   clearStreamNotice();
@@ -1197,7 +1228,12 @@ function cleanupMedia() {
   img.onerror = null;
   img.removeAttribute("src");
   img.style.visibility = "";
+  if (canvas) {
+    const context = canvas.getContext("2d");
+    context?.clearRect(0, 0, canvas.width, canvas.height);
+  }
   try { audio.pause(); } catch {}
+  audio.onloadedmetadata = null;
   audio.onloadeddata = null;
   audio.oncanplay = null;
   audio.oncanplaythrough = null;
@@ -1207,6 +1243,7 @@ function cleanupMedia() {
   audio.removeAttribute("src");
   try { audio.load(); } catch {}
   activeCompat = null;
+  updateBufferedMjpegDebug(null);
   audioPrompted = false;
 }
 
@@ -1297,7 +1334,7 @@ function renderEmbedCode(code, heightValue) {
   frame.hidden = false;
   screen.style.height = normalizedEmbedHeight(heightValue || $("#embedHeight")?.value);
   screen.style.aspectRatio = "auto";
-  screen.classList.remove("loading", "video-mode", "mjpeg-mode", "browser-mode", "browser-input-active");
+  screen.classList.remove("loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "browser-mode", "browser-input-active");
   screen.classList.add("playing", "embed-mode");
   activeEmbedCode = code;
   activeEmbedHeight = heightValue || $("#embedHeight")?.value || "";
@@ -1718,6 +1755,231 @@ function measuredAudioStartupDelayMs(startedAt) {
   return Math.max(0, Math.min(5000, Math.round(performance.now() - startedAt)));
 }
 
+function bufferedMjpegSupported() {
+  const canvas = $("#mjpegCanvas");
+  return Boolean(window.BufferedMjpeg?.BufferedMjpegPlayer
+    && window.BufferedMjpeg?.supportsBufferedMjpeg?.(canvas));
+}
+
+function updateBufferedMjpegDebug(stats = null) {
+  window.__YT_STREAMER_BUFFER_STATS__ = stats ? { ...stats, updatedAt: Date.now() } : null;
+}
+
+function markBufferedStreamPlaying(attempt, stats = null) {
+  if (!currentAttempt(attempt)) return;
+  clearStreamTimers();
+  clearStreamNotice();
+  $("#screen").classList.remove("loading");
+  const buffered = Number(stats?.queueSeconds || 0);
+  const suffix = buffered > 0 ? " · " + buffered.toFixed(1) + "s buf" : "";
+  setBadge("live", "▶ " + currentSettingsLabel() + suffix);
+  if (streamSeek.seekable) {
+    startStreamSeekTimer();
+    if (isScreenFullscreen()) showFullscreenProgress();
+  }
+}
+
+function finishBufferedStream(attempt) {
+  if (!currentAttempt(attempt)) return;
+  clearStreamTimers();
+  stopStreamSeekTimer(false);
+  if (streamSeek.duration) {
+    streamSeek.startAt = streamSeek.duration;
+    updateStreamSeekUi(streamSeek.duration);
+  } else {
+    updateStreamSeekUi();
+  }
+  $("#screen").classList.remove("loading");
+  setBadge("paused", "■ ENDED");
+  resetPauseControl(true);
+  void handleAutoplayEnd();
+}
+
+function retryBufferedAudioFromGesture() {
+  return Boolean(activeCompat?.bufferedPlayer?.retryFromGesture?.());
+}
+
+function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
+  if (!bufferedMjpegSupported()) {
+    playCompatStream({ mjpegUrl, audioUrl }, label, meta);
+    showStreamNotice(
+      "warning",
+      "Buffered playback unavailable",
+      "This browser cannot use streaming fetch + canvas playback, so YT Streamer is using the legacy MJPEG player."
+    );
+    return;
+  }
+
+  if (legacy.playing && !meta.keepLegacyState) {
+    state.legacyPlayingId = null;
+    legacy.playing = null;
+    legacy.resolution = null;
+    renderLegacyLibrary();
+  }
+
+  const screen = $("#screen");
+  const canvas = $("#mjpegCanvas");
+  const audio = $("#audio");
+  cleanupMedia();
+  resetPauseControl(false);
+  if (meta.autoplayContext) {
+    setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
+  } else {
+    setAutoplayContext();
+  }
+  configureStreamSeek(meta, meta.startAt || 0);
+
+  const attempt = streamAttempt;
+  const bufferedUrl = withUrlParam(mjpegUrl, "buffered", "1");
+  let audioFailed = false;
+  const parsed = new URL(bufferedUrl, window.location.origin);
+  const requestedFps = Math.max(1, Number(parsed.searchParams.get("fps") || $("#ctlFps").value || 12));
+
+  $("#nowPlaying").textContent = label || "Playing";
+  $("#stopBtn").disabled = false;
+  $("#restreamBtn").disabled = false;
+  screen.classList.remove("video-mode", "mjpeg-mode");
+  screen.classList.add("playing", "loading", "mjpeg-buffered-mode");
+  setBadge("reconnecting", "Buffering 0.0 / 3.0s");
+  startStreamWatchdog(attempt, "Buffered MJPEG playback", {
+    warnMs: COMPAT_STREAM_WARN_MS,
+    failMs: COMPAT_STREAM_FAIL_MS,
+  });
+
+  activeCompat = {
+    mjpegUrl: bufferedUrl,
+    audioUrl,
+    audioReady: !audioUrl || !soundOn,
+    videoReady: false,
+    videoStarted: true,
+    playbackStarted: false,
+    buffered: true,
+    bufferedPlayer: null,
+    browserAudio: false,
+    browserPcm: false,
+  };
+
+  let player = null;
+  player = new window.BufferedMjpeg.BufferedMjpegPlayer({
+    url: bufferedUrl,
+    canvas,
+    audio,
+    fps: requestedFps,
+    audioClockOffset: meta.audioElementStartAt || 0,
+    sessionId: attempt,
+    isCurrent: (sessionId) => currentAttempt(sessionId)
+      && activeCompat?.bufferedPlayer === player
+      && activeCompat?.mjpegUrl === bufferedUrl,
+    audioEnabled: () => Boolean(audioUrl && soundOn && !audioFailed),
+    startupSeconds: 3,
+    rebufferSeconds: 1.5,
+    maxQueueSeconds: 5,
+    maxQueueBytes: 24 * 1024 * 1024,
+    maxFrameBytes: 3 * 1024 * 1024,
+    onState: (stateName, detail = {}) => {
+      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      const stats = detail.stats || player.getStats();
+      updateBufferedMjpegDebug(stats);
+      if (stateName === "buffering") {
+        screen.classList.add("loading");
+        const buffered = Number(detail.bufferedSeconds ?? stats.queueSeconds ?? 0);
+        const target = Number(detail.targetSeconds || (stats.renderedFrames ? 1.5 : 3));
+        if (detail.reason === "audio") {
+          setBadge("reconnecting", "Buffering audio · " + buffered.toFixed(1) + "s video ready");
+        } else {
+          setBadge("reconnecting", "Buffering " + buffered.toFixed(1) + " / " + target.toFixed(1) + "s");
+        }
+        return;
+      }
+      if (stateName === "autoplay-blocked") {
+        screen.classList.remove("loading");
+        setBadge("reconnecting", "▶ Tap to start audio");
+        showStreamNotice(
+          "warning",
+          "Playback needs a tap",
+          "Audio is ready, but the browser requires a user gesture. Tap the player or Resume to start synchronized playback."
+        );
+        return;
+      }
+      if (stateName === "syncing") {
+        screen.classList.remove("loading");
+        setBadge("reconnecting", "Syncing A/V…");
+        return;
+      }
+      if (stateName === "playing") {
+        activeCompat.playbackStarted = true;
+        activeCompat.videoReady = true;
+        markBufferedStreamPlaying(attempt, stats);
+        return;
+      }
+      if (stateName === "background") {
+        setBadge("paused", "Paused in background");
+      }
+    },
+    onStats: (stats) => {
+      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      updateBufferedMjpegDebug(stats);
+      if (stats.state === "buffering") {
+        const target = stats.renderedFrames ? 1.5 : 3;
+        setBadge("reconnecting", "Buffering " + stats.queueSeconds.toFixed(1) + " / " + target.toFixed(1) + "s");
+      } else if (stats.state === "playing" && stats.renderedFrames % Math.max(1, Math.round(stats.fps)) === 0) {
+        markBufferedStreamPlaying(attempt, stats);
+      }
+    },
+    onError: (error) => {
+      if (!currentAttempt(attempt)) return;
+      failStreamAttempt(
+        attempt,
+        "Buffered MJPEG playback failed",
+        streamErrorDetail(error?.message || "The browser could not parse or render the MJPEG stream.")
+      );
+    },
+    onEnded: () => finishBufferedStream(attempt),
+  });
+
+  activeCompat.bufferedPlayer = player;
+  updateBufferedMjpegDebug(player.getStats());
+  audio.muted = !soundOn;
+
+  if (audioUrl && soundOn) {
+    const markAudioReady = () => {
+      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      if (!audioReadyForSync(audio)) return;
+      activeCompat.audioReady = true;
+      player.setAudioReady(true);
+    };
+    audio.onloadedmetadata = () => {
+      if (meta.audioElementStartAt) {
+        try { audio.currentTime = meta.audioElementStartAt; } catch {}
+      }
+      markAudioReady();
+    };
+    audio.onloadeddata = markAudioReady;
+    audio.oncanplay = markAudioReady;
+    audio.oncanplaythrough = markAudioReady;
+    audio.onerror = () => {
+      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      audioFailed = true;
+      activeCompat.audioReady = true;
+      toast("Audio failed; continuing with video clock", true);
+      player.setAudioReady(true);
+    };
+    setCompatAudioSource(audio, audioUrl).then(() => {
+      markAudioReady();
+    }).catch((error) => {
+      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      console.warn("[buffered-mjpeg-audio] source failed:", error.message);
+      audioFailed = true;
+      activeCompat.audioReady = true;
+      player.setAudioReady(true);
+    });
+  } else {
+    player.setAudioReady(true);
+  }
+
+  void player.start();
+}
+
 function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const screen = $("#screen"), img = $("#mjpeg"), audio = $("#audio");
   cleanupMedia();
@@ -1870,6 +2132,7 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
 // Play one synced MPEG-TS stream (H.264+AAC) via mpegts.js / MSE.
 async function playStream(sources, label, meta = {}) {
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
+  if (meta.bufferedMjpeg && mjpegUrl) return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta);
   const screen = $("#screen"), video = $("#video");
   if (legacy.playing) {
     state.legacyPlayingId = null;
@@ -1930,7 +2193,7 @@ async function playStream(sources, label, meta = {}) {
   video.onended = handleAutoplayEnd;
   video.muted = !soundOn;
   mpegtsPlayer.load();
-  video.play().catch(() => {});
+  video.play().catch((error) => handleVideoPlayRejection(attempt, error));
 }
 
 function playNativeVideoStream({ nativeUrl, fallback }, label, meta = {}) {
@@ -1966,7 +2229,7 @@ function playNativeVideoStream({ nativeUrl, fallback }, label, meta = {}) {
   video.onended = handleAutoplayEnd;
   video.src = nativeUrl;
   try { video.load(); } catch {}
-  video.play().catch(() => {});
+  video.play().catch((error) => handleVideoPlayRejection(attempt, error));
 }
 
 async function enrichYoutubeStreamMeta(item) {
@@ -2001,6 +2264,7 @@ async function playItem(item) {
       audioUrl: `/stream/audio/item/${item.id}?${audioQuery(startAt)}`,
     }, item.title, {
       seekable: item.type === "youtube" || item.type === "file",
+      bufferedMjpeg: item.type === "youtube" || item.type === "file",
       duration: item.meta?.duration,
       startAt,
     });
@@ -2031,7 +2295,7 @@ function stopPlayback() {
   resetBrowserZoom();
   renderDesktopInputUi();
   setBadge("hidden");
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "embed-mode", "browser-mode");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "embed-mode", "browser-mode");
   $("#screen").style.height = "";
   $("#screen").style.aspectRatio = "";
   $("#nowPlaying").textContent = "Player";
@@ -2058,7 +2322,7 @@ function restreamPlayback() {
   stopDesktopAudioHlsSession();
   clearBrowserAudioRetry();
   cleanupMedia();
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "embed-mode", "browser-mode");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "embed-mode", "browser-mode");
   setBadge("reconnecting", "↻ Restreaming...");
   toast("Reloading stream");
   clearTimeout(restreamTimer);
@@ -2783,6 +3047,7 @@ async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
       audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
     }, video.title || "YouTube", {
       seekable: !video.isLive,
+      bufferedMjpeg: !video.isLive,
       duration: video.duration,
       startAt,
       autoplayContext: !video.isLive ? {
@@ -2810,7 +3075,6 @@ function legacyStreamUrl(startAt = 0) {
 }
 
 function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = null, options = {}) {
-  const screen = $("#screen"), img = $("#mjpeg"), audio = $("#audio");
   cleanupMedia();
   stopStreamSeekTimer(true);
   state.playingItemId = null;
@@ -2819,11 +3083,8 @@ function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = nu
   state.youtubeSearchPlayingId = null;
   state.youtubeHistoryPlayingId = null;
   legacy.playing = item;
-  resetPauseControl(false);
   legacy.resolution = resolution || item.resolutions?.[0];
   $("#ctlHeight").value = String(legacy.resolution);
-  setAutoplayContext("library", item.id, autoplayQueue || state.legacyItems);
-  configureStreamSeek({ seekable: true, duration: item.duration }, startAt);
   renderItems();
   renderLegacyLibrary();
   renderRecommendations();
@@ -2831,34 +3092,30 @@ function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = nu
   renderYoutubeHistory();
   setDownloadsDrawerOpen(false);
   if (isMobileMode()) setPlayerDropdownOpen(true);
-  $("#nowPlaying").textContent = item.title || "Processed video";
-  $("#stopBtn").disabled = false;
-  $("#restreamBtn").disabled = false;
-  screen.classList.remove("video-mode");
-  screen.classList.add("playing", "loading", "mjpeg-mode");
-  setBadge("reconnecting", "↻ Starting processed video...");
-  const attempt = streamAttempt;
-  startStreamWatchdog(attempt, "Processed video");
 
-  img.onload = () => {
-    if (!currentAttempt(attempt)) return;
-    markStreamLive(attempt);
-  };
-  img.onerror = () => failStreamAttempt(attempt, "Processed video failed", "The Mac could not convert the saved video at this position.");
-  img.src = legacyStreamUrl(startAt);
+  replayFn = (resumeAt = getStreamCurrentTime() || startAt || 0) =>
+    playLegacyItem(item, legacy.resolution, resumeAt, autoplayQueue, { skipHistory: true });
 
-  audio.src = `/stream/legacy-audio/${encodeURIComponent(item.id)}?_=${Date.now()}`;
-  audio.muted = !soundOn;
-  audio.onloadedmetadata = () => {
-    try { audio.currentTime = startAt || 0; } catch {}
-    if (soundOn) audio.play().catch(() => toast("Tap sound to start audio"));
-  };
-  audio.oncanplay = () => {
-    if (soundOn) audio.play().catch(() => {});
-  };
-  audio.onended = handleAutoplayEnd;
-  replayFn = (resumeAt = $("#audio").currentTime || startAt || 0) => playLegacyItem(item, legacy.resolution, resumeAt, autoplayQueue, { skipHistory: true });
-  if (!options.skipHistory && (item.originalUrl || item.originalYoutubeId)) void recordWatchHistory(item, "library");
+  playBufferedMjpegStream({
+    mjpegUrl: legacyStreamUrl(startAt),
+    audioUrl: `/stream/legacy-audio/${encodeURIComponent(item.id)}?_=${Date.now()}`,
+  }, item.title || "Processed video", {
+    seekable: true,
+    bufferedMjpeg: true,
+    duration: item.duration,
+    startAt,
+    keepLegacyState: true,
+    audioElementStartAt: startAt,
+    autoplayContext: {
+      kind: "library",
+      itemId: item.id,
+      queue: autoplayQueue || state.legacyItems,
+    },
+  });
+
+  if (!options.skipHistory && (item.originalUrl || item.originalYoutubeId)) {
+    void recordWatchHistory(item, "library");
+  }
 }
 
 window.__closeModal = closeModal;
@@ -3162,6 +3419,7 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
       audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
     }, item.title || "YouTube", {
       seekable: !item.isLive && !item.isUpcoming,
+      bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
       startAt,
       autoplayContext: !item.isLive && !item.isUpcoming ? {
@@ -3210,6 +3468,7 @@ async function streamYoutubeHistoryItem(item) {
       audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
     }, item.title || "YouTube", {
       seekable: !item.isLive,
+      bufferedMjpeg: !item.isLive,
       duration: item.duration,
       startAt,
     });
@@ -3545,6 +3804,7 @@ async function streamRecommendation(item, autoplayQueue = null) {
       audioUrl: prepared ? `/stream/audio/prepared/${encodeURIComponent(item.id)}?${audioQuery(startAt)}` : `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
     }, item.title || "YouTube", {
       seekable: !item.isLive && !item.isUpcoming,
+      bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
       startAt,
       autoplayContext: !item.isLive && !item.isUpcoming ? {
@@ -4672,7 +4932,7 @@ function clearBrowserLocalPlayback(message = "") {
     resetPauseControl(true);
     replayFn = null;
     setBadge("hidden");
-    $("#screen")?.classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "browser-mode", "browser-input-active", "browser-keyboard-active");
+    $("#screen")?.classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "browser-mode", "browser-input-active", "browser-keyboard-active");
     $("#nowPlaying").textContent = "Player";
     $("#stopBtn").disabled = true;
     $("#restreamBtn").disabled = true;
@@ -5746,7 +6006,9 @@ $("#emptyBrowserBtn").onclick = openBrowser;
 $("#emptyEmbedBtn").onclick = openEmbed;
 $("#emptyLibraryBtn").onclick = openLegacyLibrary;
 $("#emptyPasteBtn").onclick = () => {
-  setMode("watch");
+  // Home hides the idle player, including the URL field.
+  setMode("browse");
+  setPlayerDropdownOpen(true);
   const input = $("#quickUrl");
   input.focus();
   input.select();
@@ -6054,6 +6316,27 @@ $("#fullscreenProgressTrack").addEventListener("keydown", (e) => {
 });
 $("#muteBtn").onclick = () => {
   const a = $("#audio");
+  const bufferedPlayer = activeCompat?.bufferedPlayer;
+  if (bufferedPlayer) {
+    if (!playbackPaused && soundOn && activeCompat?.audioUrl && bufferedPlayer.getStats?.().state === "autoplay-blocked") {
+      bufferedPlayer.retryFromGesture();
+      return;
+    }
+    const resumeAt = getStreamCurrentTime();
+    const localTime = bufferedPlayer.currentTime();
+    soundOn = !soundOn;
+    $("#muteBtn").textContent = soundOn ? "🔊" : "🔇";
+    a.muted = !soundOn;
+    if (!soundOn) {
+      bufferedPlayer.setAudioDisabled(true, localTime);
+      return;
+    }
+    if (!playbackPaused && replayFn) {
+      const result = replayFn(resumeAt);
+      if (result?.catch) result.catch((error) => toast(error.message, true));
+    }
+    return;
+  }
   if (!playbackPaused && soundOn && activeCompat?.audioUrl && a.paused) {
     startCompatAudio(true);
     return;
@@ -6199,6 +6482,7 @@ function activeScreenMediaElement() {
   const screen = $("#screen");
   if (screen.classList.contains("video-mode")) return $("#video");
   if (screen.classList.contains("mjpeg-mode")) return $("#mjpeg");
+  if (screen.classList.contains("mjpeg-buffered-mode")) return $("#mjpegCanvas");
   return null;
 }
 
@@ -6597,6 +6881,7 @@ function handleDesktopPanPointerUp(e) {
 
   if (window.PointerEvent) {
     screen.addEventListener("pointerdown", (e) => {
+      retryBufferedAudioFromGesture();
       fullscreenTapRevealOnly = canAutoHideScreenOverlays()
         && document.body.classList.contains("fullscreen-controls-idle")
         && !desktopInputActiveForScreen()
@@ -6634,6 +6919,7 @@ function handleDesktopPanPointerUp(e) {
     });
   } else {
     screen.addEventListener("touchstart", (e) => {
+      retryBufferedAudioFromGesture();
       fullscreenTapRevealOnly = canAutoHideScreenOverlays()
         && document.body.classList.contains("fullscreen-controls-idle")
         && !desktopInputActiveForScreen()
@@ -6705,6 +6991,7 @@ $("#quickPlayBtn").onclick = async () => {
         audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
       }, info?.title || "YouTube", {
         seekable: !info?.isLive,
+        bufferedMjpeg: !info?.isLive,
         duration: info?.duration,
         startAt,
       });
@@ -6804,4 +7091,7 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
   });
   document.addEventListener("pointerdown", retryBrowserAudioFromGesture, true);
   document.addEventListener("keydown", retryBrowserAudioFromGesture, true);
+  document.addEventListener("visibilitychange", () => {
+    activeCompat?.bufferedPlayer?.setVisible?.(!document.hidden);
+  });
 })();

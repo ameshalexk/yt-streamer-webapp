@@ -1,0 +1,2 @@
+# Includes the matching JavaScript challenge solver required for YouTube.
+yt-dlp[default]==2026.8.19

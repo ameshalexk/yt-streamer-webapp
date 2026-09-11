@@ -23,6 +23,10 @@ app.use(express.json({ limit: "256kb" }));
 const SERVER_STARTED_AT = Date.now();
 const SERVER_INSTANCE_ID = `${SERVER_STARTED_AT.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const LAUNCHD_SERVICE_NAME = "com.ytstreamer.webapp";
+const YOUTUBE_STREAM_HEADERS = {
+  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/145 Safari/537.36",
+  referer: "https://www.youtube.com/",
+};
 const RESTART_AUTH_WINDOW_MS = 10 * 60 * 1000;
 const RESTART_AUTH_MAX_FAILURES = 5;
 const restartAuthFailures = new Map();
@@ -870,6 +874,10 @@ app.get("/stream/hls/browser-audio/:id/:file", (req, res) => {
   res.sendFile(filePath);
 });
 
+function wantsBufferedMjpeg(req) {
+  return req.query.buffered === "1";
+}
+
 // Stream a saved item by id (resolves type: m3u8 | youtube | file).
 app.get("/stream/item/:itemId", asyncH(async (req, res) => {
   const found = await store.findItem(req.params.itemId);
@@ -879,7 +887,7 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
 
   if (item.type === "youtube") {
     const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(item.url, config.download.maxHeight);
-    return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp });
+    return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: !wantsBufferedMjpeg(req), allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
   }
   if (item.type === "file") {
     // Guard: only stream files that live inside the library dir.
@@ -888,7 +896,7 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
       return res.status(403).json({ error: "file outside library" });
     }
     try { await fs.access(resolved); } catch { return res.status(404).json({ error: "file missing" }); }
-    return stream.streamMjpeg(req, res, { input: resolved, params, isLive: false, startAt: req.query.timestamp });
+    return stream.streamMjpeg(req, res, { input: resolved, params, isLive: false, allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp });
   }
   // default: m3u8 / direct url (carry any saved UA/referer headers)
   return stream.streamMjpeg(req, res, {
@@ -915,7 +923,7 @@ app.get("/stream/youtube", asyncH(async (req, res) => {
   if (!url) return res.status(400).json({ error: "url required" });
   const params = stream.normalizeParams(req.query);
   const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(url, config.download.maxHeight);
-  return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp });
+  return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: !wantsBufferedMjpeg(req), allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
 }));
 
 app.get("/stream/prepared/:id", asyncH(async (req, res) => {
@@ -925,6 +933,7 @@ app.get("/stream/prepared/:id", asyncH(async (req, res) => {
     input: item.filePath,
     params: stream.normalizeParams(req.query),
     isLive: false,
+    allowBurst: wantsBufferedMjpeg(req),
     startAt: req.query.timestamp,
   });
 }));
@@ -942,6 +951,7 @@ app.get("/stream/legacy/:id/:resolution", asyncH(async (req, res) => {
     input,
     params: stream.normalizeParams({ ...req.query, height: req.query.height || resolution }),
     isLive: false,
+    allowBurst: wantsBufferedMjpeg(req),
     startAt: req.query.timestamp,
   });
 }));
@@ -963,7 +973,7 @@ app.get("/stream/ts/item/:itemId", asyncH(async (req, res) => {
   const params = stream.normalizeParams(req.query);
   if (item.type === "youtube") {
     const { videoUrl } = await ytdlp.getStreamUrls(item.url, config.download.maxHeight);
-    return stream.streamTS(req, res, { input: videoUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp });
+    return stream.streamTS(req, res, { input: videoUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
   }
   if (item.type === "file") {
     const resolved = path.resolve(item.url);
@@ -986,7 +996,7 @@ app.get("/stream/ts/youtube", asyncH(async (req, res) => {
   if (!url) return res.status(400).json({ error: "url required" });
   const params = stream.normalizeParams(req.query);
   const { videoUrl } = await ytdlp.getStreamUrls(url, config.download.maxHeight);
-  return stream.streamTS(req, res, { input: videoUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp });
+  return stream.streamTS(req, res, { input: videoUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
 }));
 
 app.get("/stream/ts/prepared/:id", asyncH(async (req, res) => {
@@ -1007,7 +1017,7 @@ app.get("/stream/audio/item/:itemId", asyncH(async (req, res) => {
   const { item } = found;
   if (item.type === "youtube") {
     const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(item.url, config.download.maxHeight);
-    return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp });
+    return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
   }
   if (item.type === "file") {
     const resolved = path.resolve(item.url);
@@ -1028,7 +1038,7 @@ app.get("/stream/audio/youtube", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
   const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(url, config.download.maxHeight);
-  return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp });
+  return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
 }));
 
 app.get("/stream/audio/prepared/:id", asyncH(async (req, res) => {

@@ -214,6 +214,7 @@
           </div>
           <video id="video" playsinline></video>
           <img id="mjpeg" alt="" />
+          <canvas id="mjpegCanvas" aria-label="Buffered video"></canvas>
           <canvas id="pauseFrame" aria-hidden="true"></canvas>
           <iframe id="embedFrame" title="Embedded player" allowfullscreen hidden></iframe>
           <audio id="audio" playsinline></audio>
@@ -727,6 +728,7 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
-  <script src="/app.js?v=20260720-restart-controls"></script>
+  <script src="/buffered-mjpeg.js?v=20260911-buffered-mjpeg"></script>
+  <script src="/app.js?v=20260911-buffered-mjpeg"></script>
 </body>
 </html>

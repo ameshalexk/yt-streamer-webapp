@@ -179,7 +179,7 @@ function seekSeconds(value) {
   return Number.isFinite(n) && n > 0 ? Math.max(0, n) : 0;
 }
 
-function buildArgs({ input, audioInput, params, isLive, userAgent, referer, startAt = 0, paceInput = false }) {
+export function buildMjpegArgs({ input, audioInput, params, isLive, userAgent, referer, startAt = 0, paceInput = false, allowBurst = false }) {
   const vf = [];
   if (params.height && params.height > 0) vf.push(`scale=-2:${params.height}`);
   vf.push(`fps=${params.fps}`);
@@ -189,7 +189,10 @@ function buildArgs({ input, audioInput, params, isLive, userAgent, referer, star
 
   // Reconnect logic + optional headers for flaky/protected network sources (HLS/HTTP).
   if (/^https?:\/\//i.test(input)) {
-    if (userAgent) args.push("-user_agent", userAgent);
+    // Direct googlevideo URLs commonly reject ffmpeg's default identity.
+    if (userAgent || /(^|\.)googlevideo\.com\//i.test(input)) {
+      args.push("-user_agent", userAgent || "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/145 Safari/537.36");
+    }
     if (referer) args.push("-headers", `Referer: ${referer}\r\n`);
     args.push(
       "-reconnect", "1",
@@ -198,8 +201,10 @@ function buildArgs({ input, audioInput, params, isLive, userAgent, referer, star
       "-rw_timeout", "15000000"
     );
   }
-  // Pace inputs in real time so ffmpeg doesn't burst buffered media and make the client catch up.
-  if (paceInput || isLive || !/^https?:\/\//i.test(input)) args.push("-re");
+  // Keep live/legacy clients realtime, but permit explicitly buffered on-demand clients
+  // to run ahead. HTTP backpressure still bounds ffmpeg when the browser queue is full.
+  const isHttp = /^https?:\/\//i.test(input);
+  if (paceInput || isLive || (!isHttp && !allowBurst)) args.push("-re");
   if (seek) args.push("-ss", String(seek));
 
   args.push("-i", input);
@@ -218,14 +223,14 @@ function buildArgs({ input, audioInput, params, isLive, userAgent, referer, star
 
 // Spawns ffmpeg and streams MJPEG to `res`. Cleans up on client disconnect.
 // input: m3u8 URL, direct http(s) URL, or local file path.
-export function streamMjpeg(req, res, { input, audioInput = null, params, isLive = false, userAgent = "", referer = "", startAt = 0, paceInput = false }) {
+export function streamMjpeg(req, res, { input, audioInput = null, params, isLive = false, userAgent = "", referer = "", startAt = 0, paceInput = false, allowBurst = false }) {
   if (active >= config.maxConcurrentStreams) {
     res.status(429).type("text/plain").end("Too many active streams. Stop one and retry.");
     return;
   }
   active++;
 
-  const args = buildArgs({ input, audioInput, params, isLive, userAgent, referer, startAt, paceInput });
+  const args = buildMjpegArgs({ input, audioInput, params, isLive, userAgent, referer, startAt, paceInput, allowBurst });
   const ff = spawn(config.ffmpegPath, args, { stdio: ["ignore", "pipe", "pipe"] });
   pipeFfmpegOutput(req, res, ff, {
     label: "stream",
@@ -235,6 +240,9 @@ export function streamMjpeg(req, res, { input, audioInput = null, params, isLive
       Pragma: "no-cache",
       Connection: "close",
       "X-Accel-Buffering": "no",
+      "X-MJPEG-FPS": String(params.fps),
+      "X-MJPEG-Start": String(seekSeconds(startAt)),
+      "X-MJPEG-Buffered": allowBurst ? "1" : "0",
     },
     onCleanup: () => {
       active = Math.max(0, active - 1);

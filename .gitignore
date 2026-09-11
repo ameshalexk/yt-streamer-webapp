@@ -16,6 +16,7 @@ webapp/data/
 # Local environment and credentials
 .env
 .env.*
+webapp/.venv-ytdlp/
 *.pem
 *.key
 *.crt

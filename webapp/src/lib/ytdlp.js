@@ -6,7 +6,7 @@ import { config } from "../config.js";
 
 function run(args, { timeoutMs = 60000 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(config.ytdlpPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(config.ytdlpPath, ["--ignore-config", ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
     const timer = setTimeout(() => {
@@ -106,7 +106,7 @@ export async function getStreamUrls(url, maxHeight = config.download.maxHeight) 
   // Try a progressive (muxed) format first — simplest for ffmpeg.
   const muxedFmt = `best[height<=${maxHeight}][acodec!=none][vcodec!=none]/best[height<=${maxHeight}]`;
   try {
-    const u = await run(["-g", "-f", muxedFmt, "--no-warnings", "--no-playlist", url]);
+    const u = await run(["--check-formats", "-g", "-f", muxedFmt, "--no-warnings", "--no-playlist", url]);
     const lines = u.split("\n").map((s) => s.trim()).filter(Boolean);
     if (lines.length === 1) return { videoUrl: lines[0], audioUrl: null };
     if (lines.length >= 2) return { videoUrl: lines[0], audioUrl: lines[1] };
@@ -115,7 +115,7 @@ export async function getStreamUrls(url, maxHeight = config.download.maxHeight) 
   }
   // Fall back to separate best video + best audio.
   const splitFmt = `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]`;
-  const u = await run(["-g", "-f", splitFmt, "--no-warnings", "--no-playlist", url]);
+  const u = await run(["--check-formats", "-g", "-f", splitFmt, "--no-warnings", "--no-playlist", url]);
   const lines = u.split("\n").map((s) => s.trim()).filter(Boolean);
   if (!lines.length) throw new Error("no playable stream URL found");
   return { videoUrl: lines[0], audioUrl: lines[1] || null };
