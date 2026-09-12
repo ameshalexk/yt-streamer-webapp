@@ -1840,7 +1840,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   $("#restreamBtn").disabled = false;
   screen.classList.remove("video-mode", "mjpeg-mode");
   screen.classList.add("playing", "loading", "mjpeg-buffered-mode");
-  setBadge("reconnecting", "Buffering 0.0 / 3.0s");
+  setBadge("reconnecting", "Buffering 0.0 / 4.0s");
   startStreamWatchdog(attempt, "Buffered MJPEG playback", {
     warnMs: COMPAT_STREAM_WARN_MS,
     failMs: COMPAT_STREAM_FAIL_MS,
@@ -1871,9 +1871,9 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       && activeCompat?.bufferedPlayer === player
       && activeCompat?.mjpegUrl === bufferedUrl,
     audioEnabled: () => Boolean(audioUrl && soundOn && !audioFailed),
-    startupSeconds: 3,
-    rebufferSeconds: 1.5,
-    maxQueueSeconds: 5,
+    startupSeconds: 4,
+    rebufferSeconds: 2,
+    maxQueueSeconds: 8,
     maxQueueBytes: 24 * 1024 * 1024,
     maxFrameBytes: 3 * 1024 * 1024,
     onState: (stateName, detail = {}) => {
@@ -1883,7 +1883,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (stateName === "buffering") {
         screen.classList.add("loading");
         const buffered = Number(detail.bufferedSeconds ?? stats.queueSeconds ?? 0);
-        const target = Number(detail.targetSeconds || (stats.renderedFrames ? 1.5 : 3));
+        const target = Number(detail.targetSeconds || (stats.renderedFrames ? 2 : 4));
         if (detail.reason === "audio") {
           setBadge("reconnecting", "Buffering audio · " + buffered.toFixed(1) + "s video ready");
         } else {
@@ -1920,7 +1920,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
       updateBufferedMjpegDebug(stats);
       if (stats.state === "buffering") {
-        const target = stats.renderedFrames ? 1.5 : 3;
+        const target = stats.renderedFrames ? 2 : 4;
         setBadge("reconnecting", "Buffering " + stats.queueSeconds.toFixed(1) + " / " + target.toFixed(1) + "s");
       } else if (stats.state === "playing" && stats.renderedFrames % Math.max(1, Math.round(stats.fps)) === 0) {
         markBufferedStreamPlaying(attempt, stats);

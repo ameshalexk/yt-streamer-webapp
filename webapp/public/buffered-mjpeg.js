@@ -228,9 +228,9 @@
   }
 
   class BufferedFrameQueue {
-    constructor({ fps, maxDurationSeconds = 5, maxBytes = 24 * 1024 * 1024 } = {}) {
+    constructor({ fps, maxDurationSeconds = 8, maxBytes = 24 * 1024 * 1024 } = {}) {
       this.fps = Math.max(1, Number(fps) || 12);
-      this.maxDurationSeconds = Math.max(0.25, Number(maxDurationSeconds) || 5);
+      this.maxDurationSeconds = Math.max(0.25, Number(maxDurationSeconds) || 8);
       this.maxBytes = Math.max(1024, Number(maxBytes) || 24 * 1024 * 1024);
       this.frames = [];
       this.bytes = 0;
@@ -310,7 +310,7 @@
   }
 
   class BufferPolicy {
-    constructor({ startupSeconds = 3, rebufferSeconds = 1.5, maxSeconds = 5 } = {}) {
+    constructor({ startupSeconds = 4, rebufferSeconds = 2, maxSeconds = 8 } = {}) {
       this.startupSeconds = startupSeconds;
       this.rebufferSeconds = rebufferSeconds;
       this.maxSeconds = maxSeconds;
@@ -393,9 +393,9 @@
       audioEnabled = () => Boolean(audio),
       audioClockOffset = 0,
       fetchImpl = (...args) => fetch(...args),
-      startupSeconds = 3,
-      rebufferSeconds = 1.5,
-      maxQueueSeconds = 5,
+      startupSeconds = 4,
+      rebufferSeconds = 2,
+      maxQueueSeconds = 8,
       maxQueueBytes = 24 * 1024 * 1024,
       maxFrameBytes = 3 * 1024 * 1024,
       onState = () => {},

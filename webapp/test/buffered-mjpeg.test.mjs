@@ -94,6 +94,35 @@ test("buffer policy starts short streams at EOF and uses separate startup/rebuff
   assert.equal(policy.shouldRebuffer(0, true), false);
 });
 
+test("4/8/2 candidate policy keeps queue bounded by duration and bytes", () => {
+  const policy = new BufferPolicy({ startupSeconds: 4, rebufferSeconds: 2, maxSeconds: 8 });
+  assert.equal(policy.startupReady(3.99, false, 48, true, true), false);
+  assert.equal(policy.startupReady(4, false, 48, true, true), true);
+  assert.equal(policy.resumeReady(1.99, false, 24, true, true), false);
+  assert.equal(policy.resumeReady(2, false, 24, true, true), true);
+
+  const durationQueue = new BufferedFrameQueue({
+    fps: 12,
+    maxDurationSeconds: 8,
+    maxBytes: 24 * 1024 * 1024,
+  });
+  while (durationQueue.canAccept(64 * 1024)) durationQueue.push({ size: 64 * 1024 });
+  assert.equal(durationQueue.length, 96);
+  assert.equal(durationQueue.durationSeconds(), 8);
+  assert.ok(durationQueue.bytes <= 24 * 1024 * 1024);
+  assert.equal(durationQueue.canAccept(64 * 1024), false);
+
+  const byteQueue = new BufferedFrameQueue({
+    fps: 12,
+    maxDurationSeconds: 8,
+    maxBytes: 24 * 1024 * 1024,
+  });
+  while (byteQueue.canAccept(2 * 1024 * 1024)) byteQueue.push({ size: 2 * 1024 * 1024 });
+  assert.equal(byteQueue.bytes, 24 * 1024 * 1024);
+  assert.ok(byteQueue.durationSeconds() < 8);
+  assert.equal(byteQueue.canAccept(2 * 1024 * 1024), false);
+});
+
 test("queue backpressure aborts cleanly instead of hanging", async () => {
   const queue = new BufferedFrameQueue({ fps: 1, maxDurationSeconds: 1, maxBytes: 64 });
   queue.push({ size: 32 });
@@ -193,7 +222,13 @@ test("buffered player destroy cancels fetch state and makes stale callbacks inac
     sessionId: 41,
     isCurrent: (id) => id === 41,
     audioEnabled: () => false,
+    startupSeconds: 4,
+    rebufferSeconds: 2,
+    maxQueueSeconds: 8,
   });
+  assert.equal(player.policy.startupSeconds, 4);
+  assert.equal(player.policy.rebufferSeconds, 2);
+  assert.equal(player.queue.maxDurationSeconds, 8);
   assert.equal(player._active(), true);
   assert.equal(player.controller.signal.aborted, false);
   player.destroy();

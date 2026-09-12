@@ -116,7 +116,7 @@ async function restartAction(fn) {
 
 try {
   await page.goto(SITE, { waitUntil: "domcontentloaded", timeout: 60_000 });
-  await page.waitForSelector("#quickPlayBtn");
+  await page.waitForSelector("#quickPlayBtn", { state: "attached" });
   await setControls({ "#ctlHeight": 480, "#ctlFps": 12, "#ctlQuality": 7 });
 
   report.checks.startup12 = await playUrl(PRIMARY, "Wheels on the Bus");
