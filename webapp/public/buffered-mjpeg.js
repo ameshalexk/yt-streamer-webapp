@@ -244,7 +244,7 @@
 
   class BufferedFrameQueue {
     constructor({ fps, maxDurationSeconds = 8, maxBytes = 24 * 1024 * 1024 } = {}) {
-      this.fps = Math.max(1, Number(fps) || 12);
+      this.fps = Math.max(1, Number(fps) || 24);
       this.maxDurationSeconds = Math.max(0.25, Number(maxDurationSeconds) || 8);
       this.maxBytes = Math.max(1024, Number(maxBytes) || 24 * 1024 * 1024);
       this.frames = [];
@@ -484,7 +484,7 @@
       this.ctx = canvas?.getContext?.("2d") || null;
       this.audio = audio;
       this.audioClockOffset = Math.max(0, Number(audioClockOffset) || 0);
-      this.fps = Math.max(1, Number(fps) || 12);
+      this.fps = Math.max(1, Number(fps) || 24);
       this.guard = new SessionGuard(sessionId, isCurrent);
       this.audioEnabled = audioEnabled;
       this.fetchImpl = fetchImpl;

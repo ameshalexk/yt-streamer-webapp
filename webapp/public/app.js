@@ -100,7 +100,7 @@ const FPS_OPTIONS = [
 
 const DEFAULT_STREAM_SETTINGS = {
   height: "480",
-  fps: "12",
+  fps: "24",
   quality: "7",
 };
 
@@ -1849,7 +1849,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const bufferedUrl = withUrlParam(mjpegUrl, "buffered", "1");
   let audioFailed = false;
   const parsed = new URL(bufferedUrl, window.location.origin);
-  const requestedFps = Math.max(1, Number(parsed.searchParams.get("fps") || $("#ctlFps").value || 12));
+  const requestedFps = Math.max(1, Number(parsed.searchParams.get("fps") || $("#ctlFps").value || 24));
   reportPlaybackEvent("buffered_start", { label, streamUrl: bufferedUrl, reason: `fps=${requestedFps}` });
 
   $("#nowPlaying").textContent = label || "Playing";
