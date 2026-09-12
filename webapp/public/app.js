@@ -633,6 +633,15 @@ let fullscreenProgressHideTimer = null;
 let fullscreenOverlayHideTimer = null;
 const FULLSCREEN_OVERLAY_HIDE_MS = 5000;
 const FULLSCREEN_PROGRESS_HIDE_MS = 5000;
+const SLOW_BUFFER_STARTUP_SUGGEST_MS = 20000;
+const SLOW_BUFFER_REBUFFER_SUGGEST_MS = 12000;
+const SLOW_BUFFER_REPEAT_REBUFFER_SUGGEST_MS = 6000;
+const SLOW_BUFFER_SUGGESTION_VISIBLE_MS = 10000;
+const SLOW_BUFFER_PROFILE = { height: "360", fps: "15", quality: "5" };
+let slowBufferSuggestTimer = null;
+let slowBufferCountdownTimer = null;
+let slowBufferAutoHideTimer = null;
+let slowBufferSuggestionShownAttempt = -1;
 const streamSeek = {
   seekable: false,
   duration: 0,
@@ -734,6 +743,95 @@ function showStreamNotice(kind, title, detail) {
 
 function currentAttempt(attempt) {
   return attempt === streamAttempt;
+}
+
+function cancelSlowBufferSuggestionSchedule() {
+  clearTimeout(slowBufferSuggestTimer);
+  slowBufferSuggestTimer = null;
+}
+
+function hideSlowBufferSuggestion() {
+  cancelSlowBufferSuggestionSchedule();
+  clearInterval(slowBufferCountdownTimer);
+  clearTimeout(slowBufferAutoHideTimer);
+  slowBufferCountdownTimer = null;
+  slowBufferAutoHideTimer = null;
+  const popup = $("#slowBufferSuggestion");
+  if (!popup) return;
+  popup.classList.remove("is-counting");
+  popup.hidden = true;
+}
+
+function slowBufferProfileWouldHelp() {
+  const height = Number.parseInt($("#ctlHeight")?.value || "0", 10);
+  const fps = Number.parseInt($("#ctlFps")?.value || "0", 10);
+  if (height > 0 && height <= 360 && fps > 0 && fps <= 15) return false;
+  return Boolean(replayFn);
+}
+
+function showSlowBufferSuggestion(attempt, { reason = "buffering", label = "", streamUrl = "", stats = null } = {}) {
+  if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || !slowBufferProfileWouldHelp()) return;
+  const popup = $("#slowBufferSuggestion");
+  if (!popup) return;
+  slowBufferSuggestionShownAttempt = attempt;
+  cancelSlowBufferSuggestionSchedule();
+  clearInterval(slowBufferCountdownTimer);
+  clearTimeout(slowBufferAutoHideTimer);
+  popup.hidden = false;
+  popup.classList.remove("is-counting");
+  void popup.offsetWidth;
+  popup.classList.add("is-counting");
+  const startedAt = performance.now();
+  const updateCountdown = () => {
+    const remainingMs = Math.max(0, SLOW_BUFFER_SUGGESTION_VISIBLE_MS - (performance.now() - startedAt));
+    const seconds = Math.max(0, Math.ceil(remainingMs / 1000));
+    const text = $("#slowBufferCountdownText");
+    if (text) text.textContent = String(seconds);
+    $("#slowBufferCountdown")?.setAttribute("aria-label", `Closes in ${seconds} second${seconds === 1 ? "" : "s"}`);
+  };
+  updateCountdown();
+  slowBufferCountdownTimer = setInterval(updateCountdown, 200);
+  slowBufferAutoHideTimer = setTimeout(() => hideSlowBufferSuggestion(), SLOW_BUFFER_SUGGESTION_VISIBLE_MS);
+  reportPlaybackEvent("slow_buffer_suggestion", { label, streamUrl, reason, stats });
+}
+
+function scheduleSlowBufferSuggestion(attempt, { reason = "startup", label = "", streamUrl = "", stats = null } = {}) {
+  if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || slowBufferSuggestTimer || !slowBufferProfileWouldHelp()) return;
+  if (reason === "audio") return;
+  const rebufferCount = Number(stats?.rebufferCount || 0);
+  const delay = reason === "startup"
+    ? SLOW_BUFFER_STARTUP_SUGGEST_MS
+    : (rebufferCount >= 2 ? SLOW_BUFFER_REPEAT_REBUFFER_SUGGEST_MS : SLOW_BUFFER_REBUFFER_SUGGEST_MS);
+  slowBufferSuggestTimer = setTimeout(() => {
+    slowBufferSuggestTimer = null;
+    if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || !slowBufferProfileWouldHelp()) return;
+    const latest = activeCompat?.bufferedPlayer?.getStats?.();
+    if (!latest || latest.state !== "buffering") return;
+    showSlowBufferSuggestion(attempt, { reason, label, streamUrl, stats: latest });
+  }, delay);
+}
+
+function applySlowBufferSuggestion() {
+  if (!replayFn) return hideSlowBufferSuggestion();
+  const resumeAt = streamSeek.seekable ? streamReplayTime() : undefined;
+  const attempt = streamAttempt;
+  const stats = activeCompat?.bufferedPlayer?.getStats?.();
+  $("#ctlHeight").value = SLOW_BUFFER_PROFILE.height;
+  $("#ctlFps").value = SLOW_BUFFER_PROFILE.fps;
+  $("#ctlQuality").value = SLOW_BUFFER_PROFILE.quality;
+  renderFpsPresets();
+  renderQuickQuality();
+  renderSettingOptions();
+  updateBwHint();
+  hideSlowBufferSuggestion();
+  reportPlaybackEvent("slow_buffer_suggestion_applied", {
+    streamUrl: activeCompat?.mjpegUrl || "",
+    reason: "360p/15fps/q5",
+    stats,
+  });
+  toast("Switching to 360p · 15fps · Q5");
+  replayFn(resumeAt);
+  slowBufferSuggestionShownAttempt = attempt;
 }
 
 function streamErrorDetail(reason) {
@@ -1226,6 +1324,7 @@ function cleanupMedia() {
   streamAttempt++;
   clearStreamTimers();
   clearStreamNotice();
+  hideSlowBufferSuggestion();
   stopStreamSeekTimer(false);
   destroyPlayer();
   destroyAudioHlsPlayer();
@@ -1901,6 +2000,8 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       updateBufferedMjpegDebug(stats);
       if (stateName === "buffering") {
         screen.classList.add("loading");
+        if (detail.reason === "audio") cancelSlowBufferSuggestionSchedule();
+        else scheduleSlowBufferSuggestion(attempt, { reason: detail.reason || "rebuffer", label, streamUrl: bufferedUrl, stats });
         if (stats.rebufferCount > loggedRebufferCount) {
           loggedRebufferCount = stats.rebufferCount;
           reportPlaybackEvent("buffered_rebuffer", { label, streamUrl: bufferedUrl, reason: detail.reason, stats });
@@ -1915,6 +2016,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         return;
       }
       if (stateName === "autoplay-blocked") {
+        cancelSlowBufferSuggestionSchedule();
         screen.classList.remove("loading");
         setBadge("reconnecting", "▶ Tap to start audio");
         showStreamNotice(
@@ -1925,11 +2027,13 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         return;
       }
       if (stateName === "syncing") {
+        cancelSlowBufferSuggestionSchedule();
         screen.classList.remove("loading");
         setBadge("reconnecting", "Syncing A/V…");
         return;
       }
       if (stateName === "playing") {
+        cancelSlowBufferSuggestionSchedule();
         activeCompat.playbackStarted = true;
         activeCompat.videoReady = true;
         if (!loggedPlaying) {
@@ -6212,6 +6316,11 @@ $("#streamLowerBtn").onclick = () => {
   lowerPlaybackSettings();
   toast("Retrying at " + currentSettingsLabel());
   replayFn(streamSeek.seekable ? streamReplayTime() : undefined);
+};
+$("#slowBufferApplyBtn").onclick = applySlowBufferSuggestion;
+$("#slowBufferDismissBtn").onclick = () => {
+  reportPlaybackEvent("slow_buffer_suggestion_dismissed", { streamUrl: activeCompat?.mjpegUrl || "", stats: activeCompat?.bufferedPlayer?.getStats?.() });
+  hideSlowBufferSuggestion();
 };
 $("#legacyRefreshBtn").onclick = async () => {
   try {

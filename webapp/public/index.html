@@ -218,6 +218,23 @@
               <button class="btn small ghost" id="streamLowerBtn" type="button">Lower quality</button>
             </div>
           </div>
+          <div class="slow-buffer-suggestion" id="slowBufferSuggestion" role="dialog" aria-live="polite" aria-label="Slow buffering suggestion" hidden>
+            <div class="slow-buffer-suggestion-copy">
+              <strong>Buffering is very slow</strong>
+              <span>Try 360p · 15 FPS · Quality 5 for steadier playback.</span>
+            </div>
+            <div class="slow-buffer-suggestion-actions">
+              <button class="btn small secondary" id="slowBufferApplyBtn" type="button">Use 360p · 15fps · Q5</button>
+              <button class="btn small ghost" id="slowBufferDismissBtn" type="button">Not now</button>
+            </div>
+            <div class="slow-buffer-countdown" id="slowBufferCountdown" aria-label="Closes in 10 seconds">
+              <svg viewBox="0 0 44 44" aria-hidden="true">
+                <circle class="slow-buffer-countdown-track" cx="22" cy="22" r="18" pathLength="100"></circle>
+                <circle class="slow-buffer-countdown-progress" cx="22" cy="22" r="18" pathLength="100"></circle>
+              </svg>
+              <span id="slowBufferCountdownText">10</span>
+            </div>
+          </div>
           <video id="video" playsinline></video>
           <img id="mjpeg" alt="" />
           <canvas id="mjpegCanvas" aria-label="Buffered video"></canvas>
@@ -296,6 +313,7 @@
             <label class="control-field">Quality
               <select id="ctlQuality" class="native-control" aria-hidden="true" tabindex="-1" title="Lower = sharper but more bandwidth">
                 <option value="4">High</option>
+                <option value="5">Q5</option>
                 <option value="7" selected>Medium</option>
                 <option value="12">Low (4G)</option>
                 <option value="18">Min</option>
@@ -304,6 +322,7 @@
                 <button type="button" data-quality-value="18">Min</button>
                 <button type="button" data-quality-value="12">Low</button>
                 <button type="button" data-quality-value="7">Medium</button>
+                <button type="button" data-quality-value="5">Q5</button>
                 <button type="button" data-quality-value="4">High</button>
               </div>
             </label>
