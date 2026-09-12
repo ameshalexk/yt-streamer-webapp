@@ -1883,7 +1883,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (stateName === "buffering") {
         screen.classList.add("loading");
         const buffered = Number(detail.bufferedSeconds ?? stats.queueSeconds ?? 0);
-        const target = Number(detail.targetSeconds || (stats.renderedFrames ? 2 : 4));
+        const target = Number(detail.targetSeconds || (stats.renderedFrames ? stats.recoveryTargetSeconds || 2 : 4));
         if (detail.reason === "audio") {
           setBadge("reconnecting", "Buffering audio · " + buffered.toFixed(1) + "s video ready");
         } else {
@@ -1920,7 +1920,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
       updateBufferedMjpegDebug(stats);
       if (stats.state === "buffering") {
-        const target = stats.renderedFrames ? 2 : 4;
+        const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || 2) : 4;
         setBadge("reconnecting", "Buffering " + stats.queueSeconds.toFixed(1) + " / " + target.toFixed(1) + "s");
       } else if (stats.state === "playing" && stats.renderedFrames % Math.max(1, Math.round(stats.fps)) === 0) {
         markBufferedStreamPlaying(attempt, stats);

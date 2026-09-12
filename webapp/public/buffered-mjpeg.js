@@ -331,6 +331,64 @@
     }
   }
 
+  class AdaptiveRecoveryBuffer {
+    constructor({
+      baseSeconds = 2,
+      maxSeconds = 4,
+      stepSeconds = 1,
+      stableSeconds = 30,
+      now = () => performance.now(),
+    } = {}) {
+      this.baseSeconds = Math.max(0.25, Number(baseSeconds) || 2);
+      this.maxSeconds = Math.max(this.baseSeconds, Number(maxSeconds) || 4);
+      this.stepSeconds = Math.max(0.25, Number(stepSeconds) || 1);
+      this.stableMs = Math.max(1000, (Number(stableSeconds) || 30) * 1000);
+      this.now = now;
+      this.targetSeconds = this.baseSeconds;
+      this.hadRecentRebuffer = false;
+      this.stableSince = null;
+    }
+
+    update() {
+      if (!this.hadRecentRebuffer || this.stableSince == null) return this.targetSeconds;
+      let elapsed = this.now() - this.stableSince;
+      while (elapsed >= this.stableMs) {
+        if (this.targetSeconds > this.baseSeconds) {
+          this.targetSeconds = Math.max(this.baseSeconds, this.targetSeconds - this.stepSeconds);
+          this.stableSince += this.stableMs;
+          elapsed -= this.stableMs;
+        } else {
+          this.hadRecentRebuffer = false;
+          this.stableSince = null;
+          break;
+        }
+      }
+      return this.targetSeconds;
+    }
+
+    onRebuffer() {
+      this.update();
+      if (this.hadRecentRebuffer) {
+        this.targetSeconds = Math.min(this.maxSeconds, this.targetSeconds + this.stepSeconds);
+      } else {
+        this.targetSeconds = this.baseSeconds;
+      }
+      this.hadRecentRebuffer = true;
+      this.stableSince = null;
+      return this.targetSeconds;
+    }
+
+    onPlaybackStable() {
+      if (this.hadRecentRebuffer && this.stableSince == null) this.stableSince = this.now();
+      return this.targetSeconds;
+    }
+
+    onPlaybackInterrupted() {
+      if (this.hadRecentRebuffer) this.stableSince = null;
+      return this.targetSeconds;
+    }
+  }
+
   class SessionGuard {
     constructor(id, isCurrent = () => true) {
       this.id = id;
@@ -395,6 +453,9 @@
       fetchImpl = (...args) => fetch(...args),
       startupSeconds = 4,
       rebufferSeconds = 2,
+      maxRecoverySeconds = 4,
+      recoveryStepSeconds = 1,
+      recoveryStableSeconds = 30,
       maxQueueSeconds = 8,
       maxQueueBytes = 24 * 1024 * 1024,
       maxFrameBytes = 3 * 1024 * 1024,
@@ -413,6 +474,12 @@
       this.audioEnabled = audioEnabled;
       this.fetchImpl = fetchImpl;
       this.policy = new BufferPolicy({ startupSeconds, rebufferSeconds, maxSeconds: maxQueueSeconds });
+      this.recovery = new AdaptiveRecoveryBuffer({
+        baseSeconds: rebufferSeconds,
+        maxSeconds: Math.min(maxQueueSeconds, maxRecoverySeconds),
+        stepSeconds: recoveryStepSeconds,
+        stableSeconds: recoveryStableSeconds,
+      });
       this.queue = new BufferedFrameQueue({ fps: this.fps, maxDurationSeconds: maxQueueSeconds, maxBytes: maxQueueBytes });
       this.queue.onRelease = (frame) => this._releaseFrame(frame);
       this.maxFrameBytes = maxFrameBytes;
@@ -449,6 +516,7 @@
         maxQueueBytes: 0,
         startupMs: null,
         rebufferCount: 0,
+        recoveryTargetSeconds: this.recovery.targetSeconds,
         lastAvDriftMs: null,
         eof: false,
       };
@@ -477,6 +545,7 @@
 
     _emitStats() {
       if (!this._active()) return;
+      this.stats.recoveryTargetSeconds = this.recovery.update();
       this.stats.queueSeconds = this.queue.durationSeconds();
       this.stats.queueBytes = this.queue.bytes;
       this.stats.maxQueueSeconds = Math.max(this.stats.maxQueueSeconds, this.stats.queueSeconds);
@@ -571,14 +640,16 @@
       const needsAudio = this._needsAudio();
       return startup
         ? this.policy.startupReady(this.queue.durationSeconds(), this.eof, this.queue.length, this.audioReady, needsAudio)
-        : this.policy.resumeReady(this.queue.durationSeconds(), this.eof, this.queue.length, this.audioReady, needsAudio);
+        : (needsAudio && !this.audioReady
+          ? false
+          : this.queue.durationSeconds() >= this.recovery.update() || (this.eof && this.queue.length > 0));
     }
 
     _maybeStartOrResume() {
       if (!this._active() || this.userPaused || this.hidden || this.autoplayBlocked) return;
       const startup = !this.playbackStarted;
       if (!this._bufferReady(startup)) {
-        const target = startup ? this.policy.startupSeconds : this.policy.rebufferSeconds;
+        const target = startup ? this.policy.startupSeconds : this.recovery.update();
         this._setState("buffering", {
           reason: startup ? "startup" : "rebuffer",
           bufferedSeconds: this.queue.durationSeconds(),
@@ -612,6 +683,7 @@
         this.monotonicAnchor = { media, perf: performance.now() };
       }
       if (!this._active()) return;
+      const resumedAfterRecovery = this.playbackStarted && this.buffering && this.recovery.hadRecentRebuffer;
       this.autoplayBlocked = false;
       this.buffering = false;
       this.playing = true;
@@ -619,7 +691,8 @@
         this.playbackStarted = true;
         this.stats.startupMs = Math.round(performance.now() - this.startedAt);
       }
-      this._setState("playing", { fromGesture });
+      if (resumedAfterRecovery) this.recovery.onPlaybackStable();
+      this._setState("playing", { fromGesture, recoveryTargetSeconds: this.recovery.update() });
       this._predecode();
       this._scheduleRender();
     }
@@ -748,7 +821,9 @@
       if (!this._active() || this.buffering) return;
       this.buffering = true;
       this.playing = false;
+      const recoveryTargetSeconds = this.recovery.onRebuffer();
       this.stats.rebufferCount += 1;
+      this.stats.recoveryTargetSeconds = recoveryTargetSeconds;
       if (this._needsAudio()) {
         try { this.audio.pause(); } catch {}
       } else {
@@ -759,7 +834,7 @@
       this._setState("buffering", {
         reason,
         bufferedSeconds: this.queue.durationSeconds(),
-        targetSeconds: this.policy.rebufferSeconds,
+        targetSeconds: recoveryTargetSeconds,
       });
       this._maybeStartOrResume();
     }
@@ -768,11 +843,12 @@
       if (!this._active() || !this.playbackStarted || this.userPaused || this.hidden || !this._needsAudio()) return;
       this.playing = false;
       this.buffering = true;
+      this.recovery.onPlaybackInterrupted();
       this._cancelRaf();
       this._setState("buffering", {
         reason: "audio",
         bufferedSeconds: this.queue.durationSeconds(),
-        targetSeconds: this.policy.rebufferSeconds,
+        targetSeconds: this.recovery.update(),
       });
     }
 
@@ -781,7 +857,8 @@
       if (this._bufferReady(false)) {
         this.buffering = false;
         this.playing = true;
-        this._setState("playing");
+        this.recovery.onPlaybackStable();
+        this._setState("playing", { recoveryTargetSeconds: this.recovery.update() });
         this._scheduleRender();
       }
     }
@@ -816,6 +893,7 @@
       this.userPaused = true;
       this.playing = false;
       this.buffering = false;
+      this.recovery.onPlaybackInterrupted();
       if (this._needsAudio()) {
         try { this.audio.pause(); } catch {}
       }
@@ -833,7 +911,7 @@
         this._setState("buffering", {
           reason: "resume",
           bufferedSeconds: this.queue.durationSeconds(),
-          targetSeconds: this.policy.rebufferSeconds,
+          targetSeconds: this.recovery.update(),
         });
       }
     }
@@ -846,6 +924,7 @@
       if (this.hidden) {
         const current = this.currentTime();
         this.playing = false;
+        this.recovery.onPlaybackInterrupted();
         if (this._needsAudio()) {
           try { this.audio.pause(); } catch {}
         }
@@ -857,7 +936,7 @@
         this._setState("buffering", {
           reason: "foreground",
           bufferedSeconds: this.queue.durationSeconds(),
-          targetSeconds: this.policy.rebufferSeconds,
+          targetSeconds: this.recovery.update(),
         });
         this._maybeStartOrResume();
       }
@@ -872,7 +951,8 @@
         if (!this.userPaused && !this.hidden) {
           this.playing = true;
           this.buffering = false;
-          this._setState("playing", { audioDisabled: true });
+          this.recovery.onPlaybackStable();
+          this._setState("playing", { audioDisabled: true, recoveryTargetSeconds: this.recovery.update() });
           this._scheduleRender();
         }
       }
@@ -925,6 +1005,7 @@
     BufferedFrameQueue,
     BufferPolicy,
     SessionGuard,
+    AdaptiveRecoveryBuffer,
     BufferedMjpegPlayer,
     boundaryFromContentType,
     supportsBufferedMjpeg,

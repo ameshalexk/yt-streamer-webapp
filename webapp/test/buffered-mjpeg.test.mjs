@@ -8,6 +8,7 @@ const {
   BufferedFrameQueue,
   BufferPolicy,
   SessionGuard,
+  AdaptiveRecoveryBuffer,
   boundaryFromContentType,
 } = globalThis.BufferedMjpeg;
 
@@ -121,6 +122,47 @@ test("4/8/2 candidate policy keeps queue bounded by duration and bytes", () => {
   assert.equal(byteQueue.bytes, 24 * 1024 * 1024);
   assert.ok(byteQueue.durationSeconds() < 8);
   assert.equal(byteQueue.canAccept(2 * 1024 * 1024), false);
+});
+
+test("adaptive recovery escalates repeated stalls and decays after stable playback", () => {
+  let now = 0;
+  const recovery = new AdaptiveRecoveryBuffer({
+    baseSeconds: 2,
+    maxSeconds: 4,
+    stepSeconds: 1,
+    stableSeconds: 10,
+    now: () => now,
+  });
+
+  assert.equal(recovery.targetSeconds, 2);
+  assert.equal(recovery.onRebuffer(), 2);
+  recovery.onPlaybackStable();
+  now += 5000;
+  assert.equal(recovery.onRebuffer(), 3);
+  recovery.onPlaybackStable();
+  now += 5000;
+  assert.equal(recovery.onRebuffer(), 4);
+  recovery.onPlaybackStable();
+
+  now += 10_000;
+  assert.equal(recovery.update(), 3);
+  now += 10_000;
+  assert.equal(recovery.update(), 2);
+  now += 10_000;
+  assert.equal(recovery.update(), 2);
+  assert.equal(recovery.hadRecentRebuffer, false);
+
+  assert.equal(recovery.onRebuffer(), 2);
+  recovery.onPlaybackStable();
+  now += 5000;
+  recovery.onPlaybackInterrupted();
+  now += 60_000;
+  assert.equal(recovery.update(), 2);
+  assert.equal(recovery.hadRecentRebuffer, true);
+  recovery.onPlaybackStable();
+  now += 10_000;
+  assert.equal(recovery.update(), 2);
+  assert.equal(recovery.hadRecentRebuffer, false);
 });
 
 test("queue backpressure aborts cleanly instead of hanging", async () => {
