@@ -8,6 +8,7 @@ test("slow buffering suggestion uses requested 360p 15fps quality 5 profile", ()
   assert.match(app, /SLOW_BUFFER_STARTUP_SUGGEST_MS = 20000/);
   assert.match(app, /SLOW_BUFFER_REBUFFER_SUGGEST_MS = 12000/);
   assert.match(app, /SLOW_BUFFER_SUGGESTION_VISIBLE_MS = 10000/);
+  assert.match(app, /SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO = 3/);
   assert.match(app, /replayFn\(resumeAt\)/);
 });
 
@@ -19,6 +20,7 @@ test("slow buffering suggestion has a 10-second animated countdown and explicit 
   assert.match(html, /data-quality-value="5">Q5<\/button>/);
   assert.match(html, /Use 360p · 15fps · Q5/);
   assert.match(html, /id="slowBufferDismissBtn"/);
+  assert.match(html, /id="slowBufferStopBtn"[^>]*>Stop suggestions<\/button>/);
   assert.match(html, /id="slowBufferCountdownText">10</);
   assert.match(css, /animation: slow-buffer-countdown-ring 10s linear forwards/);
   assert.match(css, /@keyframes slow-buffer-countdown-ring/);
@@ -28,4 +30,20 @@ test("audio-only buffering does not trigger a video-quality suggestion", () => {
   const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
   assert.match(app, /if \(reason === "audio"\) return/);
   assert.match(app, /if \(detail\.reason === "audio"\) cancelSlowBufferSuggestionSchedule\(\)/);
+});
+
+
+test("slow buffering suggestions cap at three per normalized video and can be stopped", () => {
+  const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  assert.match(app, /slowBufferSuggestionScope = \{ key: "", count: 0, stopped: false \}/);
+  assert.match(app, /slowBufferSuggestionScope\.count < SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO/);
+  assert.match(app, /slowBufferSuggestionScope\.stopped = true/);
+  assert.match(app, /slow_buffer_suggestions_stopped/);
+  assert.match(app, /slow_buffer_suggestion_limit_reached/);
+});
+
+test("slow suggestion video key ignores restream seek and quality parameters", () => {
+  const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  assert.match(app, /for \(const key of \["timestamp", "height", "fps", "quality", "_", "buffered"\]\) parsed\.searchParams\.delete\(key\)/);
+  assert.match(app, /if \(!key \|\| key === slowBufferSuggestionScope\.key\) return/);
 });

@@ -637,11 +637,13 @@ const SLOW_BUFFER_STARTUP_SUGGEST_MS = 20000;
 const SLOW_BUFFER_REBUFFER_SUGGEST_MS = 12000;
 const SLOW_BUFFER_REPEAT_REBUFFER_SUGGEST_MS = 6000;
 const SLOW_BUFFER_SUGGESTION_VISIBLE_MS = 10000;
+const SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO = 3;
 const SLOW_BUFFER_PROFILE = { height: "360", fps: "15", quality: "5" };
 let slowBufferSuggestTimer = null;
 let slowBufferCountdownTimer = null;
 let slowBufferAutoHideTimer = null;
 let slowBufferSuggestionShownAttempt = -1;
+let slowBufferSuggestionScope = { key: "", count: 0, stopped: false };
 const streamSeek = {
   seekable: false,
   duration: 0,
@@ -762,6 +764,43 @@ function hideSlowBufferSuggestion() {
   popup.hidden = true;
 }
 
+function slowBufferContentKey(streamUrl = "") {
+  try {
+    const parsed = new URL(String(streamUrl || ""), window.location.origin);
+    for (const key of ["timestamp", "height", "fps", "quality", "_", "buffered"]) parsed.searchParams.delete(key);
+    parsed.searchParams.sort();
+    return `${parsed.pathname}?${parsed.searchParams.toString()}`;
+  } catch {
+    return String(streamUrl || "").replace(/([?&])(timestamp|height|fps|quality|_|buffered)=[^&]*/gi, "$1");
+  }
+}
+
+function setSlowBufferSuggestionScope(streamUrl = "") {
+  const key = slowBufferContentKey(streamUrl);
+  if (!key || key === slowBufferSuggestionScope.key) return;
+  hideSlowBufferSuggestion();
+  slowBufferSuggestionScope = { key, count: 0, stopped: false };
+  slowBufferSuggestionShownAttempt = -1;
+}
+
+function slowBufferSuggestionAllowed() {
+  return !slowBufferSuggestionScope.stopped
+    && slowBufferSuggestionScope.count < SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO;
+}
+
+function stopSlowBufferSuggestions() {
+  const stats = activeCompat?.bufferedPlayer?.getStats?.();
+  slowBufferSuggestionScope.stopped = true;
+  hideSlowBufferSuggestion();
+  reportPlaybackEvent("slow_buffer_suggestions_stopped", {
+    streamUrl: activeCompat?.mjpegUrl || "",
+    reason: "user",
+    message: `${slowBufferSuggestionScope.count}/${SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO} shown`,
+    stats,
+  });
+  toast("Buffering suggestions stopped for this video");
+}
+
 function slowBufferProfileWouldHelp() {
   const height = Number.parseInt($("#ctlHeight")?.value || "0", 10);
   const fps = Number.parseInt($("#ctlFps")?.value || "0", 10);
@@ -770,10 +809,11 @@ function slowBufferProfileWouldHelp() {
 }
 
 function showSlowBufferSuggestion(attempt, { reason = "buffering", label = "", streamUrl = "", stats = null } = {}) {
-  if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || !slowBufferProfileWouldHelp()) return;
+  if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || !slowBufferSuggestionAllowed() || !slowBufferProfileWouldHelp()) return;
   const popup = $("#slowBufferSuggestion");
   if (!popup) return;
   slowBufferSuggestionShownAttempt = attempt;
+  slowBufferSuggestionScope.count += 1;
   cancelSlowBufferSuggestionSchedule();
   clearInterval(slowBufferCountdownTimer);
   clearTimeout(slowBufferAutoHideTimer);
@@ -792,11 +832,26 @@ function showSlowBufferSuggestion(attempt, { reason = "buffering", label = "", s
   updateCountdown();
   slowBufferCountdownTimer = setInterval(updateCountdown, 200);
   slowBufferAutoHideTimer = setTimeout(() => hideSlowBufferSuggestion(), SLOW_BUFFER_SUGGESTION_VISIBLE_MS);
-  reportPlaybackEvent("slow_buffer_suggestion", { label, streamUrl, reason, stats });
+  reportPlaybackEvent("slow_buffer_suggestion", {
+    label,
+    streamUrl,
+    reason,
+    message: `${slowBufferSuggestionScope.count}/${SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO}`,
+    stats,
+  });
+  if (slowBufferSuggestionScope.count >= SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO) {
+    reportPlaybackEvent("slow_buffer_suggestion_limit_reached", {
+      label,
+      streamUrl,
+      reason: "max-per-video",
+      message: String(SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO),
+      stats,
+    });
+  }
 }
 
 function scheduleSlowBufferSuggestion(attempt, { reason = "startup", label = "", streamUrl = "", stats = null } = {}) {
-  if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || slowBufferSuggestTimer || !slowBufferProfileWouldHelp()) return;
+  if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || !slowBufferSuggestionAllowed() || slowBufferSuggestTimer || !slowBufferProfileWouldHelp()) return;
   if (reason === "audio") return;
   const rebufferCount = Number(stats?.rebufferCount || 0);
   const delay = reason === "startup"
@@ -804,7 +859,7 @@ function scheduleSlowBufferSuggestion(attempt, { reason = "startup", label = "",
     : (rebufferCount >= 2 ? SLOW_BUFFER_REPEAT_REBUFFER_SUGGEST_MS : SLOW_BUFFER_REBUFFER_SUGGEST_MS);
   slowBufferSuggestTimer = setTimeout(() => {
     slowBufferSuggestTimer = null;
-    if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || !slowBufferProfileWouldHelp()) return;
+    if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || !slowBufferSuggestionAllowed() || !slowBufferProfileWouldHelp()) return;
     const latest = activeCompat?.bufferedPlayer?.getStats?.();
     if (!latest || latest.state !== "buffering") return;
     showSlowBufferSuggestion(attempt, { reason, label, streamUrl, stats: latest });
@@ -1946,6 +2001,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
 
   const attempt = streamAttempt;
   const bufferedUrl = withUrlParam(mjpegUrl, "buffered", "1");
+  setSlowBufferSuggestionScope(bufferedUrl);
   let audioFailed = false;
   const parsed = new URL(bufferedUrl, window.location.origin);
   const requestedFps = Math.max(1, Number(parsed.searchParams.get("fps") || $("#ctlFps").value || 24));
@@ -6322,6 +6378,7 @@ $("#slowBufferDismissBtn").onclick = () => {
   reportPlaybackEvent("slow_buffer_suggestion_dismissed", { streamUrl: activeCompat?.mjpegUrl || "", stats: activeCompat?.bufferedPlayer?.getStats?.() });
   hideSlowBufferSuggestion();
 };
+$("#slowBufferStopBtn").onclick = stopSlowBufferSuggestions;
 $("#legacyRefreshBtn").onclick = async () => {
   try {
     await loadLegacyLibrary();
