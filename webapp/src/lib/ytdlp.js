@@ -100,25 +100,48 @@ export async function searchVideos(query, { limit = 20 } = {}) {
   };
 }
 
+// Resolve direct media URLs and the request headers yt-dlp associates with them.
+// Keeping the headers matters because YouTube can bind signed googlevideo URLs to
+// a particular client identity.
+export function selectedStreamInfo(info) {
+  const requested = Array.isArray(info?.requested_formats) ? info.requested_formats.filter(Boolean) : [];
+  if (requested.length) {
+    const video = requested.find((format) => format.vcodec && format.vcodec !== "none") || requested[0];
+    const audio = requested.find((format) => format !== video && format.acodec && format.acodec !== "none") || null;
+    return {
+      videoUrl: video?.url || null,
+      audioUrl: audio?.url || null,
+      videoHeaders: { ...(info.http_headers || {}), ...(video?.http_headers || {}) },
+      audioHeaders: audio ? { ...(info.http_headers || {}), ...(audio.http_headers || {}) } : null,
+    };
+  }
+  return {
+    videoUrl: info?.url || null,
+    audioUrl: null,
+    videoHeaders: { ...(info?.http_headers || {}) },
+    audioHeaders: null,
+  };
+}
+
+async function resolveFormatSelection(url, format) {
+  const json = await run(["--check-formats", "-j", "-f", format, "--no-warnings", "--no-playlist", url]);
+  const info = JSON.parse(json);
+  const selected = selectedStreamInfo(info);
+  if (!selected.videoUrl) throw new Error("no playable stream URL found");
+  return selected;
+}
+
 // Resolve a direct, ffmpeg-playable URL for a video at or below maxHeight.
-// Returns { videoUrl, audioUrl|null }. Prefers a single muxed stream when available.
+// Returns signed media URLs plus yt-dlp's request headers. Prefers a muxed stream.
 export async function getStreamUrls(url, maxHeight = config.download.maxHeight) {
-  // Try a progressive (muxed) format first — simplest for ffmpeg.
   const muxedFmt = `best[height<=${maxHeight}][acodec!=none][vcodec!=none]/best[height<=${maxHeight}]`;
   try {
-    const u = await run(["--check-formats", "-g", "-f", muxedFmt, "--no-warnings", "--no-playlist", url]);
-    const lines = u.split("\n").map((s) => s.trim()).filter(Boolean);
-    if (lines.length === 1) return { videoUrl: lines[0], audioUrl: null };
-    if (lines.length >= 2) return { videoUrl: lines[0], audioUrl: lines[1] };
+    return await resolveFormatSelection(url, muxedFmt);
   } catch {
     /* fall through to split streams */
   }
-  // Fall back to separate best video + best audio.
   const splitFmt = `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]`;
-  const u = await run(["--check-formats", "-g", "-f", splitFmt, "--no-warnings", "--no-playlist", url]);
-  const lines = u.split("\n").map((s) => s.trim()).filter(Boolean);
-  if (!lines.length) throw new Error("no playable stream URL found");
-  return { videoUrl: lines[0], audioUrl: lines[1] || null };
+  return resolveFormatSelection(url, splitFmt);
 }
 
 // Download a video to the library. Returns { filePath, info }. onProgress(pct, line) optional.

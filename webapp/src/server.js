@@ -3,6 +3,7 @@
 import express from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
 import * as store from "./lib/store.js";
@@ -80,6 +81,9 @@ async function appendPlaybackEvent(entry) {
   }
 }
 
+const GOOGLEVIDEO_PROXY_TTL_MS = 2 * 60 * 60 * 1000;
+const googleVideoProxySessions = new Map();
+
 function isGoogleVideoUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
@@ -89,17 +93,62 @@ function isGoogleVideoUrl(value) {
   }
 }
 
-function localGoogleVideoProxyUrl(value) {
-  if (!isGoogleVideoUrl(value)) return value;
-  const token = Buffer.from(String(value), "utf8").toString("base64url");
-  return "http://127.0.0.1:" + config.port + "/internal/googlevideo?u=" + token;
+function cleanGoogleVideoHeaders(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const blocked = new Set(["host", "range", "if-range", "connection", "content-length", "transfer-encoding"]);
+  const headers = {};
+  for (const [key, raw] of Object.entries(source)) {
+    if (raw == null || blocked.has(String(key).toLowerCase())) continue;
+    headers[String(key)] = String(raw);
+  }
+  return headers;
 }
 
-function proxyYouTubeStreams({ videoUrl, audioUrl }) {
+function pruneGoogleVideoProxySessions() {
+  const cutoff = Date.now() - GOOGLEVIDEO_PROXY_TTL_MS;
+  for (const [id, session] of googleVideoProxySessions) {
+    if (session.createdAt < cutoff) googleVideoProxySessions.delete(id);
+  }
+}
+
+function localGoogleVideoProxyUrl(value, { headers = {}, sourceUrl = "", role = "video", maxHeight = config.download.maxHeight } = {}) {
+  if (!isGoogleVideoUrl(value)) return value;
+  pruneGoogleVideoProxySessions();
+  const id = crypto.randomBytes(18).toString("base64url");
+  googleVideoProxySessions.set(id, {
+    target: String(value),
+    headers: cleanGoogleVideoHeaders(headers),
+    sourceUrl: String(sourceUrl || ""),
+    role: role === "audio" ? "audio" : "video",
+    maxHeight,
+    createdAt: Date.now(),
+    refreshCount: 0,
+  });
+  return `http://127.0.0.1:${config.port}/internal/googlevideo/${id}`;
+}
+
+function proxyYouTubeStreams(resolved, { sourceUrl = "", maxHeight = config.download.maxHeight } = {}) {
+  const { videoUrl, audioUrl, videoHeaders, audioHeaders } = resolved;
   return {
-    videoUrl: localGoogleVideoProxyUrl(videoUrl),
-    audioUrl: audioUrl ? localGoogleVideoProxyUrl(audioUrl) : null,
+    videoUrl: localGoogleVideoProxyUrl(videoUrl, { headers: videoHeaders, sourceUrl, role: "video", maxHeight }),
+    audioUrl: audioUrl ? localGoogleVideoProxyUrl(audioUrl, { headers: audioHeaders, sourceUrl, role: "audio", maxHeight }) : null,
   };
+}
+
+async function resolveProxiedYouTubeStreams(sourceUrl, maxHeight = config.download.maxHeight) {
+  return proxyYouTubeStreams(await ytdlp.getStreamUrls(sourceUrl, maxHeight), { sourceUrl, maxHeight });
+}
+
+async function refreshGoogleVideoProxySession(session) {
+  if (!session?.sourceUrl || session.refreshCount >= 1) return false;
+  const fresh = await ytdlp.getStreamUrls(session.sourceUrl, session.maxHeight);
+  const target = session.role === "audio" ? (fresh.audioUrl || fresh.videoUrl) : fresh.videoUrl;
+  const headers = session.role === "audio" ? (fresh.audioHeaders || fresh.videoHeaders) : fresh.videoHeaders;
+  if (!isGoogleVideoUrl(target)) return false;
+  session.target = target;
+  session.headers = cleanGoogleVideoHeaders(headers);
+  session.refreshCount += 1;
+  return true;
 }
 
 // In-memory download job tracker (single user, ephemeral is fine).
@@ -973,33 +1022,50 @@ function wantsBufferedMjpeg(req) {
 // signed yt-dlp URL itself is valid. Keep FFmpeg local and proxy only validated
 // googlevideo.com URLs through Node's fetch implementation. Range requests are
 // forwarded so FFmpeg can still seek efficiently in long on-demand videos.
-app.get("/internal/googlevideo", asyncH(async (req, res) => {
-  let target = "";
-  try {
-    target = Buffer.from(String(req.query.u || ""), "base64url").toString("utf8");
-  } catch {
-    return res.status(400).type("text/plain").end("Invalid proxy token");
-  }
-  if (!isGoogleVideoUrl(target)) {
-    return res.status(400).type("text/plain").end("Invalid GoogleVideo URL");
+app.get("/internal/googlevideo/:id", asyncH(async (req, res) => {
+  const session = googleVideoProxySessions.get(String(req.params.id || ""));
+  if (!session || Date.now() - session.createdAt > GOOGLEVIDEO_PROXY_TTL_MS) {
+    return res.status(404).type("text/plain").end("GoogleVideo proxy session expired");
   }
 
   const controller = new AbortController();
   res.on("close", () => controller.abort());
-  const headers = {
-    "User-Agent": YOUTUBE_STREAM_HEADERS.userAgent,
-    "Referer": YOUTUBE_STREAM_HEADERS.referer,
-    "Accept": "*/*",
+  const fetchUpstream = () => {
+    const headers = { ...session.headers };
+    if (!headers["User-Agent"] && !headers["user-agent"]) headers["User-Agent"] = YOUTUBE_STREAM_HEADERS.userAgent;
+    if (!headers.Accept && !headers.accept) headers.Accept = "*/*";
+    if (req.headers.range) headers.Range = req.headers.range;
+    if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
+    return fetch(session.target, { method: "GET", headers, redirect: "follow", signal: controller.signal });
   };
-  if (req.headers.range) headers.Range = req.headers.range;
-  if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
 
-  const upstream = await fetch(target, {
-    method: "GET",
-    headers,
-    redirect: "follow",
-    signal: controller.signal,
-  });
+  let upstream = await fetchUpstream();
+  const firstStatus = upstream.status;
+  if ((upstream.status === 403 || upstream.status === 410) && await refreshGoogleVideoProxySession(session)) {
+    try { await upstream.body?.cancel(); } catch {}
+    console.warn(`[googlevideo-proxy] upstream ${firstStatus}; refreshed signed ${session.role} URL`);
+    await appendPlaybackEvent({
+      at: new Date().toISOString(),
+      event: "googlevideo_refresh",
+      youtubeId: youtubeIdFromPlaybackUrl(session.sourceUrl),
+      role: session.role,
+      upstreamStatus: firstStatus,
+      serverInstanceId: SERVER_INSTANCE_ID,
+    });
+    upstream = await fetchUpstream();
+  }
+  if (upstream.status >= 400) {
+    await appendPlaybackEvent({
+      at: new Date().toISOString(),
+      event: "googlevideo_proxy_error",
+      youtubeId: youtubeIdFromPlaybackUrl(session.sourceUrl),
+      role: session.role,
+      upstreamStatus: upstream.status,
+      refreshCount: session.refreshCount,
+      serverInstanceId: SERVER_INSTANCE_ID,
+    });
+  }
+
   res.status(upstream.status);
   for (const name of [
     "content-type",
@@ -1030,7 +1096,7 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
   const params = stream.normalizeParams(req.query);
 
   if (item.type === "youtube") {
-    const { videoUrl, audioUrl } = proxyYouTubeStreams(await ytdlp.getStreamUrls(item.url, config.download.maxHeight));
+    const { videoUrl, audioUrl } = await resolveProxiedYouTubeStreams(item.url, config.download.maxHeight);
     return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: !wantsBufferedMjpeg(req), allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
   }
   if (item.type === "file") {
@@ -1066,7 +1132,7 @@ app.get("/stream/youtube", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
   const params = stream.normalizeParams(req.query);
-  const { videoUrl, audioUrl } = proxyYouTubeStreams(await ytdlp.getStreamUrls(url, config.download.maxHeight));
+  const { videoUrl, audioUrl } = await resolveProxiedYouTubeStreams(url, config.download.maxHeight);
   return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: !wantsBufferedMjpeg(req), allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
 }));
 
@@ -1116,7 +1182,7 @@ app.get("/stream/ts/item/:itemId", asyncH(async (req, res) => {
   const { item } = found;
   const params = stream.normalizeParams(req.query);
   if (item.type === "youtube") {
-    const { videoUrl } = await ytdlp.getStreamUrls(item.url, config.download.maxHeight);
+    const { videoUrl } = await resolveProxiedYouTubeStreams(item.url, config.download.maxHeight);
     return stream.streamTS(req, res, { input: videoUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
   }
   if (item.type === "file") {
@@ -1139,7 +1205,7 @@ app.get("/stream/ts/youtube", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
   const params = stream.normalizeParams(req.query);
-  const { videoUrl } = proxyYouTubeStreams(await ytdlp.getStreamUrls(url, config.download.maxHeight));
+  const { videoUrl } = await resolveProxiedYouTubeStreams(url, config.download.maxHeight);
   return stream.streamTS(req, res, { input: videoUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
 }));
 
@@ -1160,7 +1226,7 @@ app.get("/stream/audio/item/:itemId", asyncH(async (req, res) => {
   if (!found) return res.status(404).json({ error: "item not found" });
   const { item } = found;
   if (item.type === "youtube") {
-    const { videoUrl, audioUrl } = proxyYouTubeStreams(await ytdlp.getStreamUrls(item.url, config.download.maxHeight));
+    const { videoUrl, audioUrl } = await resolveProxiedYouTubeStreams(item.url, config.download.maxHeight);
     return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
   }
   if (item.type === "file") {
@@ -1181,7 +1247,7 @@ app.get("/stream/audio/url", asyncH(async (req, res) => {
 app.get("/stream/audio/youtube", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
-  const { videoUrl, audioUrl } = proxyYouTubeStreams(await ytdlp.getStreamUrls(url, config.download.maxHeight));
+  const { videoUrl, audioUrl } = await resolveProxiedYouTubeStreams(url, config.download.maxHeight);
   return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
 }));
 
