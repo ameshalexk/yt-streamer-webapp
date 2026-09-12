@@ -28,6 +28,16 @@ test("multipart parser handles split boundaries, split headers, and multiple fra
   assert.deepEqual([...frames[6].slice(-2)], [0xff, 0xd9]);
 });
 
+test("multipart parser handles a Safari-style multi-megabyte transport chunk", () => {
+  const source = multipartFixture({ frameCount: 80, frameBytes: 64 * 1024, closeBoundary: true });
+  assert.ok(source.byteLength > 3 * 1024 * 1024);
+  const parser = new MultipartMjpegParser("ffmpeg");
+  const frames = parser.push(source);
+  assert.equal(frames.length, 80);
+  assert.equal(parser.framesParsed, 80);
+  assert.deepEqual(parser.end(), []);
+});
+
 test("multipart parser supports parts without Content-Length using the next boundary", () => {
   const source = multipartFixture({ frameCount: 3, includeContentLength: false, closeBoundary: true });
   const parser = new MultipartMjpegParser("ffmpeg");

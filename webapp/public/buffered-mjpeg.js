@@ -142,7 +142,22 @@
         if (/^\s*$/.test(trailing)) return [];
         throw new Error("MJPEG parser already ended");
       }
-      this._append(chunk);
+
+      const value = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk || 0);
+      // WebKit may coalesce many multipart JPEG parts into one multi-megabyte
+      // ReadableStream chunk. The parser memory limit protects one in-progress
+      // part, not the arbitrary size of a transport chunk, so consume large
+      // network chunks incrementally instead of appending them whole.
+      const transportSliceBytes = 64 * 1024;
+      if (value.byteLength > transportSliceBytes) {
+        const frames = [];
+        for (let offset = 0; offset < value.byteLength; offset += transportSliceBytes) {
+          frames.push(...this.push(value.subarray(offset, Math.min(value.byteLength, offset + transportSliceBytes))));
+        }
+        return frames;
+      }
+
+      this._append(value);
       const frames = [];
 
       while (true) {
