@@ -698,13 +698,13 @@ function renderFpsPresets() {
   `).join("");
 }
 
-function setBadge(mode, text) {
+function setBadge(mode, text, { revealControls = true } = {}) {
   const b = $("#streamBadge");
   if (mode === "hidden") { b.hidden = true; return; }
   b.hidden = false;
   b.className = "stream-badge " + mode;
   b.textContent = text;
-  showFullscreenOverlays({ withProgress: false });
+  if (revealControls) showFullscreenOverlays({ withProgress: false });
 }
 
 function clearStreamTimers() {
@@ -1781,17 +1781,17 @@ function updateBufferedMjpegDebug(stats = null) {
   window.__YT_STREAMER_BUFFER_STATS__ = stats ? { ...stats, updatedAt: Date.now() } : null;
 }
 
-function markBufferedStreamPlaying(attempt, stats = null) {
+function markBufferedStreamPlaying(attempt, stats = null, { revealControls = true } = {}) {
   if (!currentAttempt(attempt)) return;
   clearStreamTimers();
   clearStreamNotice();
   $("#screen").classList.remove("loading");
   const buffered = Number(stats?.queueSeconds || 0);
   const suffix = buffered > 0 ? " · " + buffered.toFixed(1) + "s buf" : "";
-  setBadge("live", "▶ " + currentSettingsLabel() + suffix);
+  setBadge("live", "▶ " + currentSettingsLabel() + suffix, { revealControls });
   if (streamSeek.seekable) {
-    startStreamSeekTimer();
-    if (isScreenFullscreen()) showFullscreenProgress();
+    if (!streamSeek.timer) startStreamSeekTimer();
+    if (revealControls && isScreenFullscreen()) showFullscreenProgress();
   }
 }
 
@@ -1950,7 +1950,8 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || 2) : 4;
         setBadge("reconnecting", "Buffering " + stats.queueSeconds.toFixed(1) + " / " + target.toFixed(1) + "s");
       } else if (stats.state === "playing" && stats.renderedFrames % Math.max(1, Math.round(stats.fps)) === 0) {
-        markBufferedStreamPlaying(attempt, stats);
+        // Refresh the live badge text without waking fullscreen controls every second.
+        markBufferedStreamPlaying(attempt, stats, { revealControls: false });
       }
     },
     onError: (error) => {

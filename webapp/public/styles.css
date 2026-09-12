@@ -506,8 +506,8 @@ body.screen-fullscreen.browser-streaming .screen .browser-keyboard-input:not([hi
 .fullscreen-overlay .fullscreen-icon { transform: scale(1.65); }
 .fullscreen-overlay:active { background: rgba(45,140,255,.9); }
 body.fullscreen-controls-idle #fullscreenBtn.fullscreen-overlay {
-  opacity: 1;
-  pointer-events: auto;
+  opacity: 0;
+  pointer-events: none;
 }
 .screen.desktop-input-active {
   touch-action: none;
