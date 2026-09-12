@@ -3,6 +3,7 @@
 import express from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { config } from "./config.js";
 import * as store from "./lib/store.js";
 import * as ytdlp from "./lib/ytdlp.js";
@@ -32,6 +33,28 @@ const RESTART_AUTH_MAX_FAILURES = 5;
 const restartAuthFailures = new Map();
 let restartPending = false;
 let httpServer = null;
+
+function isGoogleVideoUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return parsed.protocol === "https:" && /(^|\.)googlevideo\.com$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function localGoogleVideoProxyUrl(value) {
+  if (!isGoogleVideoUrl(value)) return value;
+  const token = Buffer.from(String(value), "utf8").toString("base64url");
+  return "http://127.0.0.1:" + config.port + "/internal/googlevideo?u=" + token;
+}
+
+function proxyYouTubeStreams({ videoUrl, audioUrl }) {
+  return {
+    videoUrl: localGoogleVideoProxyUrl(videoUrl),
+    audioUrl: audioUrl ? localGoogleVideoProxyUrl(audioUrl) : null,
+  };
+}
 
 // In-memory download job tracker (single user, ephemeral is fine).
 const jobs = new Map();
@@ -878,6 +901,59 @@ function wantsBufferedMjpeg(req) {
   return req.query.buffered === "1";
 }
 
+// GoogleVideo increasingly rejects FFmpeg's TLS/HTTP fingerprint even when the
+// signed yt-dlp URL itself is valid. Keep FFmpeg local and proxy only validated
+// googlevideo.com URLs through Node's fetch implementation. Range requests are
+// forwarded so FFmpeg can still seek efficiently in long on-demand videos.
+app.get("/internal/googlevideo", asyncH(async (req, res) => {
+  let target = "";
+  try {
+    target = Buffer.from(String(req.query.u || ""), "base64url").toString("utf8");
+  } catch {
+    return res.status(400).type("text/plain").end("Invalid proxy token");
+  }
+  if (!isGoogleVideoUrl(target)) {
+    return res.status(400).type("text/plain").end("Invalid GoogleVideo URL");
+  }
+
+  const controller = new AbortController();
+  res.on("close", () => controller.abort());
+  const headers = {
+    "User-Agent": YOUTUBE_STREAM_HEADERS.userAgent,
+    "Referer": YOUTUBE_STREAM_HEADERS.referer,
+    "Accept": "*/*",
+  };
+  if (req.headers.range) headers.Range = req.headers.range;
+  if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
+
+  const upstream = await fetch(target, {
+    method: "GET",
+    headers,
+    redirect: "follow",
+    signal: controller.signal,
+  });
+  res.status(upstream.status);
+  for (const name of [
+    "content-type",
+    "content-length",
+    "content-range",
+    "accept-ranges",
+    "etag",
+    "last-modified",
+  ]) {
+    const value = upstream.headers.get(name);
+    if (value) res.setHeader(name, value);
+  }
+  res.setHeader("Cache-Control", "no-store");
+
+  if (!upstream.body) return res.end();
+  Readable.fromWeb(upstream.body)
+    .on("error", (error) => {
+      if (!res.destroyed && error?.name !== "AbortError") res.destroy(error);
+    })
+    .pipe(res);
+}));
+
 // Stream a saved item by id (resolves type: m3u8 | youtube | file).
 app.get("/stream/item/:itemId", asyncH(async (req, res) => {
   const found = await store.findItem(req.params.itemId);
@@ -886,7 +962,7 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
   const params = stream.normalizeParams(req.query);
 
   if (item.type === "youtube") {
-    const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(item.url, config.download.maxHeight);
+    const { videoUrl, audioUrl } = proxyYouTubeStreams(await ytdlp.getStreamUrls(item.url, config.download.maxHeight));
     return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: !wantsBufferedMjpeg(req), allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
   }
   if (item.type === "file") {
@@ -922,7 +998,7 @@ app.get("/stream/youtube", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
   const params = stream.normalizeParams(req.query);
-  const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(url, config.download.maxHeight);
+  const { videoUrl, audioUrl } = proxyYouTubeStreams(await ytdlp.getStreamUrls(url, config.download.maxHeight));
   return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: !wantsBufferedMjpeg(req), allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
 }));
 
@@ -995,7 +1071,7 @@ app.get("/stream/ts/youtube", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
   const params = stream.normalizeParams(req.query);
-  const { videoUrl } = await ytdlp.getStreamUrls(url, config.download.maxHeight);
+  const { videoUrl } = proxyYouTubeStreams(await ytdlp.getStreamUrls(url, config.download.maxHeight));
   return stream.streamTS(req, res, { input: videoUrl, params, isLive: false, paceInput: true, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
 }));
 
@@ -1016,7 +1092,7 @@ app.get("/stream/audio/item/:itemId", asyncH(async (req, res) => {
   if (!found) return res.status(404).json({ error: "item not found" });
   const { item } = found;
   if (item.type === "youtube") {
-    const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(item.url, config.download.maxHeight);
+    const { videoUrl, audioUrl } = proxyYouTubeStreams(await ytdlp.getStreamUrls(item.url, config.download.maxHeight));
     return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
   }
   if (item.type === "file") {
@@ -1037,7 +1113,7 @@ app.get("/stream/audio/url", asyncH(async (req, res) => {
 app.get("/stream/audio/youtube", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
-  const { videoUrl, audioUrl } = await ytdlp.getStreamUrls(url, config.download.maxHeight);
+  const { videoUrl, audioUrl } = proxyYouTubeStreams(await ytdlp.getStreamUrls(url, config.download.maxHeight));
   return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
 }));
 

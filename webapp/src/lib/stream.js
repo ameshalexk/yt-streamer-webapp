@@ -208,7 +208,9 @@ export function buildMjpegArgs({ input, audioInput, params, isLive, userAgent, r
   if (seek) args.push("-ss", String(seek));
 
   args.push("-i", input);
-  if (audioInput) args.push("-i", audioInput); // present but unused by mjpeg output
+  // MJPEG is video-only. Audio is served by the separate /stream/audio/*
+  // endpoint, so opening a second input here wastes bandwidth and can make an
+  // otherwise healthy video fail when the unused audio URL is rejected.
 
   args.push(
     "-an", // MJPEG carries no audio

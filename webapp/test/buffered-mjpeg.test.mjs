@@ -221,6 +221,18 @@ test("on-demand MJPEG production can run ahead while live and legacy paths stay 
   });
   assert.equal(bufferedHttp.includes("-re"), false);
 
+  const youtubeVideoOnly = buildMjpegArgs({
+    input: "http://127.0.0.1:8099/internal/googlevideo?u=video",
+    audioInput: "http://127.0.0.1:8099/internal/googlevideo?u=audio",
+    params,
+    isLive: false,
+    paceInput: false,
+    allowBurst: true,
+  });
+  assert.equal(youtubeVideoOnly.filter((arg) => arg === "-i").length, 1);
+  assert.equal(youtubeVideoOnly.includes("http://127.0.0.1:8099/internal/googlevideo?u=video"), true);
+  assert.equal(youtubeVideoOnly.includes("http://127.0.0.1:8099/internal/googlevideo?u=audio"), false);
+
   const bufferedLocal = buildMjpegArgs({
     input: "/tmp/fixture.mp4",
     params,
