@@ -34,6 +34,52 @@ const restartAuthFailures = new Map();
 let restartPending = false;
 let httpServer = null;
 
+const PLAYBACK_LOG_FILE = path.join(config.dataDir, "playback-events.jsonl");
+const PLAYBACK_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
+function playbackLogString(value, max = 1000) {
+  return String(value ?? "").replace(/[\r\n]+/g, " ").slice(0, max);
+}
+
+function playbackStats(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const keys = [
+    "state", "fps", "receivedFrames", "renderedFrames", "queueSeconds", "queueBytes",
+    "maxQueueSeconds", "maxQueueBytes", "startupMs", "rebufferCount",
+    "recoveryTargetSeconds", "lastAvDriftMs", "eof",
+  ];
+  return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
+}
+
+function youtubeIdFromPlaybackUrl(value) {
+  try {
+    const outer = new URL(String(value || ""), "https://stream.ameshalex.com");
+    const nested = outer.searchParams.get("url");
+    const target = nested ? new URL(nested) : outer;
+    if (target.hostname.includes("youtu.be")) return target.pathname.split("/").filter(Boolean)[0] || null;
+    if (target.hostname.includes("youtube.com")) return target.searchParams.get("v") || null;
+  } catch {}
+  return null;
+}
+
+async function appendPlaybackEvent(entry) {
+  try {
+    await fs.mkdir(config.dataDir, { recursive: true });
+    try {
+      const stat = await fs.stat(PLAYBACK_LOG_FILE);
+      if (stat.size >= PLAYBACK_LOG_MAX_BYTES) {
+        await fs.rm(`${PLAYBACK_LOG_FILE}.1`, { force: true });
+        await fs.rename(PLAYBACK_LOG_FILE, `${PLAYBACK_LOG_FILE}.1`);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await fs.appendFile(PLAYBACK_LOG_FILE, `${JSON.stringify(entry)}\n`);
+  } catch (error) {
+    console.error("[playback-log]", error.message);
+  }
+}
+
 function isGoogleVideoUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
@@ -218,6 +264,28 @@ app.get("/api/health", (req, res) => {
     time: Date.now(),
   });
 });
+
+app.post("/api/playback-event", asyncH(async (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const event = playbackLogString(body.event, 64);
+  if (!/^[a-z0-9_-]{1,64}$/i.test(event)) return res.status(400).json({ error: "invalid event" });
+  const streamUrl = playbackLogString(body.streamUrl, 1500);
+  await appendPlaybackEvent({
+    at: new Date().toISOString(),
+    event,
+    label: playbackLogString(body.label, 240) || null,
+    youtubeId: youtubeIdFromPlaybackUrl(streamUrl),
+    streamUrl: streamUrl || null,
+    message: playbackLogString(body.message, 1200) || null,
+    errorName: playbackLogString(body.errorName, 120) || null,
+    reason: playbackLogString(body.reason, 120) || null,
+    stats: playbackStats(body.stats),
+    clientUserAgent: playbackLogString(body.userAgent, 600) || null,
+    requestUserAgent: playbackLogString(req.get("user-agent"), 600) || null,
+    serverInstanceId: SERVER_INSTANCE_ID,
+  });
+  res.status(204).end();
+}));
 
 app.get("/api/sessions", (req, res) => {
   const browserSessions = browserRenderer.listSessions();

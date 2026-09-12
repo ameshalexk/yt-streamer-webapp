@@ -237,11 +237,14 @@ export function streamMjpeg(req, res, { input, audioInput = null, params, isLive
   pipeFfmpegOutput(req, res, ff, {
     label: "stream",
     headers: {
-      "Content-Type": "multipart/x-mixed-replace; boundary=ffmpeg",
+      // WebKit has longstanding special handling for multipart/x-mixed-replace.
+      // Buffered clients parse the same multipart MJPEG bytes in JavaScript, so
+      // expose them as a neutral byte stream and carry the boundary explicitly.
+      "Content-Type": allowBurst ? "application/octet-stream" : "multipart/x-mixed-replace; boundary=ffmpeg",
       "Cache-Control": "no-cache, no-store, must-revalidate",
       Pragma: "no-cache",
-      Connection: "close",
       "X-Accel-Buffering": "no",
+      "X-MJPEG-Boundary": "ffmpeg",
       "X-MJPEG-FPS": String(params.fps),
       "X-MJPEG-Start": String(seekSeconds(startAt)),
       "X-MJPEG-Buffered": allowBurst ? "1" : "0",

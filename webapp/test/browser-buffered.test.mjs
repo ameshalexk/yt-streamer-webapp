@@ -51,8 +51,9 @@ test("headless Chrome re-buffers after uneven delivery and remains bounded", { t
     }
     if (req.url === "/stream") {
       res.writeHead(200, {
-        "Content-Type": "multipart/x-mixed-replace; boundary=ffmpeg",
+        "Content-Type": "application/octet-stream",
         "Cache-Control": "no-store",
+        "X-MJPEG-Boundary": "ffmpeg",
         "X-MJPEG-FPS": "12",
       });
       let sent = 0;

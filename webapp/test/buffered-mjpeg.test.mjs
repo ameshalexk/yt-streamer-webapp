@@ -261,6 +261,40 @@ test("on-demand MJPEG production can run ahead while live and legacy paths stay 
   assert.equal(legacyLocal.includes("-re"), true);
 });
 
+test("buffered network pump keeps the next read pending before frame processing", async () => {
+  const canvas = {
+    width: 1,
+    height: 1,
+    getContext() { return { drawImage() {}, clearRect() {} }; },
+  };
+  const player = new globalThis.BufferedMjpeg.BufferedMjpegPlayer({
+    url: "/fixture",
+    canvas,
+    fps: 12,
+    sessionId: 40,
+    isCurrent: (id) => id === 40,
+    audioEnabled: () => false,
+  });
+  let reads = 0;
+  player.reader = {
+    read() {
+      reads += 1;
+      if (reads === 1) return Promise.resolve({ value: new Uint8Array([1]), done: false });
+      return new Promise(() => {});
+    },
+  };
+  player.parser = {
+    push() { return [jpegFrame(1, 8)]; },
+    end() { return []; },
+  };
+  player._enqueue = async () => {
+    assert.equal(reads, 2);
+    player.destroy();
+  };
+  await player._pump();
+  assert.equal(reads, 2);
+});
+
 test("buffered player destroy cancels fetch state and makes stale callbacks inactive", () => {
   const canvas = {
     width: 1,

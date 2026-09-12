@@ -28,6 +28,22 @@ const api = {
   del(p) { return this.send("DELETE", p); },
 };
 
+function reportPlaybackEvent(event, detail = {}) {
+  const payload = {
+    event,
+    ...detail,
+    userAgent: navigator.userAgent,
+  };
+  try {
+    fetch("/api/playback-event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  } catch {}
+}
+
 const state = {
   playlists: [],
   selectedPlaylistId: null,
@@ -1834,6 +1850,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   let audioFailed = false;
   const parsed = new URL(bufferedUrl, window.location.origin);
   const requestedFps = Math.max(1, Number(parsed.searchParams.get("fps") || $("#ctlFps").value || 12));
+  reportPlaybackEvent("buffered_start", { label, streamUrl: bufferedUrl, reason: `fps=${requestedFps}` });
 
   $("#nowPlaying").textContent = label || "Playing";
   $("#stopBtn").disabled = false;
@@ -1860,6 +1877,8 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   };
 
   let player = null;
+  let loggedPlaying = false;
+  let loggedRebufferCount = 0;
   player = new window.BufferedMjpeg.BufferedMjpegPlayer({
     url: bufferedUrl,
     canvas,
@@ -1882,6 +1901,10 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       updateBufferedMjpegDebug(stats);
       if (stateName === "buffering") {
         screen.classList.add("loading");
+        if (stats.rebufferCount > loggedRebufferCount) {
+          loggedRebufferCount = stats.rebufferCount;
+          reportPlaybackEvent("buffered_rebuffer", { label, streamUrl: bufferedUrl, reason: detail.reason, stats });
+        }
         const buffered = Number(detail.bufferedSeconds ?? stats.queueSeconds ?? 0);
         const target = Number(detail.targetSeconds || (stats.renderedFrames ? stats.recoveryTargetSeconds || 2 : 4));
         if (detail.reason === "audio") {
@@ -1909,6 +1932,10 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (stateName === "playing") {
         activeCompat.playbackStarted = true;
         activeCompat.videoReady = true;
+        if (!loggedPlaying) {
+          loggedPlaying = true;
+          reportPlaybackEvent("buffered_playing", { label, streamUrl: bufferedUrl, stats });
+        }
         markBufferedStreamPlaying(attempt, stats);
         return;
       }
@@ -1928,13 +1955,23 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     },
     onError: (error) => {
       if (!currentAttempt(attempt)) return;
+      reportPlaybackEvent("buffered_error", {
+        label,
+        streamUrl: bufferedUrl,
+        message: error?.message || String(error || ""),
+        errorName: error?.name || "Error",
+        stats: player?.getStats?.(),
+      });
       failStreamAttempt(
         attempt,
         "Buffered MJPEG playback failed",
         streamErrorDetail(error?.message || "The browser could not parse or render the MJPEG stream.")
       );
     },
-    onEnded: () => finishBufferedStream(attempt),
+    onEnded: () => {
+      reportPlaybackEvent("buffered_ended", { label, streamUrl: bufferedUrl, stats: player?.getStats?.() });
+      finishBufferedStream(attempt);
+    },
   });
 
   activeCompat.bufferedPlayer = player;

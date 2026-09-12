@@ -579,7 +579,8 @@
         const response = await this.fetchImpl(this.url, { cache: "no-store", signal: this.controller.signal });
         if (!this._active()) return;
         if (!response.ok || !response.body) throw new Error(`MJPEG request failed: HTTP ${response.status}`);
-        const boundary = boundaryFromContentType(response.headers.get("content-type"));
+        const boundary = boundaryFromContentType(response.headers.get("content-type"))
+          || String(response.headers.get("x-mjpeg-boundary") || "").replace(/^--/, "").trim();
         if (!boundary) throw new Error("MJPEG response did not include a multipart boundary");
         const serverFps = Number.parseFloat(response.headers.get("x-mjpeg-fps") || "");
         if (Number.isFinite(serverFps) && serverFps > 0 && Math.abs(serverFps - this.fps) > 0.01) {
@@ -597,10 +598,14 @@
     }
 
     async _pump() {
+      // Keep one read pending before doing parser/decode/queue work. WebKit's
+      // streaming-fetch regression can otherwise withhold response bytes while
+      // JavaScript is busy processing the previous chunk.
+      let pendingRead = this.reader.read();
       while (this._active() && !this.eof) {
         if (!this.queue.canReadMore()) await this.queue.waitUntilReadable(this.controller.signal);
         if (!this._active()) return;
-        const { value, done } = await this.reader.read();
+        const { value, done } = await pendingRead;
         if (done) {
           const finalFrames = this.parser.end();
           for (const bytes of finalFrames) await this._enqueue(bytes);
@@ -610,6 +615,8 @@
           if (!this.queue.length && !this._needsAudio()) this._finish();
           break;
         }
+        // Start the next network read immediately, before parsing/enqueue work.
+        pendingRead = this.reader.read();
         const frames = this.parser.push(value);
         for (const bytes of frames) await this._enqueue(bytes);
       }
