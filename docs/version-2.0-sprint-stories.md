@@ -50,6 +50,7 @@ Production remained on version 1 at port 8099 while the isolated version 2.0 pro
 - [x] Cache keys for the V2 development CSS/app script were advanced so the new controls load cleanly during device testing.
 - [x] Syntax checks, `git diff --check`, and all **46/46** automated tests passed at initial V2-03 completion.
 - [x] Follow-up pause/resume buffering regression fixed: buffered pause preserves the original timeline base, exposes retained queue depth while paused, and no longer treats Resume as a slow-network suggestion trigger. Updated suite: **49/49** passing.
+- [x] Recommendation playback source is now locked per viewing session. A session that begins on YouTube stays on YouTube through seek/restream/quality changes even if background preparation finishes; a session that begins prepared stays prepared. Updated suite: **51/51** passing.
 
 Headless Chrome runtime checks on the isolated port 8100 also verified: one replay for rapid Low→High→Medium taps, stored-profile reload, honest Custom state, paused restart at the same timestamp with pause restored, native fullscreen retained through a simulated restart, live-return messaging, explicit legacy-resolution fallback, and no page errors. Layout checks at 390px portrait, 844px landscape and 1280px Tesla-like widths showed no quality-control overflow.
 

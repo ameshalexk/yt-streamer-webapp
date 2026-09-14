@@ -4167,9 +4167,21 @@ async function streamRecommendation(item, autoplayQueue = null) {
   renderYoutubeHistory();
   showAttemptedUrl(item.url);
   if (isMobileMode()) setPlayerDropdownOpen(true);
+
+  // Lock this viewing session to the source that was available when playback began.
+  // Background preparation may finish later, but seek/restream/quality changes must not
+  // silently switch an active YouTube session over to the prepared local file.
+  const preparedForSession = state.recommendationPrepared[item.id]?.status === "ready";
+  const sessionSource = preparedForSession ? "prepared" : "youtube";
+  reportPlaybackEvent("recommendation_source_locked", {
+    label: item.title || "YouTube",
+    youtubeId: item.id || null,
+    reason: sessionSource,
+  });
+
   replayFn = (startAt = 0) => {
     const q = streamQuery(startAt);
-    const prepared = state.recommendationPrepared[item.id]?.status === "ready";
+    const prepared = preparedForSession;
     const u = encodeURIComponent(item.url);
     playStream({
       tsUrl: prepared ? `/stream/ts/prepared/${encodeURIComponent(item.id)}?${q}` : `/stream/ts/youtube?url=${u}&${q}`,

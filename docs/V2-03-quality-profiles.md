@@ -86,3 +86,24 @@ Real local YouTube regression check at Medium quality:
 - timeline base stayed at 0 throughout and no page errors occurred.
 
 Automated suite after the fix: **49/49 passing**.
+
+
+## Recommendation source lock follow-up — September 14, 2026
+
+A production trace showed that a recommendation could begin from the direct YouTube source while background preparation was still running, then switch to the prepared local MP4 on a later seek/restream as soon as preparation became ready. That mid-session source change could cause an avoidable reconnect and make the player appear stuck on `Connecting stream…`.
+
+Fix:
+- Each recommendation viewing session now locks its playback source when playback begins.
+- If the prepared copy is already ready at session start, the whole session uses the prepared source.
+- If it is not ready at session start, the whole session stays on the direct YouTube source.
+- Seek, restream, quality changes and other `replayFn` restarts reuse the same locked source.
+- Background preparation may still finish while the user watches, but the prepared copy is not adopted until the next time that recommendation is opened.
+- A `recommendation_source_locked` playback event records whether the session chose `youtube` or `prepared`.
+
+Runtime browser verification covered both directions:
+- a session starting on YouTube stayed on YouTube after prepared status changed to ready;
+- a session starting prepared stayed prepared even after the in-memory ready status was removed;
+- both video and separate-audio URLs stayed on the same locked source;
+- no page errors occurred.
+
+Automated suite after the source-lock fix: **51/51 passing**.
