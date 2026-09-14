@@ -629,10 +629,8 @@ let restreamTimer = null;
 let autoplayEnabled = localStorage.getItem(AUTOPLAY_KEY) === "true";
 let autoplayContext = null;
 let autoplayAdvancing = false;
-let fullscreenProgressHideTimer = null;
 let fullscreenOverlayHideTimer = null;
 const FULLSCREEN_OVERLAY_HIDE_MS = 5000;
-const FULLSCREEN_PROGRESS_HIDE_MS = 5000;
 const SLOW_BUFFER_STARTUP_SUGGEST_MS = 20000;
 const SLOW_BUFFER_REBUFFER_SUGGEST_MS = 12000;
 const SLOW_BUFFER_REPEAT_REBUFFER_SUGGEST_MS = 6000;
@@ -646,6 +644,8 @@ let slowBufferSuggestionShownAttempt = -1;
 let slowBufferSuggestionScope = { key: "", count: 0, stopped: false };
 const streamSeek = {
   seekable: false,
+  isLive: false,
+  showUnavailable: false,
   duration: 0,
   startAt: 0,
   timer: null,
@@ -741,6 +741,7 @@ function showStreamNotice(kind, title, detail) {
   n.className = "stream-notice " + kind;
   $("#streamNoticeTitle").textContent = title;
   $("#streamNoticeDetail").textContent = detail;
+  showFullscreenOverlays();
 }
 
 function currentAttempt(attempt) {
@@ -926,7 +927,6 @@ function markStreamLive(attempt) {
   if (streamSeek.seekable) {
     streamSeek.liveAtMs = Date.now();
     startStreamSeekTimer();
-    if (isScreenFullscreen()) showFullscreenProgress();
   }
 }
 
@@ -970,9 +970,14 @@ function getStreamCurrentTime() {
 
 function updateStreamSeekUi(current = getStreamCurrentTime()) {
   const panel = $("#streamSeek");
+  const unavailable = $("#liveSeekStatus");
   if (!panel) return;
   panel.hidden = !streamSeek.seekable;
-  updateFullscreenProgressUi(current);
+  if (unavailable) {
+    unavailable.hidden = streamSeek.seekable || !streamSeek.showUnavailable;
+    $("#liveSeekLabel").textContent = streamSeek.isLive ? "LIVE" : "VIDEO";
+    $("#liveSeekDetail").textContent = streamSeek.isLive ? "Seeking unavailable" : "This video cannot be seeked";
+  }
   if (!streamSeek.seekable) return;
   const duration = streamSeek.duration || 0;
   const pct = duration ? Math.max(0, Math.min(100, (current / duration) * 100)) : 0;
@@ -985,22 +990,15 @@ function updateStreamSeekUi(current = getStreamCurrentTime()) {
   if (duration && current >= duration - 0.75) handleAutoplayEnd();
 }
 
-function canShowFullscreenProgress() {
-  return Boolean(isScreenFullscreen() && streamSeek.seekable && $("#screen")?.classList.contains("playing"));
-}
-
 function canAutoHideScreenOverlays() {
   const screen = $("#screen");
-  return Boolean(screen && (screen.classList.contains("playing") || isScreenFullscreen()));
-}
-
-function scheduleFullscreenProgressHide() {
-  clearTimeout(fullscreenProgressHideTimer);
-  fullscreenProgressHideTimer = setTimeout(() => {
-    fullscreenProgressHideTimer = null;
-    $("#fullscreenProgress")?.classList.remove("is-visible");
-    document.body.classList.remove("fullscreen-progress-visible");
-  }, FULLSCREEN_PROGRESS_HIDE_MS);
+  const noticeVisible = !$("#streamNotice")?.hidden;
+  return Boolean(screen
+    && screen.classList.contains("playing")
+    && !screen.classList.contains("loading")
+    && !screen.classList.contains("controls-interacting")
+    && !playbackPaused
+    && !noticeVisible);
 }
 
 function clearFullscreenOverlayHide() {
@@ -1022,59 +1020,20 @@ function scheduleFullscreenOverlayHide() {
 }
 
 function showFullscreenOverlays({ withProgress = true } = {}) {
-  if (!canAutoHideScreenOverlays()) {
-    clearFullscreenOverlayHide();
-    return;
-  }
   document.body.classList.remove("fullscreen-controls-idle");
-  if (withProgress) showFullscreenProgress();
-  scheduleFullscreenOverlayHide();
+  if (withProgress) updateStreamSeekUi();
+  if (canAutoHideScreenOverlays()) scheduleFullscreenOverlayHide();
+  else clearFullscreenOverlayHide();
 }
 
-function showFullscreenProgress() {
-  const panel = $("#fullscreenProgress");
-  if (!panel) return;
-  updateFullscreenProgressUi();
-  if (!canShowFullscreenProgress()) {
-    panel.hidden = true;
-    panel.classList.remove("is-visible");
-    document.body.classList.remove("fullscreen-progress-visible");
-    return;
-  }
-  panel.hidden = false;
-  panel.classList.add("is-visible");
-  document.body.classList.add("fullscreen-progress-visible");
-  scheduleFullscreenProgressHide();
+function beginScreenControlInteraction() {
+  $("#screen")?.classList.add("controls-interacting");
+  clearFullscreenOverlayHide();
 }
 
-function hideFullscreenProgress() {
-  clearTimeout(fullscreenProgressHideTimer);
-  fullscreenProgressHideTimer = null;
-  const panel = $("#fullscreenProgress");
-  if (!panel) return;
-  panel.classList.remove("is-visible");
-  document.body.classList.remove("fullscreen-progress-visible");
-  panel.hidden = true;
-}
-
-function updateFullscreenProgressUi(current = getStreamCurrentTime()) {
-  const panel = $("#fullscreenProgress");
-  if (!panel) return;
-  if (!canShowFullscreenProgress()) {
-    clearTimeout(fullscreenProgressHideTimer);
-    fullscreenProgressHideTimer = null;
-    panel.classList.remove("is-visible");
-    document.body.classList.remove("fullscreen-progress-visible");
-    panel.hidden = true;
-    return;
-  }
-  const duration = streamSeek.duration || 0;
-  const pct = duration ? Math.max(0, Math.min(100, (current / duration) * 100)) : 0;
-  panel.hidden = false;
-  $("#fullscreenProgressFill").style.width = `${pct}%`;
-  $("#fullscreenProgressThumb").style.left = `${pct}%`;
-  $("#fullscreenProgressTrack").setAttribute("aria-valuenow", String(Math.round(pct)));
-  $("#fullscreenProgressTime").textContent = `${clock(current)} / ${clock(duration)}`;
+function endScreenControlInteraction() {
+  $("#screen")?.classList.remove("controls-interacting");
+  showFullscreenOverlays();
 }
 
 function renderAutoplayButton() {
@@ -1130,6 +1089,8 @@ function stopStreamSeekTimer(reset = false) {
   streamSeek.liveAtMs = 0;
   if (reset) {
     streamSeek.seekable = false;
+    streamSeek.isLive = false;
+    streamSeek.showUnavailable = false;
     streamSeek.duration = 0;
     streamSeek.startAt = 0;
     updateStreamSeekUi(0);
@@ -1147,9 +1108,10 @@ function configureStreamSeek(meta = {}, startAt = 0) {
   const duration = Number(meta.duration || 0);
   streamSeek.duration = Number.isFinite(duration) && duration > 0 ? duration : 0;
   streamSeek.seekable = Boolean(meta.seekable && streamSeek.duration);
+  streamSeek.isLive = Boolean(meta.isLive || meta.live);
+  streamSeek.showUnavailable = Boolean(!streamSeek.seekable && (streamSeek.isLive || meta.seekable === false));
   streamSeek.startAt = clampStreamSeekTime(startAt);
   updateStreamSeekUi(streamSeek.startAt);
-  if (streamSeek.seekable && isScreenFullscreen()) showFullscreenProgress();
 }
 
 function seekStreamTo(time) {
@@ -1195,6 +1157,15 @@ function setPauseButtonState(text, pressed) {
   if (!btn) return;
   btn.textContent = text;
   btn.setAttribute("aria-pressed", pressed ? "true" : "false");
+  btn.setAttribute("aria-label", pressed ? "Resume playback" : "Pause playback");
+}
+
+function renderMuteButton() {
+  const btn = $("#muteBtn");
+  if (!btn) return;
+  btn.textContent = soundOn ? "🔊 Sound" : "🔇 Muted";
+  btn.setAttribute("aria-label", soundOn ? "Mute sound" : "Turn sound on");
+  btn.setAttribute("aria-pressed", soundOn ? "false" : "true");
 }
 
 function resetPauseControl(disabled = false) {
@@ -1259,6 +1230,7 @@ function pausePlayback() {
   screen.classList.add("playback-paused");
   setPauseButtonState("▶ Resume", true);
   setBadge("paused", "Ⅱ PAUSED");
+  showFullscreenOverlays();
 }
 
 function resumePlayback() {
@@ -1271,6 +1243,7 @@ function resumePlayback() {
   screen.classList.remove("playback-paused");
   $("#pauseFrame").hidden = true;
   setPauseButtonState("Ⅱ Pause", false);
+  showFullscreenOverlays();
   if (wasBufferedMjpeg) {
     activeCompat.bufferedPlayer.resumeUser();
     return;
@@ -1372,6 +1345,7 @@ function canTryMpegts() {
 
 function cleanupMedia() {
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), audio = $("#audio");
+  clearFullscreenOverlayHide();
   setDesktopStreamActive(false);
   setBrowserStreamActive(false);
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
@@ -1945,7 +1919,6 @@ function markBufferedStreamPlaying(attempt, stats = null, { revealControls = tru
   setBadge("live", "▶ " + currentSettingsLabel() + suffix, { revealControls });
   if (streamSeek.seekable) {
     if (!streamSeek.timer) startStreamSeekTimer();
-    if (revealControls && isScreenFullscreen()) showFullscreenProgress();
   }
 }
 
@@ -2462,6 +2435,7 @@ async function playItem(item) {
       audioUrl: `/stream/audio/item/${item.id}?${audioQuery(startAt)}`,
     }, item.title, {
       seekable: item.type === "youtube" || item.type === "file",
+      isLive: item.type !== "youtube" && item.type !== "file",
       bufferedMjpeg: item.type === "youtube" || item.type === "file",
       duration: item.meta?.duration,
       startAt,
@@ -2744,7 +2718,7 @@ function updateFullscreenButton() {
   if (active) showFullscreenOverlays();
   else {
     clearFullscreenOverlayHide();
-    hideFullscreenProgress();
+    updateStreamSeekUi();
   }
   if (!btn) return;
   btn.classList.toggle("is-exit", active);
@@ -3245,6 +3219,7 @@ async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
       audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
     }, video.title || "YouTube", {
       seekable: !video.isLive,
+      isLive: Boolean(video.isLive),
       bufferedMjpeg: !video.isLive,
       duration: video.duration,
       startAt,
@@ -3617,6 +3592,7 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
       audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
     }, item.title || "YouTube", {
       seekable: !item.isLive && !item.isUpcoming,
+      isLive: Boolean(item.isLive || item.isUpcoming),
       bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
       startAt,
@@ -3666,6 +3642,7 @@ async function streamYoutubeHistoryItem(item) {
       audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
     }, item.title || "YouTube", {
       seekable: !item.isLive,
+      isLive: Boolean(item.isLive),
       bufferedMjpeg: !item.isLive,
       duration: item.duration,
       startAt,
@@ -4002,6 +3979,7 @@ async function streamRecommendation(item, autoplayQueue = null) {
       audioUrl: prepared ? `/stream/audio/prepared/${encodeURIComponent(item.id)}?${audioQuery(startAt)}` : `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
     }, item.title || "YouTube", {
       seekable: !item.isLive && !item.isUpcoming,
+      isLive: Boolean(item.isLive || item.isUpcoming),
       bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
       startAt,
@@ -6502,6 +6480,8 @@ $("#streamForwardBtn").onclick = () => seekStreamTo(getStreamCurrentTime() + 10)
 $("#streamSeekTrack").addEventListener("pointerdown", (e) => {
   if (!streamSeek.seekable) return;
   e.preventDefault();
+  e.stopPropagation();
+  beginScreenControlInteraction();
   clearInterval(streamSeek.timer);
   const seek = (clientX) => {
     const rect = $("#streamSeekTrack").getBoundingClientRect();
@@ -6511,44 +6491,37 @@ $("#streamSeekTrack").addEventListener("pointerdown", (e) => {
   };
   let target = seek(e.clientX);
   const move = (ev) => { target = seek(ev.clientX); };
-  const up = () => {
+  const finish = (commit) => {
     document.removeEventListener("pointermove", move);
     document.removeEventListener("pointerup", up);
-    seekStreamTo(target);
+    document.removeEventListener("pointercancel", cancel);
+    if (commit) seekStreamTo(target);
+    endScreenControlInteraction();
   };
+  const up = () => finish(true);
+  const cancel = () => finish(false);
   document.addEventListener("pointermove", move);
   document.addEventListener("pointerup", up);
+  document.addEventListener("pointercancel", cancel);
 });
 $("#streamSeekTrack").addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") { e.preventDefault(); seekStreamTo(getStreamCurrentTime() - 10); }
   if (e.key === "ArrowRight") { e.preventDefault(); seekStreamTo(getStreamCurrentTime() + 10); }
 });
-$("#fullscreenProgressTrack").addEventListener("pointerdown", (e) => {
-  if (!streamSeek.seekable) return;
-  e.preventDefault();
+const videoControlsOverlay = $("#videoControlsOverlay");
+videoControlsOverlay.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
-  clearInterval(streamSeek.timer);
-  clearTimeout(fullscreenProgressHideTimer);
-  const seek = (clientX) => {
-    const rect = $("#fullscreenProgressTrack").getBoundingClientRect();
-    const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    updateStreamSeekUi(pos * streamSeek.duration);
-    return pos * streamSeek.duration;
-  };
-  let target = seek(e.clientX);
-  const move = (ev) => { target = seek(ev.clientX); };
-  const up = () => {
-    document.removeEventListener("pointermove", move);
-    document.removeEventListener("pointerup", up);
-    seekStreamTo(target);
-    showFullscreenProgress();
-  };
-  document.addEventListener("pointermove", move);
-  document.addEventListener("pointerup", up);
+  beginScreenControlInteraction();
 });
-$("#fullscreenProgressTrack").addEventListener("keydown", (e) => {
-  if (e.key === "ArrowLeft") { e.preventDefault(); seekStreamTo(getStreamCurrentTime() - 10); showFullscreenProgress(); }
-  if (e.key === "ArrowRight") { e.preventDefault(); seekStreamTo(getStreamCurrentTime() + 10); showFullscreenProgress(); }
+videoControlsOverlay.addEventListener("pointerup", (e) => {
+  if (!e.target.closest(".stream-seek-track")) endScreenControlInteraction();
+});
+videoControlsOverlay.addEventListener("pointercancel", endScreenControlInteraction);
+videoControlsOverlay.addEventListener("focusin", beginScreenControlInteraction);
+videoControlsOverlay.addEventListener("focusout", () => {
+  requestAnimationFrame(() => {
+    if (!videoControlsOverlay.contains(document.activeElement)) endScreenControlInteraction();
+  });
 });
 $("#muteBtn").onclick = () => {
   const a = $("#audio");
@@ -6561,7 +6534,7 @@ $("#muteBtn").onclick = () => {
     const resumeAt = getStreamCurrentTime();
     const localTime = bufferedPlayer.currentTime();
     soundOn = !soundOn;
-    $("#muteBtn").textContent = soundOn ? "🔊" : "🔇";
+    renderMuteButton();
     a.muted = !soundOn;
     if (!soundOn) {
       bufferedPlayer.setAudioDisabled(true, localTime);
@@ -6578,7 +6551,7 @@ $("#muteBtn").onclick = () => {
     return;
   }
   soundOn = !soundOn;
-  $("#muteBtn").textContent = soundOn ? "🔊" : "🔇";
+  renderMuteButton();
   const v = $("#video");
   v.muted = !soundOn;
   a.muted = !soundOn;
@@ -7079,20 +7052,16 @@ function handleDesktopPanPointerUp(e) {
   let singleTapTimer = null;
   let ignoreDblClickUntil = 0;
   let fullscreenTapRevealOnly = false;
+  let controlsRevealOnlyUntil = 0;
 
   function canTogglePlaybackFromTap(target) {
     if (!screen.classList.contains("playing") || screen.classList.contains("embed-mode")) return false;
     if ($("#pauseBtn")?.disabled) return false;
-    return !target?.closest("button, input, select, textarea, a, .stream-notice, .stream-seek, .fullscreen-progress");
+    return !target?.closest("button, input, select, textarea, a, .stream-notice, .video-controls-overlay");
   }
 
   function handleTap(x, y, target) {
     if (!canTogglePlaybackFromTap(target)) return false;
-    const progress = $("#fullscreenProgress");
-    if (isScreenFullscreen() && streamSeek.seekable && !progress?.classList.contains("is-visible")) {
-      showFullscreenOverlays();
-      return true;
-    }
     const now = Date.now();
     const moved = Math.hypot(x - lastTapX, y - lastTapY) > 40;
     if (now - lastTapAt < 350 && !moved) {
@@ -7119,17 +7088,22 @@ function handleDesktopPanPointerUp(e) {
     screen.addEventListener("pointerdown", (e) => {
       retryBufferedAudioFromGesture();
       fullscreenTapRevealOnly = canAutoHideScreenOverlays()
-        && document.body.classList.contains("fullscreen-controls-idle")
+        && (document.body.classList.contains("fullscreen-controls-idle") || Date.now() < controlsRevealOnlyUntil)
         && !desktopInputActiveForScreen()
         && !browserInputActiveForScreen()
-        && !e.target?.closest("button, input, select, textarea, a, .fullscreen-progress");
-      if (canAutoHideScreenOverlays()) showFullscreenOverlays({ withProgress: isScreenFullscreen() });
+        && !e.target?.closest("button, input, select, textarea, a, .video-controls-overlay");
+      if (fullscreenTapRevealOnly) controlsRevealOnlyUntil = 0;
+      if (screen.classList.contains("playing") || isScreenFullscreen()) showFullscreenOverlays();
     });
     screen.addEventListener("pointerdown", handleDesktopInputPointerDown);
     screen.addEventListener("pointerdown", handleBrowserInputPointerDown);
     screen.addEventListener("pointerdown", handleDesktopPanPointerDown);
     screen.addEventListener("pointermove", (e) => {
-      if (canAutoHideScreenOverlays() && e.pointerType === "mouse") showFullscreenOverlays({ withProgress: false });
+      if (screen.classList.contains("playing") && e.pointerType === "mouse") {
+        const controlsWereIdle = document.body.classList.contains("fullscreen-controls-idle");
+        showFullscreenOverlays({ withProgress: false });
+        if (controlsWereIdle) controlsRevealOnlyUntil = Date.now() + 500;
+      }
     });
     screen.addEventListener("pointermove", handleDesktopInputPointerMove);
     screen.addEventListener("pointermove", handleBrowserInputPointerMove);
@@ -7160,8 +7134,8 @@ function handleDesktopPanPointerUp(e) {
         && document.body.classList.contains("fullscreen-controls-idle")
         && !desktopInputActiveForScreen()
         && !browserInputActiveForScreen()
-        && !e.target?.closest("button, input, select, textarea, a, .fullscreen-progress");
-      if (canAutoHideScreenOverlays()) showFullscreenOverlays({ withProgress: isScreenFullscreen() });
+        && !e.target?.closest("button, input, select, textarea, a, .video-controls-overlay");
+      if (screen.classList.contains("playing") || isScreenFullscreen()) showFullscreenOverlays();
     }, { passive: true });
     screen.addEventListener("touchend", (e) => {
       if (desktopInputActiveForScreen() || browserInputActiveForScreen()) return;
@@ -7183,6 +7157,7 @@ function handleDesktopPanPointerUp(e) {
   }, { passive: false });
   screen.addEventListener("dblclick", (e) => {
     if (desktopInputActiveForScreen() || browserInputActiveForScreen()) return;
+    if (e.target.closest(".video-controls-overlay")) return;
     if (Date.now() < ignoreDblClickUntil) return;
     e.preventDefault();
     toggleScreenFullscreen();
@@ -7227,6 +7202,7 @@ $("#quickPlayBtn").onclick = async () => {
         audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
       }, info?.title || "YouTube", {
         seekable: !info?.isLive,
+        isLive: Boolean(info?.isLive),
         bufferedMjpeg: !info?.isLive,
         duration: info?.duration,
         startAt,
@@ -7254,7 +7230,7 @@ $("#quickPlayBtn").onclick = async () => {
         tsUrl: `/stream/ts/url?url=${u}&live=1&${q}`,
         mjpegUrl: `/stream/url?url=${u}&live=1&${q}`,
         audioUrl: `/stream/audio/url?url=${u}&live=1&_=${Date.now()}`,
-      }, "Live URL");
+      }, "Live URL", { seekable: false, isLive: true });
     };
     return replayFn();
   }
@@ -7283,7 +7259,7 @@ $("#quickPlayBtn").onclick = async () => {
       tsUrl: `/stream/ts/url?url=${u}&live=1&${q}`,
       mjpegUrl: `/stream/url?url=${u}&live=1&${q}`,
       audioUrl: `/stream/audio/url?url=${u}&live=1&_=${Date.now()}`,
-    }, "Live URL");
+    }, "Live URL", { seekable: false, isLive: true });
   };
   replayFn();
 };
@@ -7306,6 +7282,7 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
 (async function init() {
   initTheme();
   renderAutoplayButton();
+  renderMuteButton();
   $("#themeToggleBtn").onclick = () => {
     applyTheme(document.documentElement.dataset.theme === "day" ? "night" : "day");
   };

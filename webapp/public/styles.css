@@ -253,8 +253,7 @@ body.screen-fullscreen .topbar,
 body.screen-fullscreen .player .col-head,
 body.screen-fullscreen .player-toolbar,
 body.screen-fullscreen .quick,
-body.screen-fullscreen .stream-settings,
-body.screen-fullscreen #streamSeek {
+body.screen-fullscreen .stream-settings {
   display: none !important;
 }
 body.screen-fullscreen #app,
@@ -288,9 +287,18 @@ body.screen-fullscreen .screen {
 body.screen-fullscreen.desktop-streaming button:not(#fullscreenBtn):not(#browserClosePopupBtn) {
   display: none !important;
 }
+body.screen-fullscreen.desktop-streaming #streamSeek,
+body.screen-fullscreen.desktop-streaming .live-seek-status,
+body.screen-fullscreen.browser-streaming #streamSeek,
+body.screen-fullscreen.browser-streaming .live-seek-status,
+body.screen-fullscreen.desktop-streaming .video-controls-row > :not(#fullscreenBtn),
+body.screen-fullscreen.browser-streaming .video-controls-row > :not(#fullscreenBtn) {
+  display: none !important;
+}
+body.screen-fullscreen.desktop-streaming .video-controls-row,
+body.screen-fullscreen.browser-streaming .video-controls-row { justify-content: flex-end; }
 body.screen-fullscreen.browser-streaming .screen .stream-badge,
 body.screen-fullscreen.browser-streaming .screen .stream-notice,
-body.screen-fullscreen.browser-streaming .screen .fullscreen-progress,
 body.screen-fullscreen.browser-streaming .screen.browser-input-active::before {
   display: none !important;
 }
@@ -495,17 +503,36 @@ body.screen-fullscreen.browser-streaming .screen .browser-keyboard-input:not([hi
   --screen-zoom-x: var(--desktop-zoom-x);
   --screen-zoom-y: var(--desktop-zoom-y);
 }
-#fullscreenBtn.fullscreen-overlay {
-  position: absolute; top: 16px; left: 16px; z-index: 45;
-  width: 76px; min-width: 76px; height: 76px; min-height: 76px; padding: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 18px; background: rgba(11,13,16,.78); border: 2px solid rgba(255,255,255,.5);
-  box-shadow: 0 6px 22px rgba(0,0,0,.48); backdrop-filter: blur(6px);
-  transition: opacity .24s ease, background-color .24s ease, border-color .24s ease;
+.video-controls-overlay {
+  position: absolute; inset: 0; z-index: 45;
+  display: flex; align-items: flex-end;
+  color: #fff; pointer-events: none;
+  background: linear-gradient(to top, rgba(0,0,0,.86) 0, rgba(0,0,0,.48) 25%, transparent 58%);
+  opacity: 1; transition: opacity .24s ease;
 }
-.fullscreen-overlay .fullscreen-icon { transform: scale(1.65); }
-.fullscreen-overlay:active { background: rgba(45,140,255,.9); }
-body.fullscreen-controls-idle #fullscreenBtn.fullscreen-overlay {
+.video-controls-panel {
+  width: 100%; padding: 18px; pointer-events: auto;
+}
+.video-controls-row {
+  display: flex; align-items: center; gap: 10px;
+}
+.video-control-btn {
+  min-width: 52px; min-height: 52px; padding: 0 18px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  border: 1px solid rgba(255,255,255,.3); border-radius: 14px;
+  background: rgba(12,15,19,.78); color: #fff;
+  font: inherit; font-size: 15px; font-weight: 800; cursor: pointer;
+  box-shadow: 0 5px 18px rgba(0,0,0,.32); backdrop-filter: blur(8px);
+}
+.video-control-btn:hover { background: rgba(31,38,47,.92); }
+.video-control-btn:active { background: rgba(45,140,255,.92); }
+.video-control-btn:focus-visible { outline: 3px solid rgba(92,178,255,.95); outline-offset: 2px; }
+.video-control-btn:disabled { opacity: .48; cursor: default; }
+.video-control-btn.icon-only { width: 52px; padding: 0; }
+.video-controls-spacer { flex: 1 1 auto; }
+.player-quality-slot { flex: 0 0 190px; min-width: 190px; min-height: 52px; visibility: hidden; }
+.video-controls-overlay .fullscreen-icon { transform: scale(1.08); }
+body.fullscreen-controls-idle .video-controls-overlay {
   opacity: 0;
   pointer-events: none;
 }
@@ -533,6 +560,12 @@ body.fullscreen-controls-idle #fullscreenBtn.fullscreen-overlay {
 }
 .browser-close-popup:active { background: rgba(127,29,29,.95); }
 .browser-close-popup[hidden] { display: none !important; }
+body.fullscreen-controls-idle .video-controls-overlay .video-controls-panel { pointer-events: none; }
+.screen:not(.playing) .video-controls-overlay { background: none; }
+.screen:not(.playing) #pauseBtn,
+.screen:not(.playing) #muteBtn,
+.screen:not(.playing) #streamSeek,
+.screen:not(.playing) #liveSeekStatus { display: none !important; }
 .screen.desktop-input-active {
   touch-action: none;
   cursor: crosshair;
@@ -611,20 +644,17 @@ body.fullscreen-controls-idle #fullscreenBtn.fullscreen-overlay {
 .screen-empty .big { font-size: 54px; opacity: .35; }
 .screen.loading::after {
   content: "Connecting stream…"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  color: var(--text); background: rgba(0,0,0,.55); font-size: 16px;
+  z-index: 20; color: var(--text); background: rgba(0,0,0,.55); font-size: 16px; pointer-events: none;
 }
 .stream-badge {
-  position: absolute; bottom: 10px; left: 10px; z-index: 5;
+  position: absolute; top: 10px; left: 10px; z-index: 47;
   font-size: 13px; font-weight: 700; padding: 6px 12px; border-radius: 999px;
   letter-spacing: .3px; backdrop-filter: blur(4px); pointer-events: none;
-  transition: opacity .24s ease, top .24s ease, bottom .24s ease;
+  transition: opacity .24s ease;
 }
 body.screen-fullscreen .screen .stream-badge {
-  top: auto; bottom: 16px; left: 16px; z-index: 45;
+  top: 16px; bottom: auto; left: 16px; z-index: 47;
   max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-body.screen-fullscreen.fullscreen-progress-visible .screen .stream-badge {
-  bottom: 88px;
 }
 body.fullscreen-controls-idle .screen .stream-badge {
   opacity: 0;
@@ -664,7 +694,7 @@ body.fullscreen-controls-idle .screen .stream-badge {
 }
 
 .stream-notice {
-  position: absolute; left: 50%; bottom: 22px; z-index: 6; transform: translateX(-50%);
+  position: absolute; left: 50%; bottom: 112px; z-index: 48; transform: translateX(-50%);
   width: min(620px, calc(100% - 32px)); padding: 16px;
   background: rgba(20,24,29,.94); border: 1px solid rgba(255,255,255,.16); border-radius: 12px;
   box-shadow: 0 12px 34px rgba(0,0,0,.55); color: var(--text);
@@ -676,65 +706,43 @@ body.fullscreen-controls-idle .screen .stream-badge {
 .notice-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .notice-actions .btn { min-height: 42px; padding: 0 16px; font-size: 14px; }
 .stream-seek {
-  margin: 0 18px 12px; padding: 12px 14px;
-  border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
+  margin: 0 0 8px; padding: 0;
 }
+.stream-seek[hidden], .live-seek-status[hidden] { display: none !important; }
 .stream-seek-row {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px;
 }
 .stream-seek-row .btn {
-  min-width: 72px;
+  width: auto; min-width: 64px; min-height: 48px; padding: 0 12px;
+  border-color: rgba(255,255,255,.24); background: rgba(12,15,19,.72); color: #fff;
 }
 .stream-seek-track {
-  position: relative; height: 36px; cursor: pointer; touch-action: none;
+  position: relative; height: 48px; cursor: pointer; touch-action: none;
 }
 .stream-seek-track::before {
-  content: ""; position: absolute; left: 0; right: 0; top: 15px; height: 6px;
-  border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line);
+  content: ""; position: absolute; left: 0; right: 0; top: 20px; height: 8px;
+  border-radius: 999px; background: rgba(255,255,255,.22); border: 1px solid rgba(255,255,255,.18);
 }
 .stream-seek-fill {
-  position: absolute; left: 0; top: 16px; height: 6px; width: 0; border-radius: 999px; background: var(--accent-2);
+  position: absolute; left: 0; top: 21px; height: 8px; width: 0; border-radius: 999px; background: rgba(45,140,255,.95);
 }
 .stream-seek-thumb {
-  position: absolute; left: 0; top: 8px; width: 22px; height: 22px; border-radius: 999px;
-  background: var(--text); border: 3px solid var(--accent-2); transform: translateX(-50%);
+  position: absolute; left: 0; top: 12px; width: 25px; height: 25px; border-radius: 999px;
+  background: #fff; border: 3px solid rgba(45,140,255,.98); transform: translateX(-50%);
+  box-shadow: 0 3px 12px rgba(0,0,0,.42);
 }
 .stream-seek-time {
-  color: var(--muted); font-size: 13px; line-height: 1.4; text-align: right;
+  color: rgba(255,255,255,.8); font-size: 13px; line-height: 1.25; text-align: center; font-variant-numeric: tabular-nums;
 }
-.fullscreen-progress {
-  position: absolute; left: 50%; bottom: 18px; z-index: 35;
-  width: min(820px, calc(100% - 44px)); padding: 12px 14px 10px;
-  border-radius: 14px; border: 1px solid rgba(255,255,255,.18);
-  background: rgba(10,12,15,.46); color: #fff; backdrop-filter: blur(8px);
-  box-shadow: 0 10px 34px rgba(0,0,0,.35);
-  transform: translate(-50%, 120%);
-  opacity: 0; pointer-events: none;
-  transition: transform .28s ease, opacity .22s ease;
+.live-seek-status {
+  min-height: 36px; margin: 0 0 8px;
+  display: flex; align-items: center; gap: 8px;
+  color: rgba(255,255,255,.78); font-size: 13px;
 }
-body.screen-fullscreen .screen .fullscreen-progress.is-visible {
-  transform: translate(-50%, 0);
-  opacity: 1; pointer-events: auto;
-}
-.fullscreen-progress-track {
-  position: relative; height: 28px; cursor: pointer; touch-action: none;
-}
-.fullscreen-progress-track::before {
-  content: ""; position: absolute; left: 0; right: 0; top: 11px; height: 7px;
-  border-radius: 999px; background: rgba(255,255,255,.18);
-}
-.fullscreen-progress-fill {
-  position: absolute; left: 0; top: 11px; height: 7px; width: 0;
-  border-radius: 999px; background: rgba(45,140,255,.9);
-}
-.fullscreen-progress-thumb {
-  position: absolute; left: 0; top: 4px; width: 21px; height: 21px;
-  border-radius: 999px; background: #fff; border: 3px solid rgba(45,140,255,.95);
-  box-shadow: 0 3px 12px rgba(0,0,0,.38); transform: translateX(-50%);
-}
-.fullscreen-progress-time {
-  margin-top: 2px; font-size: 12px; line-height: 1.3; text-align: right;
-  color: rgba(255,255,255,.78);
+.live-seek-status strong { color: #fff; letter-spacing: .6px; }
+.live-seek-dot {
+  width: 10px; height: 10px; border-radius: 50%; background: #f04747;
+  box-shadow: 0 0 0 4px rgba(240,71,71,.2);
 }
 
 .quick { display: flex; gap: 10px; padding: 0 18px 12px; }
@@ -1789,29 +1797,40 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
     font-size: 13px;
   }
   .screen { margin: 10px; }
-  .stream-seek { margin: 0 10px 12px; padding: 10px; }
+  .video-controls-panel { padding: 12px; }
+  .video-controls-row { gap: 8px; }
+  .video-control-btn { min-height: 48px; padding: 0 12px; font-size: 14px; }
+  .video-control-btn.icon-only { width: 48px; min-width: 48px; }
+  .player-quality-slot { display: none; }
+  .stream-seek { margin: 0 0 8px; padding: 0; }
   .stream-seek-row {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: auto minmax(72px, 1fr) auto;
+    gap: 8px;
   }
   .stream-seek-track {
-    grid-column: 1 / -1;
-    grid-row: 1;
+    grid-column: auto;
+    grid-row: auto;
   }
   .stream-seek-row .btn {
-    grid-row: 2;
-    width: 100%;
+    grid-row: auto;
+    width: auto;
+    min-width: 56px;
+    min-height: 48px;
+    padding: 0 8px;
   }
   .stream-badge {
-    top: auto;
-    bottom: 8px;
+    top: 8px;
+    bottom: auto;
     left: 8px;
     font-size: 12px;
     padding: 5px 10px;
   }
   .stream-notice {
-    bottom: 10px;
+    top: 50%;
+    bottom: auto;
     width: calc(100% - 20px);
     padding: 14px;
+    transform: translate(-50%, -50%);
   }
   .notice-actions .btn {
     width: 100%;

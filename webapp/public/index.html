@@ -98,8 +98,6 @@
 
         <div class="player-body" id="playerBody">
           <div class="player-toolbar" aria-label="Playback controls">
-            <button class="btn small ghost" id="muteBtn" title="Sound on/off">🔊</button>
-            <button class="btn small ghost" id="pauseBtn" type="button" disabled aria-pressed="false">Ⅱ Pause</button>
             <button class="btn small ghost" id="autoplayBtn" type="button" aria-pressed="false" title="Play the next video in Recs or Library">Autoplay Off</button>
             <button class="btn small ghost" id="restreamBtn" disabled title="Reload stream">↻ Restream</button>
             <button class="btn small ghost" id="stopBtn" disabled>■ Stop</button>
@@ -208,7 +206,6 @@
         </div>
 
         <div class="screen" id="screen">
-          <button class="btn ghost fullscreen-overlay" id="fullscreenBtn" type="button" aria-label="Full screen" title="Full screen"><span class="fullscreen-icon" aria-hidden="true"></span></button>
           <button class="browser-close-popup" id="browserClosePopupBtn" type="button" aria-label="Close popup tab" title="Close popup tab" hidden>×</button>
           <div class="stream-badge" id="streamBadge" hidden></div>
           <div class="stream-notice" id="streamNotice" hidden>
@@ -244,29 +241,37 @@
           <iframe id="embedFrame" title="Embedded player" allowfullscreen hidden></iframe>
           <audio id="audio" playsinline></audio>
           <input class="browser-keyboard-input" id="browserKeyboardInput" type="text" inputmode="text" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Browser keyboard input" hidden />
-          <div class="fullscreen-progress" id="fullscreenProgress" aria-label="Fullscreen playback progress" hidden>
-            <div class="fullscreen-progress-track" id="fullscreenProgressTrack" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
-              <div class="fullscreen-progress-fill" id="fullscreenProgressFill"></div>
-              <div class="fullscreen-progress-thumb" id="fullscreenProgressThumb"></div>
+          <div class="video-controls-overlay" id="videoControlsOverlay" aria-label="Player controls">
+            <div class="video-controls-panel">
+              <section class="stream-seek" id="streamSeek" aria-label="Playback position" hidden>
+                <div class="stream-seek-row">
+                  <button class="btn small ghost" id="streamBackBtn" type="button" aria-label="Back 10 seconds">−10s</button>
+                  <div class="stream-seek-track" id="streamSeekTrack" role="slider" aria-label="Video position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
+                    <div class="stream-seek-fill" id="streamSeekFill"></div>
+                    <div class="stream-seek-thumb" id="streamSeekThumb"></div>
+                  </div>
+                  <button class="btn small ghost" id="streamForwardBtn" type="button" aria-label="Forward 10 seconds">+10s</button>
+                </div>
+                <div class="stream-seek-time" id="streamSeekTime">0:00 / 0:00</div>
+              </section>
+              <div class="live-seek-status" id="liveSeekStatus" role="status" hidden>
+                <span class="live-seek-dot" aria-hidden="true"></span>
+                <strong id="liveSeekLabel">LIVE</strong>
+                <span id="liveSeekDetail">Seeking unavailable</span>
+              </div>
+              <div class="video-controls-row">
+                <button class="video-control-btn" id="pauseBtn" type="button" disabled aria-pressed="false">Ⅱ Pause</button>
+                <button class="video-control-btn" id="muteBtn" type="button" aria-label="Mute sound" aria-pressed="false">🔊 Sound</button>
+                <div class="player-quality-slot" id="playerQualitySlot" data-v2-story="quality-presets" aria-hidden="true"></div>
+                <span class="video-controls-spacer" aria-hidden="true"></span>
+                <button class="video-control-btn icon-only" id="fullscreenBtn" type="button" aria-label="Full screen" title="Full screen"><span class="fullscreen-icon" aria-hidden="true"></span></button>
+              </div>
             </div>
-            <div class="fullscreen-progress-time" id="fullscreenProgressTime">0:00 / 0:00</div>
           </div>
           <div class="screen-empty" id="screenEmpty">
             <div class="big">▶</div>
           </div>
         </div>
-
-        <section class="stream-seek" id="streamSeek" aria-label="Stream seek controls" hidden>
-          <div class="stream-seek-row">
-            <button class="btn small ghost" id="streamBackBtn" type="button">-10s</button>
-            <div class="stream-seek-track" id="streamSeekTrack" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
-              <div class="stream-seek-fill" id="streamSeekFill"></div>
-              <div class="stream-seek-thumb" id="streamSeekThumb"></div>
-            </div>
-            <button class="btn small ghost" id="streamForwardBtn" type="button">+10s</button>
-          </div>
-          <div class="stream-seek-time" id="streamSeekTime">0:00 / 0:00</div>
-        </section>
 
         <div class="quick">
           <input id="quickUrl" type="text" inputmode="url" placeholder="Paste a channel URL, M3U playlist, or YouTube link…" />
