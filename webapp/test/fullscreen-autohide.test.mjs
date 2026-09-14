@@ -16,7 +16,8 @@ test("one shared overlay owns the essential video controls and seek surface", ()
   assert.match(overlay, /id="fullscreenBtn"/);
   assert.match(overlay, /id="streamSeek"/);
   assert.match(overlay, /id="liveSeekStatus"/);
-  assert.match(overlay, /id="playerQualitySlot"[^>]*data-v2-story="quality-presets"[^>]*aria-hidden="true"/);
+  assert.match(overlay, /id="playerQualitySlot"[^>]*data-v2-story="quality-presets"/);
+  assert.match(overlay, /id="playerQualityPresets"/);
   assert.doesNotMatch(overlay, /id="playerQualitySlot"[^>]*\shidden(?:\s|>)/);
   for (const id of ["pauseBtn", "muteBtn", "fullscreenBtn", "streamSeek"]) {
     assert.equal((html.match(new RegExp(`id="${id}"`, "g")) || []).length, 1, `${id} must have one shared instance`);
@@ -27,8 +28,9 @@ test("idle player overlay becomes invisible and non-interactive", () => {
   const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
   assert.match(css, /body\.fullscreen-controls-idle \.video-controls-overlay \{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
   assert.match(css, /\.video-control-btn \{[^}]*min-height:\s*52px;/s);
-  assert.match(css, /\.player-quality-slot \{[^}]*flex:\s*0 0 190px;[^}]*visibility:\s*hidden;/s);
-  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.player-quality-slot \{ display:\s*none; \}/s);
+  assert.match(css, /\.player-quality-slot \{[^}]*min-width:\s*300px;[^}]*display:\s*flex;/s);
+  assert.match(css, /\.player-quality-btn \{[^}]*min-height:\s*52px;/s);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.player-quality-slot \{[^}]*flex:\s*1 0 100%;/s);
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.stream-badge \{[^}]*top:\s*8px;[^}]*bottom:\s*auto;/s);
 });
 

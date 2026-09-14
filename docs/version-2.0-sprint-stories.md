@@ -1,6 +1,6 @@
 # YT Streamer — version 2.0 sprint stories
 
-Prepared September 14, 2026. Updated: V2-01 and V2-02 implemented locally; V2-03 through V2-05 remain pending.
+Prepared September 14, 2026. Updated: V2-01 through V2-03 implemented locally; V2-04 and V2-05 remain pending.
 
 The app is primarily a Tesla-browser video player. Browser video must remain MJPEG, including when JPEG frames are buffered and drawn to canvas. Keep the existing separate audio path. Lower quality and FPS must reduce playback demand while preserving normal media speed.
 
@@ -33,6 +33,26 @@ No remote push, production deployment, service installation, media playback test
 - [x] Syntax checks and all 40 automated tests pass. Headless Chrome verified the overlay, target sizing, hidden→reveal behavior, native fullscreen containment, synthetic fullscreen containment, and live-status text.
 
 Production remained on version 1 at port 8099 while the isolated version 2.0 process stayed on loopback port 8100. No remote push or production deployment was performed. Parked-Tesla touch/visibility behavior remains the final device-specific verification for this story.
+
+## V2-03 completion — September 14, 2026
+
+- [x] Added Low / Medium / High directly to the shared V2-02 video overlay in normal and fullscreen layouts.
+- [x] Profiles now define all three stream settings together: Low = 360p/12 FPS/Q12, Medium = 480p/15 FPS/Q7, High = 480p/24 FPS/Q4.
+- [x] Overlay labels show friendly resolution/FPS details only; raw JPEG qscale remains in Advanced Stream settings.
+- [x] Selected state requires resolution, FPS and JPEG quality to all match. Any other combination is shown as **Custom** with no false preset highlight.
+- [x] The chosen profile is stored in browser local storage and restored on reload.
+- [x] VOD quality changes preserve the current position. A paused VOD restarts at the same position and automatically returns to paused state after the new stream becomes playable.
+- [x] Sound state is preserved because the existing global sound setting is reused by the restarted stream. Native and synthetic fullscreen remain on the same player element across the restart.
+- [x] Rapid Low/Medium/High taps are coalesced behind a short generation-guarded delay; only the final pending selection restarts. If a later switch starts after an earlier one, the normal stream cleanup destroys the replaced session.
+- [x] Downloaded-library videos use an explicit supported resolution fallback when the requested profile resolution was not downloaded; the UI then shows **Custom** because the resulting triple no longer exactly matches the requested preset.
+- [x] Live/unseekable quality changes explicitly report **returning to live**.
+- [x] Narrow-screen controls now wrap the three quality buttons into their own row instead of hiding them.
+- [x] Cache keys for the V2 development CSS/app script were advanced so the new controls load cleanly during device testing.
+- [x] Syntax checks, `git diff --check`, and all **46/46** automated tests pass.
+
+Headless Chrome runtime checks on the isolated port 8100 also verified: one replay for rapid Low→High→Medium taps, stored-profile reload, honest Custom state, paused restart at the same timestamp with pause restored, native fullscreen retained through a simulated restart, live-return messaging, explicit legacy-resolution fallback, and no page errors. Layout checks at 390px portrait, 844px landscape and 1280px Tesla-like widths showed no quality-control overflow.
+
+No production deployment, public URL change, or GitHub push was performed. Real parked-Tesla playback is still required before version 2.0 is considered device-validated.
 
 ## Current baseline and findings
 

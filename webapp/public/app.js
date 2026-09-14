@@ -104,6 +104,14 @@ const DEFAULT_STREAM_SETTINGS = {
   quality: "7",
 };
 
+const STREAM_QUALITY_PROFILE_KEY = "ytStreamerQualityProfileV2";
+const STREAM_QUALITY_SWITCH_DELAY_MS = 140;
+const STREAM_QUALITY_PROFILES = Object.freeze({
+  low: Object.freeze({ id: "low", label: "Low", height: "360", fps: "12", quality: "12" }),
+  medium: Object.freeze({ id: "medium", label: "Medium", height: "480", fps: "15", quality: "7" }),
+  high: Object.freeze({ id: "high", label: "High", height: "480", fps: "24", quality: "4" }),
+});
+
 const DESKTOP_AUDIO_KEY = "ytStreamerDesktopAudio";
 const DESKTOP_AUDIO_NAME_KEY = "ytStreamerDesktopAudioName";
 const DESKTOP_FEATURE_VISIBLE = false;
@@ -626,6 +634,9 @@ let streamAttempt = 0;
 let streamWarnTimer = null;
 let streamFailTimer = null;
 let restreamTimer = null;
+let qualitySwitchTimer = null;
+let qualitySwitchGeneration = 0;
+let pendingQualityRestore = null;
 let autoplayEnabled = localStorage.getItem(AUTOPLAY_KEY) === "true";
 let autoplayContext = null;
 let autoplayAdvancing = false;
@@ -664,19 +675,60 @@ function currentSettingsLabel() {
   return `${hl} · ${$("#ctlFps").value}fps · ${q}`;
 }
 
+function streamSettingsSnapshot() {
+  return {
+    height: $("#ctlHeight").value,
+    fps: $("#ctlFps").value,
+    quality: $("#ctlQuality").value,
+  };
+}
+
+function streamQualityProfileForSettings(settings = streamSettingsSnapshot()) {
+  return Object.values(STREAM_QUALITY_PROFILES).find((profile) =>
+    profile.height === String(settings.height)
+    && profile.fps === String(settings.fps)
+    && profile.quality === String(settings.quality)
+  ) || null;
+}
+
+function storedStreamQualityProfile() {
+  const id = localStorage.getItem(STREAM_QUALITY_PROFILE_KEY);
+  return id && STREAM_QUALITY_PROFILES[id] ? STREAM_QUALITY_PROFILES[id] : null;
+}
+
+function applyStreamSettings(settings) {
+  $("#ctlHeight").value = String(settings.height);
+  $("#ctlFps").value = String(settings.fps);
+  $("#ctlQuality").value = String(settings.quality);
+}
+
 function resetStreamSettings() {
-  $("#ctlHeight").value = DEFAULT_STREAM_SETTINGS.height;
-  $("#ctlFps").value = DEFAULT_STREAM_SETTINGS.fps;
-  $("#ctlQuality").value = DEFAULT_STREAM_SETTINGS.quality;
+  const stored = storedStreamQualityProfile();
+  applyStreamSettings(stored || DEFAULT_STREAM_SETTINGS);
+}
+
+function qualityProfilesAvailableForCurrentMode() {
+  const screen = $("#screen");
+  return !desktopStreamActive
+    && !browserStreamActive
+    && !screen?.classList.contains("embed-mode")
+    && !screen?.classList.contains("browser-mode");
 }
 
 function renderQuickQuality() {
-  const current = $("#ctlQuality").value;
-  document.querySelectorAll("#qualityQuick [data-quality]").forEach((btn) => {
-    const active = btn.dataset.quality === current;
+  const current = streamQualityProfileForSettings();
+  document.querySelectorAll("[data-stream-profile]").forEach((btn) => {
+    const active = btn.dataset.streamProfile === current?.id;
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-pressed", active ? "true" : "false");
   });
+  const custom = $("#playerQualityCustom");
+  if (custom) custom.hidden = Boolean(current);
+  const slot = $("#playerQualitySlot");
+  if (slot) {
+    const unavailable = $("#screen")?.classList.contains("playing") && !qualityProfilesAvailableForCurrentMode();
+    slot.hidden = Boolean(unavailable);
+  }
 }
 
 function renderSettingOptions() {
@@ -918,6 +970,19 @@ function handleVideoPlayRejection(attempt, error) {
   failStreamAttempt(attempt, "Playback could not start", error?.message || "The browser could not start video playback.");
 }
 
+function maybeRestorePlaybackAfterQualitySwitch(attempt) {
+  const pending = pendingQualityRestore;
+  if (!pending
+      || pending.generation !== qualitySwitchGeneration
+      || attempt < pending.minAttempt
+      || !currentAttempt(attempt)) return;
+  pendingQualityRestore = null;
+  if (!pending.pause) return;
+  requestAnimationFrame(() => {
+    if (currentAttempt(attempt) && !playbackPaused) pausePlayback();
+  });
+}
+
 function markStreamLive(attempt) {
   if (!currentAttempt(attempt)) return;
   clearStreamTimers();
@@ -928,6 +993,7 @@ function markStreamLive(attempt) {
     streamSeek.liveAtMs = Date.now();
     startStreamSeekTimer();
   }
+  maybeRestorePlaybackAfterQualitySwitch(attempt);
 }
 
 function clampStreamSeekTime(value) {
@@ -1920,6 +1986,7 @@ function markBufferedStreamPlaying(attempt, stats = null, { revealControls = tru
   if (streamSeek.seekable) {
     if (!streamSeek.timer) startStreamSeekTimer();
   }
+  maybeRestorePlaybackAfterQualitySwitch(attempt);
 }
 
 function finishBufferedStream(attempt) {
@@ -2761,6 +2828,131 @@ async function exitScreenFullscreen() {
 function toggleScreenFullscreen() {
   if (isScreenFullscreen()) exitScreenFullscreen();
   else enterScreenFullscreen();
+}
+
+function legacyProfileHeightFallback(requestedHeight) {
+  if (!legacy.playing) return { height: String(requestedHeight), fallback: false };
+  const available = [...new Set((legacy.playing.resolutions || [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0))]
+    .sort((a, b) => a - b);
+  const requested = Number(requestedHeight);
+  if (!available.length || available.includes(requested)) {
+    return { height: String(requestedHeight), fallback: false };
+  }
+  const atOrBelow = available.filter((value) => value <= requested);
+  const chosen = atOrBelow.length ? atOrBelow[atOrBelow.length - 1] : available[0];
+  return {
+    height: String(chosen),
+    fallback: true,
+    requested: String(requestedHeight),
+    available,
+  };
+}
+
+function applyQualityProfileSettings(profileId) {
+  const profile = STREAM_QUALITY_PROFILES[profileId];
+  if (!profile) return null;
+  const heightResult = legacyProfileHeightFallback(profile.height);
+  applyStreamSettings({ ...profile, height: heightResult.height });
+  if (legacy.playing) legacy.resolution = Number(heightResult.height);
+  renderFpsPresets();
+  renderQuickQuality();
+  renderSettingOptions();
+  updateBwHint();
+  localStorage.setItem(STREAM_QUALITY_PROFILE_KEY, profile.id);
+  return { profile, ...heightResult };
+}
+
+function qualitySwitchResumeAt() {
+  const pending = pendingQualityRestore;
+  if (pending?.generation === qualitySwitchGeneration && Number.isFinite(pending.resumeAt)) return pending.resumeAt;
+  if (!streamSeek.seekable) return undefined;
+  return streamReplayTime(playbackPaused ? pausedResumeAt : getStreamCurrentTime());
+}
+
+function qualitySwitchPauseIntent() {
+  return Boolean(playbackPaused || (pendingQualityRestore?.generation === qualitySwitchGeneration && pendingQualityRestore.pause));
+}
+
+function performQualityProfileSwitch(transition) {
+  qualitySwitchTimer = null;
+  if (transition.generation !== qualitySwitchGeneration || replayFn !== transition.replay) return;
+  const beforeAttempt = streamAttempt;
+  pendingQualityRestore = {
+    generation: transition.generation,
+    pause: transition.pause,
+    resumeAt: transition.resumeAt,
+    minAttempt: beforeAttempt + 1,
+  };
+  const fallback = transition.fallback
+    ? " · " + transition.fallback.requested + "p unavailable, using " + transition.fallback.height + "p"
+    : "";
+  const status = transition.isLive
+    ? "Changing quality to " + transition.profile.label + fallback + " · returning to live"
+    : "Changing quality to " + transition.profile.label + fallback + "…";
+  setBadge("reconnecting", transition.isLive ? "Changing quality… Returning to live" : "Changing quality…");
+  toast(status);
+  try {
+    const result = transition.replay(transition.seekable ? transition.resumeAt : undefined);
+    if (result?.catch) {
+      result.catch((error) => {
+        if (transition.generation === qualitySwitchGeneration) {
+          pendingQualityRestore = null;
+          toast(error.message, true);
+        }
+      });
+    }
+  } catch (error) {
+    if (transition.generation === qualitySwitchGeneration) {
+      pendingQualityRestore = null;
+      toast(error.message, true);
+    }
+  }
+}
+
+function requestQualityProfile(profileId) {
+  const profile = STREAM_QUALITY_PROFILES[profileId];
+  if (!profile) return;
+  const resumeAt = qualitySwitchResumeAt();
+  const pause = qualitySwitchPauseIntent();
+  const seekable = streamSeek.seekable;
+  const isLive = Boolean(streamSeek.isLive && !seekable);
+  const replay = replayFn;
+  const previousProfile = streamQualityProfileForSettings();
+  const generation = ++qualitySwitchGeneration;
+  clearTimeout(qualitySwitchTimer);
+  qualitySwitchTimer = null;
+  pendingQualityRestore = null;
+
+  const applied = applyQualityProfileSettings(profileId);
+  if (!applied) return;
+  const fallbackText = applied.fallback
+    ? " · " + applied.requested + "p unavailable, using " + applied.height + "p"
+    : "";
+
+  const unchanged = previousProfile?.id === profile.id && !applied.fallback;
+  if (unchanged) {
+    toast(profile.label + " already selected · " + applied.height + "p · " + profile.fps + "fps");
+    return;
+  }
+
+  if (!replay || !qualityProfilesAvailableForCurrentMode()) {
+    toast(profile.label + " selected · " + applied.height + "p · " + profile.fps + "fps" + fallbackText);
+    return;
+  }
+
+  const transition = {
+    generation,
+    replay,
+    profile,
+    seekable,
+    resumeAt,
+    pause,
+    isLive,
+    fallback: applied.fallback ? { requested: applied.requested, height: applied.height } : null,
+  };
+  qualitySwitchTimer = setTimeout(() => performQualityProfileSwitch(transition), STREAM_QUALITY_SWITCH_DELAY_MS);
 }
 
 // Re-apply controls live: restart whatever is currently playing with new params.
@@ -6340,15 +6532,16 @@ $("#streamSettingsBtn").onclick = () => {
   panel.hidden = !nextOpen;
   $("#streamSettingsBtn").setAttribute("aria-expanded", nextOpen ? "true" : "false");
 };
-$("#qualityQuick").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-quality]");
+function handleStreamProfileClick(e) {
+  const btn = e.target.closest("[data-stream-profile]");
   if (!btn) return;
-  const changed = $("#ctlQuality").value !== btn.dataset.quality || $("#ctlFps").value !== btn.dataset.fps;
-  $("#ctlQuality").value = btn.dataset.quality;
-  if (btn.dataset.fps) $("#ctlFps").value = btn.dataset.fps;
-  if (!changed) return;
-  reapplyControls();
-});
+  e.preventDefault();
+  e.stopPropagation();
+  requestQualityProfile(btn.dataset.streamProfile);
+}
+
+$("#qualityQuick").addEventListener("click", handleStreamProfileClick);
+$("#playerQualityPresets").addEventListener("click", handleStreamProfileClick);
 $("#heightOptions").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-height]");
   if (!btn || $("#ctlHeight").value === btn.dataset.height) return;

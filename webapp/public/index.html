@@ -20,7 +20,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e10600'/><polygon points='40,30 72,50 40,70' fill='white'/></svg>" />
   <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <link rel="stylesheet" href="/styles.css?v=20260720-restart-controls" />
+  <link rel="stylesheet" href="/styles.css?v=20260914-v2-03" />
 </head>
 <body>
   <div id="app">
@@ -262,7 +262,14 @@
               <div class="video-controls-row">
                 <button class="video-control-btn" id="pauseBtn" type="button" disabled aria-pressed="false">Ⅱ Pause</button>
                 <button class="video-control-btn" id="muteBtn" type="button" aria-label="Mute sound" aria-pressed="false">🔊 Sound</button>
-                <div class="player-quality-slot" id="playerQualitySlot" data-v2-story="quality-presets" aria-hidden="true"></div>
+                <div class="player-quality-slot" id="playerQualitySlot" data-v2-story="quality-presets">
+                  <div class="player-quality-presets" id="playerQualityPresets" role="group" aria-label="Playback quality profile">
+                    <button class="player-quality-btn" type="button" data-stream-profile="low" aria-pressed="false"><strong>Low</strong><small>360p · 12</small></button>
+                    <button class="player-quality-btn" type="button" data-stream-profile="medium" aria-pressed="false"><strong>Medium</strong><small>480p · 15</small></button>
+                    <button class="player-quality-btn" type="button" data-stream-profile="high" aria-pressed="false"><strong>High</strong><small>480p · 24</small></button>
+                  </div>
+                  <span class="player-quality-custom" id="playerQualityCustom">Custom</span>
+                </div>
                 <span class="video-controls-spacer" aria-hidden="true"></span>
                 <button class="video-control-btn icon-only" id="fullscreenBtn" type="button" aria-label="Full screen" title="Full screen"><span class="fullscreen-icon" aria-hidden="true"></span></button>
               </div>
@@ -282,9 +289,9 @@
           <div class="stream-settings-head">
             <button class="settings-toggle" id="streamSettingsBtn" type="button" aria-expanded="false" aria-controls="streamSettingsPanel">Stream settings</button>
             <div class="quality-quick" id="qualityQuick" role="group" aria-label="Quick stream quality">
-              <button type="button" data-quality="12" data-fps="8">Low</button>
-              <button type="button" data-quality="7" data-fps="12">Med</button>
-              <button type="button" data-quality="4" data-fps="24">High</button>
+              <button type="button" data-stream-profile="low" aria-pressed="false">Low</button>
+              <button type="button" data-stream-profile="medium" aria-pressed="false">Med</button>
+              <button type="button" data-stream-profile="high" aria-pressed="false">High</button>
             </div>
           </div>
           <div class="controls" id="streamSettingsPanel" hidden>
@@ -761,6 +768,6 @@
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
   <script src="/buffered-mjpeg.js?v=20260911-buffered-mjpeg"></script>
-  <script src="/app.js?v=20260911-buffered-mjpeg"></script>
+  <script src="/app.js?v=20260914-v2-03"></script>
 </body>
 </html>
