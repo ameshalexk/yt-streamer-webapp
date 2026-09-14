@@ -66,3 +66,23 @@ Before deploying version 2.0, verify in the parked Tesla:
 8. If available, test one downloaded item missing 480p and confirm the fallback message.
 
 Do not deploy version 2.0 to production until the parked-Tesla acceptance is complete.
+
+
+## Pause / resume buffering follow-up — September 14, 2026
+
+A real pause/resume test exposed a timeline bug inherited from version 1: pausing buffered MJPEG reassigned `streamSeek.startAt` to the absolute paused timestamp even though the existing buffered player kept its original timeline base. After Resume, `getStreamCurrentTime()` added that paused timestamp a second time. This could make later seek/replay operations jump ahead and made post-pause buffer behavior appear incorrect.
+
+Fix:
+- Buffered pause now keeps the original `streamSeek.startAt`.
+- Only restart-based legacy MJPEG pause rebases the stream start.
+- Paused buffered playback now displays the retained buffer, for example `Ⅱ PAUSED · 8.0s buf`.
+- Resume buffering no longer triggers the slow-network quality suggestion because a deliberate user pause is not a network failure.
+
+Real local YouTube regression check at Medium quality:
+- before pause: ~0.745 s playback, **8.0 s** buffered, 0 rebuffers;
+- after 3 s paused: ~0.747 s playback, **8.0 s** buffered, 0 rebuffers;
+- 3 s after Resume: ~3.749 s playback, **8.0 s** buffered, 0 rebuffers;
+- 6 s after Resume: ~6.756 s playback, **8.0 s** buffered, 0 rebuffers;
+- timeline base stayed at 0 throughout and no page errors occurred.
+
+Automated suite after the fix: **49/49 passing**.

@@ -29,7 +29,7 @@ test("slow buffering suggestion has a 10-second animated countdown and explicit 
 test("audio-only buffering does not trigger a video-quality suggestion", () => {
   const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
   assert.match(app, /if \(reason === "audio"\) return/);
-  assert.match(app, /if \(detail\.reason === "audio"\) cancelSlowBufferSuggestionSchedule\(\)/);
+  assert.match(app, /if \(detail\.reason === "audio" \|\| detail\.reason === "resume"\) cancelSlowBufferSuggestionSchedule\(\)/);
 });
 
 

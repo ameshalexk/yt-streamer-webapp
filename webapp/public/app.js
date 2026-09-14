@@ -1269,13 +1269,15 @@ function pausePlayback() {
   const video = $("#video");
   const img = $("#mjpeg");
   const audio = $("#audio");
+  const bufferedPauseActive = screen.classList.contains("mjpeg-buffered-mode") && activeCompat?.bufferedPlayer;
+  const restartableMjpegPause = screen.classList.contains("mjpeg-mode") && !bufferedPauseActive;
   pausedResumeAt = legacy.playing ? (audio.currentTime || 0) : getStreamCurrentTime();
   try { video.pause(); } catch {}
   try { audio.pause(); } catch {}
   try { browserPcmAudio?.ctx?.suspend?.(); } catch {}
-  if (screen.classList.contains("mjpeg-buffered-mode") && activeCompat?.bufferedPlayer) {
+  if (bufferedPauseActive) {
     activeCompat.bufferedPlayer.pauseUser();
-  } else if (screen.classList.contains("mjpeg-mode")) {
+  } else if (restartableMjpegPause) {
     freezeMjpegFrame();
     streamAttempt++;
     clearStreamTimers();
@@ -1285,17 +1287,18 @@ function pausePlayback() {
   }
   clearInterval(streamSeek.timer);
   streamSeek.timer = null;
-  if (streamSeek.seekable && (screen.classList.contains("mjpeg-mode") || screen.classList.contains("mjpeg-buffered-mode"))) {
-    streamSeek.startAt = pausedResumeAt;
+  if (streamSeek.seekable) {
+    // A buffered pause keeps the same live player and its original timeline base.
+    // Rebasing startAt here double-counts the paused position after Resume.
+    if (restartableMjpegPause) streamSeek.startAt = pausedResumeAt;
     streamSeek.liveAtMs = 0;
-    updateStreamSeekUi(pausedResumeAt);
-  } else if (streamSeek.seekable) {
     updateStreamSeekUi(pausedResumeAt);
   }
   playbackPaused = true;
   screen.classList.add("playback-paused");
   setPauseButtonState("▶ Resume", true);
-  setBadge("paused", "Ⅱ PAUSED");
+  const buffered = Number(activeCompat?.bufferedPlayer?.getStats?.().queueSeconds || 0);
+  setBadge("paused", buffered > 0 ? "Ⅱ PAUSED · " + buffered.toFixed(1) + "s buf" : "Ⅱ PAUSED");
   showFullscreenOverlays();
 }
 
@@ -2096,7 +2099,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       updateBufferedMjpegDebug(stats);
       if (stateName === "buffering") {
         screen.classList.add("loading");
-        if (detail.reason === "audio") cancelSlowBufferSuggestionSchedule();
+        if (detail.reason === "audio" || detail.reason === "resume") cancelSlowBufferSuggestionSchedule();
         else scheduleSlowBufferSuggestion(attempt, { reason: detail.reason || "rebuffer", label, streamUrl: bufferedUrl, stats });
         if (stats.rebufferCount > loggedRebufferCount) {
           loggedRebufferCount = stats.rebufferCount;
@@ -2148,7 +2151,10 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       updateBufferedMjpegDebug(stats);
       if (stats.state === "buffering") {
         const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || 2) : 4;
-        setBadge("reconnecting", "Buffering " + stats.queueSeconds.toFixed(1) + " / " + target.toFixed(1) + "s");
+        const prefix = playbackPaused ? "Paused · buffering " : "Buffering ";
+        setBadge("reconnecting", prefix + stats.queueSeconds.toFixed(1) + " / " + target.toFixed(1) + "s", { revealControls: false });
+      } else if (stats.state === "paused") {
+        setBadge("paused", "Ⅱ PAUSED · " + stats.queueSeconds.toFixed(1) + "s buf", { revealControls: false });
       } else if (stats.state === "playing" && stats.renderedFrames % Math.max(1, Math.round(stats.fps)) === 0) {
         // Refresh the live badge text without waking fullscreen controls every second.
         markBufferedStreamPlaying(attempt, stats, { revealControls: false });
