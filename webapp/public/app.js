@@ -5435,8 +5435,13 @@ async function closeRealChromePopup() {
     const result = await api.post(`/api/real-chrome/${encodeURIComponent(browserSessionId)}/close-tab`, {});
     const session = result?.session;
     if (session?.url) $("#browserUrl").value = session.url;
-    if (result?.closed) {
-      setBrowserStatus(session?.title || session?.url || "Returned to main tab", "ok");
+    if (result?.closed || result?.recovered) {
+      setBrowserStatus(
+        result?.recovered
+          ? "Returned to APNE TV"
+          : session?.title || session?.url || "Returned to main tab",
+        "ok",
+      );
       resetBrowserZoom();
       hideBrowserKeyboard();
     }

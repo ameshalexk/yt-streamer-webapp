@@ -21,6 +21,9 @@ const DESKTOP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Appl
 const POPUP_ALLOWED_HOSTS = ["mediagraming.com"];
 const POPUP_GUARD_INTERVAL_MS = 250;
 const POPUP_PENDING_GRACE_MS = 2500;
+const REMOTE_BROWSER_BLOCKED_URLS = [
+  "*://cdn.jsdelivr.net/npm/disable-devtool*",
+];
 const CHROME_PATHS = [
   process.env.REAL_CHROME_PATH || "",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -271,6 +274,27 @@ function popupUrlDecision(raw) {
   return isAllowedPopupUrl(value) ? "allow" : "block";
 }
 
+function isApneTvUrl(raw) {
+  try {
+    const url = new URL(String(raw || ""));
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+    return hostname === "apnetv.xyz" || hostname.endsWith(".apnetv.xyz");
+  } catch {
+    return false;
+  }
+}
+
+export function isApneTvDevtoolFallbackUrl(raw) {
+  try {
+    const url = new URL(String(raw || ""));
+    if (url.hostname.toLowerCase() !== "theajack.github.io") return false;
+    if (url.pathname !== "/disable-devtool/404.html") return false;
+    return isApneTvUrl(`https://${url.searchParams.get("h") || ""}/`);
+  } catch {
+    return false;
+  }
+}
+
 async function closeChromeTarget(port, targetId) {
   if (!targetId) return false;
   try {
@@ -304,6 +328,7 @@ async function preparePage(session, cdp = session.cdp) {
   await cdp.call("Runtime.enable");
   await installFullscreenShim(session, cdp);
   await cdp.call("Network.enable").catch(() => {});
+  await cdp.call("Network.setBlockedURLs", { urls: REMOTE_BROWSER_BLOCKED_URLS }).catch(() => {});
   await cdp.call("Network.setUserAgentOverride", { userAgent: DESKTOP_USER_AGENT, platform: "macOS" }).catch(() => {});
   await cdp.call("Input.setIgnoreInputEvents", { ignore: false }).catch(() => {});
   await cdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }).catch(() => {});
@@ -315,6 +340,48 @@ async function preparePage(session, cdp = session.cdp) {
   }).catch(() => {});
 }
 
+async function recoverMainFromApneTvDevtoolRedirect(session) {
+  if (session.closed || !session.mainCdp) return false;
+  const mainTarget = await targetById(session.port, session.mainTargetId).catch(() => null);
+  if (!mainTarget || !isApneTvDevtoolFallbackUrl(mainTarget.url)) return false;
+  if (session.mainRecoveryAt && Date.now() - session.mainRecoveryAt < 1500) return true;
+
+  await session.mainCdp.call("Network.setBlockedURLs", { urls: REMOTE_BROWSER_BLOCKED_URLS }).catch(() => {});
+
+  let recoveredUrl = "";
+  const history = await session.mainCdp.call("Page.getNavigationHistory").catch(() => null);
+  if (history?.entries?.length) {
+    const priorEntries = history.entries.slice(0, Math.max(0, history.currentIndex));
+    const previousApne = [...priorEntries].reverse().find((entry) => isApneTvUrl(entry.url));
+    if (previousApne) {
+      await session.mainCdp.call("Page.navigateToHistoryEntry", { entryId: previousApne.id });
+      recoveredUrl = previousApne.url;
+    }
+  }
+
+  if (!recoveredUrl && isApneTvUrl(session.mainSafeUrl)) {
+    await session.mainCdp.call("Page.navigate", { url: session.mainSafeUrl });
+    recoveredUrl = session.mainSafeUrl;
+  }
+
+  if (!recoveredUrl) return false;
+  session.mainRecoveryAt = Date.now();
+  session.mainSafeUrl = recoveredUrl;
+  session.lastUsedAt = Date.now();
+  if (!session.secondaryTargetId) {
+    session.cdp = session.mainCdp;
+    session.url = recoveredUrl;
+    try {
+      session.title = new URL(recoveredUrl).hostname || "Real Chrome";
+    } catch {
+      session.title = "Real Chrome";
+    }
+  }
+  console.log(`[real-chrome] recovered APNE TV from disable-devtool redirect -> ${recoveredUrl}`);
+  setTimeout(() => capture(session).catch(() => {}), 250).unref?.();
+  return true;
+}
+
 async function restoreMainTab(session, { closeTargetId = null } = {}) {
   if (session.closed) return false;
   const secondaryCdp = session.secondaryCdp;
@@ -323,11 +390,18 @@ async function restoreMainTab(session, { closeTargetId = null } = {}) {
   session.cdp = session.mainCdp;
   secondaryCdp?.close();
   if (closeTargetId) await closeChromeTarget(session.port, closeTargetId);
-  const mainTarget = await targetById(session.port, session.mainTargetId).catch(() => null);
+  let mainTarget = await targetById(session.port, session.mainTargetId).catch(() => null);
   if (!mainTarget || !session.mainCdp) return false;
   await preparePage(session, session.mainCdp).catch(() => {});
-  session.url = mainTarget.url || session.url;
-  session.title = mainTarget.title || session.title || "Real Chrome";
+  if (isApneTvDevtoolFallbackUrl(mainTarget.url)) {
+    await recoverMainFromApneTvDevtoolRedirect(session).catch(() => false);
+    mainTarget = await targetById(session.port, session.mainTargetId).catch(() => mainTarget);
+  }
+  if (mainTarget?.url && !isApneTvDevtoolFallbackUrl(mainTarget.url)) {
+    session.mainSafeUrl = mainTarget.url;
+  }
+  session.url = mainTarget?.url || session.mainSafeUrl || session.url;
+  session.title = mainTarget?.title || session.title || "Real Chrome";
   session.lastUsedAt = Date.now();
   capture(session).catch(() => {});
   return true;
@@ -365,6 +439,14 @@ async function enforcePopupPolicy(session) {
     const pages = (await listTargets(session.port)).filter((target) => target.type === "page" && target.webSocketDebuggerUrl);
     const pageIds = new Set(pages.map((target) => target.id));
     const main = pages.find((target) => target.id === session.mainTargetId);
+
+    if (main) {
+      if (isApneTvDevtoolFallbackUrl(main.url)) {
+        await recoverMainFromApneTvDevtoolRedirect(session).catch(() => false);
+      } else if (main.url && main.url !== "about:blank") {
+        session.mainSafeUrl = main.url;
+      }
+    }
 
     if (session.secondaryTargetId) {
       const activeSecondary = pages.find((target) => target.id === session.secondaryTargetId);
@@ -474,7 +556,7 @@ export async function start(payload = {}) {
     "--autoplay-policy=no-user-gesture-required",
     `--window-size=${width},${height}`,
     "--new-window",
-    url,
+    "about:blank",
   ], { stdio: ["ignore", "ignore", "ignore"] });
 
   const session = {
@@ -501,6 +583,8 @@ export async function start(payload = {}) {
     closed: false,
     title: "Real Chrome",
     url,
+    mainSafeUrl: isApneTvUrl(url) ? url : "",
+    mainRecoveryAt: 0,
     createdAt: Date.now(),
     lastUsedAt: Date.now(),
   };
@@ -520,12 +604,17 @@ export async function start(payload = {}) {
 
   try {
     const target = await targetForPort(port);
-    session.url = target.url || url;
-    session.title = target.title || "Real Chrome";
     session.mainTargetId = target.id;
     session.cdp = connectCdp(target.webSocketDebuggerUrl);
     session.mainCdp = session.cdp;
     await preparePage(session);
+    await session.mainCdp.call("Page.navigate", { url });
+    session.url = url;
+    try {
+      session.title = new URL(url).hostname || "Real Chrome";
+    } catch {
+      session.title = "Real Chrome";
+    }
     startPopupGuard(session);
   } catch (err) {
     try { proc.kill("SIGKILL"); } catch {}
@@ -873,9 +962,11 @@ export async function navigate(id, payload = {}) {
     await closeSecondaryTab(id, "navigate");
   }
   await session.mainCdp.ready;
+  await session.mainCdp.call("Network.setBlockedURLs", { urls: REMOTE_BROWSER_BLOCKED_URLS }).catch(() => {});
   await session.mainCdp.call("Page.navigate", { url: url.toString() });
   session.cdp = session.mainCdp;
   session.url = url.toString();
+  session.mainSafeUrl = isApneTvUrl(url.toString()) ? url.toString() : "";
   session.title = url.hostname || "Real Chrome";
   setTimeout(async () => {
     if (session.closed) return;
@@ -893,7 +984,8 @@ export async function closeSecondaryTab(id, reason = "manual") {
   const session = get(id);
   if (!session) throw httpError(404, "Real Chrome session not found.");
   if (!session.secondaryTargetId) {
-    return { ok: true, closed: false, session: sessionInfo(session) };
+    const recovered = await recoverMainFromApneTvDevtoolRedirect(session).catch(() => false);
+    return { ok: true, closed: false, recovered, session: sessionInfo(session) };
   }
   if (session.popupGuardBusy) await wait(300);
   const targetId = session.secondaryTargetId;
