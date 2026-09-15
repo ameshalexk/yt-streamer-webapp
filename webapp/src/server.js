@@ -45,11 +45,27 @@ function playbackLogString(value, max = 1000) {
 function playbackStats(value) {
   const source = value && typeof value === "object" ? value : {};
   const keys = [
-    "state", "fps", "receivedFrames", "renderedFrames", "queueSeconds", "queueBytes",
-    "maxQueueSeconds", "maxQueueBytes", "startupMs", "rebufferCount",
+    "state", "fps", "receivedFrames", "renderedFrames", "droppedFrames", "receivedBytes",
+    "queueSeconds", "queueBytes", "maxQueueSeconds", "maxQueueBytes", "queueTrend",
+    "queueTrendFps", "receiveBytesPerSecond", "receiveFps", "renderedFps", "producerSpeed",
+    "averageDecodeMs", "maxDecodeMs", "startupMs", "responseStartMs", "firstByteMs",
+    "firstFrameReceivedMs", "firstFrameDecodedMs", "firstPictureMs", "bufferReadyMs",
+    "audioReadyMs", "audioStartMs", "firstRenderedMs", "serverResolveMs",
+    "serverFirstOutputMs", "ffmpegFirstOutputMs", "resolveCache", "rebufferCount",
     "recoveryTargetSeconds", "lastAvDriftMs", "eof",
   ];
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
+}
+
+function playbackTiming(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const out = {};
+  for (const [key, raw] of Object.entries(source)) {
+    if (!/^[a-z0-9_-]{1,64}$/i.test(key)) continue;
+    if (typeof raw === "number" && Number.isFinite(raw)) out[key] = Math.round(raw * 10) / 10;
+    else if (typeof raw === "string") out[key] = playbackLogString(raw, 120);
+  }
+  return out;
 }
 
 function youtubeIdFromPlaybackUrl(value) {
@@ -135,8 +151,59 @@ function proxyYouTubeStreams(resolved, { sourceUrl = "", maxHeight = config.down
   };
 }
 
+const YOUTUBE_RESOLVE_CACHE_TTL_MS = 90 * 1000;
+const youtubeResolveCache = new Map();
+
+function pruneYouTubeResolveCache(now = Date.now()) {
+  for (const [key, entry] of youtubeResolveCache) {
+    if (!entry.promise && entry.expiresAt <= now) youtubeResolveCache.delete(key);
+  }
+}
+
+async function resolveYouTubeStreamsCached(sourceUrl, maxHeight = config.download.maxHeight) {
+  const key = String(maxHeight) + "|" + String(sourceUrl || "");
+  const now = Date.now();
+  pruneYouTubeResolveCache(now);
+  const cached = youtubeResolveCache.get(key);
+  if (cached?.value && cached.expiresAt > now) {
+    return { resolved: cached.value, resolveCache: "hit", resolveMs: 0 };
+  }
+  if (cached?.promise) {
+    const startedAt = Date.now();
+    const resolved = await cached.promise;
+    return { resolved, resolveCache: "shared", resolveMs: Date.now() - startedAt };
+  }
+
+  const startedAt = Date.now();
+  const promise = ytdlp.getStreamUrls(sourceUrl, maxHeight);
+  youtubeResolveCache.set(key, { promise, value: null, expiresAt: now + YOUTUBE_RESOLVE_CACHE_TTL_MS });
+  try {
+    const resolved = await promise;
+    youtubeResolveCache.set(key, {
+      promise: null,
+      value: resolved,
+      expiresAt: Date.now() + YOUTUBE_RESOLVE_CACHE_TTL_MS,
+    });
+    return { resolved, resolveCache: "miss", resolveMs: Date.now() - startedAt };
+  } catch (error) {
+    youtubeResolveCache.delete(key);
+    throw error;
+  }
+}
+
 async function resolveProxiedYouTubeStreams(sourceUrl, maxHeight = config.download.maxHeight) {
-  return proxyYouTubeStreams(await ytdlp.getStreamUrls(sourceUrl, maxHeight), { sourceUrl, maxHeight });
+  const result = await resolveYouTubeStreamsCached(sourceUrl, maxHeight);
+  return {
+    ...proxyYouTubeStreams(result.resolved, { sourceUrl, maxHeight }),
+    resolveCache: result.resolveCache,
+    resolveMs: result.resolveMs,
+  };
+}
+
+function requestedYouTubeMaxHeight(value) {
+  const requested = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(requested) || requested <= 0) return config.download.maxHeight;
+  return Math.max(144, Math.min(config.download.maxHeight, requested));
 }
 
 async function refreshGoogleVideoProxySession(session) {
@@ -329,6 +396,8 @@ app.post("/api/playback-event", asyncH(async (req, res) => {
     errorName: playbackLogString(body.errorName, 120) || null,
     reason: playbackLogString(body.reason, 120) || null,
     stats: playbackStats(body.stats),
+    timing: playbackTiming(body.timing),
+    diagnosis: playbackLogString(body.diagnosis, 240) || null,
     clientUserAgent: playbackLogString(body.userAgent, 600) || null,
     requestUserAgent: playbackLogString(req.get("user-agent"), 600) || null,
     serverInstanceId: SERVER_INSTANCE_ID,
@@ -1100,8 +1169,29 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
   const params = stream.normalizeParams(req.query);
 
   if (item.type === "youtube") {
-    const { videoUrl, audioUrl } = await resolveProxiedYouTubeStreams(item.url, config.download.maxHeight);
-    return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: !wantsBufferedMjpeg(req), allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
+    const requestStartedAt = Date.now();
+    const maxHeight = requestedYouTubeMaxHeight(params.height);
+    const { videoUrl, audioUrl, resolveCache, resolveMs } = await resolveProxiedYouTubeStreams(item.url, maxHeight);
+    return stream.streamMjpeg(req, res, {
+      input: videoUrl,
+      audioInput: audioUrl,
+      params,
+      isLive: false,
+      paceInput: !wantsBufferedMjpeg(req),
+      allowBurst: wantsBufferedMjpeg(req),
+      startAt: req.query.timestamp,
+      timing: { requestStartedAt, resolveMs, resolveCache },
+      onTelemetry: (telemetry) => appendPlaybackEvent({
+        at: new Date().toISOString(),
+        event: "server_stream_summary",
+        youtubeId: youtubeIdFromPlaybackUrl(item.url),
+        streamUrl: playbackLogString(req.originalUrl, 1500),
+        serverInstanceId: SERVER_INSTANCE_ID,
+        serverTelemetry: telemetry,
+        timing: { resolveMs, resolveCache },
+      }),
+      ...YOUTUBE_STREAM_HEADERS,
+    });
   }
   if (item.type === "file") {
     // Guard: only stream files that live inside the library dir.
@@ -1133,11 +1223,32 @@ app.get("/stream/url", asyncH(async (req, res) => {
 
 // Stream a YouTube url directly (extract then transcode), without saving.
 app.get("/stream/youtube", asyncH(async (req, res) => {
+  const requestStartedAt = Date.now();
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
   const params = stream.normalizeParams(req.query);
-  const { videoUrl, audioUrl } = await resolveProxiedYouTubeStreams(url, config.download.maxHeight);
-  return stream.streamMjpeg(req, res, { input: videoUrl, audioInput: audioUrl, params, isLive: false, paceInput: !wantsBufferedMjpeg(req), allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
+  const maxHeight = requestedYouTubeMaxHeight(params.height);
+  const { videoUrl, audioUrl, resolveCache, resolveMs } = await resolveProxiedYouTubeStreams(url, maxHeight);
+  return stream.streamMjpeg(req, res, {
+    input: videoUrl,
+    audioInput: audioUrl,
+    params,
+    isLive: false,
+    paceInput: !wantsBufferedMjpeg(req),
+    allowBurst: wantsBufferedMjpeg(req),
+    startAt: req.query.timestamp,
+    timing: { requestStartedAt, resolveMs, resolveCache },
+    onTelemetry: (telemetry) => appendPlaybackEvent({
+      at: new Date().toISOString(),
+      event: "server_stream_summary",
+      youtubeId: youtubeIdFromPlaybackUrl(url),
+      streamUrl: playbackLogString(req.originalUrl, 1500),
+      serverInstanceId: SERVER_INSTANCE_ID,
+      serverTelemetry: telemetry,
+      timing: { resolveMs, resolveCache },
+    }),
+    ...YOUTUBE_STREAM_HEADERS,
+  });
 }));
 
 app.get("/stream/prepared/:id", asyncH(async (req, res) => {
@@ -1251,7 +1362,10 @@ app.get("/stream/audio/url", asyncH(async (req, res) => {
 app.get("/stream/audio/youtube", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
-  const { videoUrl, audioUrl } = await resolveProxiedYouTubeStreams(url, config.download.maxHeight);
+  const maxHeight = requestedYouTubeMaxHeight(req.query.height);
+  const { videoUrl, audioUrl, resolveCache, resolveMs } = await resolveProxiedYouTubeStreams(url, maxHeight);
+  res.set("X-YT-Resolve-Ms", String(Math.max(0, Math.round(resolveMs))));
+  res.set("X-YT-Resolve-Cache", resolveCache);
   return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
 }));
 

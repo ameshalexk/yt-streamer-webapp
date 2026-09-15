@@ -134,14 +134,17 @@ async function resolveFormatSelection(url, format) {
 // Resolve a direct, ffmpeg-playable URL for a video at or below maxHeight.
 // Returns signed media URLs plus yt-dlp's request headers. Prefers a muxed stream.
 export async function getStreamUrls(url, maxHeight = config.download.maxHeight) {
-  const muxedFmt = `best[height<=${maxHeight}][acodec!=none][vcodec!=none]/best[height<=${maxHeight}]`;
-  try {
-    return await resolveFormatSelection(url, muxedFmt);
-  } catch {
-    /* fall through to split streams */
-  }
-  const splitFmt = `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]`;
-  return resolveFormatSelection(url, splitFmt);
+  const height = Math.max(144, Math.min(config.download.maxHeight, Number(maxHeight) || config.download.maxHeight));
+  // Resolve once. Prefer a muxed stream when one exists, then H.264 split video
+  // because FFmpeg starts decoding it faster on the Mac, with generic fallbacks
+  // for videos where AVC is unavailable.
+  const format = [
+    `best[height<=${height}][acodec!=none][vcodec!=none]`,
+    `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio`,
+    `bestvideo[height<=${height}]+bestaudio`,
+    `best[height<=${height}]`,
+  ].join("/");
+  return resolveFormatSelection(url, format);
 }
 
 // Download a video to the library. Returns { filePath, info }. onProgress(pct, line) optional.

@@ -677,6 +677,7 @@ body.fullscreen-controls-idle .video-controls-overlay .video-controls-panel { po
   content: "Connecting stream…"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   z-index: 20; color: var(--text); background: rgba(0,0,0,.55); font-size: 16px; pointer-events: none;
 }
+.screen.loading.startup-preview::after { display: none; }
 .stream-badge {
   position: absolute; top: 10px; left: 10px; z-index: 47;
   font-size: 13px; font-weight: 700; padding: 6px 12px; border-radius: 999px;

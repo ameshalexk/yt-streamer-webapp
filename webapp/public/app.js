@@ -534,7 +534,7 @@ function streamQuery(startAt = 0) {
 }
 
 function audioQuery(startAt = 0) {
-  const p = new URLSearchParams({ _: Date.now() });
+  const p = new URLSearchParams({ _: Date.now(), height: $("#ctlHeight").value });
   const timestamp = timestampValue(startAt);
   if (timestamp) p.set("timestamp", String(Math.floor(timestamp * 1000) / 1000));
   return p.toString();
@@ -645,6 +645,7 @@ const FULLSCREEN_OVERLAY_HIDE_MS = 5000;
 const SLOW_BUFFER_STARTUP_SUGGEST_MS = 20000;
 const SLOW_BUFFER_REBUFFER_SUGGEST_MS = 12000;
 const SLOW_BUFFER_REPEAT_REBUFFER_SUGGEST_MS = 6000;
+const SLOW_BUFFER_SYNC_SUGGEST_MS = 4000;
 const SLOW_BUFFER_SUGGESTION_VISIBLE_MS = 10000;
 const SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO = 3;
 const SLOW_BUFFER_PROFILE = { height: "360", fps: "15", quality: "5" };
@@ -653,6 +654,106 @@ let slowBufferCountdownTimer = null;
 let slowBufferAutoHideTimer = null;
 let slowBufferSuggestionShownAttempt = -1;
 let slowBufferSuggestionScope = { key: "", count: 0, stopped: false };
+let playbackStartupTraceSeq = 0;
+
+function beginPlaybackStartupTrace(kind, item = {}) {
+  const trace = {
+    id: ++playbackStartupTraceSeq,
+    kind: String(kind || "play"),
+    label: item.title || "Video",
+    streamUrl: item.url || "",
+    clickAt: performance.now(),
+    playerStartedAt: null,
+  };
+  reportPlaybackEvent("play_click", {
+    label: trace.label,
+    streamUrl: trace.streamUrl,
+    timing: { traceId: String(trace.id), kind: trace.kind, clickMs: 0 },
+  });
+  return trace;
+}
+
+function playbackStartupTiming(trace, stats = null) {
+  if (!trace) return {};
+  const out = { traceId: String(trace.id), kind: trace.kind };
+  const playerOffset = Number.isFinite(trace.playerStartedAt) ? Math.max(0, trace.playerStartedAt - trace.clickAt) : 0;
+  out.clickToPlayerMs = playerOffset;
+  const mapping = {
+    responseStartMs: "clickToResponseMs",
+    firstByteMs: "clickToFirstByteMs",
+    firstFrameReceivedMs: "clickToFirstFrameReceivedMs",
+    firstFrameDecodedMs: "clickToFirstFrameDecodedMs",
+    firstPictureMs: "clickToFirstPictureMs",
+    bufferReadyMs: "clickToBufferReadyMs",
+    audioReadyMs: "clickToAudioReadyMs",
+    audioStartMs: "clickToAudioStartMs",
+    firstRenderedMs: "clickToFirstRenderedMs",
+    startupMs: "clickToPlayingMs",
+  };
+  for (const [source, target] of Object.entries(mapping)) {
+    const raw = stats?.[source];
+    if (raw == null) continue;
+    const value = Number(raw);
+    if (Number.isFinite(value)) out[target] = playerOffset + value;
+  }
+  if (stats?.serverResolveMs != null && Number.isFinite(Number(stats.serverResolveMs))) out.serverResolveMs = Number(stats.serverResolveMs);
+  if (stats?.serverFirstOutputMs != null && Number.isFinite(Number(stats.serverFirstOutputMs))) out.serverFirstOutputMs = Number(stats.serverFirstOutputMs);
+  if (stats?.ffmpegFirstOutputMs != null && Number.isFinite(Number(stats.ffmpegFirstOutputMs))) out.ffmpegFirstOutputMs = Number(stats.ffmpegFirstOutputMs);
+  if (stats?.resolveCache) out.resolveCache = String(stats.resolveCache);
+  return out;
+}
+
+function applyLateVodDuration(duration) {
+  const value = Number(duration || 0);
+  if (!Number.isFinite(value) || value <= 0 || streamSeek.isLive) return;
+  streamSeek.duration = value;
+  streamSeek.seekable = true;
+  streamSeek.showUnavailable = false;
+  updateStreamSeekUi();
+  if (!streamSeek.timer && $("#screen")?.classList.contains("playing")) startStreamSeekTimer();
+}
+
+function bufferedSlowdownDiagnosis(stats = null, reason = "buffering") {
+  const s = stats || {};
+  if (reason === "audio") return { kind: "audio", title: "Audio is buffering", detail: "Video quality will not fix an audio-only stall." };
+  const targetFps = Math.max(1, Number(s.fps || 0));
+  const receiveFps = Number(s.receiveFps);
+  const renderedFps = Number(s.renderedFps);
+  const queueSeconds = Number(s.queueSeconds || 0);
+  const maxQueueSeconds = Number(s.maxQueueSeconds || 0);
+  const driftMs = Math.abs(Number(s.lastAvDriftMs || 0));
+  const dropped = Number(s.droppedFrames || 0);
+
+  const enoughRenderedHistory = Number(s.renderedFrames || 0) >= Math.max(8, targetFps * 2);
+  const rendererBehind = dropped > 0
+    || (enoughRenderedHistory && Number.isFinite(renderedFps) && renderedFps < targetFps * 0.8 && queueSeconds >= Math.max(2, maxQueueSeconds * 0.65))
+    || (driftMs > 220 && queueSeconds > 1.5);
+  if (rendererBehind) {
+    return {
+      kind: "renderer",
+      title: "This device is falling behind",
+      detail: "Video frames are arriving, but rendering cannot keep up. Try Low for smoother real-time playback.",
+    };
+  }
+
+  const producerSlow = Number.isFinite(receiveFps)
+    && receiveFps < targetFps * 0.8
+    && queueSeconds < Math.max(2, maxQueueSeconds * 0.4);
+  if (producerSlow || s.queueTrend === "shrinking") {
+    return {
+      kind: "network",
+      title: "Video delivery is too slow",
+      detail: "The buffer is not refilling fast enough. Try Low to reduce video demand.",
+    };
+  }
+
+  return {
+    kind: reason === "syncing" ? "sync" : "buffering",
+    title: reason === "syncing" ? "Video is catching up" : "Buffering is very slow",
+    detail: "Try Low to reduce video demand while keeping normal playback speed.",
+  };
+}
+
 const streamSeek = {
   seekable: false,
   isLive: false,
@@ -863,6 +964,8 @@ function slowBufferProfileWouldHelp() {
 
 function showSlowBufferSuggestion(attempt, { reason = "buffering", label = "", streamUrl = "", stats = null } = {}) {
   if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || !slowBufferSuggestionAllowed() || !slowBufferProfileWouldHelp()) return;
+  const diagnosis = bufferedSlowdownDiagnosis(stats, reason);
+  if (diagnosis.kind === "audio") return;
   const popup = $("#slowBufferSuggestion");
   if (!popup) return;
   slowBufferSuggestionShownAttempt = attempt;
@@ -871,6 +974,10 @@ function showSlowBufferSuggestion(attempt, { reason = "buffering", label = "", s
   clearInterval(slowBufferCountdownTimer);
   clearTimeout(slowBufferAutoHideTimer);
   popup.hidden = false;
+  const title = $("#slowBufferTitle");
+  const detail = $("#slowBufferDetail");
+  if (title) title.textContent = diagnosis.title;
+  if (detail) detail.textContent = diagnosis.detail;
   popup.classList.remove("is-counting");
   void popup.offsetWidth;
   popup.classList.add("is-counting");
@@ -889,6 +996,7 @@ function showSlowBufferSuggestion(attempt, { reason = "buffering", label = "", s
     label,
     streamUrl,
     reason,
+    diagnosis: diagnosis.kind,
     message: `${slowBufferSuggestionScope.count}/${SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO}`,
     stats,
   });
@@ -909,12 +1017,20 @@ function scheduleSlowBufferSuggestion(attempt, { reason = "startup", label = "",
   const rebufferCount = Number(stats?.rebufferCount || 0);
   const delay = reason === "startup"
     ? SLOW_BUFFER_STARTUP_SUGGEST_MS
-    : (rebufferCount >= 2 ? SLOW_BUFFER_REPEAT_REBUFFER_SUGGEST_MS : SLOW_BUFFER_REBUFFER_SUGGEST_MS);
+    : ((reason === "syncing" || reason === "renderer")
+      ? SLOW_BUFFER_SYNC_SUGGEST_MS
+      : (rebufferCount >= 2 ? SLOW_BUFFER_REPEAT_REBUFFER_SUGGEST_MS : SLOW_BUFFER_REBUFFER_SUGGEST_MS));
   slowBufferSuggestTimer = setTimeout(() => {
     slowBufferSuggestTimer = null;
     if (!currentAttempt(attempt) || slowBufferSuggestionShownAttempt === attempt || !slowBufferSuggestionAllowed() || !slowBufferProfileWouldHelp()) return;
     const latest = activeCompat?.bufferedPlayer?.getStats?.();
-    if (!latest || latest.state !== "buffering") return;
+    const latestDiagnosis = latest ? bufferedSlowdownDiagnosis(latest, reason) : null;
+    const stillSlow = latest && (
+      latest.state === "buffering"
+      || (reason === "syncing" && latest.state === "syncing")
+      || (reason === "renderer" && latestDiagnosis?.kind === "renderer")
+    );
+    if (!stillSlow) return;
     showSlowBufferSuggestion(attempt, { reason, label, streamUrl, stats: latest });
   }, delay);
 }
@@ -1198,7 +1314,7 @@ function failStreamAttempt(attempt, title, detail) {
   stopStreamSeekTimer(false);
   destroyPlayer();
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), audio = $("#audio");
-  screen.classList.remove("loading", "mjpeg-buffered-mode");
+  screen.classList.remove("loading", "mjpeg-buffered-mode", "startup-preview");
   setBadge("error", "Stream failed");
   showStreamNotice("error", title, detail);
   try { video.pause(); } catch {}
@@ -1418,7 +1534,7 @@ function cleanupMedia() {
   setDesktopStreamActive(false);
   setBrowserStreamActive(false);
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
-  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "mjpeg-buffered-mode");
+  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "mjpeg-buffered-mode", "startup-preview");
   streamAttempt++;
   clearStreamTimers();
   clearStreamNotice();
@@ -2043,17 +2159,24 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   configureStreamSeek(meta, meta.startAt || 0);
 
   const attempt = streamAttempt;
+  const startupTrace = meta.startupTrace || null;
+  if (startupTrace && !Number.isFinite(startupTrace.playerStartedAt)) startupTrace.playerStartedAt = performance.now();
   const bufferedUrl = withUrlParam(mjpegUrl, "buffered", "1");
   setSlowBufferSuggestionScope(bufferedUrl);
   let audioFailed = false;
   const parsed = new URL(bufferedUrl, window.location.origin);
   const requestedFps = Math.max(1, Number(parsed.searchParams.get("fps") || $("#ctlFps").value || 24));
-  reportPlaybackEvent("buffered_start", { label, streamUrl: bufferedUrl, reason: `fps=${requestedFps}` });
+  reportPlaybackEvent("buffered_start", {
+    label,
+    streamUrl: bufferedUrl,
+    reason: `fps=${requestedFps}`,
+    timing: playbackStartupTiming(startupTrace),
+  });
 
   $("#nowPlaying").textContent = label || "Playing";
   $("#stopBtn").disabled = false;
   $("#restreamBtn").disabled = false;
-  screen.classList.remove("video-mode", "mjpeg-mode");
+  screen.classList.remove("video-mode", "mjpeg-mode", "startup-preview");
   screen.classList.add("playing", "loading", "mjpeg-buffered-mode");
   setBadge("reconnecting", "Buffering 0.0 / 4.0s");
   startStreamWatchdog(attempt, "Buffered MJPEG playback", {
@@ -2126,18 +2249,25 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         return;
       }
       if (stateName === "syncing") {
-        cancelSlowBufferSuggestionSchedule();
         screen.classList.remove("loading");
-        setBadge("reconnecting", "Syncing A/V…");
+        scheduleSlowBufferSuggestion(attempt, { reason: "syncing", label, streamUrl: bufferedUrl, stats });
+        setBadge("reconnecting", "Catching up video…");
         return;
       }
       if (stateName === "playing") {
         cancelSlowBufferSuggestionSchedule();
+        screen.classList.remove("startup-preview");
         activeCompat.playbackStarted = true;
         activeCompat.videoReady = true;
         if (!loggedPlaying) {
           loggedPlaying = true;
-          reportPlaybackEvent("buffered_playing", { label, streamUrl: bufferedUrl, stats });
+          reportPlaybackEvent("buffered_playing", {
+            label,
+            streamUrl: bufferedUrl,
+            stats,
+            timing: playbackStartupTiming(startupTrace, stats),
+            diagnosis: bufferedSlowdownDiagnosis(stats, "playing").kind,
+          });
         }
         markBufferedStreamPlaying(attempt, stats);
         return;
@@ -2145,6 +2275,21 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (stateName === "background") {
         setBadge("paused", "Paused in background");
       }
+    },
+    onMilestone: (name, detail = {}) => {
+      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      const stats = detail.stats || player.getStats();
+      if (name === "first-picture") {
+        screen.classList.add("startup-preview");
+        setBadge("reconnecting", "Preview ready · buffering for smooth playback", { revealControls: false });
+      }
+      reportPlaybackEvent("buffered_" + String(name).replace(/-/g, "_"), {
+        label,
+        streamUrl: bufferedUrl,
+        stats,
+        timing: playbackStartupTiming(startupTrace, stats),
+        diagnosis: bufferedSlowdownDiagnosis(stats, stats.state).kind,
+      });
     },
     onStats: (stats) => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
@@ -2155,9 +2300,15 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         setBadge("reconnecting", prefix + stats.queueSeconds.toFixed(1) + " / " + target.toFixed(1) + "s", { revealControls: false });
       } else if (stats.state === "paused") {
         setBadge("paused", "Ⅱ PAUSED · " + stats.queueSeconds.toFixed(1) + "s buf", { revealControls: false });
-      } else if (stats.state === "playing" && stats.renderedFrames % Math.max(1, Math.round(stats.fps)) === 0) {
-        // Refresh the live badge text without waking fullscreen controls every second.
-        markBufferedStreamPlaying(attempt, stats, { revealControls: false });
+      } else if (stats.state === "playing") {
+        const diagnosis = bufferedSlowdownDiagnosis(stats, "renderer");
+        if (diagnosis.kind === "renderer" && stats.renderedFrames >= Math.max(1, Math.round(stats.fps * 3))) {
+          scheduleSlowBufferSuggestion(attempt, { reason: "renderer", label, streamUrl: bufferedUrl, stats });
+        }
+        if (stats.renderedFrames % Math.max(1, Math.round(stats.fps)) === 0) {
+          // Refresh the live badge text without waking fullscreen controls every second.
+          markBufferedStreamPlaying(attempt, stats, { revealControls: false });
+        }
       }
     },
     onError: (error) => {
@@ -2476,20 +2627,39 @@ function playNativeVideoStream({ nativeUrl, fallback }, label, meta = {}) {
   video.play().catch((error) => handleVideoPlayRejection(attempt, error));
 }
 
-async function enrichYoutubeStreamMeta(item) {
-  if (item.type !== "youtube" || item.meta?.duration) return item;
-  try {
-    const info = await api.get(`/api/youtube/info?url=${encodeURIComponent(item.url)}`);
-    item.meta = { ...(item.meta || {}), duration: info.duration, thumbnail: info.thumbnail };
+function refreshYoutubeMetadataInBackground(item, trace, { savedItem = false, active = () => true } = {}) {
+  const existingDuration = savedItem ? item.meta?.duration : item.duration;
+  if (!item?.url || existingDuration || item.isLive || item.isUpcoming) return;
+  const startedAt = performance.now();
+  void api.get(`/api/youtube/info?url=${encodeURIComponent(item.url)}`).then((info) => {
+    if (savedItem) {
+      item.meta = { ...(item.meta || {}), duration: info.duration, thumbnail: info.thumbnail || item.meta?.thumbnail };
+    } else {
+      item.duration = info.duration;
+      item.isLive = info.isLive;
+      if (!item.thumbnail && info.thumbnail) item.thumbnail = info.thumbnail;
+      if (!item.channelTitle && info.uploader) item.channelTitle = info.uploader;
+    }
     if (!item.title && info.title) item.title = info.title;
-  } catch (e) {
-    console.warn("youtube info failed for saved item:", e.message);
-  }
-  return item;
+    reportPlaybackEvent("youtube_metadata_ready", {
+      label: item.title || "YouTube",
+      streamUrl: item.url,
+      timing: {
+        traceId: trace ? String(trace.id) : "",
+        metadataRequestMs: performance.now() - startedAt,
+        clickToMetadataMs: trace ? performance.now() - trace.clickAt : performance.now() - startedAt,
+      },
+    });
+    if (active()) applyLateVodDuration(savedItem ? item.meta?.duration : item.duration);
+  }).catch((e) => console.warn("youtube info background lookup failed:", e.message));
 }
 
 async function playItem(item) {
-  item = await enrichYoutubeStreamMeta(item);
+  const startupTrace = beginPlaybackStartupTrace(item.type === "youtube" ? "saved-youtube" : "saved-item", item);
+  refreshYoutubeMetadataInBackground(item, startupTrace, {
+    savedItem: item.type === "youtube",
+    active: () => state.playingItemId === item.id,
+  });
   state.playingItemId = item.id;
   state.youtubeSearchPlayingId = null;
   state.youtubeHistoryPlayingId = null;
@@ -2500,8 +2670,11 @@ async function playItem(item) {
   renderRecommendations();
   if (isMobileMode()) setPlayerDropdownOpen(true);
   showAttemptedUrl(item.url);
+  let initialStartupTrace = startupTrace;
   replayFn = (startAt = 0) => {
     const q = streamQuery(startAt);
+    const trace = initialStartupTrace;
+    initialStartupTrace = null;
     playStream({
       tsUrl: `/stream/ts/item/${item.id}?${q}`,
       mjpegUrl: `/stream/item/${item.id}?${q}`,
@@ -2512,6 +2685,7 @@ async function playItem(item) {
       bufferedMjpeg: item.type === "youtube" || item.type === "file",
       duration: item.meta?.duration,
       startAt,
+      startupTrace: trace,
     });
   };
   replayFn(0);
@@ -2540,7 +2714,7 @@ function stopPlayback() {
   resetBrowserZoom();
   renderDesktopInputUi();
   setBadge("hidden");
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "embed-mode", "browser-mode");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "embed-mode", "browser-mode", "startup-preview");
   $("#screen").style.height = "";
   $("#screen").style.aspectRatio = "";
   $("#nowPlaying").textContent = "Player";
@@ -3758,17 +3932,10 @@ async function performYoutubeSearch() {
 
 async function streamYoutubeSearchResult(item, autoplayQueue = null) {
   if (!item) return;
-  if (!item.duration && !item.isLive && !item.isUpcoming) {
-    try {
-      const info = await api.get(`/api/youtube/info?url=${encodeURIComponent(item.url)}`);
-      item.duration = info.duration;
-      item.isLive = info.isLive;
-      if (!item.title && info.title) item.title = info.title;
-      if (!item.thumbnail && info.thumbnail) item.thumbnail = info.thumbnail;
-    } catch (e) {
-      console.warn("youtube info failed for search result:", e.message);
-    }
-  }
+  const startupTrace = beginPlaybackStartupTrace("youtube-search", item);
+  refreshYoutubeMetadataInBackground(item, startupTrace, {
+    active: () => state.youtubeSearchPlayingId === item.id,
+  });
   state.playingItemId = null;
   state.legacyPlayingId = null;
   state.recommendedPlayingId = null;
@@ -3781,9 +3948,12 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
   renderYoutubeHistory();
   showAttemptedUrl(item.url);
   if (isMobileMode()) setPlayerDropdownOpen(true);
+  let initialStartupTrace = startupTrace;
   replayFn = (startAt = 0) => {
     const q = streamQuery(startAt);
     const u = encodeURIComponent(item.url);
+    const trace = initialStartupTrace;
+    initialStartupTrace = null;
     playStream({
       tsUrl: `/stream/ts/youtube?url=${u}&${q}`,
       mjpegUrl: `/stream/youtube?url=${u}&${q}`,
@@ -3794,6 +3964,7 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
       bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
       startAt,
+      startupTrace: trace,
       autoplayContext: !item.isLive && !item.isUpcoming ? {
         kind: "youtube-search",
         itemId: item.id,
@@ -3807,18 +3978,10 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
 
 async function streamYoutubeHistoryItem(item) {
   if (!item) return;
-  if (!item.duration && !item.isLive) {
-    try {
-      const info = await api.get(`/api/youtube/info?url=${encodeURIComponent(item.url)}`);
-      item.duration = info.duration;
-      item.isLive = info.isLive;
-      if (!item.title && info.title) item.title = info.title;
-      if (!item.thumbnail && info.thumbnail) item.thumbnail = info.thumbnail;
-      if (!item.channelTitle && info.uploader) item.channelTitle = info.uploader;
-    } catch (e) {
-      console.warn("youtube info failed for history result:", e.message);
-    }
-  }
+  const startupTrace = beginPlaybackStartupTrace("youtube-history", item);
+  refreshYoutubeMetadataInBackground(item, startupTrace, {
+    active: () => state.youtubeHistoryPlayingId === item.id,
+  });
   state.playingItemId = null;
   state.legacyPlayingId = null;
   state.recommendedPlayingId = null;
@@ -3831,9 +3994,12 @@ async function streamYoutubeHistoryItem(item) {
   renderYoutubeHistory();
   showAttemptedUrl(item.url);
   if (isMobileMode()) setPlayerDropdownOpen(true);
+  let initialStartupTrace = startupTrace;
   replayFn = (startAt = 0) => {
     const q = streamQuery(startAt);
     const u = encodeURIComponent(item.url);
+    const trace = initialStartupTrace;
+    initialStartupTrace = null;
     playStream({
       tsUrl: `/stream/ts/youtube?url=${u}&${q}`,
       mjpegUrl: `/stream/youtube?url=${u}&${q}`,
@@ -3844,6 +4010,7 @@ async function streamYoutubeHistoryItem(item) {
       bufferedMjpeg: !item.isLive,
       duration: item.duration,
       startAt,
+      startupTrace: trace,
     });
   };
   replayFn(0);
@@ -4155,6 +4322,7 @@ async function disconnectYoutube() {
 
 async function streamRecommendation(item, autoplayQueue = null) {
   if (!item) return;
+  const startupTrace = beginPlaybackStartupTrace("recommendation", item);
   state.playingItemId = null;
   state.legacyPlayingId = null;
   state.recommendedPlayingId = item.id;
@@ -4179,9 +4347,12 @@ async function streamRecommendation(item, autoplayQueue = null) {
     reason: sessionSource,
   });
 
+  let initialStartupTrace = startupTrace;
   replayFn = (startAt = 0) => {
     const q = streamQuery(startAt);
     const prepared = preparedForSession;
+    const trace = initialStartupTrace;
+    initialStartupTrace = null;
     const u = encodeURIComponent(item.url);
     playStream({
       tsUrl: prepared ? `/stream/ts/prepared/${encodeURIComponent(item.id)}?${q}` : `/stream/ts/youtube?url=${u}&${q}`,
@@ -4193,6 +4364,7 @@ async function streamRecommendation(item, autoplayQueue = null) {
       bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
       startAt,
+      startupTrace: trace,
       autoplayContext: !item.isLive && !item.isUpcoming ? {
         kind: "recommendations",
         itemId: item.id,

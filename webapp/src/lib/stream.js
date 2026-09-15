@@ -38,13 +38,19 @@ function summarizeFfmpegError(stderr) {
   return tail;
 }
 
-function pipeFfmpegOutput(req, res, ff, { headers, label, stderrLimit = 8000, outputDelayMs = 0, onCleanup }) {
+function pipeFfmpegOutput(req, res, ff, { headers, dynamicHeaders = null, label, stderrLimit = 8000, outputDelayMs = 0, onCleanup }) {
   let stderr = "";
   let started = false;
   let cleaned = false;
   let stdoutEnded = false;
   let delayTimer = null;
   let waitingDrain = false;
+  let drainStartedAt = 0;
+  let bytesWritten = 0;
+  let backpressureCount = 0;
+  let backpressureMs = 0;
+  let firstOutputAt = 0;
+  const pipeStartedAt = Date.now();
   const delayed = [];
 
   const cleanup = (kill = true) => {
@@ -54,7 +60,16 @@ function pipeFfmpegOutput(req, res, ff, { headers, label, stderrLimit = 8000, ou
     delayed.length = 0;
     try { ff.stdout.unpipe(res); } catch {}
     if (kill && !ff.killed) ff.kill("SIGKILL");
-    onCleanup?.();
+    if (drainStartedAt) {
+      backpressureMs += Math.max(0, Date.now() - drainStartedAt);
+      drainStartedAt = 0;
+    }
+    onCleanup?.({
+      bytesWritten,
+      backpressureCount,
+      backpressureMs,
+      firstOutputMs: firstOutputAt ? Math.max(0, firstOutputAt - pipeStartedAt) : null,
+    });
   };
 
   ff.stderr.on("data", (d) => {
@@ -66,12 +81,19 @@ function pipeFfmpegOutput(req, res, ff, { headers, label, stderrLimit = 8000, ou
     if (cleaned || res.destroyed) return;
     if (!started) {
       started = true;
-      res.writeHead(200, headers);
+      firstOutputAt = Date.now();
+      const extra = typeof dynamicHeaders === "function" ? dynamicHeaders() : {};
+      res.writeHead(200, { ...headers, ...(extra || {}) });
     }
+    bytesWritten += chunk.byteLength || chunk.length || 0;
     if (!res.write(chunk)) {
       waitingDrain = true;
+      backpressureCount += 1;
+      drainStartedAt = Date.now();
       ff.stdout.pause();
       res.once("drain", () => {
+        if (drainStartedAt) backpressureMs += Math.max(0, Date.now() - drainStartedAt);
+        drainStartedAt = 0;
         waitingDrain = false;
         if (!cleaned) {
           ff.stdout.resume();
@@ -225,7 +247,19 @@ export function buildMjpegArgs({ input, audioInput, params, isLive, userAgent, r
 
 // Spawns ffmpeg and streams MJPEG to `res`. Cleans up on client disconnect.
 // input: m3u8 URL, direct http(s) URL, or local file path.
-export function streamMjpeg(req, res, { input, audioInput = null, params, isLive = false, userAgent = "", referer = "", startAt = 0, paceInput = false, allowBurst = false }) {
+export function streamMjpeg(req, res, {
+  input,
+  audioInput = null,
+  params,
+  isLive = false,
+  userAgent = "",
+  referer = "",
+  startAt = 0,
+  paceInput = false,
+  allowBurst = false,
+  timing = null,
+  onTelemetry = null,
+}) {
   if (active >= config.maxConcurrentStreams) {
     res.status(429).type("text/plain").end("Too many active streams. Stop one and retry.");
     return;
@@ -233,6 +267,7 @@ export function streamMjpeg(req, res, { input, audioInput = null, params, isLive
   active++;
 
   const args = buildMjpegArgs({ input, audioInput, params, isLive, userAgent, referer, startAt, paceInput, allowBurst });
+  const ffmpegStartedAt = Date.now();
   const ff = spawn(config.ffmpegPath, args, { stdio: ["ignore", "pipe", "pipe"] });
   pipeFfmpegOutput(req, res, ff, {
     label: "stream",
@@ -249,8 +284,20 @@ export function streamMjpeg(req, res, { input, audioInput = null, params, isLive
       "X-MJPEG-Start": String(seekSeconds(startAt)),
       "X-MJPEG-Buffered": allowBurst ? "1" : "0",
     },
-    onCleanup: () => {
+    dynamicHeaders: () => {
+      const requestStartedAt = Number(timing?.requestStartedAt || 0);
+      const resolveMs = Number(timing?.resolveMs);
+      const responseHeaders = {
+        "X-MJPEG-FFmpeg-First-Output-Ms": String(Math.max(0, Date.now() - ffmpegStartedAt)),
+      };
+      if (requestStartedAt > 0) responseHeaders["X-MJPEG-Server-First-Output-Ms"] = String(Math.max(0, Date.now() - requestStartedAt));
+      if (Number.isFinite(resolveMs)) responseHeaders["X-MJPEG-Resolve-Ms"] = String(Math.max(0, Math.round(resolveMs)));
+      if (timing?.resolveCache) responseHeaders["X-MJPEG-Resolve-Cache"] = String(timing.resolveCache);
+      return responseHeaders;
+    },
+    onCleanup: (telemetry) => {
       active = Math.max(0, active - 1);
+      onTelemetry?.(telemetry);
     },
   });
 }

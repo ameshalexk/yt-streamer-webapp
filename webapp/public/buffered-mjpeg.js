@@ -476,6 +476,7 @@
       maxFrameBytes = 3 * 1024 * 1024,
       onState = () => {},
       onStats = () => {},
+      onMilestone = () => {},
       onError = () => {},
       onEnded = () => {},
     }) {
@@ -518,18 +519,46 @@
       this.lastRenderedTime = 0;
       this.onState = onState;
       this.onStats = onStats;
+      this.onMilestone = onMilestone;
       this.onError = onError;
       this.onEnded = onEnded;
+      this.firstByteAt = null;
+      this.firstRenderedAt = null;
+      this.decodeTotalMs = 0;
+      this.decodeCount = 0;
       this.stats = {
         state: "idle",
         fps: this.fps,
         receivedFrames: 0,
         renderedFrames: 0,
+        droppedFrames: 0,
+        receivedBytes: 0,
         queueSeconds: 0,
         queueBytes: 0,
         maxQueueSeconds: 0,
         maxQueueBytes: 0,
+        queueTrend: "unknown",
+        queueTrendFps: null,
+        receiveBytesPerSecond: null,
+        receiveFps: null,
+        renderedFps: null,
+        producerSpeed: null,
+        averageDecodeMs: null,
+        maxDecodeMs: null,
         startupMs: null,
+        responseStartMs: null,
+        firstByteMs: null,
+        firstFrameReceivedMs: null,
+        firstFrameDecodedMs: null,
+        firstPictureMs: null,
+        bufferReadyMs: null,
+        audioReadyMs: null,
+        audioStartMs: null,
+        firstRenderedMs: null,
+        serverResolveMs: null,
+        serverFirstOutputMs: null,
+        ffmpegFirstOutputMs: null,
+        resolveCache: null,
         rebufferCount: 0,
         recoveryTargetSeconds: this.recovery.targetSeconds,
         lastAvDriftMs: null,
@@ -551,6 +580,32 @@
       return Boolean(this.audio && !this.audioEnded && this.audioEnabled());
     }
 
+    _milestone(name, detail = {}) {
+      if (!this._active()) return;
+      try { this.onMilestone(name, { ...detail, stats: this.getStats() }); } catch {}
+    }
+
+    _updateRates(now = performance.now()) {
+      const receiveElapsed = this.firstByteAt == null ? 0 : Math.max(0.001, (now - this.firstByteAt) / 1000);
+      if (receiveElapsed > 0) {
+        this.stats.receiveBytesPerSecond = Math.round(this.stats.receivedBytes / receiveElapsed);
+        this.stats.receiveFps = Math.round((this.stats.receivedFrames / receiveElapsed) * 100) / 100;
+        this.stats.producerSpeed = Math.round((this.stats.receiveFps / this.fps) * 100) / 100;
+      }
+      if (this.firstRenderedAt != null) {
+        const renderElapsed = Math.max(0.001, (now - this.firstRenderedAt) / 1000);
+        this.stats.renderedFps = Math.round((Math.max(0, this.stats.renderedFrames - 1) / renderElapsed) * 100) / 100;
+      }
+      if (Number.isFinite(this.stats.receiveFps) && Number.isFinite(this.stats.renderedFps)) {
+        const trend = this.stats.receiveFps - this.stats.renderedFps;
+        this.stats.queueTrendFps = Math.round(trend * 100) / 100;
+        this.stats.queueTrend = trend > 0.75 ? "growing" : (trend < -0.75 ? "shrinking" : "stable");
+      }
+      if (this.decodeCount > 0) {
+        this.stats.averageDecodeMs = Math.round((this.decodeTotalMs / this.decodeCount) * 10) / 10;
+      }
+    }
+
     _setState(state, detail = {}) {
       if (!this._active()) return;
       this.stats.state = state;
@@ -566,6 +621,7 @@
       this.stats.maxQueueSeconds = Math.max(this.stats.maxQueueSeconds, this.stats.queueSeconds);
       this.stats.maxQueueBytes = Math.max(this.stats.maxQueueBytes, this.stats.queueBytes);
       this.stats.eof = this.eof;
+      this._updateRates();
       this.onStats(this.getStats());
     }
 
@@ -583,7 +639,12 @@
     }
 
     setAudioReady(ready = true) {
-      this.audioReady = Boolean(ready);
+      const next = Boolean(ready);
+      if (next && !this.audioReady && this.stats.audioReadyMs == null) {
+        this.stats.audioReadyMs = Math.round(performance.now() - this.startedAt);
+        this._milestone("audio-ready");
+      }
+      this.audioReady = next;
       this._maybeStartOrResume();
     }
 
@@ -593,6 +654,15 @@
       try {
         const response = await this.fetchImpl(this.url, { cache: "no-store", signal: this.controller.signal });
         if (!this._active()) return;
+        this.stats.responseStartMs = Math.round(performance.now() - this.startedAt);
+        const resolveMs = Number.parseFloat(response.headers.get("x-mjpeg-resolve-ms") || "");
+        const serverFirstOutputMs = Number.parseFloat(response.headers.get("x-mjpeg-server-first-output-ms") || "");
+        const ffmpegFirstOutputMs = Number.parseFloat(response.headers.get("x-mjpeg-ffmpeg-first-output-ms") || "");
+        this.stats.serverResolveMs = Number.isFinite(resolveMs) ? resolveMs : null;
+        this.stats.serverFirstOutputMs = Number.isFinite(serverFirstOutputMs) ? serverFirstOutputMs : null;
+        this.stats.ffmpegFirstOutputMs = Number.isFinite(ffmpegFirstOutputMs) ? ffmpegFirstOutputMs : null;
+        this.stats.resolveCache = response.headers.get("x-mjpeg-resolve-cache") || null;
+        this._milestone("response-start");
         if (!response.ok || !response.body) throw new Error(`MJPEG request failed: HTTP ${response.status}`);
         const boundary = boundaryFromContentType(response.headers.get("content-type"))
           || String(response.headers.get("x-mjpeg-boundary") || "").replace(/^--/, "").trim();
@@ -630,6 +700,15 @@
           if (!this.queue.length && !this._needsAudio()) this._finish();
           break;
         }
+        if (value?.byteLength) {
+          const now = performance.now();
+          if (this.firstByteAt == null) {
+            this.firstByteAt = now;
+            this.stats.firstByteMs = Math.round(now - this.startedAt);
+            this._milestone("first-byte");
+          }
+          this.stats.receivedBytes += value.byteLength;
+        }
         // Start the next network read immediately, before parsing/enqueue work.
         pendingRead = this.reader.read();
         const frames = this.parser.push(value);
@@ -653,6 +732,15 @@
       };
       this.queue.push(frame);
       this.stats.receivedFrames += 1;
+      if (this.stats.firstFrameReceivedMs == null) {
+        this.stats.firstFrameReceivedMs = Math.round(performance.now() - this.startedAt);
+        this._milestone("first-frame-received");
+        void this._renderStartupPreview(frame);
+      }
+      if (this.stats.bufferReadyMs == null && this.queue.durationSeconds() >= this.policy.startupSeconds) {
+        this.stats.bufferReadyMs = Math.round(performance.now() - this.startedAt);
+        this._milestone("buffer-ready", { targetSeconds: this.policy.startupSeconds });
+      }
       this._emitStats();
       this._predecode();
       this._maybeStartOrResume();
@@ -690,6 +778,10 @@
           this.audio.muted = false;
           const play = this.audio.play();
           if (play?.then) await play;
+          if (this.stats.audioStartMs == null) {
+            this.stats.audioStartMs = Math.round(performance.now() - this.startedAt);
+            this._milestone("audio-start");
+          }
         } catch (error) {
           if (!this._active()) return;
           if (error?.name === "NotAllowedError" || /autoplay|gesture|interaction/i.test(String(error?.message || ""))) {
@@ -734,7 +826,7 @@
         return;
       }
 
-      const frame = this.queue.peek();
+      let frame = this.queue.peek();
       if (!frame) {
         if (this.eof) {
           if (!this._needsAudio()) this._finish();
@@ -745,6 +837,14 @@
       }
 
       const clock = this.currentTime();
+      if (this._needsAudio() && this.audio && !this.audio.paused) {
+        this._dropStaleFrames(Math.max(0, (Number(this.audio.currentTime) || 0) - this.audioClockOffset));
+        frame = this.queue.peek();
+        if (!frame) {
+          this._enterRebuffer("video");
+          return;
+        }
+      }
       const tolerance = Math.min(0.02, 0.5 / this.fps);
       if (frame.time > clock + tolerance) {
         this._scheduleRender();
@@ -762,6 +862,11 @@
         this.ctx.drawImage(decoded.source, 0, 0, this.canvas.width, this.canvas.height);
         this.lastRenderedTime = frame.time;
         this.stats.renderedFrames += 1;
+        if (this.firstRenderedAt == null) {
+          this.firstRenderedAt = performance.now();
+          this.stats.firstRenderedMs = Math.round(this.firstRenderedAt - this.startedAt);
+          this._milestone("first-rendered");
+        }
         if (this._needsAudio()) this.stats.lastAvDriftMs = Math.round((((Number(this.audio.currentTime) || 0) - this.audioClockOffset) - frame.time) * 1000);
         this.queue.shift();
         this._releaseFrame(frame);
@@ -770,16 +875,14 @@
 
         const next = this.queue.peek();
         const audioClock = Math.max(0, (Number(this.audio?.currentTime) || 0) - this.audioClockOffset);
-        if (this._needsAudio() && next && !this.audio.paused && next.time < audioClock - 0.25) {
-          try { this.audio.pause(); } catch {}
+        if (this._needsAudio() && next && next.time < audioClock - 0.25) {
+          // Keep the audio master clock moving at normal speed. Obsolete video
+          // frames are dropped on the next tick instead of pausing audio and
+          // making the whole program feel slowed down.
           this.playing = true;
-          this._setState("syncing", { driftSeconds: audioClock - next.time });
-        } else if (this._needsAudio() && next && this.audio.paused && this.stats.state === "syncing" && next.time >= audioClock - 0.04) {
-          try {
-            const play = this.audio.play();
-            if (play?.catch) play.catch(() => {});
-          } catch {}
-          this._setState("playing");
+          this._setState("syncing", { driftSeconds: audioClock - next.time, catchup: "drop-stale-frames" });
+        } else if (this.stats.state === "syncing") {
+          this._setState("playing", { catchup: "recovered" });
         }
       } catch (error) {
         this._fail(error);
@@ -799,6 +902,43 @@
       this._scheduleRender();
     }
 
+    async _renderStartupPreview(frame) {
+      if (!this._active() || this.playbackStarted || this.stats.firstPictureMs != null || !frame || frame.released) return;
+      try {
+        const decoded = await this._ensureDecoded(frame);
+        if (!this._active() || this.playbackStarted || this.stats.firstPictureMs != null || this.queue.peek() !== frame) return;
+        if (decoded.width && decoded.height && (this.canvas.width !== decoded.width || this.canvas.height !== decoded.height)) {
+          this.canvas.width = decoded.width;
+          this.canvas.height = decoded.height;
+        }
+        this.ctx.drawImage(decoded.source, 0, 0, this.canvas.width, this.canvas.height);
+        this.stats.firstPictureMs = Math.round(performance.now() - this.startedAt);
+        this._milestone("first-picture", { preview: true });
+        this._emitStats();
+      } catch (error) {
+        if (this._active()) this._fail(error);
+      }
+    }
+
+    _dropStaleFrames(audioClock) {
+      if (!this._needsAudio() || !Number.isFinite(audioClock) || this.queue.length <= 1) return 0;
+      const staleBefore = Math.max(0, audioClock - Math.max(0.08, 2 / this.fps));
+      const maxDrop = Math.max(1, Math.ceil(this.fps * 2));
+      let dropped = 0;
+      while (dropped < maxDrop && this.queue.length > 1) {
+        const frame = this.queue.peek();
+        if (!frame || frame.time >= staleBefore) break;
+        this.queue.shift();
+        this._releaseFrame(frame);
+        dropped += 1;
+      }
+      if (dropped) {
+        this.stats.droppedFrames += dropped;
+        this._emitStats();
+      }
+      return dropped;
+    }
+
     _predecode() {
       for (let i = 0; i < Math.min(2, this.queue.length); i += 1) {
         const frame = this.queue.at(i);
@@ -813,7 +953,16 @@
     _ensureDecoded(frame) {
       if (frame.decoded) return Promise.resolve(frame.decoded);
       if (frame.decodePromise) return frame.decodePromise;
+      const decodeStartedAt = performance.now();
       frame.decodePromise = decodeJpeg(frame.blob).then((decoded) => {
+        const decodeMs = Math.max(0, performance.now() - decodeStartedAt);
+        this.decodeTotalMs += decodeMs;
+        this.decodeCount += 1;
+        this.stats.maxDecodeMs = Math.max(Number(this.stats.maxDecodeMs || 0), Math.round(decodeMs * 10) / 10);
+        if (this.stats.firstFrameDecodedMs == null) {
+          this.stats.firstFrameDecodedMs = Math.round(performance.now() - this.startedAt);
+          this._milestone("first-frame-decoded");
+        }
         if (frame.released || !this._active()) {
           decoded.release?.();
           return decoded;
