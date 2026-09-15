@@ -21,9 +21,57 @@ const DESKTOP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Appl
 const POPUP_ALLOWED_HOSTS = ["mediagraming.com"];
 const POPUP_GUARD_INTERVAL_MS = 250;
 const POPUP_PENDING_GRACE_MS = 2500;
+const APNE_TRANSIT_TIMEOUT_MS = 5000;
 const REMOTE_BROWSER_BLOCKED_URLS = [
   "*://cdn.jsdelivr.net/npm/disable-devtool*",
 ];
+const APNE_FLASH_GUARD = `(() => {
+  const hostname = location.hostname.toLowerCase().replace(/\\.$/, "");
+  if (hostname !== "apnetv.xyz" && !hostname.endsWith(".apnetv.xyz")) return;
+  if (window.__ytApneFlashGuardInstalled) return;
+  window.__ytApneFlashGuardInstalled = true;
+  let lastHandled = 0;
+  const flashTarget = (event) => event.target instanceof Element ? event.target.closest(".flash_link") : null;
+  const submitFlash = (event) => {
+    const target = flashTarget(event);
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    const now = Date.now();
+    if (now - lastHandled < 900) return;
+    lastHandled = now;
+    const action = target.dataset.href || "";
+    const episodeId = target.dataset.id || "";
+    if (!/^https:\\/\\/(?:www\\.)?newsportaling\\.com\\/finnance-/i.test(action) || !episodeId) return;
+    const form = document.createElement("form");
+    form.action = action;
+    form.method = "POST";
+    form.target = "_blank";
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "id";
+    input.value = episodeId;
+    form.appendChild(input);
+    form.style.display = "none";
+    document.documentElement.appendChild(form);
+    form.submit();
+    form.remove();
+  };
+  const swallow = (event) => {
+    if (!flashTarget(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  };
+  window.addEventListener("pointerdown", submitFlash, true);
+  window.addEventListener("mousedown", submitFlash, true);
+  window.addEventListener("touchstart", submitFlash, true);
+  window.addEventListener("pointerup", swallow, true);
+  window.addEventListener("mouseup", swallow, true);
+  window.addEventListener("click", swallow, true);
+  window.addEventListener("touchend", swallow, true);
+})();`;
 const CHROME_PATHS = [
   process.env.REAL_CHROME_PATH || "",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -268,10 +316,24 @@ export function isAllowedPopupUrl(raw) {
   }
 }
 
+function isApneTvTransitUrl(raw) {
+  try {
+    const url = new URL(String(raw || ""));
+    if (!["http:", "https:"].includes(url.protocol)) return false;
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+    const hostOk = hostname === "newsportaling.com" || hostname.endsWith(".newsportaling.com");
+    return hostOk && url.pathname.startsWith("/finnance-");
+  } catch {
+    return false;
+  }
+}
+
 function popupUrlDecision(raw) {
   const value = String(raw || "").trim();
   if (!value || value === "about:blank") return "pending";
-  return isAllowedPopupUrl(value) ? "allow" : "block";
+  if (isAllowedPopupUrl(value)) return "allow";
+  if (isApneTvTransitUrl(value)) return "transit";
+  return "block";
 }
 
 function isApneTvUrl(raw) {
@@ -305,6 +367,21 @@ async function closeChromeTarget(port, targetId) {
   }
 }
 
+async function installApneFlashGuard(cdp) {
+  await cdp.call("Page.addScriptToEvaluateOnNewDocument", {
+    source: APNE_FLASH_GUARD,
+    runImmediately: true,
+  }).catch(async () => {
+    await cdp.call("Page.addScriptToEvaluateOnNewDocument", {
+      source: APNE_FLASH_GUARD,
+    }).catch(() => {});
+  });
+  await cdp.call("Runtime.evaluate", {
+    expression: APNE_FLASH_GUARD,
+    awaitPromise: true,
+  }).catch(() => {});
+}
+
 async function installFullscreenShim(session, cdp = session.cdp) {
   // Off-screen Real Chrome cannot reliably stay in native fullscreen. Reuse the
   // browser renderer's virtual fullscreen so site players fill the captured viewport.
@@ -327,6 +404,7 @@ async function preparePage(session, cdp = session.cdp) {
   await cdp.call("Page.enable");
   await cdp.call("Runtime.enable");
   await installFullscreenShim(session, cdp);
+  await installApneFlashGuard(cdp);
   await cdp.call("Network.enable").catch(() => {});
   await cdp.call("Network.setBlockedURLs", { urls: REMOTE_BROWSER_BLOCKED_URLS }).catch(() => {});
   await cdp.call("Network.setUserAgentOverride", { userAgent: DESKTOP_USER_AGENT, platform: "macOS" }).catch(() => {});
@@ -475,11 +553,25 @@ async function enforcePopupPolicy(session) {
       if (decision === "block") {
         session.popupCandidates.delete(target.id);
         await closeChromeTarget(session.port, target.id);
-        console.log(`[real-chrome] blocked popup ${target.url}`);
+        console.log("[real-chrome] blocked popup " + target.url);
         continue;
       }
+
       const firstSeen = session.popupCandidates.get(target.id) || Date.now();
       session.popupCandidates.set(target.id, firstSeen);
+
+      if (decision === "transit") {
+        const apneMainActive = isApneTvUrl(main?.url) || isApneTvUrl(session.mainSafeUrl);
+        if (!apneMainActive || Date.now() - firstSeen >= APNE_TRANSIT_TIMEOUT_MS) {
+          session.popupCandidates.delete(target.id);
+          await closeChromeTarget(session.port, target.id);
+          console.log("[real-chrome] blocked expired APNE transit " + target.url);
+        } else if (Date.now() - firstSeen < POPUP_GUARD_INTERVAL_MS * 2) {
+          console.log("[real-chrome] allowing hidden APNE transit " + target.url);
+        }
+        continue;
+      }
+
       if (Date.now() - firstSeen >= POPUP_PENDING_GRACE_MS) {
         session.popupCandidates.delete(target.id);
         await closeChromeTarget(session.port, target.id);

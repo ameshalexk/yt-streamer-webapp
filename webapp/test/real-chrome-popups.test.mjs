@@ -20,6 +20,36 @@ test("Real Chrome popup allowlist accepts only mediagraming.com and subdomains",
 });
 
 
+test("APNE TV injected Flash guard compiles as browser JavaScript", () => {
+  const match = renderer.match(/const APNE_FLASH_GUARD = `([\s\S]*?)`;/);
+  assert.ok(match, "APNE flash guard source should exist");
+  const runtimeSource = new Function(`return \`${match[1]}\`;`)();
+  assert.doesNotThrow(() => new Function(runtimeSource));
+  assert.match(runtimeSource, /hostname !== "apnetv\.xyz"/);
+});
+
+test("APNE TV Flash Link gesture bypasses page ad handlers", () => {
+  assert.match(renderer, /const APNE_FLASH_GUARD/);
+  assert.match(renderer, /__ytApneFlashGuardInstalled/);
+  assert.match(renderer, /pointerdown/);
+  assert.match(renderer, /newsportaling/);
+  assert.match(renderer, /form\.method = "POST"/);
+  assert.match(renderer, /form\.target = "_blank"/);
+  assert.match(renderer, /installApneFlashGuard\(cdp\)/);
+  assert.match(renderer, /source: APNE_FLASH_GUARD/);
+});
+
+test("APNE TV Flash Link transit is hidden and narrowly scoped", () => {
+  assert.match(renderer, /APNE_TRANSIT_TIMEOUT_MS = 5000/);
+  assert.match(renderer, /hostname === "newsportaling\.com"/);
+  assert.match(renderer, /url\.pathname\.startsWith\("\/finnance-"\)/);
+  assert.match(renderer, /isApneTvTransitUrl/);
+  assert.match(renderer, /return "transit"/);
+  assert.match(renderer, /decision === "transit"/);
+  assert.match(renderer, /apneMainActive/);
+  assert.match(renderer, /allowing hidden APNE transit/);
+});
+
 test("APNE TV disable-devtool fallback is recognized narrowly", () => {
   assert.equal(isApneTvDevtoolFallbackUrl("https://theajack.github.io/disable-devtool/404.html?h=apnetv.xyz"), true);
   assert.equal(isApneTvDevtoolFallbackUrl("https://theajack.github.io/disable-devtool/404.html?h=www.apnetv.xyz"), true);
