@@ -5400,6 +5400,7 @@ function renderBrowserInputUi() {
   const playerBtn = $("#browserInputBtn");
   const settingsBtn = $("#browserSettingsBtn");
   const settingsPanel = $("#browserPlayerSettings");
+  const closePopupBtn = $("#browserClosePopupBtn");
   const screen = $("#screen");
   const ready = browserInputReady();
   const active = Boolean(browserInputActive && ready);
@@ -5422,7 +5423,28 @@ function renderBrowserInputUi() {
     settingsBtn.setAttribute("aria-expanded", browserSettingsOpen && browserStreamActive ? "true" : "false");
   }
   if (settingsPanel) settingsPanel.hidden = !(browserStreamActive && browserSettingsOpen);
+  if (closePopupBtn) closePopupBtn.hidden = !(browserStreamActive && realChromeActive);
   syncBrowserSettingsControls("main");
+}
+
+async function closeRealChromePopup() {
+  if (!browserSessionId || !realChromeActive) return;
+  const button = $("#browserClosePopupBtn");
+  if (button) button.disabled = true;
+  try {
+    const result = await api.post(`/api/real-chrome/${encodeURIComponent(browserSessionId)}/close-tab`, {});
+    const session = result?.session;
+    if (session?.url) $("#browserUrl").value = session.url;
+    if (result?.closed) {
+      setBrowserStatus(session?.title || session?.url || "Returned to main tab", "ok");
+      resetBrowserZoom();
+      hideBrowserKeyboard();
+    }
+  } catch (err) {
+    toast(err.message || "Could not close popup tab", true);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function stopBrowserSession({ stopRealChromeOrphans = false } = {}) {
@@ -6226,6 +6248,11 @@ $("#browserStopBtn").onclick = stopPlayback;
 $("#browserCleanupBtn").onclick = closeRemoteBrowserSessions;
 $("#browserTouchToggle").onclick = toggleBrowserInput;
 $("#browserSettingsBtn").onclick = toggleBrowserPlayerSettings;
+$("#browserClosePopupBtn").onclick = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  closeRealChromePopup().catch(() => {});
+};
 $("#browserFps").addEventListener("input", () => {
   syncBrowserSettingsControls("main");
   queueBrowserSettingsUpdate();

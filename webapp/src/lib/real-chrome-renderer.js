@@ -18,6 +18,9 @@ const SESSION_TTL_MS = 15 * 60 * 1000;
 const IDLE_CLOSE_MS = 60 * 1000;
 const BOUNDARY = "realchromeframe";
 const DESKTOP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const POPUP_ALLOWED_HOSTS = ["mediagraming.com"];
+const POPUP_GUARD_INTERVAL_MS = 250;
+const POPUP_PENDING_GRACE_MS = 2500;
 const CHROME_PATHS = [
   process.env.REAL_CHROME_PATH || "",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -232,6 +235,12 @@ function connectCdp(webSocketDebuggerUrl) {
   };
 }
 
+async function listTargets(port) {
+  const res = await fetch(`http://127.0.0.1:${port}/json/list`);
+  if (!res.ok) throw new Error(`Chrome target list returned HTTP ${res.status}`);
+  return res.json();
+}
+
 async function targetForPort(port) {
   const targets = await waitForJson(`http://127.0.0.1:${port}/json/list`);
   const page = targets.find((target) => target.type === "page" && target.webSocketDebuggerUrl);
@@ -239,38 +248,180 @@ async function targetForPort(port) {
   return page;
 }
 
-async function installFullscreenShim(session) {
+async function targetById(port, targetId) {
+  if (!targetId) return null;
+  const targets = await listTargets(port);
+  return targets.find((target) => target.id === targetId && target.type === "page" && target.webSocketDebuggerUrl) || null;
+}
+
+export function isAllowedPopupUrl(raw) {
+  try {
+    const url = new URL(String(raw || ""));
+    if (!["http:", "https:"].includes(url.protocol)) return false;
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+    return POPUP_ALLOWED_HOSTS.some((allowed) => hostname === allowed || hostname.endsWith(`.${allowed}`));
+  } catch {
+    return false;
+  }
+}
+
+function popupUrlDecision(raw) {
+  const value = String(raw || "").trim();
+  if (!value || value === "about:blank") return "pending";
+  return isAllowedPopupUrl(value) ? "allow" : "block";
+}
+
+async function closeChromeTarget(port, targetId) {
+  if (!targetId) return false;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/close/${encodeURIComponent(targetId)}`);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function installFullscreenShim(session, cdp = session.cdp) {
   // Off-screen Real Chrome cannot reliably stay in native fullscreen. Reuse the
   // browser renderer's virtual fullscreen so site players fill the captured viewport.
-  await session.cdp.call("Page.addScriptToEvaluateOnNewDocument", {
+  await cdp.call("Page.addScriptToEvaluateOnNewDocument", {
     source: FULLSCREEN_SHIM,
     runImmediately: true,
   }).catch(async () => {
-    await session.cdp.call("Page.addScriptToEvaluateOnNewDocument", {
+    await cdp.call("Page.addScriptToEvaluateOnNewDocument", {
       source: FULLSCREEN_SHIM,
     }).catch(() => {});
   });
-  await session.cdp.call("Runtime.evaluate", {
+  await cdp.call("Runtime.evaluate", {
     expression: FULLSCREEN_SHIM,
     awaitPromise: true,
   }).catch(() => {});
 }
 
-async function preparePage(session) {
-  await session.cdp.ready;
-  await session.cdp.call("Page.enable");
-  await session.cdp.call("Runtime.enable");
-  await installFullscreenShim(session);
-  await session.cdp.call("Network.enable").catch(() => {});
-  await session.cdp.call("Network.setUserAgentOverride", { userAgent: DESKTOP_USER_AGENT, platform: "macOS" }).catch(() => {});
-  await session.cdp.call("Input.setIgnoreInputEvents", { ignore: false }).catch(() => {});
-  await session.cdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }).catch(() => {});
-  await session.cdp.call("Emulation.setDeviceMetricsOverride", {
+async function preparePage(session, cdp = session.cdp) {
+  await cdp.ready;
+  await cdp.call("Page.enable");
+  await cdp.call("Runtime.enable");
+  await installFullscreenShim(session, cdp);
+  await cdp.call("Network.enable").catch(() => {});
+  await cdp.call("Network.setUserAgentOverride", { userAgent: DESKTOP_USER_AGENT, platform: "macOS" }).catch(() => {});
+  await cdp.call("Input.setIgnoreInputEvents", { ignore: false }).catch(() => {});
+  await cdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }).catch(() => {});
+  await cdp.call("Emulation.setDeviceMetricsOverride", {
     width: session.width,
     height: session.height,
     deviceScaleFactor: 1,
     mobile: false,
   }).catch(() => {});
+}
+
+async function restoreMainTab(session, { closeTargetId = null } = {}) {
+  if (session.closed) return false;
+  const secondaryCdp = session.secondaryCdp;
+  session.secondaryTargetId = null;
+  session.secondaryCdp = null;
+  session.cdp = session.mainCdp;
+  secondaryCdp?.close();
+  if (closeTargetId) await closeChromeTarget(session.port, closeTargetId);
+  const mainTarget = await targetById(session.port, session.mainTargetId).catch(() => null);
+  if (!mainTarget || !session.mainCdp) return false;
+  await preparePage(session, session.mainCdp).catch(() => {});
+  session.url = mainTarget.url || session.url;
+  session.title = mainTarget.title || session.title || "Real Chrome";
+  session.lastUsedAt = Date.now();
+  capture(session).catch(() => {});
+  return true;
+}
+
+async function activateAllowedSecondaryTab(session, target) {
+  if (!target?.id || target.id === session.mainTargetId || !target.webSocketDebuggerUrl) return false;
+  if (!isAllowedPopupUrl(target.url)) return false;
+
+  const previousTargetId = session.secondaryTargetId;
+  const previousCdp = session.secondaryCdp;
+  const cdp = connectCdp(target.webSocketDebuggerUrl);
+  await preparePage(session, cdp);
+
+  session.secondaryTargetId = target.id;
+  session.secondaryCdp = cdp;
+  session.cdp = cdp;
+  session.url = target.url || session.url;
+  session.title = target.title || new URL(target.url).hostname || "Real Chrome";
+  session.popupCandidates.delete(target.id);
+  session.lastUsedAt = Date.now();
+  previousCdp?.close();
+  if (previousTargetId && previousTargetId !== target.id) {
+    await closeChromeTarget(session.port, previousTargetId);
+  }
+  capture(session).catch(() => {});
+  console.log(`[real-chrome] allowed popup ${target.url}`);
+  return true;
+}
+
+async function enforcePopupPolicy(session) {
+  if (session.closed || session.popupGuardBusy) return;
+  session.popupGuardBusy = true;
+  try {
+    const pages = (await listTargets(session.port)).filter((target) => target.type === "page" && target.webSocketDebuggerUrl);
+    const pageIds = new Set(pages.map((target) => target.id));
+    const main = pages.find((target) => target.id === session.mainTargetId);
+
+    if (session.secondaryTargetId) {
+      const activeSecondary = pages.find((target) => target.id === session.secondaryTargetId);
+      if (!activeSecondary) {
+        await restoreMainTab(session);
+      } else if (popupUrlDecision(activeSecondary.url) === "block") {
+        const blockedId = session.secondaryTargetId;
+        console.log(`[real-chrome] closing allowed popup after redirect: ${activeSecondary.url}`);
+        await restoreMainTab(session, { closeTargetId: blockedId });
+      } else {
+        session.url = activeSecondary.url || session.url;
+        session.title = activeSecondary.title || session.title;
+      }
+    } else if (main) {
+      session.url = main.url || session.url;
+      session.title = main.title || session.title;
+    }
+
+    for (const target of pages) {
+      if (target.id === session.mainTargetId || target.id === session.secondaryTargetId) continue;
+      const decision = popupUrlDecision(target.url);
+      if (decision === "allow") {
+        await activateAllowedSecondaryTab(session, target);
+        continue;
+      }
+      if (decision === "block") {
+        session.popupCandidates.delete(target.id);
+        await closeChromeTarget(session.port, target.id);
+        console.log(`[real-chrome] blocked popup ${target.url}`);
+        continue;
+      }
+      const firstSeen = session.popupCandidates.get(target.id) || Date.now();
+      session.popupCandidates.set(target.id, firstSeen);
+      if (Date.now() - firstSeen >= POPUP_PENDING_GRACE_MS) {
+        session.popupCandidates.delete(target.id);
+        await closeChromeTarget(session.port, target.id);
+        console.log("[real-chrome] blocked unresolved popup target");
+      }
+    }
+
+    for (const targetId of [...session.popupCandidates.keys()]) {
+      if (!pageIds.has(targetId)) session.popupCandidates.delete(targetId);
+    }
+  } catch (err) {
+    if (!session.closed) console.warn("[real-chrome] popup guard:", err.message);
+  } finally {
+    session.popupGuardBusy = false;
+  }
+}
+
+function startPopupGuard(session) {
+  if (session.tabGuardTimer) return;
+  session.tabGuardTimer = setInterval(() => {
+    enforcePopupPolicy(session).catch(() => {});
+  }, POPUP_GUARD_INTERVAL_MS);
+  session.tabGuardTimer.unref?.();
+  enforcePopupPolicy(session).catch(() => {});
 }
 
 export function activeSessionCount() {
@@ -336,6 +487,13 @@ export async function start(payload = {}) {
     profile,
     proc,
     cdp: null,
+    mainCdp: null,
+    secondaryCdp: null,
+    mainTargetId: null,
+    secondaryTargetId: null,
+    popupCandidates: new Map(),
+    popupGuardBusy: false,
+    tabGuardTimer: null,
     clients: new Set(),
     timer: null,
     capturing: false,
@@ -349,8 +507,11 @@ export async function start(payload = {}) {
   proc.on("exit", () => {
     session.closed = true;
     sessions.delete(session.id);
-    session.cdp?.close();
+    session.secondaryCdp?.close();
+    if (session.mainCdp && session.mainCdp !== session.secondaryCdp) session.mainCdp.close();
+    else session.cdp?.close();
     if (session.timer) clearInterval(session.timer);
+    if (session.tabGuardTimer) clearInterval(session.tabGuardTimer);
     for (const client of session.clients) {
       try { client.end(); } catch {}
     }
@@ -361,8 +522,11 @@ export async function start(payload = {}) {
     const target = await targetForPort(port);
     session.url = target.url || url;
     session.title = target.title || "Real Chrome";
+    session.mainTargetId = target.id;
     session.cdp = connectCdp(target.webSocketDebuggerUrl);
+    session.mainCdp = session.cdp;
     await preparePage(session);
+    startPopupGuard(session);
   } catch (err) {
     try { proc.kill("SIGKILL"); } catch {}
     await cleanupOrphans("failed-start").catch(() => {});
@@ -391,6 +555,8 @@ function sessionInfo(session) {
     lastUsedAt: session.lastUsedAt,
     ageMs: now - session.createdAt,
     idleMs: now - session.lastUsedAt,
+    secondaryTabOpen: Boolean(session.secondaryTargetId),
+    popupAllowlist: [...POPUP_ALLOWED_HOSTS],
   };
 }
 
@@ -703,19 +869,42 @@ export async function navigate(id, payload = {}) {
   if (!session) throw httpError(404, "Real Chrome session not found.");
   const url = normalizeUrl(payload.url);
   session.lastUsedAt = Date.now();
-  await session.cdp.ready;
-  await session.cdp.call("Page.navigate", { url: url.toString() });
+  if (session.secondaryTargetId) {
+    await closeSecondaryTab(id, "navigate");
+  }
+  await session.mainCdp.ready;
+  await session.mainCdp.call("Page.navigate", { url: url.toString() });
+  session.cdp = session.mainCdp;
   session.url = url.toString();
   session.title = url.hostname || "Real Chrome";
   setTimeout(async () => {
     if (session.closed) return;
     try {
-      const target = await targetForPort(session.port);
+      const target = await targetById(session.port, session.mainTargetId);
+      if (!target) return;
       session.url = target.url || session.url;
       session.title = target.title || session.title;
     } catch {}
   }, 800).unref?.();
   return sessionInfo(session);
+}
+
+export async function closeSecondaryTab(id, reason = "manual") {
+  const session = get(id);
+  if (!session) throw httpError(404, "Real Chrome session not found.");
+  if (!session.secondaryTargetId) {
+    return { ok: true, closed: false, session: sessionInfo(session) };
+  }
+  if (session.popupGuardBusy) await wait(300);
+  const targetId = session.secondaryTargetId;
+  session.popupGuardBusy = true;
+  try {
+    const restored = await restoreMainTab(session, { closeTargetId: targetId });
+    console.log(`[real-chrome] closed secondary tab (${reason})`);
+    return { ok: true, closed: true, restored, session: sessionInfo(session) };
+  } finally {
+    session.popupGuardBusy = false;
+  }
 }
 
 export async function stop(id, reason = "manual") {
@@ -724,7 +913,10 @@ export async function stop(id, reason = "manual") {
   sessions.delete(session.id);
   session.closed = true;
   if (session.timer) clearInterval(session.timer);
-  session.cdp?.close();
+  if (session.tabGuardTimer) clearInterval(session.tabGuardTimer);
+  session.secondaryCdp?.close();
+  if (session.mainCdp && session.mainCdp !== session.secondaryCdp) session.mainCdp.close();
+  else session.cdp?.close();
   try { session.proc.kill("SIGTERM"); } catch {}
   setTimeout(() => {
     if (!session.proc.killed) {

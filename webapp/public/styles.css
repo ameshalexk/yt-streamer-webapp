@@ -285,7 +285,7 @@ body.screen-fullscreen .screen {
   border-radius: 0;
   aspect-ratio: auto;
 }
-body.screen-fullscreen.desktop-streaming button:not(#fullscreenBtn) {
+body.screen-fullscreen.desktop-streaming button:not(#fullscreenBtn):not(#browserClosePopupBtn) {
   display: none !important;
 }
 body.screen-fullscreen.browser-streaming .screen .stream-badge,
@@ -509,6 +509,30 @@ body.fullscreen-controls-idle #fullscreenBtn.fullscreen-overlay {
   opacity: 0;
   pointer-events: none;
 }
+.browser-close-popup {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 46;
+  width: 58px;
+  min-width: 58px;
+  height: 58px;
+  min-height: 58px;
+  padding: 0 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgba(255,255,255,.58);
+  border-radius: 50%;
+  background: rgba(11,13,16,.82);
+  color: #fff;
+  box-shadow: 0 6px 22px rgba(0,0,0,.48);
+  backdrop-filter: blur(6px);
+  font: 400 42px/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+.browser-close-popup:active { background: rgba(127,29,29,.95); }
+.browser-close-popup[hidden] { display: none !important; }
 .screen.desktop-input-active {
   touch-action: none;
   cursor: crosshair;

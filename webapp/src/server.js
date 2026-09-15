@@ -912,6 +912,10 @@ app.post("/api/real-chrome/:id/input", asyncH(async (req, res) => {
   res.json(await realChromeRenderer.input(req.params.id, req.body || {}));
 }));
 
+app.post("/api/real-chrome/:id/close-tab", asyncH(async (req, res) => {
+  res.json(await realChromeRenderer.closeSecondaryTab(req.params.id, "remote-x"));
+}));
+
 app.post("/api/real-chrome/:id/stop", asyncH(async (req, res) => {
   const ok = await realChromeRenderer.stop(req.params.id);
   if (!ok) return res.status(404).json({ error: "Real Chrome session not found" });

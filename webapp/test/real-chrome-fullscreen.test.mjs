@@ -12,7 +12,7 @@ test("Real Chrome reuses the virtual fullscreen shim", () => {
   assert.match(realChrome, /source: FULLSCREEN_SHIM/);
   assert.match(realChrome, /runImmediately: true/);
   assert.match(realChrome, /Runtime\.evaluate[\s\S]*expression: FULLSCREEN_SHIM/);
-  assert.match(realChrome, /await installFullscreenShim\(session\);/);
+  assert.match(realChrome, /await installFullscreenShim\(session, cdp\);/);
 });
 
 test("touch taps do not send a second explicit mouse activation", () => {
