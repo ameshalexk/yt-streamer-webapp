@@ -854,7 +854,10 @@
       this.renderPending = true;
       try {
         const decoded = await this._ensureDecoded(frame);
-        if (!this._active() || this.queue.peek() !== frame) return;
+        // Pause/visibility can change while JPEG decode is in flight. Treat
+        // Pause as a hard visual boundary: never draw or consume a frame after
+        // the user has paused, even if its decode started before the click.
+        if (!this._active() || this.userPaused || this.hidden || !this.playing || this.queue.peek() !== frame) return;
         if (decoded.width && decoded.height && (this.canvas.width !== decoded.width || this.canvas.height !== decoded.height)) {
           this.canvas.width = decoded.width;
           this.canvas.height = decoded.height;

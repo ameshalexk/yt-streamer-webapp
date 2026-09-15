@@ -66,3 +66,55 @@ test("user pause and resume do not count as a network rebuffer", async () => {
   assert.deepEqual(states.slice(-2), ["paused", "playing"]);
   player.destroy();
 });
+
+test("pause is a hard visual boundary while a JPEG decode is in flight", async () => {
+  const draws = [];
+  const canvas = {
+    width: 1,
+    height: 1,
+    getContext() { return { drawImage(...args) { draws.push(args); }, clearRect() {} }; },
+  };
+  const player = new BufferedMjpegPlayer({
+    url: "/fixture",
+    canvas,
+    fps: 4,
+    sessionId: 92,
+    isCurrent: (id) => id === 92,
+    audioEnabled: () => false,
+  });
+  player.playbackStarted = true;
+  player.playing = true;
+  player.buffering = false;
+  player.monotonicAnchor = { media: 1, perf: performance.now() - 1000 };
+  const frame = {
+    index: 0,
+    time: 0,
+    size: 1,
+    bytes: new Uint8Array([1]),
+    blob: null,
+    decoded: null,
+    decodePromise: null,
+    released: false,
+  };
+  player.queue.push(frame);
+
+  let resolveDecode;
+  player._ensureDecoded = () => new Promise((resolve) => {
+    resolveDecode = resolve;
+  });
+  player._scheduleRender = () => {};
+
+  const rendering = player._renderTick();
+  await Promise.resolve();
+  assert.equal(player.renderPending, true);
+  player.pauseUser();
+  resolveDecode({ source: {}, width: 1, height: 1, release() {} });
+  await rendering;
+
+  assert.equal(player.userPaused, true);
+  assert.equal(player.getStats().state, "paused");
+  assert.equal(player.getStats().renderedFrames, 0);
+  assert.equal(player.queue.length, 1);
+  assert.equal(draws.length, 0);
+  player.destroy();
+});
