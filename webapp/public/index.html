@@ -20,7 +20,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e10600'/><polygon points='40,30 72,50 40,70' fill='white'/></svg>" />
   <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <link rel="stylesheet" href="/styles.css?v=20260914-v2-03" />
+  <link rel="stylesheet" href="/styles.css?v=20260915-apne-daily" />
 </head>
 <body>
   <div id="app">
@@ -37,6 +37,7 @@
         <button class="mode-tab" type="button" data-mode="browser">Browser</button>
         <button class="mode-tab" type="button" data-mode="embed" hidden>Embed</button>
         <button class="mode-tab" type="button" data-mode="library">Library</button>
+        <button class="mode-tab" type="button" data-mode="apne">APNE Daily</button>
       </nav>
       <div class="topbar-right">
         <button class="theme-toggle" id="themeToggleBtn" type="button" aria-label="Switch to day mode" title="Switch to day mode">
@@ -756,6 +757,29 @@
         </div>
       </section>
 
+      <section class="apne-daily-view side-panel" id="apneDailyView" aria-label="APNE Daily" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>APNE Daily</h2>
+            <div class="apne-daily-subtitle">Today’s APNE episodes, saved straight to the Mac.</div>
+          </div>
+          <div class="panel-actions">
+            <button class="btn small ghost" id="apneDailyRefreshBtn" type="button">Refresh</button>
+            <button class="btn small secondary" id="apneManageShowsBtn" type="button">Manage Shows</button>
+          </div>
+        </div>
+        <div class="apne-daily-body">
+          <div class="apne-daily-list" id="apneDailyList">
+            <article class="apne-show-card is-checking">
+              <div class="apne-show-main">
+                <h3>Anupamaa</h3>
+                <div class="apne-status"><span class="apne-status-dot"></span>Checking</div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
       <div class="downloads-drawer-backdrop" id="downloadsDrawerBackdrop" hidden></div>
       <section class="downloads-drawer side-panel" id="downloadsDrawer" aria-label="Downloaded videos" aria-hidden="true" inert>
         <div class="panel-head">
@@ -782,6 +806,6 @@
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
   <script src="/buffered-mjpeg.js?v=20260911-buffered-mjpeg"></script>
-  <script src="/app.js?v=20260914-v2-03-source-lock"></script>
+  <script src="/app.js?v=20260915-apne-daily"></script>
 </body>
 </html>

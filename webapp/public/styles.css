@@ -1562,6 +1562,72 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
   color: var(--muted); text-align: center; padding: 34px 16px;
 }
 
+
+/* APNE Daily */
+.apne-daily-view {
+  min-height: 0; overflow: hidden; background: var(--bg); display: flex; flex-direction: column;
+}
+.apne-daily-view .panel-head > div:first-child { min-width: 0; }
+.apne-daily-subtitle {
+  margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.35;
+}
+.apne-daily-body {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px;
+}
+.apne-daily-list { display: grid; gap: 14px; max-width: 860px; margin: 0 auto; }
+.apne-show-card {
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 18px;
+}
+.apne-show-main {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px;
+}
+.apne-show-copy { min-width: 0; }
+.apne-show-card h3 { margin: 0 0 8px; font-size: 22px; }
+.apne-status {
+  display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 800;
+}
+.apne-status-dot {
+  width: 9px; height: 9px; flex: 0 0 auto; border-radius: 999px; background: var(--muted);
+}
+.apne-show-card.is-available .apne-status-dot,
+.apne-show-card.is-saved .apne-status-dot { background: var(--ok); }
+.apne-show-card.is-failed .apne-status-dot { background: var(--accent); }
+.apne-show-card.is-downloading .apne-status-dot,
+.apne-show-card.is-checking .apne-status-dot {
+  background: #f1b84b; animation: apne-pulse 1s ease-in-out infinite alternate;
+}
+.apne-episode-detail { margin-top: 7px; color: var(--muted); font-size: 13px; }
+.apne-download-today {
+  min-width: 190px; min-height: 58px; padding: 0 22px; font-size: 17px; font-weight: 900;
+}
+.apne-download-today:disabled { opacity: .52; cursor: default; }
+.apne-progress {
+  height: 7px; overflow: hidden; margin-top: 16px; border-radius: 999px; background: var(--panel-2);
+}
+.apne-progress i {
+  display: block; width: 38%; height: 100%; border-radius: inherit; background: var(--accent);
+  animation: apne-progress 1.2s ease-in-out infinite alternate;
+}
+.apne-manage-list { display: grid; gap: 8px; margin: 0 0 16px; }
+.apne-manage-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2);
+}
+.apne-manage-row > div { min-width: 0; display: grid; gap: 3px; }
+.apne-manage-row strong,
+.apne-manage-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apne-manage-row small { color: var(--muted); font-size: 11px; }
+.apne-built-in { color: var(--muted); font-size: 12px; font-weight: 800; }
+@keyframes apne-pulse { to { opacity: .35; } }
+@keyframes apne-progress { from { transform: translateX(-10%); } to { transform: translateX(170%); } }
+
+@media (max-width: 640px) {
+  .apne-daily-body { padding: 10px; }
+  .apne-show-card { padding: 14px; }
+  .apne-show-main { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .apne-download-today { width: 100%; min-width: 0; }
+}
+
 /* Toast */
 .toast {
   position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);

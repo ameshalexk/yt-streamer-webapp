@@ -4,7 +4,7 @@ import net from "node:net";
 import path from "node:path";
 import { config } from "../config.js";
 import { FULLSCREEN_SHIM } from "./browser-renderer.js";
-import * as store from "./store.js";
+import { downloadApneHls, sanitizeDownloadName } from "./apne-daily.js";
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
@@ -656,77 +656,6 @@ async function mediagramingPlayerFrame(cdp) {
 }
 
 
-function sanitizeDownloadName(value) {
-  const cleaned = String(value || "APNE TV episode")
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/\b(?:online|watch online)\b/gi, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[. ]+$/g, "");
-  return (cleaned || "APNE TV episode").slice(0, 160);
-}
-
-async function ensureDownloadedVideosPlaylist() {
-  const playlists = await store.listPlaylists();
-  let playlist = playlists.find((item) => item?.meta?.kind === "downloaded-files");
-  if (!playlist) {
-    playlist = await store.addPlaylist({
-      name: "Downloaded Videos",
-      meta: { kind: "downloaded-files", hidden: true },
-    });
-  }
-  return playlist;
-}
-
-async function probeLocalVideoDuration(filePath) {
-  return new Promise((resolve) => {
-    const child = spawn("ffprobe", [
-      "-v", "error",
-      "-show_entries", "format=duration",
-      "-of", "default=nw=1:nk=1",
-      filePath,
-    ], { stdio: ["ignore", "pipe", "ignore"] });
-    let output = "";
-    const timer = setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch {}
-      resolve(null);
-    }, 5000);
-    child.stdout.on("data", (chunk) => { output += chunk.toString(); });
-    child.on("error", () => { clearTimeout(timer); resolve(null); });
-    child.on("close", () => {
-      clearTimeout(timer);
-      const duration = Number.parseFloat(output.trim());
-      resolve(Number.isFinite(duration) && duration > 0 ? duration : null);
-    });
-  });
-}
-
-async function registerDownloadedVideo(filePath, title, meta = {}) {
-  const playlist = await ensureDownloadedVideosPlaylist();
-  return store.addItem(playlist.id, {
-    title,
-    type: "file",
-    url: filePath,
-    meta: { downloaded: true, source: "apnetv", ...meta },
-  });
-}
-
-async function uniqueLibraryVideoPath(title) {
-  await fs.mkdir(config.libraryDir, { recursive: true });
-  const base = sanitizeDownloadName(title);
-  for (let n = 1; n < 1000; n += 1) {
-    const suffix = n === 1 ? "" : ` (${n})`;
-    const candidate = path.join(config.libraryDir, `${base}${suffix}.mp4`);
-    try {
-      await fs.access(candidate);
-    } catch {
-      return candidate;
-    }
-  }
-  return path.join(config.libraryDir, `${base} ${Date.now()}.mp4`);
-}
-
 function mediagramingHlsUrl(frame) {
   try {
     const frameUrl = new URL(String(frame?.url || ""));
@@ -757,60 +686,26 @@ async function resolveApneDownloadTitle(session) {
 }
 
 function runApneHlsDownload(session, { hlsUrl, referer, title }) {
-  return (async () => {
-    const finalPath = await uniqueLibraryVideoPath(title);
-    const partPath = finalPath.replace(/\.mp4$/i, ".part.mp4");
-    await fs.rm(partPath, { force: true }).catch(() => {});
-    session.apneDownload = {
-      status: "downloading",
-      title,
-      filePath: finalPath,
-      startedAt: Date.now(),
-      error: null,
-    };
-    await setApneDownloadButtonState(session, "Downloading…");
-    console.log(`[real-chrome] APNE download started -> ${finalPath}`);
-
-    await new Promise((resolve, reject) => {
-      const child = spawn(config.ffmpegPath, [
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel", "warning",
-        "-y",
-        "-user_agent", DESKTOP_USER_AGENT,
-        "-referer", referer || "https://mediagraming.com/",
-        "-i", hlsUrl,
-        "-map", "0:v:0?",
-        "-map", "0:a:0?",
-        "-c", "copy",
-        "-movflags", "+faststart",
-        partPath,
-      ], { stdio: ["ignore", "ignore", "pipe"] });
-      let stderr = "";
-      child.stderr.on("data", (chunk) => {
-        stderr = (stderr + chunk.toString()).slice(-12000);
-      });
-      child.on("error", (err) => reject(new Error(`ffmpeg failed to start: ${err.message}`)));
-      child.on("close", (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(stderr.trim().split("\n").slice(-5).join(" | ") || `ffmpeg exited ${code}`));
-      });
-    });
-
-    await fs.rename(partPath, finalPath);
-    const duration = await probeLocalVideoDuration(finalPath);
-    const item = await registerDownloadedVideo(finalPath, title, duration ? { duration } : {});
-    session.apneDownload = {
-      ...session.apneDownload,
-      status: "done",
-      finishedAt: Date.now(),
-      filePath: finalPath,
-      itemId: item?.id || null,
-    };
-    await setApneDownloadButtonState(session, "Saved");
-    console.log(`[real-chrome] APNE download completed -> ${finalPath}`);
-    return finalPath;
-  })().catch(async (err) => {
+  return downloadApneHls({
+    hlsUrl,
+    referer,
+    title,
+    onStage: (status, extra = {}) => {
+      session.apneDownload = {
+        ...(session.apneDownload || {}),
+        status: status === "Saved" ? "done" : "downloading",
+        title,
+        filePath: extra.filePath || session.apneDownload?.filePath || null,
+        itemId: extra.itemId || session.apneDownload?.itemId || null,
+        startedAt: session.apneDownload?.startedAt || Date.now(),
+        finishedAt: status === "Saved" ? Date.now() : null,
+        error: null,
+      };
+      setApneDownloadButtonState(session, status === "Saved" ? "Saved" : "Downloading…").catch(() => {});
+      if (status === "Downloading") console.log("[real-chrome] APNE download started -> " + (extra.filePath || title));
+      if (status === "Saved") console.log("[real-chrome] APNE download completed -> " + (extra.filePath || title));
+    },
+  }).then((result) => result.filePath).catch(async (err) => {
     if (session.apneDownload) {
       session.apneDownload = { ...session.apneDownload, status: "error", error: err.message, finishedAt: Date.now() };
     }

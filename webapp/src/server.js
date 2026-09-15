@@ -18,6 +18,7 @@ import * as processedLibrary from "./lib/processed-library.js";
 import * as preparedCache from "./lib/prepared-cache.js";
 import * as youtubeOAuth from "./lib/youtube-oauth.js";
 import * as moneyDashboard from "./lib/money-dashboard.js";
+import * as apneDaily from "./lib/apne-daily.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -511,6 +512,25 @@ app.post("/api/money-dashboard", asyncH(async (req, res) => {
 // ---------------------------------------------------------------------------
 // Playlists CRUD
 // ---------------------------------------------------------------------------
+app.get("/api/apne-daily", asyncH(async (req, res) => {
+  res.json(await apneDaily.listDailyStatus());
+}));
+
+app.post("/api/apne-daily/shows", asyncH(async (req, res) => {
+  res.status(201).json(await apneDaily.addShow(req.body || {}));
+}));
+
+app.delete("/api/apne-daily/shows/:id", asyncH(async (req, res) => {
+  const removed = await apneDaily.removeShow(req.params.id);
+  if (!removed) return res.status(404).json({ error: "APNE Daily show not found." });
+  res.json({ ok: true });
+}));
+
+app.post("/api/apne-daily/shows/:id/download", asyncH(async (req, res) => {
+  const job = await apneDaily.startShowDownload(req.params.id);
+  res.status(202).json(job);
+}));
+
 app.get("/api/playlists", asyncH(async (req, res) => {
   res.json(await store.listPlaylists());
 }));

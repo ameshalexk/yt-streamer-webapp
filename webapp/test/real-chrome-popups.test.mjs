@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { isAllowedPopupUrl, isApneTvDevtoolFallbackUrl } from "../src/lib/real-chrome-renderer.js";
 
 const renderer = fs.readFileSync(new URL("../src/lib/real-chrome-renderer.js", import.meta.url), "utf8");
+const apneDaily = fs.readFileSync(new URL("../src/lib/apne-daily.js", import.meta.url), "utf8");
 const server = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
 const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
@@ -60,10 +61,11 @@ test("APNE Download resolves the JW HLS stream and saves one synced MP4 on the M
   assert.match(renderer, /mediagramingHlsUrl/);
   assert.match(renderer, /videoapne\.to/);
   assert.match(renderer, /downloadMediagramingEpisode/);
-  assert.match(renderer, /config\.libraryDir/);
-  assert.match(renderer, /"-map", "0:v:0\?"/);
-  assert.match(renderer, /"-map", "0:a:0\?"/);
-  assert.match(renderer, /"-c", "copy"/);
+  assert.match(renderer, /downloadApneHls/);
+  assert.match(apneDaily, /config\.libraryDir/);
+  assert.match(apneDaily, /"-map", "0:v:0\?"/);
+  assert.match(apneDaily, /"-map", "0:a:0\?"/);
+  assert.match(apneDaily, /"-c", "copy"/);
   assert.match(renderer, /APNE download completed/);
 });
 
@@ -137,14 +139,15 @@ test("remote X closes only the secondary Real Chrome tab", () => {
 });
 
 test("APNE downloads register as hidden local-file library items with duration", () => {
-  assert.match(renderer, /ensureDownloadedVideosPlaylist/);
-  assert.match(renderer, /kind: "downloaded-files"/);
-  assert.match(renderer, /registerDownloadedVideo/);
-  assert.match(renderer, /probeLocalVideoDuration/);
-  assert.match(renderer, /ffprobe/);
-  assert.match(renderer, /duration \? \{ duration \} : \{\}/);
-  assert.match(renderer, /type: "file"/);
-  assert.match(renderer, /source: "apnetv"/);
+  assert.match(renderer, /downloadApneHls/);
+  assert.match(apneDaily, /ensureDownloadedVideosPlaylist/);
+  assert.match(apneDaily, /kind: "downloaded-files"/);
+  assert.match(apneDaily, /registerDownloadedVideo/);
+  assert.match(apneDaily, /probeLocalVideoDuration/);
+  assert.match(apneDaily, /ffprobe/);
+  assert.match(apneDaily, /duration \? \{ \.\.\.meta, duration \} : meta/);
+  assert.match(apneDaily, /type: "file"/);
+  assert.match(apneDaily, /source: "apnetv"/);
 });
 
 test("Downloaded Videos drawer includes local MP4 items and plays them through the normal local-file player", () => {

@@ -58,6 +58,7 @@ const state = {
   legacyPlaylists: [],
   selectedLegacyPlaylistId: null,
   legacyPlaylistVideos: [],
+  apneDaily: { today: "", shows: [], loading: false, pollTimer: null },
   youtubeAuth: null,
   recommendations: [],
   recommendationCategory: "all",
@@ -355,6 +356,7 @@ function setMode(mode) {
   setMobileNavOpen(false);
   if (mode !== "browse") state.savedDrawerOpen = false;
   if (mode !== "library") state.downloadsDrawerOpen = false;
+  if (mode !== "apne" && state.apneDaily.pollTimer) { clearTimeout(state.apneDaily.pollTimer); state.apneDaily.pollTimer = null; }
   const layout = $("#layout");
   layout.classList.toggle("mode-watch", mode === "watch");
   layout.classList.toggle("mode-browse", mode === "browse");
@@ -363,6 +365,7 @@ function setMode(mode) {
   layout.classList.toggle("mode-browser", mode === "browser");
   layout.classList.toggle("mode-embed", mode === "embed");
   layout.classList.toggle("mode-library", mode === "library");
+  layout.classList.toggle("mode-apne", mode === "apne");
   document.querySelectorAll(".mode-tab").forEach((tab) => {
     const active = tab.dataset.mode === mode;
     tab.classList.toggle("active", active);
@@ -375,6 +378,7 @@ function setMode(mode) {
   setPanelHidden($("#browserView"), mode !== "browser");
   setPanelHidden($("#embedView"), mode !== "embed");
   setPanelHidden($("#legacyLibraryView"), mode !== "library");
+  setPanelHidden($("#apneDailyView"), mode !== "apne");
   syncSavedDrawer();
   syncDownloadsDrawer();
   const player = $(".player");
@@ -2874,10 +2878,12 @@ function refreshYoutubeMetadataInBackground(item, trace, { savedItem = false, ac
 
 async function playItem(item) {
   const startupTrace = beginPlaybackStartupTrace(item.type === "youtube" ? "saved-youtube" : "saved-item", item);
-  refreshYoutubeMetadataInBackground(item, startupTrace, {
-    savedItem: item.type === "youtube",
-    active: () => state.playingItemId === item.id,
-  });
+  if (item.type === "youtube") {
+    refreshYoutubeMetadataInBackground(item, startupTrace, {
+      savedItem: true,
+      active: () => state.playingItemId === item.id,
+    });
+  }
   state.playingItemId = item.id;
   state.youtubeSearchPlayingId = null;
   state.youtubeHistoryPlayingId = null;
@@ -3543,6 +3549,183 @@ function pollDownload(jobId) {
       } catch (e) { reject(e); }
     };
     tick();
+  });
+}
+
+
+// ---- APNE Daily ----
+function apneStatusClass(status) {
+  return "is-" + String(status || "Checking").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function renderApneDaily() {
+  const list = $("#apneDailyList");
+  if (!list) return;
+  const shows = state.apneDaily.shows || [];
+  if (!shows.length) {
+    list.innerHTML = '<article class="apne-show-card is-checking"><div class="apne-show-main"><h3>Anupamaa</h3><div class="apne-status"><span class="apne-status-dot"></span>Checking</div></div></article>';
+    return;
+  }
+  list.innerHTML = shows.map((show) => {
+    const status = show.status || "Checking";
+    const busy = status === "Checking" || status === "Downloading";
+    const saved = status === "Saved";
+    const unavailable = status === "Not available yet";
+    const episode = show.episode || {};
+    const detail = show.detail || episode.dateLabel || "";
+    const buttonText = saved ? "Play" : (status === "Failed" ? "Download Today" : "Download Today");
+    const disabled = busy || unavailable;
+    const action = saved ? "play" : "download";
+    return '<article class="apne-show-card ' + apneStatusClass(status) + '" data-show-id="' + esc(show.id) + '">' +
+      '<div class="apne-show-main">' +
+        '<div class="apne-show-copy"><h3>' + esc(show.name) + '</h3>' +
+          '<div class="apne-status"><span class="apne-status-dot"></span>' + esc(status) + '</div>' +
+          (detail ? '<div class="apne-episode-detail">' + esc(detail) + '</div>' : '') +
+        '</div>' +
+        '<button class="btn apne-download-today ' + (saved ? 'secondary' : '') + '" data-act="' + action + '" type="button" ' + (disabled ? 'disabled' : '') + '>' + esc(buttonText) + '</button>' +
+      '</div>' +
+      (status === "Downloading" ? '<div class="apne-progress"><i></i></div>' : '') +
+    '</article>';
+  }).join("");
+}
+
+function scheduleApneDailyPoll() {
+  if (state.apneDaily.pollTimer) clearTimeout(state.apneDaily.pollTimer);
+  state.apneDaily.pollTimer = null;
+  if (state.mode !== "apne") return;
+  if (!(state.apneDaily.shows || []).some((show) => show.status === "Checking" || show.status === "Downloading")) return;
+  state.apneDaily.pollTimer = setTimeout(() => loadApneDaily({ quiet: true }), 1600);
+}
+
+async function loadApneDaily({ quiet = false } = {}) {
+  if (state.apneDaily.loading) return;
+  state.apneDaily.loading = true;
+  if (!quiet && state.apneDaily.shows.length) {
+    state.apneDaily.shows = state.apneDaily.shows.map((show) => (
+      show.status === "Downloading" ? show : { ...show, status: "Checking", detail: "Checking APNE TV…" }
+    ));
+    renderApneDaily();
+  }
+  try {
+    const data = await api.get("/api/apne-daily");
+    state.apneDaily.today = data.today || "";
+    state.apneDaily.shows = data.shows || [];
+    renderApneDaily();
+    scheduleApneDailyPoll();
+  } catch (error) {
+    if (!state.apneDaily.shows.length) {
+      state.apneDaily.shows = [{ id: "anupamaa", name: "Anupamaa", status: "Failed", detail: error.message }];
+    } else {
+      state.apneDaily.shows = state.apneDaily.shows.map((show) => ({ ...show, status: "Failed", detail: error.message }));
+    }
+    renderApneDaily();
+  } finally {
+    state.apneDaily.loading = false;
+  }
+}
+
+async function openApneDaily() {
+  setMode("apne");
+  if (!state.apneDaily.shows.length) {
+    state.apneDaily.shows = [{ id: "anupamaa", name: "Anupamaa", status: "Checking", detail: "Checking APNE TV…" }];
+    renderApneDaily();
+  }
+  await loadApneDaily();
+}
+
+async function startApneDailyDownload(showId) {
+  const show = state.apneDaily.shows.find((item) => item.id === showId);
+  if (!show) return;
+  show.status = "Downloading";
+  show.detail = "Preparing download on Mac…";
+  renderApneDaily();
+  try {
+    const job = await api.post("/api/apne-daily/shows/" + encodeURIComponent(showId) + "/download", {});
+    show.status = job.status || "Downloading";
+    show.detail = job.detail || "Preparing download on Mac…";
+    if (job.itemId) show.itemId = job.itemId;
+    renderApneDaily();
+    if (show.status === "Saved") {
+      await loadPlaylists().catch(() => {});
+      toast("Already saved in Downloaded Videos");
+    } else {
+      toast("Preparing download on Mac…");
+    }
+    scheduleApneDailyPoll();
+  } catch (error) {
+    show.status = "Failed";
+    show.detail = error.message;
+    renderApneDaily();
+    toast(error.message, true);
+  }
+}
+
+async function playApneDailyItem(itemId) {
+  let item = downloadedLocalItems().find((entry) => entry.id === itemId);
+  if (!item) {
+    await loadPlaylists().catch(() => {});
+    item = downloadedLocalItems().find((entry) => entry.id === itemId);
+  }
+  if (!item) return toast("Saved episode is not in Downloaded Videos yet", true);
+  await playItem(item);
+}
+
+function renderApneManageRows() {
+  const list = $("#apneManageList");
+  if (!list) return;
+  const shows = state.apneDaily.shows || [];
+  list.innerHTML = shows.map((show) =>
+    '<div class="apne-manage-row" data-show-id="' + esc(show.id) + '">' +
+      '<div><strong>' + esc(show.name) + '</strong><small>' + esc(show.url || "") + '</small></div>' +
+      (show.builtIn ? '<span class="apne-built-in">Built in</span>' : '<button class="btn small ghost" data-act="remove-apne-show" type="button">Remove</button>') +
+    '</div>'
+  ).join("");
+}
+
+function openApneManageShows() {
+  openModal(
+    '<h3>Manage APNE Daily Shows</h3>' +
+    '<div class="apne-manage-list" id="apneManageList"></div>' +
+    '<label for="apneShowUrl">APNE show URL</label>' +
+    '<input id="apneShowUrl" inputmode="url" placeholder="https://apnetv.xyz/Hindi-Serial/Show-Name" />' +
+    '<label for="apneShowName">Name <span class="muted">(optional)</span></label>' +
+    '<input id="apneShowName" placeholder="Show name" />' +
+    '<div class="modal-actions"><button class="btn ghost" id="apneManageClose" type="button">Close</button><button class="btn" id="apneAddShow" type="button">Add Show</button></div>'
+  );
+  renderApneManageRows();
+  $("#apneManageClose").onclick = closeModal;
+  $("#apneAddShow").onclick = async () => {
+    const url = $("#apneShowUrl").value.trim();
+    const name = $("#apneShowName").value.trim();
+    if (!url) return toast("Paste an APNE show URL", true);
+    const button = $("#apneAddShow");
+    button.disabled = true;
+    try {
+      await api.post("/api/apne-daily/shows", { url, name });
+      closeModal();
+      await loadApneDaily();
+      openApneManageShows();
+      toast("Show added");
+    } catch (error) {
+      toast(error.message, true);
+      button.disabled = false;
+    }
+  };
+  bindTap($("#apneManageList"), async (event) => {
+    const button = event.target.closest('[data-act="remove-apne-show"]');
+    if (!button) return;
+    const row = button.closest("[data-show-id]");
+    if (!row) return;
+    button.disabled = true;
+    try {
+      await api.del("/api/apne-daily/shows/" + encodeURIComponent(row.dataset.showId));
+      await loadApneDaily();
+      renderApneManageRows();
+      toast("Show removed");
+    } catch (error) {
+      toast(error.message, true);
+      button.disabled = false;
+    }
   });
 }
 
@@ -6846,6 +7029,7 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
     else if (tab.dataset.mode === "browser") openBrowser();
     else if (tab.dataset.mode === "embed") openEmbed();
     else if (tab.dataset.mode === "library") openLegacyLibrary();
+    else if (tab.dataset.mode === "apne") openApneDaily();
     else setMode(tab.dataset.mode);
   };
 });
@@ -6866,6 +7050,18 @@ $("#emptyDesktopBtn").onclick = openDesktop;
 $("#emptyBrowserBtn").onclick = openBrowser;
 $("#emptyEmbedBtn").onclick = openEmbed;
 $("#emptyLibraryBtn").onclick = openLegacyLibrary;
+$("#apneDailyRefreshBtn").onclick = () => loadApneDaily();
+$("#apneManageShowsBtn").onclick = openApneManageShows;
+bindTap($("#apneDailyList"), async (event) => {
+  const button = event.target.closest("[data-act]");
+  const card = event.target.closest("[data-show-id]");
+  if (!button || !card) return;
+  if (button.dataset.act === "download") await startApneDailyDownload(card.dataset.showId);
+  else if (button.dataset.act === "play") {
+    const show = state.apneDaily.shows.find((item) => item.id === card.dataset.showId);
+    if (show?.itemId) await playApneDailyItem(show.itemId);
+  }
+});
 $("#emptyPasteBtn").onclick = () => {
   // Home hides the idle player, including the URL field.
   setMode("browse");
