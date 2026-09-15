@@ -22,6 +22,9 @@ const POPUP_ALLOWED_HOSTS = ["mediagraming.com"];
 const POPUP_GUARD_INTERVAL_MS = 250;
 const POPUP_PENDING_GRACE_MS = 2500;
 const APNE_TRANSIT_TIMEOUT_MS = 5000;
+const PLAY_NOW_REQUEST_TTL_MS = 15000;
+const MEDIA_AUTOPLAY_TIMEOUT_MS = 10000;
+const MEDIA_AUTOPLAY_INTERVAL_MS = 350;
 const REMOTE_BROWSER_BLOCKED_URLS = [
   "*://cdn.jsdelivr.net/npm/disable-devtool*",
 ];
@@ -31,16 +34,50 @@ const APNE_FLASH_GUARD = `(() => {
   if (window.__ytApneFlashGuardInstalled) return;
   window.__ytApneFlashGuardInstalled = true;
   let lastHandled = 0;
+  const PLAY_NOW_CLASS = "yt-apne-play-now";
   const flashTarget = (event) => event.target instanceof Element ? event.target.closest(".flash_link") : null;
+  const isPlayNowEvent = (event) => event.target instanceof Element && Boolean(event.target.closest("." + PLAY_NOW_CLASS));
+
+  const installPlayNowButtons = () => {
+    for (const target of document.querySelectorAll(".flash_link")) {
+      if (target.querySelector(":scope > ." + PLAY_NOW_CLASS)) continue;
+      if (getComputedStyle(target).position === "static") target.style.position = "relative";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = PLAY_NOW_CLASS;
+      button.textContent = "Play Now";
+      button.setAttribute("aria-label", "Play this episode now");
+      Object.assign(button.style, {
+        position: "absolute",
+        right: "14px",
+        top: "50%",
+        transform: "translateY(-50%)",
+        zIndex: "2147483000",
+        padding: "10px 16px",
+        border: "0",
+        borderRadius: "999px",
+        background: "#111",
+        color: "#fff",
+        font: "600 15px/1 system-ui, -apple-system, sans-serif",
+        boxShadow: "0 2px 10px rgba(0,0,0,.28)",
+        cursor: "pointer",
+        touchAction: "manipulation",
+      });
+      target.appendChild(button);
+    }
+  };
+
   const submitFlash = (event) => {
     const target = flashTarget(event);
     if (!target) return;
+    const playNow = isPlayNowEvent(event);
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
     const now = Date.now();
     if (now - lastHandled < 900) return;
     lastHandled = now;
+    if (playNow) window.__ytApnePlayNowRequestedAt = now;
     const action = target.dataset.href || "";
     const episodeId = target.dataset.id || "";
     if (!/^https:\\/\\/(?:www\\.)?newsportaling\\.com\\/finnance-/i.test(action) || !episodeId) return;
@@ -67,10 +104,25 @@ const APNE_FLASH_GUARD = `(() => {
   window.addEventListener("pointerdown", submitFlash, true);
   window.addEventListener("mousedown", submitFlash, true);
   window.addEventListener("touchstart", submitFlash, true);
+  window.addEventListener("click", submitFlash, true);
   window.addEventListener("pointerup", swallow, true);
   window.addEventListener("mouseup", swallow, true);
   window.addEventListener("click", swallow, true);
   window.addEventListener("touchend", swallow, true);
+
+  const install = () => {
+    installPlayNowButtons();
+    if (window.__ytApnePlayNowObserver || !document.documentElement) return;
+    const observer = new MutationObserver(() => installPlayNowButtons());
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    window.__ytApnePlayNowObserver = observer;
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", install, { once: true });
+  } else {
+    install();
+  }
+  setTimeout(install, 0);
 })();`;
 const CHROME_PATHS = [
   process.env.REAL_CHROME_PATH || "",
@@ -134,6 +186,65 @@ function psOutput() {
       else resolve(stdout);
     });
   });
+}
+
+const AUDIO_SERVICE_MARKER = "audio.mojom.AudioService";
+const AUDIO_PRIME_EXPRESSION = `(() => {
+  try {
+    const key = "__ytStreamerAudioPrime";
+    if (!window[key]) {
+      const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextCtor) return { ok: false, reason: "AudioContext unavailable" };
+      const context = new AudioContextCtor();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      oscillator.connect(gain).connect(context.destination);
+      oscillator.start();
+      window[key] = { context, oscillator, gain };
+    }
+    const prime = window[key];
+    if (prime.context.state === "suspended") prime.context.resume().catch(() => {});
+    return { ok: true, state: prime.context.state };
+  } catch (error) {
+    return { ok: false, reason: String(error?.message || error) };
+  }
+})()`;
+
+async function profileAudioServicePids(profile) {
+  const profileArg = `--user-data-dir=${profile}`;
+  const lines = (await psOutput()).split("\n");
+  const pids = [];
+  for (const line of lines) {
+    const match = line.match(/^\s*(\d+)\s+(.+)$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const command = match[2] || "";
+    if (pid && command.includes(profileArg) && command.includes(AUDIO_SERVICE_MARKER)) pids.push(pid);
+  }
+  return [...new Set(pids)];
+}
+
+async function ensureAudioServiceForTap(session, timeoutMs = 2200) {
+  let audioPids = await profileAudioServicePids(session.profile).catch(() => []);
+  if (audioPids.length) return audioPids;
+
+  const deadline = Date.now() + timeoutMs;
+  while (!session.closed && Date.now() < deadline) {
+    await session.cdp.call("Runtime.evaluate", {
+      expression: AUDIO_PRIME_EXPRESSION,
+      awaitPromise: true,
+      returnByValue: true,
+    }).catch(() => {});
+    await wait(120);
+    audioPids = await profileAudioServicePids(session.profile).catch(() => []);
+    if (audioPids.length) {
+      console.log(`[real-chrome] primed audio service for Core Tap: ${audioPids.join(",")}`);
+      return audioPids;
+    }
+  }
+  console.warn("[real-chrome] Core Tap audio service did not appear before capture startup");
+  return audioPids;
 }
 
 async function profileProcessPids(profile) {
@@ -485,6 +596,131 @@ async function restoreMainTab(session, { closeTargetId = null } = {}) {
   return true;
 }
 
+async function consumeApnePlayNowRequest(session) {
+  if (!session.mainCdp) return false;
+  const result = await session.mainCdp.call("Runtime.evaluate", {
+    expression: `(() => {
+      const value = Number(window.__ytApnePlayNowRequestedAt || 0);
+      window.__ytApnePlayNowRequestedAt = 0;
+      return value;
+    })()`,
+    returnByValue: true,
+  }).catch(() => null);
+  const requestedAt = Number(result?.result?.value || 0);
+  return requestedAt > 0 && Date.now() - requestedAt <= PLAY_NOW_REQUEST_TTL_MS;
+}
+
+const MEDIAGRAMING_AUTOPLAY_EXPRESSION = `(async () => {
+  const visible = (el) => {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 2 && rect.height > 2 && style.display !== "none" && style.visibility !== "hidden";
+  };
+
+  const docs = [document];
+  for (const iframe of document.querySelectorAll("iframe")) {
+    try {
+      if (iframe.contentDocument) docs.push(iframe.contentDocument);
+    } catch {}
+  }
+
+  const videos = docs.flatMap((doc) => [...doc.querySelectorAll("video")]);
+  let clicked = false;
+  let playAttempted = false;
+
+  for (const video of videos) {
+    try {
+      video.muted = false;
+      video.volume = 1;
+      if (video.paused || video.readyState < 2) {
+        playAttempted = true;
+        await video.play().catch(() => {});
+      }
+    } catch {}
+  }
+
+  let playing = videos.some((video) => !video.paused && !video.ended);
+  if (!playing) {
+    const selectors = [
+      ".jw-display-icon-container",
+      ".jw-icon-playback",
+      ".vjs-big-play-button",
+      ".plyr__control--overlaid",
+      "[data-plyr='play']",
+      "button[aria-label*='play' i]",
+      "[role='button'][aria-label*='play' i]",
+      "button[title*='play' i]"
+    ];
+    for (const doc of docs) {
+      let control = null;
+      for (const selector of selectors) {
+        control = [...doc.querySelectorAll(selector)].find(visible);
+        if (control) break;
+      }
+      if (control) {
+        try {
+          control.click();
+          clicked = true;
+          break;
+        } catch {}
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    playing = videos.some((video) => !video.paused && !video.ended);
+  }
+
+  const playerFrame = [...document.querySelectorAll("iframe")].find((iframe) => {
+    const src = String(iframe.src || "");
+    return /\/new\/video\.php/i.test(src) || /videoapne|master\.m3u8/i.test(src);
+  }) || [...document.querySelectorAll("iframe")].filter(visible).sort((a, b) => {
+    const ar = a.getBoundingClientRect();
+    const br = b.getBoundingClientRect();
+    return (br.width * br.height) - (ar.width * ar.height);
+  })[0] || null;
+
+  let fullscreen = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+  if (!fullscreen && playerFrame) {
+    try {
+      await (playerFrame.requestFullscreen?.() || playerFrame.webkitRequestFullscreen?.());
+    } catch {}
+    fullscreen = Boolean(document.fullscreenElement || document.webkitFullscreenElement)
+      || document.documentElement.classList.contains("ytstreamer-fs-active");
+  }
+
+  return {
+    href: location.href,
+    videos: videos.length,
+    playing,
+    clicked,
+    playAttempted,
+    playerFrame: Boolean(playerFrame),
+    fullscreen,
+  };
+})()`;
+
+async function autoPlayMediagraming(session, cdp) {
+  const startedAt = Date.now();
+  let last = null;
+  while (!session.closed
+    && session.secondaryCdp === cdp
+    && Date.now() - startedAt < MEDIA_AUTOPLAY_TIMEOUT_MS) {
+    const result = await cdp.call("Runtime.evaluate", {
+      expression: MEDIAGRAMING_AUTOPLAY_EXPRESSION,
+      awaitPromise: true,
+      returnByValue: true,
+    }).catch(() => null);
+    last = result?.result?.value || last;
+    if (last?.playing && last?.fullscreen) {
+      console.log("[real-chrome] Play Now started Mediagraming playback in fullscreen");
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, MEDIA_AUTOPLAY_INTERVAL_MS));
+  }
+  console.log("[real-chrome] Play Now automation ended without full confirmation", last || {});
+  return false;
+}
+
 async function activateAllowedSecondaryTab(session, target) {
   if (!target?.id || target.id === session.mainTargetId || !target.webSocketDebuggerUrl) return false;
   if (!isAllowedPopupUrl(target.url)) return false;
@@ -507,6 +743,13 @@ async function activateAllowedSecondaryTab(session, target) {
   }
   capture(session).catch(() => {});
   console.log(`[real-chrome] allowed popup ${target.url}`);
+
+  const playNow = await consumeApnePlayNowRequest(session).catch(() => false);
+  if (playNow) {
+    autoPlayMediagraming(session, cdp).catch((err) => {
+      console.warn("[real-chrome] Play Now automation failed", err?.message || err);
+    });
+  }
   return true;
 }
 
@@ -745,6 +988,14 @@ function get(id) {
   const session = sessions.get(String(id || ""));
   if (!session || session.closed) return null;
   return session;
+}
+
+export async function audioCapturePids(id) {
+  const session = get(id);
+  if (!session) throw httpError(404, "Real Chrome session not found.");
+  await ensureAudioServiceForTap(session);
+  const profilePids = await profileProcessPids(session.profile).catch(() => []);
+  return [...new Set([session.proc?.pid, ...profilePids].map(Number).filter((pid) => Number.isInteger(pid) && pid > 1))];
 }
 
 async function capture(session) {
@@ -1043,6 +1294,54 @@ export async function input(id, payload = {}) {
     return { ok: true };
   }
   throw httpError(400, "Unsupported Real Chrome input type.");
+}
+
+export async function mediaPlayback(id, payload = {}) {
+  const session = get(id);
+  if (!session) throw httpError(404, "Real Chrome session not found.");
+  const action = String(payload.action || "").toLowerCase();
+  if (!new Set(["pause", "play"]).has(action)) throw httpError(400, "Media action must be pause or play.");
+  session.lastUsedAt = Date.now();
+  await session.cdp.ready;
+  const expression = `(() => {
+    const action = ${JSON.stringify(action)};
+    const docs = [document];
+    for (const iframe of document.querySelectorAll("iframe")) {
+      try { if (iframe.contentDocument) docs.push(iframe.contentDocument); } catch {}
+    }
+    const media = docs.flatMap((doc) => [...doc.querySelectorAll("video,audio")]);
+    let changed = 0;
+    for (const item of media) {
+      try {
+        if (action === "pause") {
+          if (!item.paused && !item.ended) { item.pause(); changed += 1; }
+        } else if (!item.ended && item.paused) {
+          item.play().catch(() => {});
+          changed += 1;
+        }
+      } catch {}
+    }
+    return {
+      ok: true,
+      action,
+      mediaCount: media.length,
+      changed,
+      states: media.slice(0, 12).map((item) => ({
+        tag: item.tagName,
+        paused: item.paused,
+        ended: item.ended,
+        currentTime: Number(item.currentTime || 0),
+        muted: Boolean(item.muted),
+        volume: Number(item.volume ?? 1),
+      })),
+    };
+  })()`;
+  const result = await session.cdp.call("Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  });
+  return result.result?.value || { ok: true, action, mediaCount: 0, changed: 0, states: [] };
 }
 
 export async function navigate(id, payload = {}) {

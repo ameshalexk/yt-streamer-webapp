@@ -12,6 +12,7 @@ import * as stream from "./lib/stream.js";
 import * as desktopInput from "./lib/desktop-input.js";
 import * as browserRenderer from "./lib/browser-renderer.js";
 import * as realChromeRenderer from "./lib/real-chrome-renderer.js";
+import * as browserAudioCapture from "./lib/browser-audio-capture.js";
 import * as catalog from "./lib/catalog.js";
 import * as processedLibrary from "./lib/processed-library.js";
 import * as preparedCache from "./lib/prepared-cache.js";
@@ -347,6 +348,7 @@ async function shutdownForRestart() {
         browserRenderer.stopAll("app-restart"),
         realChromeRenderer.stopAll("app-restart"),
         realChromeRenderer.cleanupOrphans("app-restart"),
+        browserAudioCapture.releaseAll(),
       ]),
       new Promise((resolve) => setTimeout(resolve, 2800)),
     ]);
@@ -932,17 +934,50 @@ app.post("/api/browser/:id/input", asyncH(async (req, res) => {
   res.json(await browserRenderer.input(req.params.id, req.body || {}));
 }));
 
+
+async function acquireBrowserAudioCapture(req) {
+  const backend = browserAudioCapture.normalizeBackend(req.query.backend);
+  let processPids = [];
+  if (backend === "core-tap") {
+    const sessionId = String(req.query.session || "").trim();
+    if (!sessionId) {
+      const error = new Error("Core Tap requires an active Real Chrome session.");
+      error.status = 400;
+      throw error;
+    }
+    processPids = await realChromeRenderer.audioCapturePids(sessionId);
+  }
+  try {
+    return await browserAudioCapture.acquire({
+      backend,
+      audio: req.query.audio,
+      processPids,
+    });
+  } catch (error) {
+    if (error?.code === "CORE_TAP_PERMISSION_REQUIRED") error.status = 403;
+    throw error;
+  }
+}
+
 app.get("/api/browser/audio-sources", asyncH(async (req, res) => {
   res.json(await stream.listDesktopSources(5000, { requireDesktopEnabled: false }));
 }));
 
 app.get("/api/browser/audio-hls/start", asyncH(async (req, res) => {
-  res.json(await stream.startDesktopAudioHls({
-    audio: req.query.audio,
-    bitrateK: req.query.bitrate,
-    requireDesktopEnabled: false,
-    urlPrefix: "/stream/hls/browser-audio",
-  }));
+  const capture = await acquireBrowserAudioCapture(req);
+  try {
+    const hls = await stream.startDesktopAudioHls({
+      audio: capture.audio,
+      bitrateK: req.query.bitrate,
+      requireDesktopEnabled: false,
+      urlPrefix: "/stream/hls/browser-audio",
+      onCleanup: capture.release,
+    });
+    res.json({ ...hls, capture: { backend: capture.backend, ...capture.details } });
+  } catch (error) {
+    await capture.release().catch(() => {});
+    throw error;
+  }
 }));
 
 app.post("/api/browser/audio-hls/:id/stop", asyncH(async (req, res) => {
@@ -981,6 +1016,10 @@ app.post("/api/real-chrome/:id/input", asyncH(async (req, res) => {
   res.json(await realChromeRenderer.input(req.params.id, req.body || {}));
 }));
 
+app.post("/api/real-chrome/:id/media", asyncH(async (req, res) => {
+  res.json(await realChromeRenderer.mediaPlayback(req.params.id, req.body || {}));
+}));
+
 app.post("/api/real-chrome/:id/close-tab", asyncH(async (req, res) => {
   res.json(await realChromeRenderer.closeSecondaryTab(req.params.id, "remote-x"));
 }));
@@ -1013,11 +1052,38 @@ app.get("/stream/real-chrome/:id", (req, res) => {
 });
 
 app.get("/stream/browser-audio", asyncH(async (req, res) => {
-  return stream.streamCapturedAudio(req, res, { audio: req.query.audio, bitrateK: req.query.bitrate });
+  const capture = await acquireBrowserAudioCapture(req);
+  if (capture.pcmStream) {
+    return stream.streamPipeAudio(req, res, {
+      inputStream: capture.pcmStream,
+      sampleRate: capture.details?.sampleRate,
+      channels: capture.details?.channels,
+      bitrateK: req.query.bitrate,
+      onCleanup: capture.release,
+    });
+  }
+  return stream.streamCapturedAudio(req, res, {
+    audio: capture.audio,
+    bitrateK: req.query.bitrate,
+    onCleanup: capture.release,
+  });
 }));
 
 app.get("/stream/browser-pcm", asyncH(async (req, res) => {
-  return stream.streamCapturedPcm(req, res, { audio: req.query.audio, sampleRate: req.query.rate });
+  const capture = await acquireBrowserAudioCapture(req);
+  if (capture.pcmStream) {
+    return stream.streamPipePcm(req, res, {
+      inputStream: capture.pcmStream,
+      sampleRate: capture.details?.sampleRate,
+      channels: capture.details?.channels,
+      onCleanup: capture.release,
+    });
+  }
+  return stream.streamCapturedPcm(req, res, {
+    audio: capture.audio,
+    sampleRate: req.query.rate,
+    onCleanup: capture.release,
+  });
 }));
 
 app.get("/stream/ts/desktop", asyncH(async (req, res) => {

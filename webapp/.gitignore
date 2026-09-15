@@ -3,3 +3,6 @@ data/
 *.log
 .DS_Store
 .env
+
+native/build/
+data

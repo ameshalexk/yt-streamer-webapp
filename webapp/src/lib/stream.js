@@ -430,7 +430,7 @@ export function streamDesktopMjpeg(req, res, { params, videoDelayMs = 0 }) {
   });
 }
 
-export function streamCapturedAudio(req, res, { audio, bitrateK }) {
+export function streamCapturedAudio(req, res, { audio, bitrateK, onCleanup = null }) {
   const args = buildDesktopAudioArgs({ audio, bitrateK });
   if (!args) {
     res.status(404).type("text/plain").end("No audio capture device selected.");
@@ -459,6 +459,7 @@ export function streamCapturedAudio(req, res, { audio, bitrateK }) {
     cleaned = true;
     audioActive = Math.max(0, audioActive - 1);
     if (desktopAudioCleanup === cleanup) desktopAudioCleanup = null;
+    if (onCleanup) Promise.resolve(onCleanup()).catch((error) => console.warn("[browser-audio] cleanup:", error.message));
     try { ff.stdout.unpipe(res); } catch {}
     if (!res.destroyed) {
       try { res.end(); } catch {}
@@ -483,7 +484,7 @@ export function streamCapturedAudio(req, res, { audio, bitrateK }) {
   res.on("close", cleanup);
 }
 
-export function streamCapturedPcm(req, res, { audio, sampleRate }) {
+export function streamCapturedPcm(req, res, { audio, sampleRate, onCleanup = null }) {
   const args = buildCapturedPcmArgs({ audio, sampleRate });
   const rate = normalizeAudioSampleRate(sampleRate);
   if (!args) {
@@ -516,6 +517,7 @@ export function streamCapturedPcm(req, res, { audio, sampleRate }) {
     cleaned = true;
     audioActive = Math.max(0, audioActive - 1);
     if (desktopAudioCleanup === cleanup) desktopAudioCleanup = null;
+    if (onCleanup) Promise.resolve(onCleanup()).catch((error) => console.warn("[browser-audio] cleanup:", error.message));
     try { ff.stdout.unpipe(res); } catch {}
     if (!res.destroyed) {
       try { res.end(); } catch {}
@@ -538,6 +540,95 @@ export function streamCapturedPcm(req, res, { audio, sampleRate }) {
   res.socket?.on("error", cleanup);
   req.on("close", cleanup);
   res.on("close", cleanup);
+}
+
+function pipeCaptureInputArgs({ sampleRate = 48000, channels = 2 } = {}) {
+  const rate = Math.max(24000, Math.min(192000, parseInt(sampleRate, 10) || 48000));
+  const count = Math.max(1, Math.min(8, parseInt(channels, 10) || 2));
+  return ["-f", "f32le", "-ar", String(rate), "-ac", String(count), "-i", "pipe:0"];
+}
+
+function streamPipeCapture(req, res, {
+  inputStream,
+  sampleRate = 48000,
+  channels = 2,
+  bitrateK = null,
+  pcm = false,
+  onCleanup = null,
+} = {}) {
+  if (!inputStream?.pipe) {
+    res.status(502).type("text/plain").end("Core Audio tap did not provide a PCM stream.");
+    if (onCleanup) Promise.resolve(onCleanup()).catch(() => {});
+    return;
+  }
+  desktopAudioCleanup?.();
+  desktopAudioCleanup = null;
+  audioActive++;
+  const args = ["-hide_banner", "-loglevel", "error", ...pipeCaptureInputArgs({ sampleRate, channels }), "-vn"];
+  if (pcm) {
+    args.push("-ac", "2", "-ar", "48000", "-f", "s16le", "pipe:1");
+  } else {
+    const bitrate = normalizeAudioBitrateK(bitrateK);
+    args.push("-c:a", "libmp3lame", "-b:a", `${bitrate}k`, "-ac", "2", "-ar", "48000", "-write_xing", "0", "-flush_packets", "1", "-f", "mp3", "pipe:1");
+  }
+  const ff = spawn(config.ffmpegPath, args, { stdio: ["pipe", "pipe", "pipe"] });
+  res.socket?.setNoDelay?.(true);
+  res.writeHead(200, {
+    "Content-Type": pcm ? "application/octet-stream" : "audio/mpeg",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    Connection: "close",
+    "X-Accel-Buffering": "no",
+    ...(pcm ? {
+      "X-Audio-Format": "s16le",
+      "X-Audio-Sample-Rate": "48000",
+      "X-Audio-Channels": "2",
+    } : {}),
+  });
+  inputStream.pipe(ff.stdin);
+  ff.stdout.pipe(res);
+  let stderr = "";
+  let cleaned = false;
+  ff.stderr.on("data", (d) => {
+    stderr += d;
+    if (stderr.length > 4000) stderr = stderr.slice(-4000);
+  });
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    audioActive = Math.max(0, audioActive - 1);
+    if (desktopAudioCleanup === cleanup) desktopAudioCleanup = null;
+    try { inputStream.unpipe(ff.stdin); } catch {}
+    try { ff.stdin.end(); } catch {}
+    try { ff.stdout.unpipe(res); } catch {}
+    if (!res.destroyed) { try { res.end(); } catch {} }
+    if (!ff.killed) { try { ff.kill("SIGKILL"); } catch {} }
+    if (onCleanup) Promise.resolve(onCleanup()).catch((error) => console.warn("[browser-audio] Core Tap cleanup:", error.message));
+  };
+  desktopAudioCleanup = cleanup;
+  ff.on("error", (error) => {
+    console.error("[core-tap-audio] ffmpeg error:", error.message);
+    cleanup();
+  });
+  ff.on("close", (code) => {
+    if (code && code !== 0 && code !== 255) console.error(`[core-tap-audio] ffmpeg exited ${code}: ${summarizeFfmpegError(stderr)}`);
+    cleanup();
+  });
+  ff.stdin.on("error", cleanup);
+  ff.stdout.on("error", cleanup);
+  inputStream.on?.("error", cleanup);
+  inputStream.on?.("end", cleanup);
+  res.on("error", cleanup);
+  res.socket?.on("error", cleanup);
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+}
+
+export function streamPipeAudio(req, res, options = {}) {
+  return streamPipeCapture(req, res, { ...options, pcm: false });
+}
+
+export function streamPipePcm(req, res, options = {}) {
+  return streamPipeCapture(req, res, { ...options, pcm: true });
 }
 
 export function streamDesktopAudio(req, res, { audio }) {
@@ -916,6 +1007,11 @@ async function removeAudioHlsSession(session) {
     try { session.ff.kill("SIGKILL"); } catch {}
   }
   audioActive = Math.max(0, audioActive - 1);
+  if (session.onCleanup) {
+    const cleanup = session.onCleanup;
+    session.onCleanup = null;
+    await Promise.resolve(cleanup()).catch((error) => console.warn("[browser-audio] HLS cleanup:", error.message));
+  }
   await fs.rm(session.dir, { recursive: true, force: true }).catch(() => {});
 }
 
@@ -967,7 +1063,7 @@ function buildDesktopAudioHlsArgs({ audio, bitrateK, playlistPath, segmentPatter
   ];
 }
 
-export async function startDesktopAudioHls({ audio, bitrateK, requireDesktopEnabled = true, urlPrefix = "/stream/hls/desktop-audio" }) {
+export async function startDesktopAudioHls({ audio, bitrateK, requireDesktopEnabled = true, urlPrefix = "/stream/hls/desktop-audio", onCleanup = null }) {
   if (requireDesktopEnabled && !config.desktop.enabled) throw httpError(404, "Desktop streaming is disabled.");
   const argsInput = normalizeAudioInput(audio);
   if (!argsInput) throw httpError(400, "No desktop audio device selected.");
@@ -980,7 +1076,7 @@ export async function startDesktopAudioHls({ audio, bitrateK, requireDesktopEnab
   const playlistPath = path.join(dir, "live.m3u8");
   const segmentPattern = path.join(dir, "seg-%05d.ts");
   const session = {
-    id, dir, playlistPath, stderr: "", closed: false, cleaned: false, ff: null, timer: null,
+    id, dir, playlistPath, stderr: "", closed: false, cleaned: false, ff: null, timer: null, onCleanup,
     createdAt: Date.now(), lastUsedAt: Date.now(),
   };
   const args = buildDesktopAudioHlsArgs({ audio, bitrateK, playlistPath, segmentPattern });

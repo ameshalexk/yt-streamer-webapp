@@ -44,6 +44,22 @@ test("APNE TV Flash Link gesture bypasses page ad handlers", () => {
   assert.match(renderer, /source: APNE_FLASH_GUARD/);
 });
 
+test("APNE TV injects a Play Now button and marks one-tap autoplay", () => {
+  assert.match(renderer, /PLAY_NOW_CLASS = "yt-apne-play-now"/);
+  assert.match(renderer, /button\.textContent = "Play Now"/);
+  assert.match(renderer, /__ytApnePlayNowRequestedAt/);
+  assert.match(renderer, /MutationObserver/);
+});
+
+test("Play Now promotes Mediagraming then auto-plays and fullscreens the player", () => {
+  assert.match(renderer, /consumeApnePlayNowRequest/);
+  assert.match(renderer, /MEDIAGRAMING_AUTOPLAY_EXPRESSION/);
+  assert.match(renderer, /video\.play\(\)/);
+  assert.match(renderer, /requestFullscreen/);
+  assert.match(renderer, /autoPlayMediagraming\(session, cdp\)/);
+  assert.match(renderer, /Play Now started Mediagraming playback in fullscreen/);
+});
+
 test("APNE TV Flash Link transit is hidden and narrowly scoped", () => {
   assert.match(renderer, /APNE_TRANSIT_TIMEOUT_MS = 5000/);
   assert.match(renderer, /hostname === "newsportaling\.com"/);

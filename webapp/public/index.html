@@ -175,7 +175,14 @@
               <output id="browserPlayerQualityValue" for="browserPlayerQuality">70%</output>
             </div>
           </label>
-          <label>Audio
+          <label>Audio version
+            <select id="browserPlayerAudioCapture">
+              <option value="core-tap" selected>Version 2 · Core Tap (Recommended)</option>
+              <option value="blackhole-direct">Version 1 · BlackHole (Fallback)</option>
+              <option value="manual">Advanced · Manual device</option>
+            </select>
+          </label>
+          <label>Audio device
             <select id="browserPlayerAudio"></select>
           </label>
           <label>Format
@@ -599,7 +606,14 @@
                     <output id="browserQualityValue" for="browserQuality">70%</output>
                   </div>
                 </label>
-                <label>Audio
+                <label>Audio version
+                  <select id="browserAudioCapture">
+                    <option value="core-tap" selected>Version 2 · Core Tap (Recommended)</option>
+                    <option value="blackhole-direct">Version 1 · BlackHole (Fallback)</option>
+                    <option value="manual">Advanced · Manual device</option>
+                  </select>
+                </label>
+                <label>Audio device
                   <select id="browserAudio"></select>
                 </label>
                 <label>Format
