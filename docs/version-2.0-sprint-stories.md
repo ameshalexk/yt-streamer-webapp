@@ -1,6 +1,6 @@
 # YT Streamer — version 2.0 sprint stories
 
-Prepared September 14, 2026. Updated: V2-01 through V2-03 implemented locally; V2-04 and V2-05 remain pending.
+Prepared September 14, 2026. Updated: V2-01 through V2-05 completed locally. V2-05 concluded NO-GO for generic live rewind; parked-Tesla validation and deployment remain.
 
 The app is primarily a Tesla-browser video player. Browser video must remain MJPEG, including when JPEG frames are buffered and drawn to canvas. Keep the existing separate audio path. Lower quality and FPS must reduce playback demand while preserving normal media speed.
 
@@ -55,6 +55,33 @@ Production remained on version 1 at port 8099 while the isolated version 2.0 pro
 Headless Chrome runtime checks on the isolated port 8100 also verified: one replay for rapid Low→High→Medium taps, stored-profile reload, honest Custom state, paused restart at the same timestamp with pause restored, native fullscreen retained through a simulated restart, live-return messaging, explicit legacy-resolution fallback, and no page errors. Layout checks at 390px portrait, 844px landscape and 1280px Tesla-like widths showed no quality-control overflow.
 
 No production deployment, public URL change, or GitHub push was performed. Real parked-Tesla playback is still required before version 2.0 is considered device-validated.
+
+## V2-04 completion — September 14, 2026
+
+- [x] Added click-to-picture timing milestones covering source resolution, server/FFmpeg first output, first bytes/frame/decode/picture, buffer target, audio readiness/start and synchronized playback.
+- [x] Removed blocking YouTube metadata lookup from the initial play path; duration/title enrichment now happens in parallel and can enable VOD seeking after playback begins.
+- [x] Video and audio requests share a short-lived/in-flight YouTube source resolve. The resolver also uses one yt-dlp format-selection process and caps the upstream source to the requested playback height.
+- [x] The first decoded JPEG is drawn immediately as a startup preview while the existing 4-second media safety buffer continues filling.
+- [x] Added producer receive bytes/sec, receive FPS, rendered FPS, queue trend, decode time, A/V drift, dropped-frame and server HTTP-backpressure telemetry.
+- [x] Slowdown feedback distinguishes network starvation, renderer backlog and audio-only trouble. Try Low remains user-controlled; there is no automatic quality downgrade.
+- [x] Replaced the old audio-pausing renderer catch-up behavior with bounded stale-frame dropping against the audio master clock.
+- [x] Cold isolated rerun: first picture about **3.82 s**, synchronized playback about **3.99 s**. Immediate warm-cache rerun: first picture **1.29 s**, playback **1.51 s**.
+- [x] 5× CPU-throttled Chrome validation: **17.69 rendered FPS**, **62 obsolete frames dropped in 10 s**, audio advanced normally by **10.01 s**, final drift **56 ms**, **0 rebuffers**.
+- [x] `npm run check`, `npm run check:v2`, `git diff --check`, and all **58/58** automated tests pass.
+
+Full evidence: `docs/V2-04-slowdown-and-startup.md`.
+
+## V2-05 completion — September 14, 2026
+
+- [x] Rechecked a current DVR-disabled YouTube live source (NASA `M3HKLzjvKPc`) and a DVR-enabled source (LiveNOW FOX `C96oohpWBGw`).
+- [x] The YouTube pages reported `isLiveDvrEnabled=false` for NASA and `true` for LiveNOW FOX.
+- [x] `yt-dlp --live-from-start` exposed historical/from-start fragment formats for both, proving transport capability alone cannot be treated as permission to expose rewind.
+- [x] Decision: **NO-GO for generic live rewind in current v2**. Keep live playback explicitly unseekable until the server has a bounded DVR adapter that respects the broadcaster DVR signal and synchronizes historical video + separate audio.
+- [x] Bounded follow-up story defined as **V2-DVR-01** with moving window, expiry handling, Go Live, synchronized restart and no-DVR fallback. No unbounded recorder was added.
+
+Full evidence: `docs/V2-05-live-rewind.md`.
+
+No production deployment or GitHub push was performed. Parked-Tesla validation remains required before v2 is considered device-validated.
 
 ## Current baseline and findings
 
