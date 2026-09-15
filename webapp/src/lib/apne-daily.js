@@ -7,6 +7,8 @@ import * as store from "./store.js";
 
 const APNE_ORIGIN = "https://apnetv.xyz";
 const SHOWS_FILE = path.join(config.dataDir, "apne-daily-shows.json");
+const LOG_FILE = path.join(config.dataDir, "apne-daily.log");
+const LOG_MAX_BYTES = 2 * 1024 * 1024;
 const DESKTOP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/145 Safari/537.36";
 const REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_SHOWS = [{
@@ -17,6 +19,35 @@ const DEFAULT_SHOWS = [{
 }];
 
 const jobs = new Map();
+
+function jobKey(showId, dateKey) {
+  return `${showId}:${dateKey}`;
+}
+
+function hostOf(value) {
+  try { return new URL(String(value || "")).hostname; } catch { return ""; }
+}
+
+async function writeApneLog(event, fields = {}) {
+  const entry = { ts: new Date().toISOString(), event, ...fields };
+  const line = JSON.stringify(entry) + "\n";
+  try {
+    await fs.mkdir(config.dataDir, { recursive: true });
+    try {
+      const stat = await fs.stat(LOG_FILE);
+      if (stat.size >= LOG_MAX_BYTES) {
+        await fs.rm(`${LOG_FILE}.1`, { force: true }).catch(() => {});
+        await fs.rename(LOG_FILE, `${LOG_FILE}.1`).catch(() => {});
+      }
+    } catch {}
+    await fs.appendFile(LOG_FILE, line, "utf8");
+  } catch (error) {
+    console.warn("[apne-daily] log write failed:", error.message);
+  }
+  const consoleFields = { ...fields };
+  delete consoleFields.ffmpegTail;
+  console.log(`[apne-daily] ${event}`, consoleFields);
+}
 
 function httpError(status, message) {
   const err = new Error(message);
@@ -235,24 +266,40 @@ export function parseMediagramingHlsFromHtml(html) {
   return hlsUrl.href;
 }
 
-export async function resolveApneEpisodeDirect(episodeUrl) {
-  const episode = await fetchText(episodeUrl, { referer: APNE_ORIGIN + "/" });
-  const flash = parseFlashTargetFromEpisodeHtml(episode.html);
-  const news = await fetchText(flash.href, {
-    method: "POST",
-    body: new URLSearchParams({ id: flash.id }).toString(),
-    referer: episodeUrl,
+export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
+  const log = (event, fields = {}) => writeApneLog(event, {
+    showId: context.showId || null,
+    dateKey: context.dateKey || null,
+    episodeUrl,
+    ...fields,
   });
-  const handoff = parseNewsportalingRedirect(news.html);
-  const media = await fetchText(handoff.url, {
-    method: "POST",
-    body: new URLSearchParams({ id: handoff.id || flash.id, channel: handoff.channel }).toString(),
-    referer: flash.href,
-  });
-  return {
-    hlsUrl: parseMediagramingHlsFromHtml(media.html),
-    referer: handoff.url,
-  };
+  await log("resolve_start");
+  try {
+    const episode = await fetchText(episodeUrl, { referer: APNE_ORIGIN + "/" });
+    await log("episode_html_ok", { bytes: episode.html.length, responseHost: hostOf(episode.url) });
+    const flash = parseFlashTargetFromEpisodeHtml(episode.html);
+    await log("flash_target_ok", { nextHost: hostOf(flash.href) });
+    const news = await fetchText(flash.href, {
+      method: "POST",
+      body: new URLSearchParams({ id: flash.id }).toString(),
+      referer: episodeUrl,
+    });
+    await log("newsportaling_html_ok", { bytes: news.html.length, responseHost: hostOf(news.url) });
+    const handoff = parseNewsportalingRedirect(news.html);
+    await log("mediagraming_handoff_ok", { nextHost: hostOf(handoff.url), channel: handoff.channel });
+    const media = await fetchText(handoff.url, {
+      method: "POST",
+      body: new URLSearchParams({ id: handoff.id || flash.id, channel: handoff.channel }).toString(),
+      referer: flash.href,
+    });
+    await log("mediagraming_html_ok", { bytes: media.html.length, responseHost: hostOf(media.url) });
+    const hlsUrl = parseMediagramingHlsFromHtml(media.html);
+    await log("hls_resolved", { hlsHost: hostOf(hlsUrl) });
+    return { hlsUrl, referer: handoff.url };
+  } catch (error) {
+    await log("resolve_failed", { error: error.message });
+    throw error;
+  }
 }
 
 export function sanitizeDownloadName(value) {
@@ -331,6 +378,10 @@ export async function downloadApneHls({ hlsUrl, referer, title, meta = {}, onSta
   const partPath = finalPath.replace(/\.mp4$/i, ".part.mp4");
   await fs.rm(partPath, { force: true }).catch(() => {});
   onStage("Downloading", { filePath: finalPath });
+  await writeApneLog("ffmpeg_start", {
+    showId: meta.apneShowId || null, dateKey: meta.apneEpisodeDate || null,
+    hlsHost: hostOf(hlsUrl), fileName: path.basename(finalPath),
+  });
 
   await new Promise((resolve, reject) => {
     const child = spawn(config.ffmpegPath, [
@@ -354,13 +405,23 @@ export async function downloadApneHls({ hlsUrl, referer, title, meta = {}, onSta
     child.on("error", (err) => reject(new Error(`ffmpeg failed to start: ${err.message}`)));
     child.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(stderr.trim().split("\n").slice(-5).join(" | ") || `ffmpeg exited ${code}`));
+      else {
+        const message = stderr.trim().split("\n").slice(-5).join(" | ") || `ffmpeg exited ${code}`;
+        writeApneLog("ffmpeg_failed", {
+          showId: meta.apneShowId || null, dateKey: meta.apneEpisodeDate || null,
+          code, ffmpegTail: message,
+        }).finally(() => reject(new Error(message)));
+      }
     });
   });
 
   await fs.rename(partPath, finalPath);
   const duration = await probeLocalVideoDuration(finalPath);
   const item = await registerDownloadedVideo(finalPath, title, duration ? { ...meta, duration } : meta);
+  await writeApneLog("download_saved", {
+    showId: meta.apneShowId || null, dateKey: meta.apneEpisodeDate || null,
+    fileName: path.basename(finalPath), duration: duration || null, itemId: item?.id || null,
+  });
   onStage("Saved", { filePath: finalPath, itemId: item?.id || null, duration });
   return { filePath: finalPath, item, duration };
 }
@@ -389,8 +450,18 @@ async function downloadedItemFor(show, episode) {
 }
 
 async function detectRecent(show, limit = 10) {
-  const page = await fetchText(show.url, { referer: APNE_ORIGIN + "/" });
-  return parseRecentEpisodesFromShowHtml(page.html, show, limit);
+  await writeApneLog("show_check_start", { showId: show.id, showUrl: show.url, limit });
+  try {
+    const page = await fetchText(show.url, { referer: APNE_ORIGIN + "/" });
+    const episodes = parseRecentEpisodesFromShowHtml(page.html, show, limit);
+    await writeApneLog("show_check_ok", {
+      showId: show.id, count: episodes.length, latestDateKey: episodes[0]?.dateKey || null, htmlBytes: page.html.length,
+    });
+    return episodes;
+  } catch (error) {
+    await writeApneLog("show_check_failed", { showId: show.id, error: error.message });
+    throw error;
+  }
 }
 
 async function detectLatest(show) {
@@ -413,30 +484,42 @@ function publicJob(job) {
   };
 }
 
-async function statusForShow(show) {
-  const job = jobs.get(show.id);
-  if (job && ["Checking", "Downloading"].includes(job.status)) {
-    return { ...show, status: job.status, detail: job.detail || "", episode: job.episode || null, itemId: job.itemId || null, job: publicJob(job) };
+async function episodeStatus(show, episode) {
+  const saved = await downloadedItemFor(show, episode);
+  const job = jobs.get(jobKey(show.id, episode.dateKey));
+  let status = saved ? "Saved" : "Available";
+  let itemId = saved?.id || null;
+  let detail = "";
+  if (!saved && job) {
+    status = job.status || status;
+    itemId = job.itemId || null;
+    detail = job.detail || "";
   }
+  return { ...episode, status, itemId, detail, job: publicJob(job) };
+}
+
+async function statusForShow(show) {
   try {
-    const recentEpisodes = await detectRecent(show, 10);
+    const detected = await detectRecent(show, 10);
+    const recentEpisodes = await Promise.all(detected.map((episode) => episodeStatus(show, episode)));
     const episode = recentEpisodes[0];
-    const saved = await downloadedItemFor(show, episode);
     const isToday = episode.dateKey === todayKey();
-    let status = isToday ? "Available" : "Not available yet";
+    let status = isToday ? episode.status : "Not available yet";
     let detail = isToday ? episode.dateLabel : `Latest: ${episode.dateLabel}`;
-    let itemId = null;
-    if (saved) {
+    let itemId = isToday ? episode.itemId : null;
+    const latestJob = jobs.get(jobKey(show.id, episode.dateKey));
+
+    // Preserve the existing convenient Play state when the latest APNE episode is already saved.
+    if (!isToday && episode.status === "Saved") {
       status = "Saved";
       detail = episode.dateLabel;
-      itemId = saved.id;
-    } else if (job?.status === "Failed" && job.episode?.url === episode.url) {
-      status = "Failed";
-      detail = job.error || "Download failed";
+      itemId = episode.itemId;
+    } else if (isToday && episode.status === "Failed") {
+      detail = episode.detail || latestJob?.error || "Download failed";
     }
-    return { ...show, status, detail, episode, recentEpisodes, itemId, job: publicJob(job) };
+    return { ...show, status, detail, episode, recentEpisodes, itemId, job: publicJob(latestJob) };
   } catch (error) {
-    return { ...show, status: "Failed", detail: error.message, episode: null, recentEpisodes: [], itemId: null, job: publicJob(job) };
+    return { ...show, status: "Failed", detail: error.message, episode: null, recentEpisodes: [], itemId: null, job: null };
   }
 }
 
@@ -454,6 +537,7 @@ export async function addShow(input = {}) {
   }
   shows.push(candidate);
   await saveCustomShows(shows);
+  await writeApneLog("show_added", { showId: candidate.id, showUrl: candidate.url });
   return candidate;
 }
 
@@ -463,53 +547,47 @@ export async function removeShow(showId) {
   if (!show) return false;
   if (show.builtIn) throw httpError(400, "Anupamaa is the built-in APNE Daily show.");
   await saveCustomShows(shows.filter((item) => item.id !== showId));
-  jobs.delete(showId);
+  for (const key of jobs.keys()) {
+    if (key.startsWith(`${showId}:`)) jobs.delete(key);
+  }
+  await writeApneLog("show_removed", { showId });
   return true;
 }
 
-export async function startShowDownload(showId) {
-  const shows = await loadShows();
-  const show = shows.find((item) => item.id === showId);
-  if (!show) throw httpError(404, "APNE Daily show not found.");
-  const active = jobs.get(show.id);
+async function createEpisodeDownloadJob(show, episode) {
+  const key = jobKey(show.id, episode.dateKey);
+  const active = jobs.get(key);
   if (active && ["Checking", "Downloading"].includes(active.status)) return publicJob(active);
+
+  const saved = await downloadedItemFor(show, episode);
+  if (saved) {
+    const existing = {
+      id: crypto.randomBytes(8).toString("hex"), showId: show.id, status: "Saved", detail: "Already downloaded",
+      startedAt: Date.now(), finishedAt: Date.now(), episode, itemId: saved.id, filePath: saved.url, error: null,
+    };
+    jobs.set(key, existing);
+    await writeApneLog("download_duplicate", { showId: show.id, dateKey: episode.dateKey, itemId: saved.id });
+    return publicJob(existing);
+  }
 
   const job = {
     id: crypto.randomBytes(8).toString("hex"),
     showId: show.id,
     status: "Checking",
-    detail: "Checking APNE TV…",
+    detail: "Resolving APNE stream…",
     startedAt: Date.now(),
-    episode: null,
+    episode,
     itemId: null,
     filePath: null,
     error: null,
   };
-  jobs.set(show.id, job);
+  jobs.set(key, job);
+  await writeApneLog("download_requested", { showId: show.id, dateKey: episode.dateKey, episodeUrl: episode.url });
 
   (async () => {
     try {
-      const episode = await detectLatest(show);
-      job.episode = episode;
-      const saved = await downloadedItemFor(show, episode);
-      if (saved) {
-        job.status = "Saved";
-        job.detail = "Already downloaded";
-        job.itemId = saved.id;
-        job.filePath = saved.url;
-        job.finishedAt = Date.now();
-        return;
-      }
-      if (episode.dateKey !== todayKey()) {
-        job.status = "Not available yet";
-        job.detail = `Latest: ${episode.dateLabel}`;
-        job.finishedAt = Date.now();
-        return;
-      }
-
       job.status = "Downloading";
-      job.detail = "Resolving APNE stream…";
-      const resolved = await resolveApneEpisodeDirect(episode.url);
+      const resolved = await resolveApneEpisodeDirect(episode.url, { showId: show.id, dateKey: episode.dateKey });
       const title = episodeTitle(show, episode);
       const result = await downloadApneHls({
         hlsUrl: resolved.hlsUrl,
@@ -539,9 +617,36 @@ export async function startShowDownload(showId) {
       job.detail = error.message;
       job.error = error.message;
       job.finishedAt = Date.now();
+      await writeApneLog("download_failed", { showId: show.id, dateKey: episode.dateKey, error: error.message });
       console.warn("[apne-daily] download failed:", error.message);
     }
   })();
 
   return publicJob(job);
+}
+
+export async function startEpisodeDownload(showId, dateKey) {
+  const key = String(dateKey || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) throw httpError(400, "A valid APNE episode date is required.");
+  const shows = await loadShows();
+  const show = shows.find((item) => item.id === showId);
+  if (!show) throw httpError(404, "APNE Daily show not found.");
+  const recent = await detectRecent(show, 25);
+  const episode = recent.find((item) => item.dateKey === key);
+  if (!episode) throw httpError(404, "That episode is no longer in APNE's recent episode list.");
+  return createEpisodeDownloadJob(show, episode);
+}
+
+export async function startShowDownload(showId) {
+  const shows = await loadShows();
+  const show = shows.find((item) => item.id === showId);
+  if (!show) throw httpError(404, "APNE Daily show not found.");
+  const episode = await detectLatest(show);
+  if (episode.dateKey !== todayKey()) {
+    return {
+      id: null, showId: show.id, status: "Not available yet", detail: `Latest: ${episode.dateLabel}`,
+      episode, itemId: null, filePath: null, error: null, startedAt: null, finishedAt: null,
+    };
+  }
+  return createEpisodeDownloadJob(show, episode);
 }

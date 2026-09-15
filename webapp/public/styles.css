@@ -1612,11 +1612,15 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
   display: grid; gap: 6px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
 }
 .apne-recent-title { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
-.apne-recent-link {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  min-height: 38px; padding: 8px 10px; border-radius: 9px; color: var(--text); background: var(--panel-2); text-decoration: none;
+.apne-recent-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 48px; padding: 8px 10px; border-radius: 9px; background: var(--panel-2);
 }
-.apne-recent-link:hover { text-decoration: none; filter: brightness(1.08); }
+.apne-recent-copy { min-width: 0; display: grid; gap: 2px; }
+.apne-recent-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.apne-recent-copy small { color: var(--muted); font-size: 11px; }
+.apne-recent-copy .apne-recent-error { color: var(--accent); white-space: normal; overflow-wrap: anywhere; }
+.apne-recent-action { flex: 0 0 auto; min-width: 92px; }
 .apne-manage-list { display: grid; gap: 8px; margin: 0 0 16px; }
 .apne-manage-row {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -1635,6 +1639,8 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
   .apne-show-card { padding: 14px; }
   .apne-show-main { display: grid; grid-template-columns: minmax(0, 1fr); }
   .apne-download-today { width: 100%; min-width: 0; }
+  .apne-recent-row { gap: 8px; }
+  .apne-recent-action { min-width: 86px; }
 }
 
 /* Toast */

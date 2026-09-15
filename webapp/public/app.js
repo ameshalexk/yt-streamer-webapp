@@ -3587,10 +3587,20 @@ function renderApneDaily() {
       (status === "Downloading" ? '<div class="apne-progress"><i></i></div>' : '') +
       ((show.recentEpisodes || []).length ?
         '<div class="apne-recent"><div class="apne-recent-title">Recent episodes</div>' +
-          (show.recentEpisodes || []).map((recent) =>
-            '<a class="apne-recent-link" href="' + esc(recent.url || "#") + '" target="_blank" rel="noopener noreferrer">' +
-              '<span>' + esc(recent.dateLabel || recent.dateKey || "Episode") + '</span><span aria-hidden="true">↗</span></a>'
-          ).join("") +
+          (show.recentEpisodes || []).map((recent) => {
+            const recentStatus = recent.status || "Available";
+            const recentSaved = recentStatus === "Saved" && recent.itemId;
+            const recentBusy = recentStatus === "Checking" || recentStatus === "Downloading";
+            const recentAction = recentSaved ? "play-episode" : "download-episode";
+            const recentButton = recentSaved ? "Play" : (recentBusy ? "Downloading…" : (recentStatus === "Failed" ? "Retry" : "Download"));
+            return '<div class="apne-recent-row" data-date-key="' + esc(recent.dateKey || "") + '">' +
+              '<div class="apne-recent-copy"><strong>' + esc(recent.dateLabel || recent.dateKey || "Episode") + '</strong>' +
+                (recentBusy ? '<small>' + esc(recent.detail || "Saving to Mac…") + '</small>' : '') +
+                (recentStatus === "Failed" ? '<small class="apne-recent-error">' + esc(recent.detail || "Download failed") + '</small>' : '') +
+              '</div>' +
+              '<button class="btn small ' + (recentSaved ? 'secondary' : '') + ' apne-recent-action" type="button" data-act="' + recentAction + '" data-date-key="' + esc(recent.dateKey || "") + '" data-item-id="' + esc(recent.itemId || "") + '" ' + (recentBusy ? 'disabled' : '') + '>' + esc(recentButton) + '</button>' +
+            '</div>';
+          }).join("") +
         '</div>' : '') +
     '</article>';
   }).join("");
@@ -3600,7 +3610,11 @@ function scheduleApneDailyPoll() {
   if (state.apneDaily.pollTimer) clearTimeout(state.apneDaily.pollTimer);
   state.apneDaily.pollTimer = null;
   if (state.mode !== "apne") return;
-  if (!(state.apneDaily.shows || []).some((show) => show.status === "Checking" || show.status === "Downloading")) return;
+  const hasBusyDownload = (state.apneDaily.shows || []).some((show) =>
+    show.status === "Checking" || show.status === "Downloading" ||
+    (show.recentEpisodes || []).some((episode) => episode.status === "Checking" || episode.status === "Downloading")
+  );
+  if (!hasBusyDownload) return;
   state.apneDaily.pollTimer = setTimeout(() => loadApneDaily({ quiet: true }), 1600);
 }
 
@@ -3662,6 +3676,38 @@ async function startApneDailyDownload(showId) {
   } catch (error) {
     show.status = "Failed";
     show.detail = error.message;
+    renderApneDaily();
+    toast(error.message, true);
+  }
+}
+
+async function startApneEpisodeDownload(showId, dateKey) {
+  const show = state.apneDaily.shows.find((item) => item.id === showId);
+  const episode = show?.recentEpisodes?.find((item) => item.dateKey === dateKey);
+  if (!show || !episode) return;
+  episode.status = "Downloading";
+  episode.detail = "Resolving APNE stream…";
+  renderApneDaily();
+  try {
+    const job = await api.post(
+      "/api/apne-daily/shows/" + encodeURIComponent(showId) + "/episodes/" + encodeURIComponent(dateKey) + "/download",
+      {}
+    );
+    episode.status = job.status || "Downloading";
+    episode.detail = job.detail || "Saving to Mac…";
+    if (job.itemId) episode.itemId = job.itemId;
+    renderApneDaily();
+    if (episode.status === "Saved") {
+      await loadPlaylists().catch(() => {});
+      toast("Episode already saved on Mac");
+      await loadApneDaily({ quiet: true });
+    } else {
+      toast("Downloading episode to Mac…");
+      scheduleApneDailyPoll();
+    }
+  } catch (error) {
+    episode.status = "Failed";
+    episode.detail = error.message;
     renderApneDaily();
     toast(error.message, true);
   }
@@ -7064,7 +7110,10 @@ bindTap($("#apneDailyList"), async (event) => {
   const card = event.target.closest("[data-show-id]");
   if (!button || !card) return;
   if (button.dataset.act === "download") await startApneDailyDownload(card.dataset.showId);
-  else if (button.dataset.act === "play") {
+  else if (button.dataset.act === "download-episode") await startApneEpisodeDownload(card.dataset.showId, button.dataset.dateKey);
+  else if (button.dataset.act === "play-episode") {
+    if (button.dataset.itemId) await playApneDailyItem(button.dataset.itemId);
+  } else if (button.dataset.act === "play") {
     const show = state.apneDaily.shows.find((item) => item.id === card.dataset.showId);
     if (show?.itemId) await playApneDailyItem(show.itemId);
   }

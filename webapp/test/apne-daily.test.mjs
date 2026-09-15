@@ -92,8 +92,9 @@ test("APNE Daily duplicate detection skips an already downloaded episode", () =>
     meta: { source: "apnetv" },
   }, show, episode), false);
 
-  assert.match(apneDailySource, /if \(saved\) \{[\s\S]*job\.status = "Saved";[\s\S]*Already downloaded/);
-  assert.match(apneDailySource, /if \(episode\.dateKey !== todayKey\(\)\) \{[\s\S]*"Not available yet"/);
+  assert.match(apneDailySource, /download_duplicate/);
+  assert.match(apneDailySource, /export async function startEpisodeDownload\(showId, dateKey\)/);
+  assert.match(apneDailySource, /recent\.find\(\(item\) => item\.dateKey === key\)/);
 });
 
 test("APNE Daily downloads register as seekable local files in Downloaded Videos", () => {
@@ -132,7 +133,9 @@ test("APNE Daily UI renders the tab, statuses, Download Today, Play, and Manage 
   assert.match(app, /Download Today/);
   assert.match(app, /saved \? "Play"/);
   assert.match(app, /Recent episodes/);
-  assert.match(app, /apne-recent-link/);
+  assert.match(app, /recentAction = recentSaved \? "play-episode" : "download-episode"/);
+  assert.match(app, /button\.dataset\.act === "play-episode"/);
+  assert.match(app, /startApneEpisodeDownload/);
   assert.match(apneDailySource, /recentEpisodes/);
   assert.match(app, /if \(item\.type === "youtube"\) \{[\s\S]*refreshYoutubeMetadataInBackground/);
   for (const status of ["Checking", "Not available yet", "Available", "Downloading", "Saved", "Failed"]) {
@@ -140,4 +143,19 @@ test("APNE Daily UI renders the tab, statuses, Download Today, Play, and Manage 
   }
   assert.match(server, /app\.get\("\/api\/apne-daily"/);
   assert.match(server, /\/api\/apne-daily\/shows\/:id\/download/);
+  assert.match(server, /\/api\/apne-daily\/shows\/:id\/episodes\/:dateKey\/download/);
+});
+
+
+test("APNE Daily keeps structured rotating diagnostics for source-chain changes", () => {
+  assert.match(apneDailySource, /apne-daily\.log/);
+  assert.match(apneDailySource, /LOG_MAX_BYTES/);
+  for (const event of [
+    "show_check_start", "show_check_ok", "show_check_failed",
+    "resolve_start", "episode_html_ok", "flash_target_ok",
+    "newsportaling_html_ok", "mediagraming_handoff_ok", "mediagraming_html_ok",
+    "hls_resolved", "ffmpeg_start", "ffmpeg_failed", "download_saved", "download_failed",
+  ]) assert.ok(apneDailySource.includes(event), `missing APNE diagnostic event ${event}`);
+  assert.match(apneDailySource, /hlsHost: hostOf\(hlsUrl\)/);
+  assert.doesNotMatch(apneDailySource, /hlsUrl, fileName/);
 });

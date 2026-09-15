@@ -526,6 +526,11 @@ app.delete("/api/apne-daily/shows/:id", asyncH(async (req, res) => {
   res.json({ ok: true });
 }));
 
+app.post("/api/apne-daily/shows/:id/episodes/:dateKey/download", asyncH(async (req, res) => {
+  const job = await apneDaily.startEpisodeDownload(req.params.id, req.params.dateKey);
+  res.status(202).json(job);
+}));
+
 app.post("/api/apne-daily/shows/:id/download", asyncH(async (req, res) => {
   const job = await apneDaily.startShowDownload(req.params.id);
   res.status(202).json(job);
