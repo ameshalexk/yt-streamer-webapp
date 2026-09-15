@@ -44,20 +44,25 @@ test("APNE TV Flash Link gesture bypasses page ad handlers", () => {
   assert.match(renderer, /source: APNE_FLASH_GUARD/);
 });
 
-test("APNE TV injects a Play Now button and marks one-tap autoplay", () => {
+test("APNE TV injects a top-level Play Now overlay and marks one-tap autoplay", () => {
   assert.match(renderer, /PLAY_NOW_CLASS = "yt-apne-play-now"/);
   assert.match(renderer, /button\.textContent = "Play Now"/);
+  assert.match(renderer, /document\.querySelectorAll\("body > \." \+ PLAY_NOW_CLASS\)/);
+  assert.match(renderer, /document\.body\.appendChild\(button\)/);
+  assert.match(renderer, /pointerEvents: "auto"/);
+  assert.match(renderer, /zIndex: "2147483647"/);
   assert.match(renderer, /__ytApnePlayNowRequestedAt/);
   assert.match(renderer, /MutationObserver/);
 });
 
-test("Play Now promotes Mediagraming then auto-plays and fullscreens the player", () => {
+test("Play Now promotes Mediagraming then clicks and fullscreens the player", () => {
   assert.match(renderer, /consumeApnePlayNowRequest/);
-  assert.match(renderer, /MEDIAGRAMING_AUTOPLAY_EXPRESSION/);
-  assert.match(renderer, /video\.play\(\)/);
+  assert.match(renderer, /MEDIAGRAMING_PLAYER_STATE_EXPRESSION/);
+  assert.match(renderer, /Input\.dispatchMouseEvent/);
+  assert.match(renderer, /clickPlayerCenter\(cdp, last\.rect\)/);
   assert.match(renderer, /requestFullscreen/);
   assert.match(renderer, /autoPlayMediagraming\(session, cdp\)/);
-  assert.match(renderer, /Play Now started Mediagraming playback in fullscreen/);
+  assert.match(renderer, /Play Now started Mediagraming player in fullscreen/);
 });
 
 test("APNE TV Flash Link transit is hidden and narrowly scoped", () => {

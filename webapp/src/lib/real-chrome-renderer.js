@@ -34,43 +34,67 @@ const APNE_FLASH_GUARD = `(() => {
   if (window.__ytApneFlashGuardInstalled) return;
   window.__ytApneFlashGuardInstalled = true;
   let lastHandled = 0;
+  let refreshingPlayNowButtons = false;
   const PLAY_NOW_CLASS = "yt-apne-play-now";
   const flashTarget = (event) => event.target instanceof Element ? event.target.closest(".flash_link") : null;
-  const isPlayNowEvent = (event) => event.target instanceof Element && Boolean(event.target.closest("." + PLAY_NOW_CLASS));
+  const playNowButton = (event) => event.target instanceof Element ? event.target.closest("." + PLAY_NOW_CLASS) : null;
 
-  const installPlayNowButtons = () => {
-    for (const target of document.querySelectorAll(".flash_link")) {
-      if (target.querySelector(":scope > ." + PLAY_NOW_CLASS)) continue;
-      if (getComputedStyle(target).position === "static") target.style.position = "relative";
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = PLAY_NOW_CLASS;
-      button.textContent = "Play Now";
-      button.setAttribute("aria-label", "Play this episode now");
-      Object.assign(button.style, {
-        position: "absolute",
-        right: "14px",
-        top: "50%",
-        transform: "translateY(-50%)",
-        zIndex: "2147483000",
-        padding: "10px 16px",
-        border: "0",
-        borderRadius: "999px",
-        background: "#111",
-        color: "#fff",
-        font: "600 15px/1 system-ui, -apple-system, sans-serif",
-        boxShadow: "0 2px 10px rgba(0,0,0,.28)",
-        cursor: "pointer",
-        touchAction: "manipulation",
+  const refreshPlayNowButtons = () => {
+    if (refreshingPlayNowButtons || !document.body) return;
+    refreshingPlayNowButtons = true;
+    try {
+      const targets = [...document.querySelectorAll(".flash_link")];
+      const buttons = [...document.querySelectorAll("body > ." + PLAY_NOW_CLASS)];
+
+      while (buttons.length < targets.length) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = PLAY_NOW_CLASS;
+        button.textContent = "Play Now";
+        button.setAttribute("aria-label", "Play this episode now");
+        Object.assign(button.style, {
+          position: "fixed",
+          zIndex: "2147483647",
+          padding: "10px 16px",
+          border: "0",
+          borderRadius: "999px",
+          background: "#111",
+          color: "#fff",
+          font: "600 15px/1 system-ui, -apple-system, sans-serif",
+          boxShadow: "0 2px 10px rgba(0,0,0,.28)",
+          cursor: "pointer",
+          touchAction: "manipulation",
+          pointerEvents: "auto",
+          transform: "translate(-100%, -50%)",
+        });
+        document.body.appendChild(button);
+        buttons.push(button);
+      }
+
+      buttons.forEach((button, index) => {
+        const target = targets[index];
+        if (!target) {
+          button.style.display = "none";
+          return;
+        }
+        const rect = target.getBoundingClientRect();
+        const visible = rect.width > 20 && rect.height > 20 && rect.bottom > 0 && rect.top < innerHeight;
+        button.dataset.action = target.dataset.href || "";
+        button.dataset.episodeId = target.dataset.id || "";
+        button.style.left = Math.max(112, Math.min(innerWidth - 8, rect.right - 14)) + "px";
+        button.style.top = Math.max(24, Math.min(innerHeight - 24, rect.top + rect.height / 2)) + "px";
+        button.style.display = visible ? "block" : "none";
       });
-      target.appendChild(button);
+    } finally {
+      refreshingPlayNowButtons = false;
     }
   };
 
   const submitFlash = (event) => {
-    const target = flashTarget(event);
-    if (!target) return;
-    const playNow = isPlayNowEvent(event);
+    const button = playNowButton(event);
+    const target = button ? null : flashTarget(event);
+    if (!button && !target) return;
+    const playNow = Boolean(button);
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
@@ -78,8 +102,8 @@ const APNE_FLASH_GUARD = `(() => {
     if (now - lastHandled < 900) return;
     lastHandled = now;
     if (playNow) window.__ytApnePlayNowRequestedAt = now;
-    const action = target.dataset.href || "";
-    const episodeId = target.dataset.id || "";
+    const action = button?.dataset.action || target?.dataset.href || "";
+    const episodeId = button?.dataset.episodeId || target?.dataset.id || "";
     if (!/^https:\\/\\/(?:www\\.)?newsportaling\\.com\\/finnance-/i.test(action) || !episodeId) return;
     const form = document.createElement("form");
     form.action = action;
@@ -95,8 +119,9 @@ const APNE_FLASH_GUARD = `(() => {
     form.submit();
     form.remove();
   };
+
   const swallow = (event) => {
-    if (!flashTarget(event)) return;
+    if (!playNowButton(event) && !flashTarget(event)) return;
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
@@ -109,11 +134,13 @@ const APNE_FLASH_GUARD = `(() => {
   window.addEventListener("mouseup", swallow, true);
   window.addEventListener("click", swallow, true);
   window.addEventListener("touchend", swallow, true);
+  window.addEventListener("scroll", refreshPlayNowButtons, true);
+  window.addEventListener("resize", refreshPlayNowButtons, true);
 
   const install = () => {
-    installPlayNowButtons();
+    refreshPlayNowButtons();
     if (window.__ytApnePlayNowObserver || !document.documentElement) return;
-    const observer = new MutationObserver(() => installPlayNowButtons());
+    const observer = new MutationObserver(() => setTimeout(refreshPlayNowButtons, 0));
     observer.observe(document.documentElement, { childList: true, subtree: true });
     window.__ytApnePlayNowObserver = observer;
   };
@@ -610,114 +637,97 @@ async function consumeApnePlayNowRequest(session) {
   return requestedAt > 0 && Date.now() - requestedAt <= PLAY_NOW_REQUEST_TTL_MS;
 }
 
-const MEDIAGRAMING_AUTOPLAY_EXPRESSION = `(async () => {
+const MEDIAGRAMING_PLAYER_STATE_EXPRESSION = `(() => {
   const visible = (el) => {
     if (!el) return false;
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
-    return rect.width > 2 && rect.height > 2 && style.display !== "none" && style.visibility !== "hidden";
+    return rect.width > 80 && rect.height > 45 && style.display !== "none" && style.visibility !== "hidden";
   };
-
-  const docs = [document];
-  for (const iframe of document.querySelectorAll("iframe")) {
-    try {
-      if (iframe.contentDocument) docs.push(iframe.contentDocument);
-    } catch {}
-  }
-
-  const videos = docs.flatMap((doc) => [...doc.querySelectorAll("video")]);
-  let clicked = false;
-  let playAttempted = false;
-
-  for (const video of videos) {
-    try {
-      video.muted = false;
-      video.volume = 1;
-      if (video.paused || video.readyState < 2) {
-        playAttempted = true;
-        await video.play().catch(() => {});
-      }
-    } catch {}
-  }
-
-  let playing = videos.some((video) => !video.paused && !video.ended);
-  if (!playing) {
-    const selectors = [
-      ".jw-display-icon-container",
-      ".jw-icon-playback",
-      ".vjs-big-play-button",
-      ".plyr__control--overlaid",
-      "[data-plyr='play']",
-      "button[aria-label*='play' i]",
-      "[role='button'][aria-label*='play' i]",
-      "button[title*='play' i]"
-    ];
-    for (const doc of docs) {
-      let control = null;
-      for (const selector of selectors) {
-        control = [...doc.querySelectorAll(selector)].find(visible);
-        if (control) break;
-      }
-      if (control) {
-        try {
-          control.click();
-          clicked = true;
-          break;
-        } catch {}
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    playing = videos.some((video) => !video.paused && !video.ended);
-  }
-
-  const playerFrame = [...document.querySelectorAll("iframe")].find((iframe) => {
+  const frames = [...document.querySelectorAll("iframe")].filter(visible);
+  const playerFrame = frames.find((iframe) => {
     const src = String(iframe.src || "");
-    return /\/new\/video\.php/i.test(src) || /videoapne|master\.m3u8/i.test(src);
-  }) || [...document.querySelectorAll("iframe")].filter(visible).sort((a, b) => {
-    const ar = a.getBoundingClientRect();
-    const br = b.getBoundingClientRect();
+    return /\\/new\\/video\\.php/i.test(src) || /videoapne|master\\.m3u8/i.test(src);
+  }) || frames.sort((a, b) => {
+    const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
     return (br.width * br.height) - (ar.width * ar.height);
   })[0] || null;
-
-  let fullscreen = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
-  if (!fullscreen && playerFrame) {
-    try {
-      await (playerFrame.requestFullscreen?.() || playerFrame.webkitRequestFullscreen?.());
-    } catch {}
-    fullscreen = Boolean(document.fullscreenElement || document.webkitFullscreenElement)
-      || document.documentElement.classList.contains("ytstreamer-fs-active");
-  }
-
+  if (!playerFrame) return { playerFrame: false, fullscreen: false, rect: null };
+  const rect = playerFrame.getBoundingClientRect();
   return {
-    href: location.href,
-    videos: videos.length,
-    playing,
-    clicked,
-    playAttempted,
-    playerFrame: Boolean(playerFrame),
-    fullscreen,
+    playerFrame: true,
+    fullscreen: Boolean(document.fullscreenElement || document.webkitFullscreenElement)
+      || document.documentElement.classList.contains("ytstreamer-fs-active"),
+    src: String(playerFrame.src || ""),
+    rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height,
+      centerX: rect.left + rect.width / 2, centerY: rect.top + rect.height / 2 }
   };
 })()`;
 
+const MEDIAGRAMING_FULLSCREEN_EXPRESSION = `(() => {
+  const frames = [...document.querySelectorAll("iframe")].filter((iframe) => {
+    const rect = iframe.getBoundingClientRect();
+    const style = getComputedStyle(iframe);
+    return rect.width > 80 && rect.height > 45 && style.display !== "none" && style.visibility !== "hidden";
+  });
+  const playerFrame = frames.find((iframe) => {
+    const src = String(iframe.src || "");
+    return /\\/new\\/video\\.php/i.test(src) || /videoapne|master\\.m3u8/i.test(src);
+  }) || frames.sort((a, b) => {
+    const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+    return (br.width * br.height) - (ar.width * ar.height);
+  })[0] || null;
+  if (!playerFrame) return { ok: false, fullscreen: false };
+  try {
+    const request = playerFrame.requestFullscreen || playerFrame.webkitRequestFullscreen;
+    if (request) request.call(playerFrame).catch?.(() => {});
+  } catch {}
+  return { ok: true, fullscreen: Boolean(document.fullscreenElement || document.webkitFullscreenElement)
+    || document.documentElement.classList.contains("ytstreamer-fs-active") };
+})()`;
+
+async function mediaPlayerState(cdp) {
+  const result = await cdp.call("Runtime.evaluate", { expression: MEDIAGRAMING_PLAYER_STATE_EXPRESSION, returnByValue: true }).catch(() => null);
+  return result?.result?.value || null;
+}
+
+async function clickPlayerCenter(cdp, rect) {
+  const x = Number(rect?.centerX), y = Number(rect?.centerY);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  await cdp.call("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" }).catch(() => {});
+  await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+  await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
+  return true;
+}
+
+async function fullscreenMediagramingPlayer(cdp) {
+  const result = await cdp.call("Runtime.evaluate", { expression: MEDIAGRAMING_FULLSCREEN_EXPRESSION, returnByValue: true }).catch(() => null);
+  return Boolean(result?.result?.value?.fullscreen);
+}
+
 async function autoPlayMediagraming(session, cdp) {
   const startedAt = Date.now();
-  let last = null;
-  while (!session.closed
-    && session.secondaryCdp === cdp
-    && Date.now() - startedAt < MEDIA_AUTOPLAY_TIMEOUT_MS) {
-    const result = await cdp.call("Runtime.evaluate", {
-      expression: MEDIAGRAMING_AUTOPLAY_EXPRESSION,
-      awaitPromise: true,
-      returnByValue: true,
-    }).catch(() => null);
-    last = result?.result?.value || last;
-    if (last?.playing && last?.fullscreen) {
-      console.log("[real-chrome] Play Now started Mediagraming playback in fullscreen");
-      return true;
+  let clicked = false, last = null;
+  while (!session.closed && session.secondaryCdp === cdp && Date.now() - startedAt < MEDIA_AUTOPLAY_TIMEOUT_MS) {
+    last = await mediaPlayerState(cdp);
+    if (last?.playerFrame && !clicked) {
+      clicked = await clickPlayerCenter(cdp, last.rect).catch(() => false);
+      if (clicked) {
+        console.log("[real-chrome] Play Now clicked Mediagraming player");
+        await new Promise((resolve) => setTimeout(resolve, 450));
+      }
+    }
+    if (last?.playerFrame && clicked) {
+      const fullscreen = await fullscreenMediagramingPlayer(cdp);
+      if (fullscreen) {
+        console.log("[real-chrome] Play Now started Mediagraming player in fullscreen");
+        capture(session).catch(() => {});
+        return true;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, MEDIA_AUTOPLAY_INTERVAL_MS));
   }
-  console.log("[real-chrome] Play Now automation ended without full confirmation", last || {});
+  console.log("[real-chrome] Play Now automation ended without full confirmation", { clicked, last });
   return false;
 }
 
