@@ -25,6 +25,9 @@ const APNE_TRANSIT_TIMEOUT_MS = 5000;
 const PLAY_NOW_REQUEST_TTL_MS = 15000;
 const MEDIA_AUTOPLAY_TIMEOUT_MS = 10000;
 const MEDIA_AUTOPLAY_INTERVAL_MS = 350;
+const CAPTURE_CONTROL_HEADROOM_MS = 8;
+const CAPTURE_COMMAND_TIMEOUT_MS = 1500;
+const INPUT_COMMAND_TIMEOUT_MS = 2000;
 const REMOTE_BROWSER_BLOCKED_URLS = [
   "*://cdn.jsdelivr.net/npm/disable-devtool*",
 ];
@@ -50,8 +53,8 @@ const APNE_FLASH_GUARD = `(() => {
         const button = document.createElement("button");
         button.type = "button";
         button.className = PLAY_NOW_CLASS;
-        button.textContent = "Play Now";
-        button.setAttribute("aria-label", "Play this episode now");
+        button.textContent = "Download";
+        button.setAttribute("aria-label", "Download this episode to the Mac");
         Object.assign(button.style, {
           position: "fixed",
           zIndex: "2147483647",
@@ -94,6 +97,7 @@ const APNE_FLASH_GUARD = `(() => {
     const button = playNowButton(event);
     const target = button ? null : flashTarget(event);
     if (!button && !target) return;
+    if (button && event.type !== "click") return;
     const playNow = Boolean(button);
     event.preventDefault();
     event.stopPropagation();
@@ -121,7 +125,8 @@ const APNE_FLASH_GUARD = `(() => {
   };
 
   const swallow = (event) => {
-    if (!playNowButton(event) && !flashTarget(event)) return;
+    if (playNowButton(event)) return;
+    if (!flashTarget(event)) return;
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
@@ -397,7 +402,7 @@ function connectCdp(webSocketDebuggerUrl) {
   });
   return {
     ready,
-    call(method, params = {}) {
+    call(method, params = {}, timeoutMs = 8000) {
       if (!opened || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Chrome DevTools WebSocket is not open"));
       const id = nextRpcId++;
       ws.send(JSON.stringify({ id, method, params }));
@@ -405,7 +410,7 @@ function connectCdp(webSocketDebuggerUrl) {
         const timer = setTimeout(() => {
           pending.delete(id);
           reject(new Error(`${method} timed out`));
-        }, 8000);
+        }, Math.max(250, Number(timeoutMs) || 8000));
         pending.set(id, {
           resolve: (value) => {
             clearTimeout(timer);
@@ -637,97 +642,263 @@ async function consumeApnePlayNowRequest(session) {
   return requestedAt > 0 && Date.now() - requestedAt <= PLAY_NOW_REQUEST_TTL_MS;
 }
 
-const MEDIAGRAMING_PLAYER_STATE_EXPRESSION = `(() => {
-  const visible = (el) => {
-    if (!el) return false;
-    const rect = el.getBoundingClientRect();
-    const style = getComputedStyle(el);
-    return rect.width > 80 && rect.height > 45 && style.display !== "none" && style.visibility !== "hidden";
-  };
-  const frames = [...document.querySelectorAll("iframe")].filter(visible);
-  const playerFrame = frames.find((iframe) => {
-    const src = String(iframe.src || "");
-    return /\\/new\\/video\\.php/i.test(src) || /videoapne|master\\.m3u8/i.test(src);
-  }) || frames.sort((a, b) => {
-    const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
-    return (br.width * br.height) - (ar.width * ar.height);
-  })[0] || null;
-  if (!playerFrame) return { playerFrame: false, fullscreen: false, rect: null };
-  const rect = playerFrame.getBoundingClientRect();
+function flattenFrameTree(node, out = []) {
+  if (!node) return out;
+  if (node.frame) out.push(node.frame);
+  for (const child of node.childFrames || []) flattenFrameTree(child, out);
+  return out;
+}
+
+async function mediagramingPlayerFrame(cdp) {
+  const tree = await cdp.call("Page.getFrameTree", {}, INPUT_COMMAND_TIMEOUT_MS).catch(() => null);
+  return flattenFrameTree(tree?.frameTree).find((frame) => /\/new\/video\.php/i.test(String(frame?.url || ""))) || null;
+}
+
+
+function sanitizeDownloadName(value) {
+  const cleaned = String(value || "APNE TV episode")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\b(?:online|watch online)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "");
+  return (cleaned || "APNE TV episode").slice(0, 160);
+}
+
+async function uniqueLibraryVideoPath(title) {
+  await fs.mkdir(config.libraryDir, { recursive: true });
+  const base = sanitizeDownloadName(title);
+  for (let n = 1; n < 1000; n += 1) {
+    const suffix = n === 1 ? "" : ` (${n})`;
+    const candidate = path.join(config.libraryDir, `${base}${suffix}.mp4`);
+    try {
+      await fs.access(candidate);
+    } catch {
+      return candidate;
+    }
+  }
+  return path.join(config.libraryDir, `${base} ${Date.now()}.mp4`);
+}
+
+function mediagramingHlsUrl(frame) {
+  try {
+    const frameUrl = new URL(String(frame?.url || ""));
+    if (frameUrl.hostname.toLowerCase() !== "mediagraming.com") return "";
+    const source = new URL(frameUrl.searchParams.get("url") || "");
+    const host = source.hostname.toLowerCase().replace(/\.$/, "");
+    if (source.protocol !== "https:" || (host !== "videoapne.to" && !host.endsWith(".videoapne.to"))) return "";
+    if (!/\.m3u8(?:$|[?#])/i.test(source.href)) return "";
+    return source.href;
+  } catch {
+    return "";
+  }
+}
+
+async function setApneDownloadButtonState(session, label) {
+  if (!session?.mainCdp || session.closed) return;
+  const text = JSON.stringify(String(label || "Download"));
+  await session.mainCdp.call("Runtime.evaluate", {
+    expression: `(() => { for (const button of document.querySelectorAll("body > .yt-apne-play-now")) button.textContent = ${text}; return true; })()`,
+    returnByValue: true,
+  }, INPUT_COMMAND_TIMEOUT_MS).catch(() => null);
+}
+
+async function resolveApneDownloadTitle(session) {
+  const main = await targetById(session.port, session.mainTargetId).catch(() => null);
+  const title = main?.title || session.mainTitle || "APNE TV episode";
+  return sanitizeDownloadName(title);
+}
+
+function runApneHlsDownload(session, { hlsUrl, referer, title }) {
+  return (async () => {
+    const finalPath = await uniqueLibraryVideoPath(title);
+    const partPath = finalPath.replace(/\.mp4$/i, ".part.mp4");
+    await fs.rm(partPath, { force: true }).catch(() => {});
+    session.apneDownload = {
+      status: "downloading",
+      title,
+      filePath: finalPath,
+      startedAt: Date.now(),
+      error: null,
+    };
+    await setApneDownloadButtonState(session, "Downloading…");
+    console.log(`[real-chrome] APNE download started -> ${finalPath}`);
+
+    await new Promise((resolve, reject) => {
+      const child = spawn(config.ffmpegPath, [
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel", "warning",
+        "-y",
+        "-user_agent", DESKTOP_USER_AGENT,
+        "-referer", referer || "https://mediagraming.com/",
+        "-i", hlsUrl,
+        "-map", "0:v:0?",
+        "-map", "0:a:0?",
+        "-c", "copy",
+        "-movflags", "+faststart",
+        partPath,
+      ], { stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = "";
+      child.stderr.on("data", (chunk) => {
+        stderr = (stderr + chunk.toString()).slice(-12000);
+      });
+      child.on("error", (err) => reject(new Error(`ffmpeg failed to start: ${err.message}`)));
+      child.on("close", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(stderr.trim().split("\n").slice(-5).join(" | ") || `ffmpeg exited ${code}`));
+      });
+    });
+
+    await fs.rename(partPath, finalPath);
+    session.apneDownload = {
+      ...session.apneDownload,
+      status: "done",
+      finishedAt: Date.now(),
+      filePath: finalPath,
+    };
+    await setApneDownloadButtonState(session, "Saved");
+    console.log(`[real-chrome] APNE download completed -> ${finalPath}`);
+    return finalPath;
+  })().catch(async (err) => {
+    if (session.apneDownload) {
+      session.apneDownload = { ...session.apneDownload, status: "error", error: err.message, finishedAt: Date.now() };
+    }
+    await setApneDownloadButtonState(session, "Download failed");
+    console.warn("[real-chrome] APNE download failed", err?.message || err);
+    throw err;
+  });
+}
+
+async function downloadMediagramingEpisode(session, cdp, target) {
+  const deadline = Date.now() + 10_000;
+  let frame = null;
+  let hlsUrl = "";
+  while (!session.closed && Date.now() < deadline) {
+    frame = await mediagramingPlayerFrame(cdp);
+    hlsUrl = mediagramingHlsUrl(frame);
+    if (hlsUrl) break;
+    await wait(250);
+  }
+  if (!hlsUrl) throw new Error("Could not find the Mediagraming HLS stream");
+  const title = await resolveApneDownloadTitle(session);
+  const referer = target?.url || "https://mediagraming.com/";
+  runApneHlsDownload(session, { hlsUrl, referer, title }).catch(() => {});
+  return { hlsUrl, title };
+}
+
+const MEDIAGRAMING_JW_PLAY_EXPRESSION = `(async () => {
+  const video = document.querySelector("video");
+  const play = document.querySelector('.jw-icon-display[aria-label="Play"], .jw-icon-playback[aria-label="Play"]');
+  if (!video) return { ok: false, reason: "no-video" };
+  try {
+    video.muted = false;
+    video.volume = 1;
+  } catch {}
+  if (play) {
+    try { play.click(); } catch {}
+  }
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  const currentTime = Number(video.currentTime || 0);
+  const playing = !video.paused && !video.ended && currentTime > 0 && Number(video.readyState || 0) >= 2;
   return {
-    playerFrame: true,
-    fullscreen: Boolean(document.fullscreenElement || document.webkitFullscreenElement)
-      || document.documentElement.classList.contains("ytstreamer-fs-active"),
-    src: String(playerFrame.src || ""),
-    rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height,
-      centerX: rect.left + rect.width / 2, centerY: rect.top + rect.height / 2 }
+    ok: true,
+    playing,
+    paused: Boolean(video.paused),
+    ended: Boolean(video.ended),
+    currentTime,
+    readyState: Number(video.readyState || 0),
+    networkState: Number(video.networkState || 0),
+    src: String(video.currentSrc || video.src || ""),
+    playerClass: String(document.querySelector(".jwplayer")?.className || ""),
   };
 })()`;
 
-const MEDIAGRAMING_FULLSCREEN_EXPRESSION = `(() => {
+async function startMediagramingJwPlayback(cdp) {
+  const frame = await mediagramingPlayerFrame(cdp);
+  if (!frame) return { ok: false, reason: "no-player-frame" };
+  const world = await cdp.call("Page.createIsolatedWorld", {
+    frameId: frame.id,
+    worldName: "ytstreamer-play-now",
+    grantUniveralAccess: true,
+  }, INPUT_COMMAND_TIMEOUT_MS).catch(() => null);
+  const contextId = world?.executionContextId;
+  if (!contextId) return { ok: false, reason: "no-player-context" };
+  const result = await cdp.call("Runtime.evaluate", {
+    contextId,
+    expression: MEDIAGRAMING_JW_PLAY_EXPRESSION,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  }, Math.max(INPUT_COMMAND_TIMEOUT_MS, 2500)).catch(() => null);
+  return { frameId: frame.id, ...(result?.result?.value || { ok: false, reason: "player-evaluate-failed" }) };
+}
+
+const MEDIAGRAMING_FULLSCREEN_EXPRESSION = `(async () => {
   const frames = [...document.querySelectorAll("iframe")].filter((iframe) => {
     const rect = iframe.getBoundingClientRect();
     const style = getComputedStyle(iframe);
     return rect.width > 80 && rect.height > 45 && style.display !== "none" && style.visibility !== "hidden";
   });
-  const playerFrame = frames.find((iframe) => {
-    const src = String(iframe.src || "");
-    return /\\/new\\/video\\.php/i.test(src) || /videoapne|master\\.m3u8/i.test(src);
-  }) || frames.sort((a, b) => {
-    const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
-    return (br.width * br.height) - (ar.width * ar.height);
-  })[0] || null;
+  const playerFrame = frames.find((iframe) => /\/new\/video\.php/i.test(String(iframe.src || "")))
+    || frames.sort((a, b) => {
+      const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+      return (br.width * br.height) - (ar.width * ar.height);
+    })[0] || null;
   if (!playerFrame) return { ok: false, fullscreen: false };
+  let error = "";
   try {
     const request = playerFrame.requestFullscreen || playerFrame.webkitRequestFullscreen;
-    if (request) request.call(playerFrame).catch?.(() => {});
-  } catch {}
-  return { ok: true, fullscreen: Boolean(document.fullscreenElement || document.webkitFullscreenElement)
-    || document.documentElement.classList.contains("ytstreamer-fs-active") };
+    if (request) await request.call(playerFrame);
+  } catch (err) {
+    error = String(err?.message || err);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  return {
+    ok: true,
+    error,
+    fullscreen: Boolean(document.fullscreenElement || document.webkitFullscreenElement)
+      || document.documentElement.classList.contains("ytstreamer-fs-active")
+  };
 })()`;
 
-async function mediaPlayerState(cdp) {
-  const result = await cdp.call("Runtime.evaluate", { expression: MEDIAGRAMING_PLAYER_STATE_EXPRESSION, returnByValue: true }).catch(() => null);
-  return result?.result?.value || null;
-}
-
-async function clickPlayerCenter(cdp, rect) {
-  const x = Number(rect?.centerX), y = Number(rect?.centerY);
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
-  await cdp.call("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" }).catch(() => {});
-  await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
-  await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
-  return true;
-}
-
 async function fullscreenMediagramingPlayer(cdp) {
-  const result = await cdp.call("Runtime.evaluate", { expression: MEDIAGRAMING_FULLSCREEN_EXPRESSION, returnByValue: true }).catch(() => null);
+  const result = await cdp.call("Runtime.evaluate", {
+    expression: MEDIAGRAMING_FULLSCREEN_EXPRESSION,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  }, INPUT_COMMAND_TIMEOUT_MS).catch(() => null);
   return Boolean(result?.result?.value?.fullscreen);
 }
 
 async function autoPlayMediagraming(session, cdp) {
   const startedAt = Date.now();
-  let clicked = false, last = null;
+  let last = null;
   while (!session.closed && session.secondaryCdp === cdp && Date.now() - startedAt < MEDIA_AUTOPLAY_TIMEOUT_MS) {
-    last = await mediaPlayerState(cdp);
-    if (last?.playerFrame && !clicked) {
-      clicked = await clickPlayerCenter(cdp, last.rect).catch(() => false);
-      if (clicked) {
-        console.log("[real-chrome] Play Now clicked Mediagraming player");
-        await new Promise((resolve) => setTimeout(resolve, 450));
+    last = await startMediagramingJwPlayback(cdp);
+    if (last?.playing) {
+      console.log(`[real-chrome] Play Now confirmed JW Player playback at ${last.currentTime.toFixed(2)}s`);
+      // JW Player is still settling after the frame-context Play click. Do not
+      // immediately run another frame evaluation; give the parent page a clean
+      // turn, then retry only the synthetic fullscreen request.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const fullscreen = await fullscreenMediagramingPlayer(cdp);
+        if (fullscreen) {
+          console.log("[real-chrome] Play Now fullscreen confirmed after playback");
+          capture(session).catch(() => {});
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
       }
-    }
-    if (last?.playerFrame && clicked) {
-      const fullscreen = await fullscreenMediagramingPlayer(cdp);
-      if (fullscreen) {
-        console.log("[real-chrome] Play Now started Mediagraming player in fullscreen");
-        capture(session).catch(() => {});
-        return true;
-      }
+      console.log("[real-chrome] Play Now playback is running but fullscreen did not settle");
+      return false;
     }
     await new Promise((resolve) => setTimeout(resolve, MEDIA_AUTOPLAY_INTERVAL_MS));
   }
-  console.log("[real-chrome] Play Now automation ended without full confirmation", { clicked, last });
+  console.log("[real-chrome] Play Now automation ended without playback confirmation", last || {});
   return false;
 }
 
@@ -735,11 +906,29 @@ async function activateAllowedSecondaryTab(session, target) {
   if (!target?.id || target.id === session.mainTargetId || !target.webSocketDebuggerUrl) return false;
   if (!isAllowedPopupUrl(target.url)) return false;
 
-  const previousTargetId = session.secondaryTargetId;
-  const previousCdp = session.secondaryCdp;
   const cdp = connectCdp(target.webSocketDebuggerUrl);
   await preparePage(session, cdp);
+  const downloadRequested = await consumeApnePlayNowRequest(session).catch(() => false);
 
+  if (downloadRequested) {
+    session.popupCandidates.delete(target.id);
+    session.backgroundTargetIds.add(target.id);
+    session.lastUsedAt = Date.now();
+    session.apneDownload = { status: "resolving", title: session.mainTitle || "APNE TV episode", startedAt: Date.now(), error: null };
+    setApneDownloadButtonState(session, "Preparing…").catch(() => {});
+    console.log(`[real-chrome] resolving APNE download from ${target.url}`);
+    downloadMediagramingEpisode(session, cdp, target)
+      .catch(() => {})
+      .finally(async () => {
+        session.backgroundTargetIds.delete(target.id);
+        cdp.close();
+        await closeChromeTarget(session.port, target.id).catch(() => false);
+      });
+    return true;
+  }
+
+  const previousTargetId = session.secondaryTargetId;
+  const previousCdp = session.secondaryCdp;
   session.secondaryTargetId = target.id;
   session.secondaryCdp = cdp;
   session.cdp = cdp;
@@ -753,13 +942,6 @@ async function activateAllowedSecondaryTab(session, target) {
   }
   capture(session).catch(() => {});
   console.log(`[real-chrome] allowed popup ${target.url}`);
-
-  const playNow = await consumeApnePlayNowRequest(session).catch(() => false);
-  if (playNow) {
-    autoPlayMediagraming(session, cdp).catch((err) => {
-      console.warn("[real-chrome] Play Now automation failed", err?.message || err);
-    });
-  }
   return true;
 }
 
@@ -776,6 +958,7 @@ async function enforcePopupPolicy(session) {
         await recoverMainFromApneTvDevtoolRedirect(session).catch(() => false);
       } else if (main.url && main.url !== "about:blank") {
         session.mainSafeUrl = main.url;
+        session.mainTitle = main.title || session.mainTitle || "";
       }
     }
 
@@ -797,7 +980,7 @@ async function enforcePopupPolicy(session) {
     }
 
     for (const target of pages) {
-      if (target.id === session.mainTargetId || target.id === session.secondaryTargetId) continue;
+      if (target.id === session.mainTargetId || target.id === session.secondaryTargetId || session.backgroundTargetIds.has(target.id)) continue;
       const decision = popupUrlDecision(target.url);
       if (decision === "allow") {
         await activateAllowedSecondaryTab(session, target);
@@ -919,17 +1102,21 @@ export async function start(payload = {}) {
     mainTargetId: null,
     secondaryTargetId: null,
     popupCandidates: new Map(),
+    backgroundTargetIds: new Set(),
     popupGuardBusy: false,
     tabGuardTimer: null,
     clients: new Set(),
     timer: null,
     capturing: false,
     captureErrors: 0,
+    captureBackoffMs: 0,
     closed: false,
     title: "Real Chrome",
     url,
     mainSafeUrl: isApneTvUrl(url) ? url : "",
+    mainTitle: "",
     mainRecoveryAt: 0,
+    apneDownload: null,
     createdAt: Date.now(),
     lastUsedAt: Date.now(),
   };
@@ -939,7 +1126,7 @@ export async function start(payload = {}) {
     session.secondaryCdp?.close();
     if (session.mainCdp && session.mainCdp !== session.secondaryCdp) session.mainCdp.close();
     else session.cdp?.close();
-    if (session.timer) clearInterval(session.timer);
+    if (session.timer) clearTimeout(session.timer);
     if (session.tabGuardTimer) clearInterval(session.tabGuardTimer);
     for (const client of session.clients) {
       try { client.end(); } catch {}
@@ -991,6 +1178,7 @@ function sessionInfo(session) {
     idleMs: now - session.lastUsedAt,
     secondaryTabOpen: Boolean(session.secondaryTargetId),
     popupAllowlist: [...POPUP_ALLOWED_HOSTS],
+    apneDownload: session.apneDownload ? { ...session.apneDownload } : null,
   };
 }
 
@@ -1009,16 +1197,19 @@ export async function audioCapturePids(id) {
 }
 
 async function capture(session) {
-  if (session.capturing || session.closed || !session.clients.size) return;
+  if (session.capturing || session.closed || !session.clients.size) return { ok: false, skipped: true, elapsedMs: 0 };
+  const cdp = session.cdp;
+  if (!cdp) return { ok: false, skipped: true, elapsedMs: 0 };
   session.capturing = true;
+  const startedAt = Date.now();
   try {
-    const result = await session.cdp.call("Page.captureScreenshot", {
+    const result = await cdp.call("Page.captureScreenshot", {
       format: "jpeg",
       quality: screenshotQuality(session.quality),
       fromSurface: true,
-    });
+    }, CAPTURE_COMMAND_TIMEOUT_MS);
     const frame = Buffer.from(result.data || "", "base64");
-    if (!frame.length) return;
+    if (!frame.length) return { ok: false, empty: true, elapsedMs: Date.now() - startedAt };
     const header = Buffer.from(`--${BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.length}\r\n\r\n`);
     const tail = Buffer.from("\r\n");
     for (const res of [...session.clients]) {
@@ -1031,29 +1222,53 @@ async function capture(session) {
       res.write(tail);
     }
     session.captureErrors = 0;
+    session.captureBackoffMs = Math.max(0, Math.round((session.captureBackoffMs || 0) * 0.5));
+    return { ok: true, elapsedMs: Date.now() - startedAt };
   } catch (err) {
+    // Target changes are normal during APNE -> Mediagraming handoff. Do not poison
+    // the session because an in-flight screenshot belonged to the previous target.
+    if (session.closed || session.cdp !== cdp) {
+      return { ok: false, transitioned: true, elapsedMs: Date.now() - startedAt };
+    }
     session.captureErrors = (session.captureErrors || 0) + 1;
+    session.captureBackoffMs = Math.min(250, Math.max(24, (session.captureBackoffMs || 16) * 2));
     console.error("[real-chrome] capture failed:", err.message);
     if (session.captureErrors >= 12) {
       stop(session.id, "capture-errors").catch(() => {});
     }
+    return { ok: false, error: err.message, elapsedMs: Date.now() - startedAt };
   } finally {
     session.capturing = false;
   }
 }
 
-function ensureCaptureLoop(session) {
-  if (session.timer) return;
-  session.timer = setInterval(() => capture(session), Math.max(16, Math.round(1000 / session.fps)));
+function scheduleNextCapture(session, delayMs = 0) {
+  if (session.timer || session.closed || !session.clients.size) return;
+  session.timer = setTimeout(async () => {
+    session.timer = null;
+    if (session.closed || !session.clients.size) return;
+    const startedAt = Date.now();
+    await capture(session);
+    if (session.closed || !session.clients.size) return;
+    const elapsedMs = Date.now() - startedAt;
+    const targetIntervalMs = Math.max(16, Math.round(1000 / Math.max(MIN_FPS, session.fps)));
+    const backoffMs = session.captureBackoffMs || 0;
+    const nextDelayMs = Math.max(CAPTURE_CONTROL_HEADROOM_MS, backoffMs, targetIntervalMs - elapsedMs);
+    scheduleNextCapture(session, nextDelayMs);
+  }, Math.max(0, delayMs));
   session.timer.unref?.();
-  capture(session).catch(() => {});
+}
+
+function ensureCaptureLoop(session) {
+  scheduleNextCapture(session, 0);
 }
 
 function restartCaptureLoop(session) {
   if (session.timer) {
-    clearInterval(session.timer);
+    clearTimeout(session.timer);
     session.timer = null;
   }
+  session.captureBackoffMs = 0;
   if (session.clients.size > 0) ensureCaptureLoop(session);
 }
 
@@ -1106,7 +1321,7 @@ export function stream(req, res, id) {
     session.clients.delete(res);
     session.lastUsedAt = Date.now();
     if (session.clients.size === 0 && session.timer) {
-      clearInterval(session.timer);
+      clearTimeout(session.timer);
       session.timer = null;
     }
   };
@@ -1186,8 +1401,17 @@ async function pressKey(session, key) {
   await session.cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code });
 }
 
-async function googleLoginClickFallback(session, p) {
-  const result = await session.cdp.call("Runtime.evaluate", {
+function isGooglePageUrl(raw) {
+  try {
+    const hostname = new URL(String(raw || "")).hostname.toLowerCase();
+    return hostname === "google.com" || hostname.endsWith(".google.com");
+  } catch {
+    return false;
+  }
+}
+
+async function googleLoginClickFallback(cdp, p) {
+  const result = await cdp.call("Runtime.evaluate", {
     returnByValue: true,
     expression: `(() => {
       if (!/\\.google\\.com$/i.test(location.hostname)) return { ok: false, skipped: true };
@@ -1251,56 +1475,116 @@ async function googleLoginClickFallback(session, p) {
   return result.result?.value || { ok: false, clicked: false };
 }
 
+async function tryApnePlayNowAtPoint(session, cdp, p) {
+  if (session.secondaryTargetId) return { matched: false };
+  if (!isApneTvUrl(session.url) && !isApneTvUrl(session.mainSafeUrl)) return { matched: false };
+  const expression = `(() => {
+    const x = ${Math.round(p.x)};
+    const y = ${Math.round(p.y)};
+    const buttons = [...document.querySelectorAll("body > .yt-apne-play-now")];
+    const button = buttons.find((candidate) => {
+      if (getComputedStyle(candidate).display === "none") return false;
+      const rect = candidate.getBoundingClientRect();
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    });
+    if (!button) return { matched: false };
+    const action = button.dataset.action || "";
+    const episodeId = button.dataset.episodeId || "";
+    if (!/^https:\\/\\/(?:www\\.)?newsportaling\\.com\\/finnance-/i.test(action) || !episodeId) {
+      return { matched: true, submitted: false };
+    }
+    window.__ytApnePlayNowRequestedAt = Date.now();
+    const form = document.createElement("form");
+    form.action = action;
+    form.method = "POST";
+    form.target = "_blank";
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "id";
+    input.value = episodeId;
+    form.appendChild(input);
+    form.style.display = "none";
+    document.documentElement.appendChild(form);
+    form.submit();
+    form.remove();
+    return { matched: true, submitted: true };
+  })()`;
+  const result = await cdp.call("Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    userGesture: true,
+  }, INPUT_COMMAND_TIMEOUT_MS).catch(() => null);
+  return result?.result?.value || { matched: false };
+}
+
 export async function input(id, payload = {}) {
   const session = get(id);
   if (!session) throw httpError(404, "Real Chrome session not found.");
   session.lastUsedAt = Date.now();
-  if (payload.type === "focus-info") return focusedEditableInfo(session);
-  if (payload.type === "replace-text") return replaceFocusedEditableText(session, payload.text);
+  const cdp = session.cdp;
+  if (!cdp) throw httpError(409, "Real Chrome target is changing. Retry the input.");
+  await cdp.ready;
+
+  if (payload.type === "focus-info") return focusedEditableInfo({ ...session, cdp });
+  if (payload.type === "replace-text") return replaceFocusedEditableText({ ...session, cdp }, payload.text);
   if (payload.type === "text") {
-    await session.cdp.call("Input.insertText", { text: String(payload.text ?? "").slice(0, 4096) });
+    await cdp.call("Input.insertText", { text: String(payload.text ?? "").slice(0, 4096) }, INPUT_COMMAND_TIMEOUT_MS);
     return { ok: true };
   }
   if (payload.type === "key") {
-    await pressKey(session, String(payload.key || ""));
+    const keyCodes = { Enter: 13, Backspace: 8, Delete: 46, Tab: 9, Escape: 27, ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40 };
+    const key = String(payload.key || "");
+    const code = keyCodes[key];
+    if (!code) throw httpError(400, "Unsupported Real Chrome key.");
+    await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key, code: key, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code }, INPUT_COMMAND_TIMEOUT_MS);
+    await cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code }, INPUT_COMMAND_TIMEOUT_MS);
     return { ok: true };
   }
+
   const p = point(payload, session);
   const button = payload.button === 2 ? "right" : "left";
   if (payload.type === "tap") {
+    if (cdp === session.mainCdp) {
+      const playNow = await tryApnePlayNowAtPoint(session, cdp, p);
+      if (playNow?.matched) return { ok: true, download: playNow };
+    }
     if (payload.pointerType === "touch") {
-      // Touch emulation already emits the compatibility click. Do not send a second
-      // explicit mouse click or toggle controls (such as fullscreen) can fire twice.
-      await session.cdp.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, radiusX: 2, radiusY: 2, force: 1, id: 1 }] });
-      await session.cdp.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-      const fallback = await googleLoginClickFallback(session, p).catch(() => null);
-      if (fallback?.clicked) return { ok: true, fallback };
+      await cdp.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, radiusX: 2, radiusY: 2, force: 1, id: 1 }] }, INPUT_COMMAND_TIMEOUT_MS);
+      try {
+        await cdp.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, INPUT_COMMAND_TIMEOUT_MS);
+      } catch (err) {
+        // If the page navigated during touchStart Chrome can discard touch state.
+        // The gesture has already been delivered; do not surface a fatal UI toast.
+        if (!/TouchStart first/i.test(String(err?.message || ""))) throw err;
+      }
+      if (session.cdp === cdp && isGooglePageUrl(session.url)) {
+        const fallback = await googleLoginClickFallback(cdp, p).catch(() => null);
+        if (fallback?.clicked) return { ok: true, fallback };
+      }
       return { ok: true };
     }
-    await session.cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 });
-    await session.cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 });
+    await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+    await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
     return { ok: true };
   }
   if (payload.type === "move" || payload.type === "drag") {
-    await session.cdp.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x, y: p.y, button: "none" });
+    await cdp.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x, y: p.y, button: "none" }, INPUT_COMMAND_TIMEOUT_MS);
     return { ok: true };
   }
   if (payload.type === "down") {
-    await session.cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 });
+    await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
     return { ok: true };
   }
   if (payload.type === "up") {
-    await session.cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 });
+    await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
     return { ok: true };
   }
   if (payload.type === "scroll") {
-    await session.cdp.call("Input.dispatchMouseEvent", {
-      type: "mouseWheel",
-      x: p.x,
-      y: p.y,
+    await cdp.call("Input.dispatchMouseEvent", {
+      type: "mouseWheel", x: p.x, y: p.y,
       deltaX: Math.max(-2000, Math.min(2000, Number(payload.dx) || 0)),
       deltaY: Math.max(-2000, Math.min(2000, Number(payload.dy) || 0)),
-    });
+    }, INPUT_COMMAND_TIMEOUT_MS);
     return { ok: true };
   }
   throw httpError(400, "Unsupported Real Chrome input type.");

@@ -44,9 +44,10 @@ test("APNE TV Flash Link gesture bypasses page ad handlers", () => {
   assert.match(renderer, /source: APNE_FLASH_GUARD/);
 });
 
-test("APNE TV injects a top-level Play Now overlay and marks one-tap autoplay", () => {
+test("APNE TV injects a top-level Download overlay", () => {
   assert.match(renderer, /PLAY_NOW_CLASS = "yt-apne-play-now"/);
-  assert.match(renderer, /button\.textContent = "Play Now"/);
+  assert.match(renderer, /button\.textContent = "Download"/);
+  assert.match(renderer, /Download this episode to the Mac/);
   assert.match(renderer, /document\.querySelectorAll\("body > \." \+ PLAY_NOW_CLASS\)/);
   assert.match(renderer, /document\.body\.appendChild\(button\)/);
   assert.match(renderer, /pointerEvents: "auto"/);
@@ -55,14 +56,34 @@ test("APNE TV injects a top-level Play Now overlay and marks one-tap autoplay", 
   assert.match(renderer, /MutationObserver/);
 });
 
-test("Play Now promotes Mediagraming then clicks and fullscreens the player", () => {
-  assert.match(renderer, /consumeApnePlayNowRequest/);
-  assert.match(renderer, /MEDIAGRAMING_PLAYER_STATE_EXPRESSION/);
-  assert.match(renderer, /Input\.dispatchMouseEvent/);
-  assert.match(renderer, /clickPlayerCenter\(cdp, last\.rect\)/);
-  assert.match(renderer, /requestFullscreen/);
-  assert.match(renderer, /autoPlayMediagraming\(session, cdp\)/);
-  assert.match(renderer, /Play Now started Mediagraming player in fullscreen/);
+test("APNE Download resolves the JW HLS stream and saves one synced MP4 on the Mac", () => {
+  assert.match(renderer, /mediagramingHlsUrl/);
+  assert.match(renderer, /videoapne\.to/);
+  assert.match(renderer, /downloadMediagramingEpisode/);
+  assert.match(renderer, /config\.libraryDir/);
+  assert.match(renderer, /"-map", "0:v:0\?"/);
+  assert.match(renderer, /"-map", "0:a:0\?"/);
+  assert.match(renderer, /"-c", "copy"/);
+  assert.match(renderer, /APNE download completed/);
+});
+
+test("Real Chrome pins a gesture to one CDP target and self-paces capture", () => {
+  assert.match(renderer, /const cdp = session\.cdp/);
+  assert.match(renderer, /Input\.dispatchTouchEvent/);
+  assert.match(renderer, /CAPTURE_CONTROL_HEADROOM_MS = 8/);
+  assert.match(renderer, /CAPTURE_COMMAND_TIMEOUT_MS = 1500/);
+  assert.match(renderer, /scheduleNextCapture/);
+  assert.match(renderer, /session\.cdp !== cdp/);
+});
+
+test("Download tap is intercepted by coordinates and resolved in a background popup", () => {
+  assert.match(renderer, /tryApnePlayNowAtPoint/);
+  assert.match(renderer, /body > \.yt-apne-play-now/);
+  assert.match(renderer, /userGesture: true/);
+  assert.match(renderer, /return \{ ok: true, download: playNow \}/);
+  assert.match(renderer, /backgroundTargetIds/);
+  assert.match(renderer, /resolving APNE download/);
+  assert.match(app, /Preparing download on Mac/);
 });
 
 test("APNE TV Flash Link transit is hidden and narrowly scoped", () => {

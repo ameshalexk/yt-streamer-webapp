@@ -7455,7 +7455,14 @@ function sendBrowserPointer(type, e) {
   if (!point) return false;
   const result = postBrowserInput({ type, ...point, button: desktopInputButton(e), pointerType: e.pointerType || "" });
   if (type === "tap") {
-    result?.then?.(() => queueBrowserKeyboardFocus()).catch(() => hideBrowserKeyboard());
+    result?.then?.((response) => {
+      if (response?.download?.submitted) {
+        toast("Preparing download on Mac…");
+        hideBrowserKeyboard();
+        return;
+      }
+      queueBrowserKeyboardFocus();
+    }).catch(() => hideBrowserKeyboard());
   }
   return true;
 }
