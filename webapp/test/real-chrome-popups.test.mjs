@@ -9,6 +9,11 @@ const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8"
 const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
 
+test("browser MJPEG supports 60 FPS defaults and JPEG quality 100", () => {
+  assert.match(renderer, /const DEFAULT_FPS = 60/);
+  assert.match(renderer, /clampInt\(value, 20, 100, fallback\)/);
+});
+
 test("Real Chrome popup allowlist accepts only mediagraming.com and subdomains", () => {
   assert.equal(isAllowedPopupUrl("https://mediagraming.com/watch/123"), true);
   assert.equal(isAllowedPopupUrl("https://www.mediagraming.com/watch/123"), true);

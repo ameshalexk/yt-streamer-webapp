@@ -19,3 +19,14 @@ test("12 FPS remains available as an explicit selectable option", () => {
   assert.match(html, /<option value="12">12<\/option>/);
   assert.match(app, /\{ value: "12", label: "12" \}/);
 });
+
+test("browser controls default to 60 FPS and allow JPEG quality 100", () => {
+  const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const browserRenderer = fs.readFileSync(new URL("../src/lib/browser-renderer.js", import.meta.url), "utf8");
+  assert.match(html, /id="browserFps"[^>]*max="60"[^>]*value="60"/);
+  assert.match(html, /id="browserPlayerFps"[^>]*max="60"[^>]*value="60"/);
+  assert.match(html, /id="browserQuality"[^>]*max="100"/);
+  assert.match(html, /id="browserPlayerQuality"[^>]*max="100"/);
+  assert.match(browserRenderer, /clampInt\(payload\.fps, config\.mjpeg\.minFps, config\.mjpeg\.maxFps, 60\)/);
+  assert.match(browserRenderer, /clampInt\(value, 20, 100, fallback\)/);
+});

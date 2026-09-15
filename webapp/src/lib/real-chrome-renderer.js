@@ -11,7 +11,7 @@ const MIN_WIDTH = 640;
 const MIN_HEIGHT = 360;
 const MAX_WIDTH = 1920;
 const MAX_HEIGHT = 1080;
-const DEFAULT_FPS = 6;
+const DEFAULT_FPS = 60;
 const MIN_FPS = 3;
 const MAX_FPS = 60;
 const SESSION_TTL_MS = 15 * 60 * 1000;
@@ -96,7 +96,7 @@ function clampInt(value, min, max, fallback) {
 }
 
 function screenshotQuality(value, fallback = 72) {
-  return clampInt(value, 20, 90, fallback);
+  return clampInt(value, 20, 100, fallback);
 }
 
 function normalizeUrl(raw) {

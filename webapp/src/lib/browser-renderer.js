@@ -277,7 +277,7 @@ function clampInt(value, min, max, fallback) {
 }
 
 function screenshotQuality(value, fallback = 70) {
-  return clampInt(value, 20, 90, fallback);
+  return clampInt(value, 20, 100, fallback);
 }
 
 function normalizeUrl(raw) {
@@ -455,7 +455,7 @@ export async function start(payload = {}) {
   await assertPublicUrl(url);
   const width = clampInt(payload.width, MIN_WIDTH, MAX_WIDTH, DEFAULT_WIDTH);
   const height = clampInt(payload.height, MIN_HEIGHT, MAX_HEIGHT, DEFAULT_HEIGHT);
-  const fps = clampInt(payload.fps, config.mjpeg.minFps, config.mjpeg.maxFps, 6);
+  const fps = clampInt(payload.fps, config.mjpeg.minFps, config.mjpeg.maxFps, 60);
   const quality = screenshotQuality(payload.quality);
   const { chromium } = await loadPlaywright();
   const browser = await chromium.launch({
