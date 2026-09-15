@@ -679,6 +679,29 @@ async function ensureDownloadedVideosPlaylist() {
   return playlist;
 }
 
+async function probeLocalVideoDuration(filePath) {
+  return new Promise((resolve) => {
+    const child = spawn("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=nw=1:nk=1",
+      filePath,
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+    let output = "";
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      resolve(null);
+    }, 5000);
+    child.stdout.on("data", (chunk) => { output += chunk.toString(); });
+    child.on("error", () => { clearTimeout(timer); resolve(null); });
+    child.on("close", () => {
+      clearTimeout(timer);
+      const duration = Number.parseFloat(output.trim());
+      resolve(Number.isFinite(duration) && duration > 0 ? duration : null);
+    });
+  });
+}
+
 async function registerDownloadedVideo(filePath, title, meta = {}) {
   const playlist = await ensureDownloadedVideosPlaylist();
   return store.addItem(playlist.id, {
@@ -775,7 +798,8 @@ function runApneHlsDownload(session, { hlsUrl, referer, title }) {
     });
 
     await fs.rename(partPath, finalPath);
-    const item = await registerDownloadedVideo(finalPath, title);
+    const duration = await probeLocalVideoDuration(finalPath);
+    const item = await registerDownloadedVideo(finalPath, title, duration ? { duration } : {});
     session.apneDownload = {
       ...session.apneDownload,
       status: "done",

@@ -136,10 +136,13 @@ test("remote X closes only the secondary Real Chrome tab", () => {
   assert.match(renderer, /if \(!session\.secondaryTargetId\) \{[\s\S]*closed: false/);
 });
 
-test("APNE downloads register as hidden local-file library items", () => {
+test("APNE downloads register as hidden local-file library items with duration", () => {
   assert.match(renderer, /ensureDownloadedVideosPlaylist/);
   assert.match(renderer, /kind: "downloaded-files"/);
   assert.match(renderer, /registerDownloadedVideo/);
+  assert.match(renderer, /probeLocalVideoDuration/);
+  assert.match(renderer, /ffprobe/);
+  assert.match(renderer, /duration \? \{ duration \} : \{\}/);
   assert.match(renderer, /type: "file"/);
   assert.match(renderer, /source: "apnetv"/);
 });
