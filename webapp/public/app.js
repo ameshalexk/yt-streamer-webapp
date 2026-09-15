@@ -649,12 +649,94 @@ const SLOW_BUFFER_SYNC_SUGGEST_MS = 4000;
 const SLOW_BUFFER_SUGGESTION_VISIBLE_MS = 10000;
 const SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO = 3;
 const SLOW_BUFFER_PROFILE = { height: "360", fps: "15", quality: "5" };
+const ADAPTIVE_BUFFER_PROFILE_KEY = "ytStreamerAdaptiveBufferV2";
+const ADAPTIVE_BUFFER_PROFILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const ADAPTIVE_BUFFER_PROFILES = Object.freeze({
+  fast: Object.freeze({ id: "fast", startupSeconds: 2, rebufferSeconds: 1.25, maxQueueSeconds: 4 }),
+  balanced: Object.freeze({ id: "balanced", startupSeconds: 3, rebufferSeconds: 1.5, maxQueueSeconds: 5 }),
+  resilient: Object.freeze({ id: "resilient", startupSeconds: 4, rebufferSeconds: 2, maxQueueSeconds: 6 }),
+});
 let slowBufferSuggestTimer = null;
 let slowBufferCountdownTimer = null;
 let slowBufferAutoHideTimer = null;
 let slowBufferSuggestionShownAttempt = -1;
 let slowBufferSuggestionScope = { key: "", count: 0, stopped: false };
 let playbackStartupTraceSeq = 0;
+
+function readAdaptiveBufferState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ADAPTIVE_BUFFER_PROFILE_KEY) || "null");
+    const tier = raw?.tier;
+    const updatedAt = Number(raw?.updatedAt || 0);
+    if (!ADAPTIVE_BUFFER_PROFILES[tier] || !updatedAt || Date.now() - updatedAt > ADAPTIVE_BUFFER_PROFILE_MAX_AGE_MS) {
+      return { tier: "balanced", fastStreak: 0, updatedAt: Date.now() };
+    }
+    return { tier, fastStreak: Math.max(0, Math.min(3, Number(raw.fastStreak) || 0)), updatedAt };
+  } catch {
+    return { tier: "balanced", fastStreak: 0, updatedAt: Date.now() };
+  }
+}
+
+function adaptiveBufferPolicy() {
+  const state = readAdaptiveBufferState();
+  return { ...ADAPTIVE_BUFFER_PROFILES[state.tier], learnedTier: state.tier };
+}
+
+function saveAdaptiveBufferState(state) {
+  try {
+    localStorage.setItem(ADAPTIVE_BUFFER_PROFILE_KEY, JSON.stringify({
+      tier: ADAPTIVE_BUFFER_PROFILES[state?.tier] ? state.tier : "balanced",
+      fastStreak: Math.max(0, Math.min(3, Number(state?.fastStreak) || 0)),
+      updatedAt: Date.now(),
+    }));
+  } catch {}
+}
+
+function evaluateAdaptiveBufferSample(stats = {}) {
+  const fps = Math.max(1, Number(stats.fps || 24));
+  const renderedFps = Number(stats.renderedFps);
+  const avgDecodeMs = Number(stats.averageDecodeMs);
+  const frameBudgetMs = 1000 / fps;
+  const rendered = Math.max(0, Number(stats.renderedFrames || 0));
+  const dropped = Math.max(0, Number(stats.droppedFrames || 0));
+  const dropRatio = dropped / Math.max(1, rendered + dropped);
+  const driftMs = Math.abs(Number(stats.lastAvDriftMs || 0));
+  const rebufferCount = Math.max(0, Number(stats.rebufferCount || 0));
+  const renderRatio = Number.isFinite(renderedFps) ? renderedFps / fps : 0;
+  const slow = rebufferCount > 0 || dropRatio > 0.05
+    || (Number.isFinite(renderedFps) && renderRatio < 0.88)
+    || (Number.isFinite(avgDecodeMs) && avgDecodeMs > frameBudgetMs * 0.75)
+    || driftMs > 180;
+  if (slow) return { grade: "slow", renderRatio, dropRatio, driftMs, frameBudgetMs };
+  const fast = Number.isFinite(renderedFps) && renderRatio >= 0.97 && dropRatio < 0.01
+    && (!Number.isFinite(avgDecodeMs) || avgDecodeMs <= frameBudgetMs * 0.45)
+    && driftMs <= 100;
+  return { grade: fast ? "fast" : "balanced", renderRatio, dropRatio, driftMs, frameBudgetMs };
+}
+
+function learnAdaptiveBufferProfile(stats, { force = false } = {}) {
+  const fps = Math.max(1, Number(stats?.fps || 24));
+  const renderedFrames = Math.max(0, Number(stats?.renderedFrames || 0));
+  if (!force && renderedFrames < fps * 8) return null;
+  const sample = evaluateAdaptiveBufferSample(stats);
+  const previous = readAdaptiveBufferState();
+  let nextTier = previous.tier;
+  let fastStreak = previous.fastStreak;
+  if (sample.grade === "slow") {
+    nextTier = "resilient";
+    fastStreak = 0;
+  } else if (sample.grade === "fast") {
+    fastStreak = Math.min(3, fastStreak + 1);
+    if (fastStreak >= 2) nextTier = "fast";
+    else if (nextTier === "resilient") nextTier = "balanced";
+  } else {
+    fastStreak = 0;
+    nextTier = "balanced";
+  }
+  const changed = nextTier !== previous.tier || fastStreak !== previous.fastStreak;
+  if (changed) saveAdaptiveBufferState({ tier: nextTier, fastStreak });
+  return { ...sample, previousTier: previous.tier, nextTier, fastStreak, changed };
+}
 
 function beginPlaybackStartupTrace(kind, item = {}) {
   const trace = {
@@ -2166,10 +2248,13 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   let audioFailed = false;
   const parsed = new URL(bufferedUrl, window.location.origin);
   const requestedFps = Math.max(1, Number(parsed.searchParams.get("fps") || $("#ctlFps").value || 24));
+  const bufferPolicy = adaptiveBufferPolicy();
+  window.__YT_STREAMER_BUFFER_POLICY__ = { ...bufferPolicy, selectedAt: Date.now() };
+  let adaptiveBufferLearned = false;
   reportPlaybackEvent("buffered_start", {
     label,
     streamUrl: bufferedUrl,
-    reason: `fps=${requestedFps}`,
+    reason: `fps=${requestedFps};buffer=${bufferPolicy.id}:${bufferPolicy.startupSeconds}/${bufferPolicy.maxQueueSeconds}/${bufferPolicy.rebufferSeconds}`,
     timing: playbackStartupTiming(startupTrace),
   });
 
@@ -2178,7 +2263,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   $("#restreamBtn").disabled = false;
   screen.classList.remove("video-mode", "mjpeg-mode", "startup-preview");
   screen.classList.add("playing", "loading", "mjpeg-buffered-mode");
-  setBadge("reconnecting", "Buffering 0.0 / 4.0s");
+  setBadge("reconnecting", "Buffering 0.0 / " + bufferPolicy.startupSeconds.toFixed(1) + "s");
   startStreamWatchdog(attempt, "Buffered MJPEG playback", {
     warnMs: COMPAT_STREAM_WARN_MS,
     failMs: COMPAT_STREAM_FAIL_MS,
@@ -2211,9 +2296,9 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       && activeCompat?.bufferedPlayer === player
       && activeCompat?.mjpegUrl === bufferedUrl,
     audioEnabled: () => Boolean(audioUrl && soundOn && !audioFailed),
-    startupSeconds: 4,
-    rebufferSeconds: 2,
-    maxQueueSeconds: 8,
+    startupSeconds: bufferPolicy.startupSeconds,
+    rebufferSeconds: bufferPolicy.rebufferSeconds,
+    maxQueueSeconds: bufferPolicy.maxQueueSeconds,
     maxQueueBytes: 24 * 1024 * 1024,
     maxFrameBytes: 3 * 1024 * 1024,
     onState: (stateName, detail = {}) => {
@@ -2226,10 +2311,20 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         else scheduleSlowBufferSuggestion(attempt, { reason: detail.reason || "rebuffer", label, streamUrl: bufferedUrl, stats });
         if (stats.rebufferCount > loggedRebufferCount) {
           loggedRebufferCount = stats.rebufferCount;
+          const learned = learnAdaptiveBufferProfile(stats, { force: true });
+          if (learned) {
+            reportPlaybackEvent("adaptive_buffer_learned", {
+              label,
+              streamUrl: bufferedUrl,
+              reason: learned.grade,
+              message: `${learned.previousTier}->${learned.nextTier}`,
+              stats,
+            });
+          }
           reportPlaybackEvent("buffered_rebuffer", { label, streamUrl: bufferedUrl, reason: detail.reason, stats });
         }
         const buffered = Number(detail.bufferedSeconds ?? stats.queueSeconds ?? 0);
-        const target = Number(detail.targetSeconds || (stats.renderedFrames ? stats.recoveryTargetSeconds || 2 : 4));
+        const target = Number(detail.targetSeconds || (stats.renderedFrames ? stats.recoveryTargetSeconds || bufferPolicy.rebufferSeconds : bufferPolicy.startupSeconds));
         if (detail.reason === "audio") {
           setBadge("reconnecting", "Buffering audio · " + buffered.toFixed(1) + "s video ready");
         } else {
@@ -2295,12 +2390,25 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
       updateBufferedMjpegDebug(stats);
       if (stats.state === "buffering") {
-        const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || 2) : 4;
+        const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || bufferPolicy.rebufferSeconds) : bufferPolicy.startupSeconds;
         const prefix = playbackPaused ? "Paused · buffering " : "Buffering ";
         setBadge("reconnecting", prefix + stats.queueSeconds.toFixed(1) + " / " + target.toFixed(1) + "s", { revealControls: false });
       } else if (stats.state === "paused") {
         setBadge("paused", "Ⅱ PAUSED · " + stats.queueSeconds.toFixed(1) + "s buf", { revealControls: false });
       } else if (stats.state === "playing") {
+        if (!adaptiveBufferLearned && stats.renderedFrames >= Math.max(1, Math.round(stats.fps * 8))) {
+          adaptiveBufferLearned = true;
+          const learned = learnAdaptiveBufferProfile(stats);
+          if (learned) {
+            reportPlaybackEvent("adaptive_buffer_learned", {
+              label,
+              streamUrl: bufferedUrl,
+              reason: learned.grade,
+              message: `${learned.previousTier}->${learned.nextTier}`,
+              stats,
+            });
+          }
+        }
         const diagnosis = bufferedSlowdownDiagnosis(stats, "renderer");
         if (diagnosis.kind === "renderer" && stats.renderedFrames >= Math.max(1, Math.round(stats.fps * 3))) {
           scheduleSlowBufferSuggestion(attempt, { reason: "renderer", label, streamUrl: bufferedUrl, stats });
