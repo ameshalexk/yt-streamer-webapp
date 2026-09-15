@@ -3585,6 +3585,13 @@ function renderApneDaily() {
         '<button class="btn apne-download-today ' + (saved ? 'secondary' : '') + '" data-act="' + action + '" type="button" ' + (disabled ? 'disabled' : '') + '>' + esc(buttonText) + '</button>' +
       '</div>' +
       (status === "Downloading" ? '<div class="apne-progress"><i></i></div>' : '') +
+      ((show.recentEpisodes || []).length ?
+        '<div class="apne-recent"><div class="apne-recent-title">Recent episodes</div>' +
+          (show.recentEpisodes || []).map((recent) =>
+            '<a class="apne-recent-link" href="' + esc(recent.url || "#") + '" target="_blank" rel="noopener noreferrer">' +
+              '<span>' + esc(recent.dateLabel || recent.dateKey || "Episode") + '</span><span aria-hidden="true">↗</span></a>'
+          ).join("") +
+        '</div>' : '') +
     '</article>';
   }).join("");
 }

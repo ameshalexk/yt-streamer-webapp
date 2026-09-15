@@ -6,6 +6,7 @@ import {
   normalizeApneShowInput,
   parseFlashTargetFromEpisodeHtml,
   parseLatestEpisodeFromShowHtml,
+  parseRecentEpisodesFromShowHtml,
   parseMediagramingHlsFromHtml,
   parseNewsportalingRedirect,
 } from "../src/lib/apne-daily.js";
@@ -34,6 +35,18 @@ test("APNE Daily detects the newest dated episode from a show page", () => {
   assert.equal(episode.dateLabel, "15th September 2026");
   assert.equal(episode.dateKey, "2026-09-15");
 });
+
+test("APNE Daily returns up to 10 recent episodes in newest-first order", () => {
+  const fixture = Array.from({ length: 12 }, (_, index) => {
+    const day = 12 - index;
+    return `<option value="_self#@#https://apnetv.xyz/Hindi-Serial/show/${286300 + day}/Anupamaa">${day}th September 2026</option>`;
+  }).join("");
+  const episodes = parseRecentEpisodesFromShowHtml(fixture, show, 10);
+  assert.equal(episodes.length, 10);
+  assert.equal(episodes[0].dateKey, "2026-09-12");
+  assert.equal(episodes[9].dateKey, "2026-09-03");
+});
+
 
 test("APNE Daily resolves the browserless APNE to Newsportaling to Mediagraming HLS chain", () => {
   const episodeHtml = '<div data-id="252828be46d8f1433be256ee1e3f212f" data-href="https://newsportaling.com/finnance-account-insurance-yield" class="flash_link">Flash Link</div>';
@@ -118,6 +131,9 @@ test("APNE Daily UI renders the tab, statuses, Download Today, Play, and Manage 
   assert.match(app, /function renderApneDaily\(\)/);
   assert.match(app, /Download Today/);
   assert.match(app, /saved \? "Play"/);
+  assert.match(app, /Recent episodes/);
+  assert.match(app, /apne-recent-link/);
+  assert.match(apneDailySource, /recentEpisodes/);
   assert.match(app, /if \(item\.type === "youtube"\) \{[\s\S]*refreshYoutubeMetadataInBackground/);
   for (const status of ["Checking", "Not available yet", "Available", "Downloading", "Saved", "Failed"]) {
     assert.ok((apneDailySource + app).includes(status), "missing APNE Daily status: " + status);

@@ -160,14 +160,18 @@ async function fetchText(url, { method = "GET", body = null, referer = APNE_ORIG
   }
 }
 
-export function parseLatestEpisodeFromShowHtml(html, show = {}) {
+export function parseRecentEpisodesFromShowHtml(html, show = {}, limit = 10) {
   const pattern = /<option\b[^>]*value=["'][^"'<>]*#@#(https:\/\/apnetv\.xyz\/Hindi-Serial\/show\/\d+\/[^"'<>]+)["'][^>]*>([\s\S]*?)<\/option>/gi;
   const matches = [];
+  const seen = new Set();
   for (const match of String(html || "").matchAll(pattern)) {
     const date = parseApneDateLabel(match[2]);
     if (!date) continue;
+    const url = decodeHtml(match[1]);
+    if (seen.has(url)) continue;
+    seen.add(url);
     matches.push({
-      url: decodeHtml(match[1]),
+      url,
       dateLabel: date.label,
       dateKey: date.key,
       title: `${show.name || "APNE"} ${date.label}`,
@@ -175,7 +179,12 @@ export function parseLatestEpisodeFromShowHtml(html, show = {}) {
   }
   if (!matches.length) throw new Error("APNE did not return any dated episodes for this show.");
   matches.sort((a, b) => b.dateKey.localeCompare(a.dateKey));
-  return matches[0];
+  const count = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(25, Math.trunc(Number(limit)))) : 10;
+  return matches.slice(0, count);
+}
+
+export function parseLatestEpisodeFromShowHtml(html, show = {}) {
+  return parseRecentEpisodesFromShowHtml(html, show, 1)[0];
 }
 
 function readAttributes(tag) {
@@ -379,9 +388,13 @@ async function downloadedItemFor(show, episode) {
   return items.find((item) => episodeMatchesDownloadedItem(item, show, episode)) || null;
 }
 
-async function detectLatest(show) {
+async function detectRecent(show, limit = 10) {
   const page = await fetchText(show.url, { referer: APNE_ORIGIN + "/" });
-  return parseLatestEpisodeFromShowHtml(page.html, show);
+  return parseRecentEpisodesFromShowHtml(page.html, show, limit);
+}
+
+async function detectLatest(show) {
+  return (await detectRecent(show, 1))[0];
 }
 
 function publicJob(job) {
@@ -406,7 +419,8 @@ async function statusForShow(show) {
     return { ...show, status: job.status, detail: job.detail || "", episode: job.episode || null, itemId: job.itemId || null, job: publicJob(job) };
   }
   try {
-    const episode = await detectLatest(show);
+    const recentEpisodes = await detectRecent(show, 10);
+    const episode = recentEpisodes[0];
     const saved = await downloadedItemFor(show, episode);
     const isToday = episode.dateKey === todayKey();
     let status = isToday ? "Available" : "Not available yet";
@@ -420,9 +434,9 @@ async function statusForShow(show) {
       status = "Failed";
       detail = job.error || "Download failed";
     }
-    return { ...show, status, detail, episode, itemId, job: publicJob(job) };
+    return { ...show, status, detail, episode, recentEpisodes, itemId, job: publicJob(job) };
   } catch (error) {
-    return { ...show, status: "Failed", detail: error.message, episode: null, itemId: null, job: publicJob(job) };
+    return { ...show, status: "Failed", detail: error.message, episode: null, recentEpisodes: [], itemId: null, job: publicJob(job) };
   }
 }
 
