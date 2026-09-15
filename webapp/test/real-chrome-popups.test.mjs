@@ -135,3 +135,19 @@ test("remote X closes only the secondary Real Chrome tab", () => {
   assert.match(css, /\.browser-close-popup \{[\s\S]*right: 16px;/);
   assert.match(renderer, /if \(!session\.secondaryTargetId\) \{[\s\S]*closed: false/);
 });
+
+test("APNE downloads register as hidden local-file library items", () => {
+  assert.match(renderer, /ensureDownloadedVideosPlaylist/);
+  assert.match(renderer, /kind: "downloaded-files"/);
+  assert.match(renderer, /registerDownloadedVideo/);
+  assert.match(renderer, /type: "file"/);
+  assert.match(renderer, /source: "apnetv"/);
+});
+
+test("Downloaded Videos drawer includes local MP4 items and plays them through the normal local-file player", () => {
+  assert.match(app, /function downloadedLocalItems\(\)/);
+  assert.match(app, /Local MP4 · synced video \+ audio/);
+  assert.match(app, /data-local-id/);
+  assert.match(app, /await playItem\(item\)/);
+  assert.match(app, /visibleSavedPlaylists/);
+});

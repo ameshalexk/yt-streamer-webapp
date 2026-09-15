@@ -439,15 +439,35 @@ async function pingHealth() {
 async function loadPlaylists() {
   state.playlists = await api.get("/api/playlists");
   renderPlaylists();
-  if (!state.selectedPlaylistId && state.playlists.length) selectPlaylist(state.playlists[0].id);
-  else renderItems();
+  const visible = visibleSavedPlaylists();
+  if (!state.selectedPlaylistId && visible.length) selectPlaylist(visible[0].id);
+  else if (state.selectedPlaylistId && !visible.some((playlist) => playlist.id === state.selectedPlaylistId)) {
+    state.selectedPlaylistId = visible[0]?.id || null;
+    renderItems();
+  } else renderItems();
   refreshChannelSavedStates();
+}
+
+function isDownloadedVideosPlaylist(playlist) {
+  return playlist?.meta?.kind === "downloaded-files";
+}
+
+function visibleSavedPlaylists() {
+  return state.playlists.filter((playlist) => !isDownloadedVideosPlaylist(playlist));
+}
+
+function downloadedLocalItems() {
+  return state.playlists
+    .filter(isDownloadedVideosPlaylist)
+    .flatMap((playlist) => playlist.items || [])
+    .filter((item) => item.type === "file");
 }
 
 function renderPlaylists() {
   const ul = $("#playlistList");
-  if (!state.playlists.length) { ul.innerHTML = `<div class="empty">No playlists yet.<br>Tap “+ New”.</div>`; return; }
-  ul.innerHTML = state.playlists.map((p) => `
+  const playlists = visibleSavedPlaylists();
+  if (!playlists.length) { ul.innerHTML = `<div class="empty">No playlists yet.<br>Tap “+ New”.</div>`; return; }
+  ul.innerHTML = playlists.map((p) => `
     <li data-id="${p.id}" class="${p.id === state.selectedPlaylistId ? "active" : ""}">
       <div class="meta">
         <div class="title">${esc(p.name)}</div>
@@ -3663,11 +3683,22 @@ function renderLegacyPlaylistVideos() {
 function renderLegacyLibrary() {
   const list = $("#legacyList");
   if (!list) return;
-  if (!state.legacyItems.length) {
-    list.innerHTML = `<div class="legacy-empty">No processed videos yet.</div>`;
+  const localItems = downloadedLocalItems();
+  if (!state.legacyItems.length && !localItems.length) {
+    list.innerHTML = `<div class="legacy-empty">No downloaded videos yet.</div>`;
     return;
   }
-  list.innerHTML = state.legacyItems.map((item) => `
+  const localHtml = localItems.map((item) => `
+    <div class="legacy-item ${item.id === state.playingItemId ? "active" : ""}" data-local-id="${esc(item.id)}">
+      <div class="meta">
+        <div class="title">${esc(item.title)}</div>
+        <div class="sub">Local MP4 · synced video + audio</div>
+      </div>
+      <div class="actions">
+        <button class="btn small secondary" data-act="play-local" type="button">Play</button>
+      </div>
+    </div>`).join("");
+  const processedHtml = state.legacyItems.map((item) => `
     <div class="legacy-item ${item.id === state.legacyPlayingId ? "active" : ""}" data-id="${esc(item.id)}">
       <div class="meta">
         <div class="title">${esc(item.title)}</div>
@@ -3678,6 +3709,7 @@ function renderLegacyLibrary() {
         <button class="btn small ghost" data-act="delete" type="button">Delete</button>
       </div>
     </div>`).join("");
+  list.innerHTML = localHtml + processedHtml;
 }
 
 async function probeLegacyFormats() {
@@ -4793,6 +4825,7 @@ function closeChannels() { closeChannelMenus(); if (state.mode === "browse") set
 async function openLegacyLibrary() {
   setMode("library");
   try {
+    await loadPlaylists();
     await loadLegacyLibrary();
     await loadLegacyPlaylists();
   }
@@ -7033,7 +7066,15 @@ $("#legacyRefreshBtn").onclick = async () => {
     toast(e.message, true);
   }
 };
-$("#openDownloadsDrawerBtn").onclick = () => setDownloadsDrawerOpen(true);
+$("#openDownloadsDrawerBtn").onclick = async () => {
+  try {
+    await loadPlaylists();
+    await loadLegacyLibrary();
+  } catch (e) {
+    toast(e.message, true);
+  }
+  setDownloadsDrawerOpen(true);
+};
 $("#closeDownloadsDrawerBtn").onclick = () => setDownloadsDrawerOpen(false);
 $("#downloadsDrawerBackdrop").onclick = () => setDownloadsDrawerOpen(false);
 $("#legacyProbeBtn").onclick = probeLegacyFormats;
@@ -7240,6 +7281,14 @@ bindTap($("#itemList"), async (e) => {
 bindTap($("#legacyList"), async (e) => {
   const row = e.target.closest(".legacy-item");
   if (!row) return;
+  const localId = row.dataset.localId;
+  if (localId) {
+    const item = downloadedLocalItems().find((entry) => entry.id === localId);
+    if (!item) return;
+    setDownloadsDrawerOpen(false);
+    await playItem(item);
+    return;
+  }
   const item = state.legacyItems.find((x) => x.id === row.dataset.id);
   if (!item) return;
   const act = e.target.closest("[data-act]")?.dataset.act || "play";

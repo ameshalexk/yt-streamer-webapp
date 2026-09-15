@@ -4,6 +4,7 @@ import net from "node:net";
 import path from "node:path";
 import { config } from "../config.js";
 import { FULLSCREEN_SHIM } from "./browser-renderer.js";
+import * as store from "./store.js";
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
@@ -666,6 +667,28 @@ function sanitizeDownloadName(value) {
   return (cleaned || "APNE TV episode").slice(0, 160);
 }
 
+async function ensureDownloadedVideosPlaylist() {
+  const playlists = await store.listPlaylists();
+  let playlist = playlists.find((item) => item?.meta?.kind === "downloaded-files");
+  if (!playlist) {
+    playlist = await store.addPlaylist({
+      name: "Downloaded Videos",
+      meta: { kind: "downloaded-files", hidden: true },
+    });
+  }
+  return playlist;
+}
+
+async function registerDownloadedVideo(filePath, title, meta = {}) {
+  const playlist = await ensureDownloadedVideosPlaylist();
+  return store.addItem(playlist.id, {
+    title,
+    type: "file",
+    url: filePath,
+    meta: { downloaded: true, source: "apnetv", ...meta },
+  });
+}
+
 async function uniqueLibraryVideoPath(title) {
   await fs.mkdir(config.libraryDir, { recursive: true });
   const base = sanitizeDownloadName(title);
@@ -752,11 +775,13 @@ function runApneHlsDownload(session, { hlsUrl, referer, title }) {
     });
 
     await fs.rename(partPath, finalPath);
+    const item = await registerDownloadedVideo(finalPath, title);
     session.apneDownload = {
       ...session.apneDownload,
       status: "done",
       finishedAt: Date.now(),
       filePath: finalPath,
+      itemId: item?.id || null,
     };
     await setApneDownloadButtonState(session, "Saved");
     console.log(`[real-chrome] APNE download completed -> ${finalPath}`);
