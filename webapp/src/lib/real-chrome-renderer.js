@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { config } from "../config.js";
+import { FULLSCREEN_SHIM } from "./browser-renderer.js";
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
@@ -238,10 +239,28 @@ async function targetForPort(port) {
   return page;
 }
 
+async function installFullscreenShim(session) {
+  // Off-screen Real Chrome cannot reliably stay in native fullscreen. Reuse the
+  // browser renderer's virtual fullscreen so site players fill the captured viewport.
+  await session.cdp.call("Page.addScriptToEvaluateOnNewDocument", {
+    source: FULLSCREEN_SHIM,
+    runImmediately: true,
+  }).catch(async () => {
+    await session.cdp.call("Page.addScriptToEvaluateOnNewDocument", {
+      source: FULLSCREEN_SHIM,
+    }).catch(() => {});
+  });
+  await session.cdp.call("Runtime.evaluate", {
+    expression: FULLSCREEN_SHIM,
+    awaitPromise: true,
+  }).catch(() => {});
+}
+
 async function preparePage(session) {
   await session.cdp.ready;
   await session.cdp.call("Page.enable");
   await session.cdp.call("Runtime.enable");
+  await installFullscreenShim(session);
   await session.cdp.call("Network.enable").catch(() => {});
   await session.cdp.call("Network.setUserAgentOverride", { userAgent: DESKTOP_USER_AGENT, platform: "macOS" }).catch(() => {});
   await session.cdp.call("Input.setIgnoreInputEvents", { ignore: false }).catch(() => {});
@@ -642,13 +661,16 @@ export async function input(id, payload = {}) {
   const button = payload.button === 2 ? "right" : "left";
   if (payload.type === "tap") {
     if (payload.pointerType === "touch") {
+      // Touch emulation already emits the compatibility click. Do not send a second
+      // explicit mouse click or toggle controls (such as fullscreen) can fire twice.
       await session.cdp.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, radiusX: 2, radiusY: 2, force: 1, id: 1 }] });
       await session.cdp.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      const fallback = await googleLoginClickFallback(session, p).catch(() => null);
+      if (fallback?.clicked) return { ok: true, fallback };
+      return { ok: true };
     }
     await session.cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 });
     await session.cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 });
-    const fallback = payload.pointerType === "touch" ? await googleLoginClickFallback(session, p).catch(() => null) : null;
-    if (fallback?.clicked) return { ok: true, fallback };
     return { ok: true };
   }
   if (payload.type === "move" || payload.type === "drag") {

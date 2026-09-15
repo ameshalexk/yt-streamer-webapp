@@ -11,7 +11,7 @@ const MIN_HEIGHT = 240;
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const IDLE_CLOSE_MS = 60 * 1000;
 const BOUNDARY = "browserframe";
-const FULLSCREEN_SHIM = `(() => {
+export const FULLSCREEN_SHIM = `(() => {
   if (window.__ytStreamerFullscreenShim) return;
   window.__ytStreamerFullscreenShim = true;
   let activeElement = null;
