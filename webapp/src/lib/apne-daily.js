@@ -11,6 +11,9 @@ const LOG_FILE = path.join(config.dataDir, "apne-daily.log");
 const LOG_MAX_BYTES = 2 * 1024 * 1024;
 const DESKTOP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/145 Safari/537.36";
 const REQUEST_TIMEOUT_MS = 15_000;
+const APNE_HISTORY_MONTHS = 3;
+const APNE_HISTORY_FETCH_LIMIT = 250;
+const APNE_HISTORY_PAGE_SIZE = 10;
 const DEFAULT_SHOWS = [{
   id: "anupamaa",
   name: "Anupamaa",
@@ -210,8 +213,25 @@ export function parseRecentEpisodesFromShowHtml(html, show = {}, limit = 10) {
   }
   if (!matches.length) throw new Error("APNE did not return any dated episodes for this show.");
   matches.sort((a, b) => b.dateKey.localeCompare(a.dateKey));
-  const count = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(25, Math.trunc(Number(limit)))) : 10;
+  const count = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(APNE_HISTORY_FETCH_LIMIT, Math.trunc(Number(limit)))) : 10;
   return matches.slice(0, count);
+}
+
+export function filterApneEpisodesByMonths(episodes, months = APNE_HISTORY_MONTHS) {
+  const list = Array.isArray(episodes)
+    ? episodes.filter((episode) => /^\d{4}-\d{2}-\d{2}$/.test(String(episode?.dateKey || "")))
+    : [];
+  if (!list.length) return [];
+  const newest = list[0].dateKey;
+  const parts = newest.split("-").map(Number);
+  const cutoff = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  cutoff.setUTCMonth(cutoff.getUTCMonth() - Math.max(1, Math.trunc(Number(months) || APNE_HISTORY_MONTHS)));
+  const cutoffKey = [
+    cutoff.getUTCFullYear(),
+    String(cutoff.getUTCMonth() + 1).padStart(2, "0"),
+    String(cutoff.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+  return list.filter((episode) => episode.dateKey >= cutoffKey);
 }
 
 export function parseLatestEpisodeFromShowHtml(html, show = {}) {
@@ -443,10 +463,17 @@ export function episodeMatchesDownloadedItem(item, show, episode) {
   return Boolean(itemTitle && showName && shortDate && itemTitle.includes(showName) && itemTitle.includes(shortDate));
 }
 
-async function downloadedItemFor(show, episode) {
+async function downloadedApneItems() {
   const playlists = await store.listPlaylists();
-  const items = playlists.filter((playlist) => playlist?.meta?.kind === "downloaded-files").flatMap((playlist) => playlist.items || []);
-  return items.find((item) => episodeMatchesDownloadedItem(item, show, episode)) || null;
+  return playlists
+    .filter((playlist) => playlist?.meta?.kind === "downloaded-files")
+    .flatMap((playlist) => playlist.items || [])
+    .filter((item) => item?.type === "file" && item?.meta?.source === "apnetv");
+}
+
+async function downloadedItemFor(show, episode, items = null) {
+  const candidates = items || await downloadedApneItems();
+  return candidates.find((item) => episodeMatchesDownloadedItem(item, show, episode)) || null;
 }
 
 async function detectRecent(show, limit = 10) {
@@ -484,8 +511,8 @@ function publicJob(job) {
   };
 }
 
-async function episodeStatus(show, episode) {
-  const saved = await downloadedItemFor(show, episode);
+async function episodeStatus(show, episode, downloadedItems = null) {
+  const saved = await downloadedItemFor(show, episode, downloadedItems);
   const job = jobs.get(jobKey(show.id, episode.dateKey));
   let status = saved ? "Saved" : "Available";
   let itemId = saved?.id || null;
@@ -500,26 +527,56 @@ async function episodeStatus(show, episode) {
 
 async function statusForShow(show) {
   try {
-    const detected = await detectRecent(show, 10);
-    const recentEpisodes = await Promise.all(detected.map((episode) => episodeStatus(show, episode)));
+    const detected = await detectRecent(show, APNE_HISTORY_FETCH_LIMIT);
+    const historyEpisodes = filterApneEpisodesByMonths(detected, APNE_HISTORY_MONTHS);
+    const downloadedItems = await downloadedApneItems();
+    const recentEpisodes = await Promise.all(historyEpisodes.map((episode) => episodeStatus(show, episode, downloadedItems)));
     const episode = recentEpisodes[0];
-    const isToday = episode.dateKey === todayKey();
-    let status = isToday ? episode.status : "Not available yet";
-    let detail = isToday ? episode.dateLabel : `Latest: ${episode.dateLabel}`;
-    let itemId = isToday ? episode.itemId : null;
+    const status = episode.status;
+    let detail = "Latest: " + episode.dateLabel;
+    const itemId = episode.itemId || null;
     const latestJob = jobs.get(jobKey(show.id, episode.dateKey));
 
-    // Preserve the existing convenient Play state when the latest APNE episode is already saved.
-    if (!isToday && episode.status === "Saved") {
-      status = "Saved";
-      detail = episode.dateLabel;
-      itemId = episode.itemId;
-    } else if (isToday && episode.status === "Failed") {
+    // APNE follows the Indian TV date, which can already be tomorrow in America/Chicago.
+    // If APNE has published the newest dated episode, treat it as the current available
+    // episode instead of greying it out purely because the local calendar date differs.
+    if (status === "Failed") {
       detail = episode.detail || latestJob?.error || "Download failed";
+    } else if (status === "Downloading") {
+      detail = episode.detail || ("Downloading " + episode.dateLabel + "…");
     }
-    return { ...show, status, detail, episode, recentEpisodes, itemId, job: publicJob(latestJob) };
+
+    return {
+      ...show,
+      status,
+      detail,
+      episode,
+      recentEpisodes,
+      itemId,
+      job: publicJob(latestJob),
+      history: {
+        months: APNE_HISTORY_MONTHS,
+        total: recentEpisodes.length,
+        pageSize: APNE_HISTORY_PAGE_SIZE,
+        pageCount: Math.max(1, Math.ceil(recentEpisodes.length / APNE_HISTORY_PAGE_SIZE)),
+      },
+    };
   } catch (error) {
-    return { ...show, status: "Failed", detail: error.message, episode: null, recentEpisodes: [], itemId: null, job: null };
+    return {
+      ...show,
+      status: "Failed",
+      detail: error.message,
+      episode: null,
+      recentEpisodes: [],
+      itemId: null,
+      job: null,
+      history: {
+        months: APNE_HISTORY_MONTHS,
+        total: 0,
+        pageSize: APNE_HISTORY_PAGE_SIZE,
+        pageCount: 1,
+      },
+    };
   }
 }
 
@@ -631,9 +688,10 @@ export async function startEpisodeDownload(showId, dateKey) {
   const shows = await loadShows();
   const show = shows.find((item) => item.id === showId);
   if (!show) throw httpError(404, "APNE Daily show not found.");
-  const recent = await detectRecent(show, 25);
-  const episode = recent.find((item) => item.dateKey === key);
-  if (!episode) throw httpError(404, "That episode is no longer in APNE's recent episode list.");
+  const detected = await detectRecent(show, APNE_HISTORY_FETCH_LIMIT);
+  const history = filterApneEpisodesByMonths(detected, APNE_HISTORY_MONTHS);
+  const episode = history.find((item) => item.dateKey === key);
+  if (!episode) throw httpError(404, "That episode is outside APNE Daily's " + APNE_HISTORY_MONTHS + "-month history window.");
   return createEpisodeDownloadJob(show, episode);
 }
 
@@ -642,11 +700,5 @@ export async function startShowDownload(showId) {
   const show = shows.find((item) => item.id === showId);
   if (!show) throw httpError(404, "APNE Daily show not found.");
   const episode = await detectLatest(show);
-  if (episode.dateKey !== todayKey()) {
-    return {
-      id: null, showId: show.id, status: "Not available yet", detail: `Latest: ${episode.dateLabel}`,
-      episode, itemId: null, filePath: null, error: null, startedAt: null, finishedAt: null,
-    };
-  }
   return createEpisodeDownloadJob(show, episode);
 }

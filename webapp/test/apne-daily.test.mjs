@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   episodeMatchesDownloadedItem,
+  filterApneEpisodesByMonths,
   normalizeApneShowInput,
   parseFlashTargetFromEpisodeHtml,
   parseLatestEpisodeFromShowHtml,
@@ -46,6 +47,20 @@ test("APNE Daily returns up to 10 recent episodes in newest-first order", () => 
   assert.equal(episodes[0].dateKey, "2026-09-12");
   assert.equal(episodes[9].dateKey, "2026-09-03");
 });
+
+test("APNE Daily keeps a three-month episode history window", () => {
+  const episodes = [
+    { dateKey: "2026-09-16", dateLabel: "16th September 2026" },
+    { dateKey: "2026-08-01", dateLabel: "1st August 2026" },
+    { dateKey: "2026-06-16", dateLabel: "16th June 2026" },
+    { dateKey: "2026-06-15", dateLabel: "15th June 2026" },
+  ];
+  assert.deepEqual(
+    filterApneEpisodesByMonths(episodes, 3).map((episode) => episode.dateKey),
+    ["2026-09-16", "2026-08-01", "2026-06-16"],
+  );
+});
+
 
 
 test("APNE Daily resolves the browserless APNE to Newsportaling to Mediagraming HLS chain", () => {
@@ -94,7 +109,7 @@ test("APNE Daily duplicate detection skips an already downloaded episode", () =>
 
   assert.match(apneDailySource, /download_duplicate/);
   assert.match(apneDailySource, /export async function startEpisodeDownload\(showId, dateKey\)/);
-  assert.match(apneDailySource, /recent\.find\(\(item\) => item\.dateKey === key\)/);
+  assert.match(apneDailySource, /history\.find\(\(item\) => item\.dateKey === key\)/);
 });
 
 test("APNE Daily downloads register as seekable local files in Downloaded Videos", () => {
@@ -125,20 +140,26 @@ test("APNE Daily show management normalizes APNE show and episode URLs", () => {
   );
 });
 
-test("APNE Daily UI renders the tab, statuses, Download Today, Play, and Manage Shows", () => {
+test("APNE Daily UI renders latest controls, three-month history, and pagination", () => {
   assert.match(html, /data-mode="apne"[^>]*>APNE Daily<\/button>/);
   assert.match(html, /id="apneDailyView"/);
   assert.match(html, /id="apneManageShowsBtn"[^>]*>Manage Shows<\/button>/);
   assert.match(app, /function renderApneDaily\(\)/);
-  assert.match(app, /Download Today/);
-  assert.match(app, /saved \? "Play"/);
-  assert.match(app, /Recent episodes/);
+  assert.match(app, /Download Latest/);
+  assert.match(app, /saved \? "Play Latest"/);
+  assert.match(app, /Last .* months/);
+  assert.match(app, /apne-page-newer/);
+  assert.match(app, /apne-page-older/);
+  assert.match(app, /Page .* of/);
   assert.match(app, /recentAction = recentSaved \? "play-episode" : "download-episode"/);
   assert.match(app, /button\.dataset\.act === "play-episode"/);
   assert.match(app, /startApneEpisodeDownload/);
   assert.match(apneDailySource, /recentEpisodes/);
+  assert.match(apneDailySource, /APNE_HISTORY_MONTHS = 3/);
+  assert.match(apneDailySource, /APNE_HISTORY_PAGE_SIZE = 10/);
+  assert.match(apneDailySource, /Indian TV date/);
   assert.match(app, /if \(item\.type === "youtube"\) \{[\s\S]*refreshYoutubeMetadataInBackground/);
-  for (const status of ["Checking", "Not available yet", "Available", "Downloading", "Saved", "Failed"]) {
+  for (const status of ["Checking", "Available", "Downloading", "Saved", "Failed"]) {
     assert.ok((apneDailySource + app).includes(status), "missing APNE Daily status: " + status);
   }
   assert.match(server, /app\.get\("\/api\/apne-daily"/);

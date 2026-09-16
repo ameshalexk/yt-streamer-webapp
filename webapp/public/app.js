@@ -58,7 +58,7 @@ const state = {
   legacyPlaylists: [],
   selectedLegacyPlaylistId: null,
   legacyPlaylistVideos: [],
-  apneDaily: { today: "", shows: [], loading: false, pollTimer: null },
+  apneDaily: { today: "", shows: [], loading: false, pollTimer: null, pageByShow: {} },
   youtubeAuth: null,
   recommendations: [],
   recommendationCategory: "all",
@@ -3749,16 +3749,67 @@ function renderApneDaily() {
     list.innerHTML = '<article class="apne-show-card is-checking"><div class="apne-show-main"><h3>Anupamaa</h3><div class="apne-status"><span class="apne-status-dot"></span>Checking</div></div></article>';
     return;
   }
+
   list.innerHTML = shows.map((show) => {
     const status = show.status || "Checking";
     const busy = status === "Checking" || status === "Downloading";
     const saved = status === "Saved";
-    const unavailable = status === "Not available yet";
     const episode = show.episode || {};
     const detail = show.detail || episode.dateLabel || "";
-    const buttonText = saved ? "Play" : (status === "Failed" ? "Download Today" : "Download Today");
-    const disabled = busy || unavailable;
+    const buttonText = saved ? "Play Latest" : (status === "Failed" ? "Retry Latest" : "Download Latest");
+    const disabled = busy;
     const action = saved ? "play" : "download";
+
+    const historyEpisodes = show.recentEpisodes || [];
+    const pageSize = Math.max(1, Number(show.history?.pageSize || 10));
+    const pageCount = Math.max(1, Math.ceil(historyEpisodes.length / pageSize));
+    const requestedPage = Math.max(1, Number(state.apneDaily.pageByShow?.[show.id] || 1));
+    const page = Math.min(pageCount, requestedPage);
+    state.apneDaily.pageByShow[show.id] = page;
+    const pageStart = (page - 1) * pageSize;
+    const pageEpisodes = historyEpisodes.slice(pageStart, pageStart + pageSize);
+    const historyMonths = Number(show.history?.months || 3);
+    const historyTotal = Number(show.history?.total ?? historyEpisodes.length);
+
+    const historyHtml = historyEpisodes.length
+      ? '<div class="apne-recent">' +
+          '<div class="apne-recent-head">' +
+            '<div class="apne-recent-title">Episodes</div>' +
+            '<div class="apne-history-range">Last ' + esc(historyMonths) + ' months · ' + esc(historyTotal) + ' episodes</div>' +
+          '</div>' +
+          pageEpisodes.map((recent, pageIndex) => {
+            const recentStatus = recent.status || "Available";
+            const recentSaved = recentStatus === "Saved" && recent.itemId;
+            const recentBusy = recentStatus === "Checking" || recentStatus === "Downloading";
+            const recentAction = recentSaved ? "play-episode" : "download-episode";
+            const recentButton = recentSaved ? "Play" : (recentBusy ? "Downloading…" : (recentStatus === "Failed" ? "Retry" : "Download"));
+            const recentLabel = recent.dateLabel || recent.dateKey || "Episode";
+            const absoluteIndex = pageStart + pageIndex;
+            const badge = absoluteIndex === 0 ? "Latest" : (recent.dateKey && recent.dateKey === state.apneDaily.today ? "Today" : "");
+            const subLabel = recentBusy
+              ? (recent.detail || "Saving to Mac…")
+              : (recentStatus === "Failed" ? (recent.detail || "Download failed") : (recentSaved ? "Saved on Mac" : "Available"));
+
+            return '<div class="apne-recent-row" data-date-key="' + esc(recent.dateKey || "") + '">' +
+              '<div class="apne-recent-copy">' +
+                '<div class="apne-recent-heading"><strong>' + esc(recentLabel) + '</strong>' +
+                  (badge ? '<span class="apne-date-badge">' + esc(badge) + '</span>' : '') +
+                '</div>' +
+                '<small class="' + (recentStatus === "Failed" ? 'apne-recent-error' : '') + '">' + esc(subLabel) + '</small>' +
+              '</div>' +
+              '<button class="btn small ' + (recentSaved ? 'secondary' : '') + ' apne-recent-action" type="button" data-act="' + recentAction + '" data-date-key="' + esc(recent.dateKey || "") + '" data-item-id="' + esc(recent.itemId || "") + '" ' + (recentBusy ? 'disabled' : '') + '>' + esc(recentButton) + '</button>' +
+            '</div>';
+          }).join("") +
+          (pageCount > 1
+            ? '<div class="apne-pagination" aria-label="Episode history pages">' +
+                '<button class="btn small ghost apne-page-btn" type="button" data-act="apne-page-newer" ' + (page <= 1 ? 'disabled' : '') + '>Newer</button>' +
+                '<span class="apne-page-label">Page ' + esc(page) + ' of ' + esc(pageCount) + '</span>' +
+                '<button class="btn small ghost apne-page-btn" type="button" data-act="apne-page-older" ' + (page >= pageCount ? 'disabled' : '') + '>Older</button>' +
+              '</div>'
+            : '') +
+        '</div>'
+      : '';
+
     return '<article class="apne-show-card ' + apneStatusClass(status) + '" data-show-id="' + esc(show.id) + '">' +
       '<div class="apne-show-main">' +
         '<div class="apne-show-copy"><h3>' + esc(show.name) + '</h3>' +
@@ -3768,27 +3819,10 @@ function renderApneDaily() {
         '<button class="btn apne-download-today ' + (saved ? 'secondary' : '') + '" data-act="' + action + '" type="button" ' + (disabled ? 'disabled' : '') + '>' + esc(buttonText) + '</button>' +
       '</div>' +
       (status === "Downloading" ? '<div class="apne-progress"><i></i></div>' : '') +
-      ((show.recentEpisodes || []).length ?
-        '<div class="apne-recent"><div class="apne-recent-title">Recent episodes</div>' +
-          (show.recentEpisodes || []).map((recent) => {
-            const recentStatus = recent.status || "Available";
-            const recentSaved = recentStatus === "Saved" && recent.itemId;
-            const recentBusy = recentStatus === "Checking" || recentStatus === "Downloading";
-            const recentAction = recentSaved ? "play-episode" : "download-episode";
-            const recentButton = recentSaved ? "Play" : (recentBusy ? "Downloading…" : (recentStatus === "Failed" ? "Retry" : "Download"));
-            return '<div class="apne-recent-row" data-date-key="' + esc(recent.dateKey || "") + '">' +
-              '<div class="apne-recent-copy"><strong>' + esc(recent.dateLabel || recent.dateKey || "Episode") + '</strong>' +
-                (recentBusy ? '<small>' + esc(recent.detail || "Saving to Mac…") + '</small>' : '') +
-                (recentStatus === "Failed" ? '<small class="apne-recent-error">' + esc(recent.detail || "Download failed") + '</small>' : '') +
-              '</div>' +
-              '<button class="btn small ' + (recentSaved ? 'secondary' : '') + ' apne-recent-action" type="button" data-act="' + recentAction + '" data-date-key="' + esc(recent.dateKey || "") + '" data-item-id="' + esc(recent.itemId || "") + '" ' + (recentBusy ? 'disabled' : '') + '>' + esc(recentButton) + '</button>' +
-            '</div>';
-          }).join("") +
-        '</div>' : '') +
+      historyHtml +
     '</article>';
   }).join("");
 }
-
 function scheduleApneDailyPoll() {
   if (state.apneDaily.pollTimer) clearTimeout(state.apneDaily.pollTimer);
   state.apneDaily.pollTimer = null;
@@ -7292,7 +7326,14 @@ bindTap($("#apneDailyList"), async (event) => {
   const button = event.target.closest("[data-act]");
   const card = event.target.closest("[data-show-id]");
   if (!button || !card) return;
-  if (button.dataset.act === "download") await startApneDailyDownload(card.dataset.showId);
+  if (button.dataset.act === "apne-page-newer" || button.dataset.act === "apne-page-older") {
+    const showId = card.dataset.showId;
+    const current = Math.max(1, Number(state.apneDaily.pageByShow?.[showId] || 1));
+    state.apneDaily.pageByShow[showId] = button.dataset.act === "apne-page-older"
+      ? current + 1
+      : Math.max(1, current - 1);
+    renderApneDaily();
+  } else if (button.dataset.act === "download") await startApneDailyDownload(card.dataset.showId);
   else if (button.dataset.act === "download-episode") await startApneEpisodeDownload(card.dataset.showId, button.dataset.dateKey);
   else if (button.dataset.act === "play-episode") {
     if (button.dataset.itemId) await playApneDailyItem(button.dataset.itemId);
