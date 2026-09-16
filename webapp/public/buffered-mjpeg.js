@@ -526,6 +526,8 @@
       this.firstRenderedAt = null;
       this.decodeTotalMs = 0;
       this.decodeCount = 0;
+      this.renderTotalMs = 0;
+      this.renderCount = 0;
       this.stats = {
         state: "idle",
         fps: this.fps,
@@ -545,6 +547,8 @@
         producerSpeed: null,
         averageDecodeMs: null,
         maxDecodeMs: null,
+        averageRenderMs: null,
+        maxRenderMs: null,
         startupMs: null,
         responseStartMs: null,
         firstByteMs: null,
@@ -603,6 +607,9 @@
       }
       if (this.decodeCount > 0) {
         this.stats.averageDecodeMs = Math.round((this.decodeTotalMs / this.decodeCount) * 10) / 10;
+      }
+      if (this.renderCount > 0) {
+        this.stats.averageRenderMs = Math.round((this.renderTotalMs / this.renderCount) * 10) / 10;
       }
     }
 
@@ -862,7 +869,12 @@
           this.canvas.width = decoded.width;
           this.canvas.height = decoded.height;
         }
+        const renderStartedAt = performance.now();
         this.ctx.drawImage(decoded.source, 0, 0, this.canvas.width, this.canvas.height);
+        const renderMs = Math.max(0, performance.now() - renderStartedAt);
+        this.renderTotalMs += renderMs;
+        this.renderCount += 1;
+        this.stats.maxRenderMs = Math.max(Number(this.stats.maxRenderMs || 0), Math.round(renderMs * 10) / 10);
         this.lastRenderedTime = frame.time;
         this.stats.renderedFrames += 1;
         if (this.firstRenderedAt == null) {

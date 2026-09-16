@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import fssync from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
+import { RawJpegStreamParser, encodeEautoFrame } from "./eauto-framing.js";
 
 let active = 0;
 const hlsSessions = new Map();
@@ -38,7 +39,7 @@ function summarizeFfmpegError(stderr) {
   return tail;
 }
 
-function pipeFfmpegOutput(req, res, ff, { headers, dynamicHeaders = null, label, stderrLimit = 8000, outputDelayMs = 0, onCleanup }) {
+export function pipeFfmpegOutput(req, res, ff, { headers, dynamicHeaders = null, label, stderrLimit = 8000, outputDelayMs = 0, transformChunk = null, transformEnd = null, onCleanup }) {
   let stderr = "";
   let started = false;
   let cleaned = false;
@@ -52,12 +53,14 @@ function pipeFfmpegOutput(req, res, ff, { headers, dynamicHeaders = null, label,
   let firstOutputAt = 0;
   const pipeStartedAt = Date.now();
   const delayed = [];
+  const pendingOutputs = [];
 
   const cleanup = (kill = true) => {
     if (cleaned) return;
     cleaned = true;
     if (delayTimer) clearTimeout(delayTimer);
     delayed.length = 0;
+    pendingOutputs.length = 0;
     try { ff.stdout.unpipe(res); } catch {}
     if (kill && !ff.killed) ff.kill("SIGKILL");
     if (drainStartedAt) {
@@ -96,8 +99,8 @@ function pipeFfmpegOutput(req, res, ff, { headers, dynamicHeaders = null, label,
         drainStartedAt = 0;
         waitingDrain = false;
         if (!cleaned) {
-          ff.stdout.resume();
-          flushDelayed();
+          flushPendingOutputs();
+          if (!waitingDrain) flushDelayed();
         }
       });
       return false;
@@ -106,10 +109,41 @@ function pipeFfmpegOutput(req, res, ff, { headers, dynamicHeaders = null, label,
   };
 
   const finishIfReady = () => {
-    if (stdoutEnded && delayed.length === 0 && started && !res.destroyed) {
+    if (stdoutEnded && delayed.length === 0 && pendingOutputs.length === 0 && started && !res.destroyed) {
       try { res.end(); } catch {}
     }
   };
+
+  function flushPendingOutputs() {
+    if (cleaned || waitingDrain) return;
+    while (pendingOutputs.length) {
+      const output = pendingOutputs.shift();
+      if (!writeChunk(output)) return;
+    }
+    if (!cleaned) ff.stdout.resume();
+    finishIfReady();
+  }
+
+  function dispatchOutputs(outputs) {
+    const valid = (outputs || []).filter((output) => output?.byteLength || output?.length);
+    if (outputDelayMs > 0) {
+      for (const output of valid) delayed.push({ sendAt: Date.now() + outputDelayMs, chunk: output });
+      scheduleDelayedFlush();
+      return;
+    }
+    if (waitingDrain) {
+      pendingOutputs.push(...valid);
+      return;
+    }
+    for (let index = 0; index < valid.length; index += 1) {
+      if (!writeChunk(valid[index])) {
+        // res.write accepted this output but signaled backpressure. Preserve
+        // every later framed JPEG from the same ffmpeg chunk until drain.
+        pendingOutputs.push(...valid.slice(index + 1));
+        break;
+      }
+    }
+  }
 
   const scheduleDelayedFlush = () => {
     if (delayTimer || delayed.length === 0 || waitingDrain) return;
@@ -129,15 +163,34 @@ function pipeFfmpegOutput(req, res, ff, { headers, dynamicHeaders = null, label,
   }
 
   ff.stdout.on("data", (chunk) => {
-    if (outputDelayMs > 0) {
-      delayed.push({ sendAt: Date.now() + outputDelayMs, chunk });
-      scheduleDelayedFlush();
+    let chunks;
+    try {
+      chunks = transformChunk ? transformChunk(chunk) : [chunk];
+    } catch (error) {
+      console.error(`[${label}] output transform error:`, error.message);
+      if (!started && !res.headersSent) res.status(502).type("text/plain").end(`video framing failed: ${error.message}`);
+      else if (!res.destroyed) res.destroy(error);
+      cleanup(true);
       return;
     }
-    writeChunk(chunk);
+    dispatchOutputs(chunks);
   });
 
   ff.stdout.on("end", () => {
+    // A client abort/seek kills ffmpeg immediately and can leave a partial JPEG
+    // in stdout. Cleanup already owns that expected path; do not report it as a
+    // framing failure or try to write to the closed response.
+    if (cleaned) return;
+    if (transformEnd) {
+      try {
+        dispatchOutputs(transformEnd());
+      } catch (error) {
+        console.error(`[${label}] output finalization error:`, error.message);
+        if (!res.destroyed) res.destroy(error);
+        cleanup(false);
+        return;
+      }
+    }
     stdoutEnded = true;
     if (outputDelayMs > 0) flushDelayed();
     else finishIfReady();
@@ -201,7 +254,7 @@ function seekSeconds(value) {
   return Number.isFinite(n) && n > 0 ? Math.max(0, n) : 0;
 }
 
-export function buildMjpegArgs({ input, audioInput, params, isLive, userAgent, referer, startAt = 0, paceInput = false, allowBurst = false }) {
+export function buildMjpegArgs({ input, audioInput, params, isLive, userAgent, referer, startAt = 0, paceInput = false, allowBurst = false, framed = false }) {
   const vf = [];
   if (params.height && params.height > 0) vf.push(`scale=-2:${params.height}`);
   vf.push(`fps=${params.fps}`);
@@ -239,7 +292,7 @@ export function buildMjpegArgs({ input, audioInput, params, isLive, userAgent, r
     "-map", "0:v:0",
     "-vf", vf.join(","),
     "-q:v", String(params.quality),
-    "-f", "mpjpeg",
+    ...(framed ? ["-c:v", "mjpeg", "-f", "image2pipe"] : ["-f", "mpjpeg"]),
     "pipe:1"
   );
   return args;
@@ -257,6 +310,9 @@ export function streamMjpeg(req, res, {
   startAt = 0,
   paceInput = false,
   allowBurst = false,
+  framed = false,
+  sessionId = 0,
+  frameProfile = "e-auto",
   timing = null,
   onTelemetry = null,
 }) {
@@ -266,16 +322,19 @@ export function streamMjpeg(req, res, {
   }
   active++;
 
-  const args = buildMjpegArgs({ input, audioInput, params, isLive, userAgent, referer, startAt, paceInput, allowBurst });
+  const args = buildMjpegArgs({ input, audioInput, params, isLive, userAgent, referer, startAt, paceInput, allowBurst, framed });
   const ffmpegStartedAt = Date.now();
   const ff = spawn(config.ffmpegPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+  const rawJpegParser = framed ? new RawJpegStreamParser({ maxJpegBytes: 8 * 1024 * 1024 }) : null;
+  let frameSequence = 0;
+  const streamStartSeconds = seekSeconds(startAt);
   pipeFfmpegOutput(req, res, ff, {
-    label: "stream",
+    label: framed ? "eauto-stream" : "stream",
     headers: {
       // WebKit has longstanding special handling for multipart/x-mixed-replace.
       // Buffered clients parse the same multipart MJPEG bytes in JavaScript, so
       // expose them as a neutral byte stream and carry the boundary explicitly.
-      "Content-Type": allowBurst ? "application/octet-stream" : "multipart/x-mixed-replace; boundary=ffmpeg",
+      "Content-Type": framed ? "application/vnd.ytstreamer.eauto+jpeg" : (allowBurst ? "application/octet-stream" : "multipart/x-mixed-replace; boundary=ffmpeg"),
       "Cache-Control": "no-cache, no-store, must-revalidate",
       Pragma: "no-cache",
       "X-Accel-Buffering": "no",
@@ -283,7 +342,27 @@ export function streamMjpeg(req, res, {
       "X-MJPEG-FPS": String(params.fps),
       "X-MJPEG-Start": String(seekSeconds(startAt)),
       "X-MJPEG-Buffered": allowBurst ? "1" : "0",
+      ...(framed ? {
+        "X-EAuto-Protocol": "EAJF/1",
+        "X-EAuto-Header-Bytes": "48",
+        "X-EAuto-Session-Id": String(sessionId >>> 0),
+      } : {}),
     },
+    transformChunk: framed ? (chunk) => rawJpegParser.push(chunk).map((jpeg) => {
+      const sequence = frameSequence++;
+      return encodeEautoFrame({
+        sessionId: sessionId >>> 0,
+        sequence,
+        videoTimestamp: Math.round((streamStartSeconds + sequence / params.fps) * 1_000_000),
+        encodeTimestamp: Date.now(),
+        fps: params.fps,
+        quality: params.quality,
+        profile: frameProfile,
+        width: 0,
+        height: params.height,
+      }, jpeg);
+    }) : null,
+    transformEnd: framed ? () => rawJpegParser.end() : null,
     dynamicHeaders: () => {
       const requestStartedAt = Number(timing?.requestStartedAt || 0);
       const resolveMs = Number(timing?.resolveMs);

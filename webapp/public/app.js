@@ -115,10 +115,24 @@ const STREAM_QUALITY_PROFILES = Object.freeze({
 
 const AUTO_STREAM_QUALITY_ID = "auto";
 const AUTO_STREAM_INITIAL_TIER = "medium";
+const E_AUTO_STREAM_QUALITY_ID = "e-auto";
+const E_AUTO_INITIAL_PROFILE_ID = "balanced";
+const E_AUTO_STREAM_PROFILES = Object.freeze({
+  economy: Object.freeze({ id: "economy", label: "Economy", height: "360", fps: "8", quality: "18", nominalBitrate: 650_000 }),
+  low: Object.freeze({ id: "low", label: "Low", height: "360", fps: "12", quality: "12", nominalBitrate: 1_000_000 }),
+  balanced: Object.freeze({ id: "balanced", label: "Balanced", height: "480", fps: "15", quality: "7", nominalBitrate: 1_800_000 }),
+  smooth: Object.freeze({ id: "smooth", label: "Smooth", height: "480", fps: "18", quality: "5", nominalBitrate: 2_500_000 }),
+  high: Object.freeze({ id: "high", label: "High", height: "720", fps: "24", quality: "4", nominalBitrate: 4_800_000 }),
+});
 const autoQualityController = window.YtAutoQuality?.AutoQualityController
   ? new window.YtAutoQuality.AutoQualityController()
   : null;
 let streamQualitySelection = null;
+let eAutoProfileId = E_AUTO_INITIAL_PROFILE_ID;
+const eAutoAbrController = window.YtExperimentalAuto?.MjpegAbrController
+  ? new window.YtExperimentalAuto.MjpegAbrController({ profile: E_AUTO_INITIAL_PROFILE_ID, logger: console })
+  : null;
+let eAutoDebugUpdatedAt = 0;
 
 const DESKTOP_AUDIO_KEY = "ytStreamerDesktopAudio";
 const DESKTOP_AUDIO_NAME_KEY = "ytStreamerDesktopAudioName";
@@ -696,6 +710,139 @@ let slowBufferAutoHideTimer = null;
 let slowBufferSuggestionShownAttempt = -1;
 let slowBufferSuggestionScope = { key: "", count: 0, stopped: false };
 let playbackStartupTraceSeq = 0;
+const EXPERIMENT_SESSIONS_KEY = "ytStreamerAutoExperimentSessionsV1";
+let activeExperimentMeasurement = null;
+let preserveExperimentOnCleanup = false;
+
+function experimentMode() {
+  if (streamQualitySelection === E_AUTO_STREAM_QUALITY_ID) return "e-auto";
+  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) return "auto";
+  return null;
+}
+
+function beginExperimentMeasurement(mode, label, streamUrl, attempt) {
+  if (!mode) return null;
+  if (activeExperimentMeasurement && activeExperimentMeasurement.mode === mode && activeExperimentMeasurement.label === label) {
+    activeExperimentMeasurement.attempt = attempt;
+    activeExperimentMeasurement.lastCounters = null;
+    return activeExperimentMeasurement;
+  }
+  finalizeExperimentMeasurement("replaced");
+  activeExperimentMeasurement = {
+    mode, label, streamUrl, attempt, startedAt: Date.now(), lastAt: performance.now(), lastState: "idle",
+    stallStartedAt: null, stallCount: 0, stallDurationMs: 0, rebufferEvents: 0,
+    receivedFrames: 0, renderedFrames: 0, droppedFrames: 0, lateFrames: 0, receivedBytes: 0,
+    queueSamples: 0, queueTotal: 0, minBuffer: Number.POSITIVE_INFINITY,
+    driftSamples: 0, driftTotal: 0, decodeSamples: 0, decodeTotal: 0, renderSamples: 0, renderTotal: 0,
+    lastCounters: null, latest: null,
+  };
+  return activeExperimentMeasurement;
+}
+
+function updateExperimentMeasurement(stats = {}, stateName = stats.state, stateReason = null) {
+  const m = activeExperimentMeasurement;
+  if (!m) return;
+  const now = performance.now();
+  const counters = {
+    receivedFrames: Number(stats.receivedFrames || 0), renderedFrames: Number(stats.renderedFrames || 0),
+    droppedFrames: Number(stats.droppedFrames || 0), lateFrames: Number(stats.lateFrames || 0),
+    receivedBytes: Number(stats.receivedBytes || 0), rebufferCount: Number(stats.rebufferCount || 0),
+  };
+  const previous = m.lastCounters;
+  for (const key of ["receivedFrames", "renderedFrames", "droppedFrames", "lateFrames", "receivedBytes"]) {
+    const delta = previous && counters[key] >= previous[key] ? counters[key] - previous[key] : counters[key];
+    m[key] += Math.max(0, delta);
+  }
+  if (previous) m.rebufferEvents += Math.max(0, counters.rebufferCount - previous.rebufferCount);
+  else m.rebufferEvents += counters.rebufferCount;
+  m.lastCounters = counters;
+  const queue = Number(stats.queueSeconds);
+  if (Number.isFinite(queue)) { m.queueSamples++; m.queueTotal += queue; m.minBuffer = Math.min(m.minBuffer, queue); }
+  const drift = Math.abs(Number(stats.lastAvDriftMs));
+  if (Number.isFinite(drift)) { m.driftSamples++; m.driftTotal += drift; }
+  const decode = Number(stats.averageDecodeMs);
+  if (Number.isFinite(decode)) { m.decodeSamples++; m.decodeTotal += decode; }
+  const render = Number(stats.averageRenderMs);
+  if (Number.isFinite(render)) { m.renderSamples++; m.renderTotal += render; }
+  const benignBufferReasons = new Set(["startup", "resume", "foreground"]);
+  const isStalling = stateName === "buffering" && counters.renderedFrames > 0
+    && !benignBufferReasons.has(String(stateReason || ""));
+  if (isStalling && m.stallStartedAt == null) { m.stallStartedAt = now; m.stallCount += 1; }
+  if (!isStalling && m.stallStartedAt != null) { m.stallDurationMs += now - m.stallStartedAt; m.stallStartedAt = null; }
+  m.lastState = stateName || m.lastState;
+  m.lastStateReason = stateReason;
+  m.lastAt = now;
+  m.latest = { ...stats };
+}
+
+function experimentSummary(m, reason = "stopped") {
+  if (!m) return null;
+  const now = performance.now();
+  const stallDurationMs = m.stallDurationMs + (m.stallStartedAt == null ? 0 : now - m.stallStartedAt);
+  const latest = m.latest || {};
+  const durationSeconds = Math.max(0.001, (Date.now() - m.startedAt) / 1000);
+  return {
+    mode: m.mode, label: m.label, reason, endedAt: new Date().toISOString(), durationSeconds,
+    startupMs: Number(latest.startupMs ?? 0), firstJpegMs: Number(latest.firstFrameReceivedMs ?? 0),
+    firstRenderedMs: Number(latest.firstRenderedMs ?? 0), audioStartMs: Number(latest.audioStartMs ?? 0),
+    averageBufferSeconds: m.queueSamples ? m.queueTotal / m.queueSamples : 0,
+    minimumBufferSeconds: Number.isFinite(m.minBuffer) ? m.minBuffer : 0,
+    stallCount: m.stallCount, stallDurationSeconds: stallDurationMs / 1000, rebufferEvents: m.rebufferEvents,
+    receivedFrames: m.receivedFrames, renderedFrames: m.renderedFrames, droppedFrames: m.droppedFrames,
+    lateFrames: m.lateFrames, dropPercent: 100 * m.droppedFrames / Math.max(1, m.renderedFrames + m.droppedFrames),
+    effectiveFps: m.renderedFrames / durationSeconds, totalVideoBytes: m.receivedBytes,
+    averageVideoMbps: m.receivedBytes * 8 / durationSeconds / 1_000_000,
+    estimatedBandwidthMbps: Number(latest.estimatedBandwidth || 0) / 1_000_000,
+    averageAvDriftMs: m.driftSamples ? m.driftTotal / m.driftSamples : 0,
+    averageDecodeMs: m.decodeSamples ? m.decodeTotal / m.decodeSamples : Number(latest.averageDecodeMs || 0),
+    averageRenderMs: m.renderSamples ? m.renderTotal / m.renderSamples : Number(latest.averageRenderMs || 0),
+    selectedFps: Number(latest.fps || 0), selectedJpegQuality: Number(latest.jpegQuality || $("#ctlQuality")?.value || 0),
+    selectedHeight: Number(latest.height || $("#ctlHeight")?.value || 0),
+  };
+}
+
+function loadExperimentSummaries() {
+  try { return JSON.parse(localStorage.getItem(EXPERIMENT_SESSIONS_KEY) || "{}") || {}; } catch { return {}; }
+}
+
+function percentDifference(next, base) {
+  return Number(base) ? ((Number(next) - Number(base)) / Math.abs(Number(base))) * 100 : null;
+}
+
+function renderExperimentComparison(latest = loadExperimentSummaries()) {
+  const auto = latest.auto;
+  const eauto = latest["e-auto"];
+  const panel = $("#eAutoSessionSummary");
+  if (!panel || !auto || !eauto) return;
+  const rows = [
+    ["startup latency", eauto.startupMs, auto.startupMs, "ms"], ["stall count", eauto.stallCount, auto.stallCount, ""],
+    ["stall duration", eauto.stallDurationSeconds, auto.stallDurationSeconds, "s"], ["video bandwidth", eauto.averageVideoMbps, auto.averageVideoMbps, "Mbps"],
+    ["A/V drift", eauto.averageAvDriftMs, auto.averageAvDriftMs, "ms"], ["dropped frames", eauto.dropPercent, auto.dropPercent, "%"],
+  ];
+  const differences = rows.map(([name, next, base, unit]) => {
+    const pct = percentDifference(next, base);
+    return `${name}: ${pct == null ? "n/a" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`} (${Number(base).toFixed(2)}${unit} → ${Number(next).toFixed(2)}${unit})`;
+  });
+  panel.textContent = `Latest Auto vs E Auto\n${differences.join("\n")}`;
+}
+
+function finalizeExperimentMeasurement(reason = "stopped") {
+  const m = activeExperimentMeasurement;
+  if (!m) return null;
+  updateExperimentMeasurement(m.latest || {}, m.lastState, m.lastStateReason);
+  const summary = experimentSummary(m, reason);
+  activeExperimentMeasurement = null;
+  const latest = loadExperimentSummaries();
+  latest[summary.mode] = summary;
+  try { localStorage.setItem(EXPERIMENT_SESSIONS_KEY, JSON.stringify(latest)); } catch {}
+  const title = summary.mode === "e-auto" ? "E AUTO SESSION" : "AUTO SESSION";
+  console.info(`${title}\nStartup: ${(summary.startupMs / 1000).toFixed(2)}s\nStalls: ${summary.stallCount}\nStall time: ${summary.stallDurationSeconds.toFixed(2)}s\nAvg FPS: ${summary.effectiveFps.toFixed(1)}\nDropped frames: ${summary.dropPercent.toFixed(1)}%\nAvg video rate: ${summary.averageVideoMbps.toFixed(2)} Mbps\nAvg A/V drift: ${summary.averageAvDriftMs.toFixed(0)}ms`);
+  reportPlaybackEvent(summary.mode === "e-auto" ? "eauto_session_summary" : "auto_session_summary", {
+    label: summary.label, streamUrl: m.streamUrl, reason, stats: summary,
+  });
+  renderExperimentComparison(latest);
+  return summary;
+}
 
 function readAdaptiveBufferState() {
   try {
@@ -712,6 +859,9 @@ function readAdaptiveBufferState() {
 }
 
 function adaptiveBufferPolicy() {
+  if (streamQualitySelection === E_AUTO_STREAM_QUALITY_ID) {
+    return { id: "e-auto-dynamic", startupSeconds: 2, rebufferSeconds: 1.5, maxQueueSeconds: 5.5, learnedTier: "e-auto" };
+  }
   if (streamQualitySelection === AUTO_STREAM_QUALITY_ID && autoQualityController?.enabled) {
     const policy = autoQualityController.getBufferPolicy();
     return { ...policy, learnedTier: `auto-${autoQualityController.tier}` };
@@ -898,6 +1048,10 @@ function currentSettingsLabel() {
     const tier = STREAM_QUALITY_PROFILES[autoQualityController.tier];
     return `Auto ${tier?.label || "Medium"} · ${settings}`;
   }
+  if (streamQualitySelection === E_AUTO_STREAM_QUALITY_ID) {
+    const profile = E_AUTO_STREAM_PROFILES[eAutoProfileId];
+    return `E Auto ${profile?.label || "Balanced"} · ${settings}`;
+  }
   return settings;
 }
 
@@ -920,6 +1074,7 @@ function streamQualityProfileForSettings(settings = streamSettingsSnapshot()) {
 function storedStreamQualityProfile() {
   const id = localStorage.getItem(STREAM_QUALITY_PROFILE_KEY);
   if (id === AUTO_STREAM_QUALITY_ID) return { id: AUTO_STREAM_QUALITY_ID, auto: true };
+  if (id === E_AUTO_STREAM_QUALITY_ID) return { id: E_AUTO_STREAM_QUALITY_ID, experimentalAuto: true };
   return id && STREAM_QUALITY_PROFILES[id] ? STREAM_QUALITY_PROFILES[id] : null;
 }
 
@@ -943,6 +1098,12 @@ function applyStreamSettings(settings) {
 
 function resetStreamSettings() {
   const stored = storedStreamQualityProfile();
+  if (stored?.experimentalAuto) {
+    eAutoProfileId = E_AUTO_INITIAL_PROFILE_ID;
+    setStreamQualitySelection(E_AUTO_STREAM_QUALITY_ID, { persist: false });
+    applyStreamSettings(E_AUTO_STREAM_PROFILES[eAutoProfileId]);
+    return;
+  }
   if (stored?.auto) {
     setStreamQualitySelection(AUTO_STREAM_QUALITY_ID, { persist: false });
     autoQualityController?.selectTier(AUTO_STREAM_INITIAL_TIER);
@@ -962,8 +1123,8 @@ function qualityProfilesAvailableForCurrentMode() {
 }
 
 function renderQuickQuality() {
-  const current = streamQualitySelection === AUTO_STREAM_QUALITY_ID
-    ? { id: AUTO_STREAM_QUALITY_ID }
+  const current = streamQualitySelection === AUTO_STREAM_QUALITY_ID || streamQualitySelection === E_AUTO_STREAM_QUALITY_ID
+    ? { id: streamQualitySelection }
     : streamQualityProfileForSettings();
   document.querySelectorAll("[data-stream-profile]").forEach((btn) => {
     const active = btn.dataset.streamProfile === current?.id;
@@ -977,6 +1138,8 @@ function renderQuickQuality() {
     const unavailable = $("#screen")?.classList.contains("playing") && !qualityProfilesAvailableForCurrentMode();
     slot.hidden = Boolean(unavailable);
   }
+  const eAutoDebug = $("#eAutoDebug");
+  if (eAutoDebug) eAutoDebug.hidden = streamQualitySelection !== E_AUTO_STREAM_QUALITY_ID;
 }
 
 function renderSettingOptions() {
@@ -1451,11 +1614,14 @@ function seekStreamTo(time) {
   streamSeek.liveAtMs = 0;
   updateStreamSeekUi(target);
   toast("Seeking to " + clock(target));
+  preserveExperimentOnCleanup = true;
   replayFn(target);
 }
 
 function failStreamAttempt(attempt, title, detail) {
   if (!currentAttempt(attempt)) return;
+  updateExperimentMeasurement(activeCompat?.bufferedPlayer?.getStats?.() || {}, "error");
+  finalizeExperimentMeasurement("error");
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
   streamAttempt++;
   clearStreamTimers();
@@ -1719,6 +1885,13 @@ function canTryMpegts() {
 
 function cleanupMedia() {
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), audio = $("#audio");
+  updateExperimentMeasurement(activeCompat?.bufferedPlayer?.getStats?.() || {}, activeCompat?.bufferedPlayer?.getStats?.().state);
+  if (preserveExperimentOnCleanup) {
+    preserveExperimentOnCleanup = false;
+    if (activeExperimentMeasurement) activeExperimentMeasurement.lastCounters = null;
+  } else {
+    finalizeExperimentMeasurement("stopped");
+  }
   clearFullscreenOverlayHide();
   setDesktopStreamActive(false);
   setBrowserStreamActive(false);
@@ -2383,7 +2556,13 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const attempt = streamAttempt;
   const startupTrace = meta.startupTrace || null;
   if (startupTrace && !Number.isFinite(startupTrace.playerStartedAt)) startupTrace.playerStartedAt = performance.now();
-  const bufferedUrl = withUrlParam(mjpegUrl, "buffered", "1");
+  const eAutoMode = streamQualitySelection === E_AUTO_STREAM_QUALITY_ID;
+  let bufferedUrl = withUrlParam(mjpegUrl, "buffered", "1");
+  if (eAutoMode) {
+    bufferedUrl = withUrlParam(bufferedUrl, "eauto", "1");
+    bufferedUrl = withUrlParam(bufferedUrl, "eautoSession", attempt);
+    bufferedUrl = withUrlParam(bufferedUrl, "eautoProfile", eAutoProfileId);
+  }
   setSlowBufferSuggestionScope(bufferedUrl);
   let audioFailed = false;
   const parsed = new URL(bufferedUrl, window.location.origin);
@@ -2392,7 +2571,8 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const bufferPolicy = adaptiveBufferPolicy();
   window.__YT_STREAMER_BUFFER_POLICY__ = { ...bufferPolicy, selectedAt: Date.now() };
   let adaptiveBufferLearned = false;
-  reportPlaybackEvent("buffered_start", {
+  beginExperimentMeasurement(experimentMode(), label, bufferedUrl, attempt);
+  reportPlaybackEvent(eAutoMode ? "eauto_start" : "buffered_start", {
     label,
     streamUrl: bufferedUrl,
     reason: `fps=${requestedFps};buffer=${bufferPolicy.id}:${bufferPolicy.startupSeconds}/${bufferPolicy.maxQueueSeconds}/${bufferPolicy.rebufferSeconds}`,
@@ -2426,12 +2606,16 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   let player = null;
   let loggedPlaying = false;
   let loggedRebufferCount = 0;
-  player = new window.BufferedMjpeg.BufferedMjpegPlayer({
+  const PlayerClass = eAutoMode
+    ? window.YtExperimentalAuto.ExperimentalMjpegPlayer
+    : window.BufferedMjpeg.BufferedMjpegPlayer;
+  player = new PlayerClass({
     url: bufferedUrl,
     canvas,
     audio,
     fps: requestedFps,
     audioClockOffset: meta.audioElementStartAt || 0,
+    streamStartSeconds: Number(meta.startAt || 0),
     sessionId: attempt,
     isCurrent: (sessionId) => currentAttempt(sessionId)
       && activeCompat?.bufferedPlayer === player
@@ -2445,6 +2629,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     onState: (stateName, detail = {}) => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
       const stats = detail.stats || player.getStats();
+      updateExperimentMeasurement(stats, stateName, detail.reason);
       updateBufferedMjpegDebug(stats);
       if (stateName === "buffering") {
         screen.classList.add("loading");
@@ -2464,7 +2649,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
               });
             }
           }
-          reportPlaybackEvent("buffered_rebuffer", { label, streamUrl: bufferedUrl, reason: detail.reason, stats });
+          reportPlaybackEvent(eAutoMode ? "eauto_rebuffer" : "buffered_rebuffer", { label, streamUrl: bufferedUrl, reason: detail.reason, stats });
         }
         const buffered = Number(detail.bufferedSeconds ?? stats.queueSeconds ?? 0);
         const target = Number(detail.targetSeconds || (stats.renderedFrames ? stats.recoveryTargetSeconds || bufferPolicy.rebufferSeconds : bufferPolicy.startupSeconds));
@@ -2499,7 +2684,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         activeCompat.videoReady = true;
         if (!loggedPlaying) {
           loggedPlaying = true;
-          reportPlaybackEvent("buffered_playing", {
+          reportPlaybackEvent(eAutoMode ? "eauto_playing" : "buffered_playing", {
             label,
             streamUrl: bufferedUrl,
             stats,
@@ -2521,7 +2706,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         screen.classList.add("startup-preview");
         setBadge("reconnecting", "Preview ready · buffering for smooth playback", { revealControls: false });
       }
-      reportPlaybackEvent("buffered_" + String(name).replace(/-/g, "_"), {
+      reportPlaybackEvent((eAutoMode ? "eauto_" : "buffered_") + String(name).replace(/-/g, "_"), {
         label,
         streamUrl: bufferedUrl,
         stats,
@@ -2531,7 +2716,12 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     },
     onStats: (stats) => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      // Periodic samples carry cumulative state but not the transition reason.
+      // Only onState may open/close a measured stall, otherwise startup and
+      // resume buffering can be misclassified as playback interruptions.
+      updateExperimentMeasurement(stats, null);
       updateBufferedMjpegDebug(stats);
+      if (eAutoMode && maybeAdaptEAutoQuality(stats, player)) return;
       if (maybeAdaptAutoQuality(stats)) return;
       if (stats.state === "buffering") {
         const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || bufferPolicy.rebufferSeconds) : bufferPolicy.startupSeconds;
@@ -2567,13 +2757,14 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     },
     onError: (error) => {
       if (!currentAttempt(attempt)) return;
-      reportPlaybackEvent("buffered_error", {
+      reportPlaybackEvent(eAutoMode ? "eauto_error" : "buffered_error", {
         label,
         streamUrl: bufferedUrl,
         message: error?.message || String(error || ""),
         errorName: error?.name || "Error",
         stats: player?.getStats?.(),
       });
+      finalizeExperimentMeasurement("error");
       failStreamAttempt(
         attempt,
         "Buffered MJPEG playback failed",
@@ -2581,7 +2772,9 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       );
     },
     onEnded: () => {
-      reportPlaybackEvent("buffered_ended", { label, streamUrl: bufferedUrl, stats: player?.getStats?.() });
+      updateExperimentMeasurement(player?.getStats?.() || {}, "ended");
+      reportPlaybackEvent(eAutoMode ? "eauto_ended" : "buffered_ended", { label, streamUrl: bufferedUrl, stats: player?.getStats?.() });
+      finalizeExperimentMeasurement("ended");
       finishBufferedStream(attempt);
     },
   });
@@ -3321,6 +3514,21 @@ function applyQualityProfileSettings(profileId, {
   return { profile, ...heightResult };
 }
 
+function applyEAutoProfileSettings(profileId, { persist = true } = {}) {
+  const profile = E_AUTO_STREAM_PROFILES[profileId];
+  if (!profile) return null;
+  const heightResult = legacyProfileHeightFallback(profile.height);
+  eAutoProfileId = profile.id;
+  applyStreamSettings({ ...profile, height: heightResult.height });
+  if (legacy.playing) legacy.resolution = Number(heightResult.height);
+  setStreamQualitySelection(E_AUTO_STREAM_QUALITY_ID, { persist });
+  renderFpsPresets();
+  renderQuickQuality();
+  renderSettingOptions();
+  updateBwHint();
+  return { profile, ...heightResult };
+}
+
 function qualitySwitchResumeAt() {
   const pending = pendingQualityRestore;
   if (pending?.generation === qualitySwitchGeneration && Number.isFinite(pending.resumeAt)) return pending.resumeAt;
@@ -3352,6 +3560,7 @@ function performQualityProfileSwitch(transition) {
   setBadge("reconnecting", transition.isLive ? "Changing quality… Returning to live" : "Changing quality…");
   if (!transition.silentToast) toast(status);
   try {
+    if (transition.preserveExperiment) preserveExperimentOnCleanup = true;
     const result = transition.replay(transition.seekable ? transition.resumeAt : undefined);
     if (result?.catch) {
       result.catch((error) => {
@@ -3367,6 +3576,111 @@ function performQualityProfileSwitch(transition) {
       toast(error.message, true);
     }
   }
+}
+
+function requestEAutoMode() {
+  if (!eAutoAbrController || !window.YtExperimentalAuto?.ExperimentalMjpegPlayer) {
+    toast("E Auto is unavailable in this build", true);
+    return;
+  }
+  if (streamQualitySelection === E_AUTO_STREAM_QUALITY_ID) {
+    toast("E Auto already selected · " + (E_AUTO_STREAM_PROFILES[eAutoProfileId]?.label || "Balanced"));
+    return;
+  }
+  const previousProfile = streamQualityProfileForSettings();
+  const profile = E_AUTO_STREAM_PROFILES[E_AUTO_INITIAL_PROFILE_ID];
+  eAutoAbrController.profile = E_AUTO_INITIAL_PROFILE_ID;
+  eAutoAbrController.bufferTarget = 3;
+  eAutoAbrController.lastSwitchAt = Number.NEGATIVE_INFINITY;
+  eAutoAbrController.healthySince = null;
+  const applied = applyEAutoProfileSettings(E_AUTO_INITIAL_PROFILE_ID);
+  if (!applied) return;
+  const resumeAt = qualitySwitchResumeAt();
+  const pause = qualitySwitchPauseIntent();
+  const seekable = streamSeek.seekable;
+  const replay = replayFn;
+  reportPlaybackEvent("eauto_enabled", {
+    streamUrl: activeCompat?.mjpegUrl || "", reason: "start-balanced",
+    message: "framed-jpeg;audio-master;ewma-fast-3;ewma-slow-9",
+  });
+  if (!replay || !qualityProfilesAvailableForCurrentMode()) {
+    toast("E Auto selected · experimental framed JPEG");
+    return;
+  }
+  const transition = {
+    generation: ++qualitySwitchGeneration, replay, profile,
+    statusLabel: "E Auto · " + profile.label, seekable, resumeAt, pause,
+    isLive: Boolean(streamSeek.isLive && !seekable), silentToast: false,
+  };
+  clearTimeout(qualitySwitchTimer);
+  qualitySwitchTimer = setTimeout(() => performQualityProfileSwitch(transition), STREAM_QUALITY_SWITCH_DELAY_MS);
+}
+
+function requestEAutoProfile(decision, stats = null) {
+  if (!decision || decision.action !== "switch" || streamQualitySelection !== E_AUTO_STREAM_QUALITY_ID) return false;
+  const profile = E_AUTO_STREAM_PROFILES[decision.to];
+  if (!profile) return false;
+  const applied = applyEAutoProfileSettings(decision.to);
+  if (!applied) return false;
+  console.info(`[EAUTO:PROFILE] ${decision.from}->${decision.to} action=${decision.reason} bufferTarget=${decision.targetBuffer.toFixed(1)}s`);
+  reportPlaybackEvent("eauto_profile_switch", {
+    streamUrl: activeCompat?.mjpegUrl || "", reason: decision.reason,
+    message: `${decision.from}->${decision.to};bufferTarget=${decision.targetBuffer.toFixed(1)}`,
+    stats: stats || {},
+  });
+  if (!replayFn || !qualityProfilesAvailableForCurrentMode()) return true;
+  const transition = {
+    generation: ++qualitySwitchGeneration, replay: replayFn, profile,
+    statusLabel: "E Auto · " + profile.label,
+    seekable: streamSeek.seekable, resumeAt: qualitySwitchResumeAt(), pause: qualitySwitchPauseIntent(),
+    isLive: Boolean(streamSeek.isLive && !streamSeek.seekable), silentToast: true,
+    preserveExperiment: true,
+    fallback: applied.fallback ? { requested: applied.requested, height: applied.height } : null,
+  };
+  clearTimeout(qualitySwitchTimer);
+  qualitySwitchTimer = setTimeout(() => performQualityProfileSwitch(transition), STREAM_QUALITY_SWITCH_DELAY_MS);
+  return true;
+}
+
+function updateEAutoDebug(stats, controller = eAutoAbrController) {
+  const panel = $("#eAutoDebug");
+  const text = $("#eAutoDebugText");
+  if (!panel || !text) return;
+  panel.hidden = streamQualitySelection !== E_AUTO_STREAM_QUALITY_ID;
+  if (panel.hidden || performance.now() - eAutoDebugUpdatedAt < 500) return;
+  eAutoDebugUpdatedAt = performance.now();
+  text.textContent = [
+    `profile=${eAutoProfileId} ${$("#ctlHeight").value}p/${stats.fps || $("#ctlFps").value}fps/Q${stats.jpegQuality || $("#ctlQuality").value}`,
+    `state=${stats.state} buffer=${Number(stats.queueSeconds || 0).toFixed(2)}s target=${Number(controller?.targetBuffer || 0).toFixed(2)}s trend=${stats.queueTrend || "unknown"}`,
+    `bandwidthFast=${(Number(stats.bandwidthFast || 0) / 1e6).toFixed(2)}Mbps bandwidthSlow=${(Number(stats.bandwidthSlow || 0) / 1e6).toFixed(2)}Mbps estimate=${(Number(stats.estimatedBandwidth || 0) / 1e6).toFixed(2)}Mbps`,
+    `frames received=${stats.receivedFrames || 0} rendered=${stats.renderedFrames || 0} dropped=${stats.droppedFrames || 0} late=${stats.lateFrames || 0}`,
+    `decode=${Number(stats.averageDecodeMs || 0).toFixed(1)}ms render=${Number(stats.averageRenderMs || 0).toFixed(1)}ms drift=${Number(stats.lastAvDriftMs || 0).toFixed(0)}ms`,
+    `stalls=${stats.rebufferCount || 0} bytes=${stats.receivedBytes || 0}`,
+  ].join("\n");
+}
+
+function maybeAdaptEAutoQuality(stats, player) {
+  if (streamQualitySelection !== E_AUTO_STREAM_QUALITY_ID || !eAutoAbrController) return false;
+  const fps = Math.max(1, Number(stats.fps || 15));
+  const rendered = Number(stats.renderedFrames || 0);
+  const dropped = Number(stats.droppedFrames || 0);
+  const profile = E_AUTO_STREAM_PROFILES[eAutoProfileId] || E_AUTO_STREAM_PROFILES.balanced;
+  player?.setBufferTarget?.(eAutoAbrController.targetBuffer);
+  updateEAutoDebug(stats, eAutoAbrController);
+  if (stats.eof) return false;
+  if (rendered < fps * 3 || Number(stats.receivedFrames || 0) < fps * 3 || !["playing", "syncing"].includes(stats.state)) return false;
+  const decision = eAutoAbrController.observe({
+    buffer: Number(stats.queueSeconds || 0),
+    drain: stats.queueTrend === "shrinking" && Number(stats.queueSeconds || 0) < 1.75,
+    stall: stats.state === "buffering" && rendered > 0,
+    decode: Number(stats.averageDecodeMs || 0) / (1000 / fps),
+    drop: dropped / Math.max(1, rendered + dropped),
+    render: Number.isFinite(Number(stats.renderedFps)) ? Number(stats.renderedFps) / fps : 1,
+    bandwidth: Number(stats.estimatedBandwidth),
+    requiredBandwidth: Math.max(Number(stats.mediaBitrate || 0) * 1.12, profile.nominalBitrate * 0.75),
+  });
+  if (!decision) return false;
+  return requestEAutoProfile(decision, stats);
 }
 
 function autoQualityReasonLabel(reason) {
@@ -3416,8 +3730,7 @@ function requestAutoQualityMode() {
   const fallbackText = applied.fallback
     ? " · " + applied.requested + "p unavailable, using " + applied.height + "p"
     : "";
-  const unchanged = previousProfile?.id === profile.id && !applied.fallback;
-  if (unchanged || !replay || !qualityProfilesAvailableForCurrentMode()) {
+  if (!replay || !qualityProfilesAvailableForCurrentMode()) {
     toast("Auto selected · starting " + profile.label + fallbackText);
     return;
   }
@@ -3476,6 +3789,7 @@ function requestAutoQualityTier(decision, stats = null) {
     pause,
     isLive,
     silentToast: true,
+    preserveExperiment: true,
     fallback: applied.fallback ? { requested: applied.requested, height: applied.height } : null,
   };
   qualitySwitchTimer = setTimeout(() => performQualityProfileSwitch(transition), STREAM_QUALITY_SWITCH_DELAY_MS);
@@ -3490,12 +3804,17 @@ function maybeAdaptAutoQuality(stats) {
 }
 
 function requestQualityProfile(profileId) {
+  if (profileId === E_AUTO_STREAM_QUALITY_ID) {
+    requestEAutoMode();
+    return;
+  }
   if (profileId === AUTO_STREAM_QUALITY_ID) {
     requestAutoQualityMode();
     return;
   }
   const profile = STREAM_QUALITY_PROFILES[profileId];
   if (!profile) return;
+  const previousSelection = streamQualitySelection;
   const resumeAt = qualitySwitchResumeAt();
   const pause = qualitySwitchPauseIntent();
   const seekable = streamSeek.seekable;
@@ -3513,7 +3832,9 @@ function requestQualityProfile(profileId) {
     ? " · " + applied.requested + "p unavailable, using " + applied.height + "p"
     : "";
 
-  const unchanged = previousProfile?.id === profile.id && !applied.fallback;
+  const unchanged = previousSelection !== AUTO_STREAM_QUALITY_ID
+    && previousSelection !== E_AUTO_STREAM_QUALITY_ID
+    && previousProfile?.id === profile.id && !applied.fallback;
   if (unchanged) {
     toast(profile.label + " already selected · " + applied.height + "p · " + profile.fps + "fps");
     return;
@@ -3539,7 +3860,7 @@ function requestQualityProfile(profileId) {
 
 // Re-apply controls live: restart whatever is currently playing with new params.
 function reapplyControls() {
-  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) {
+  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID || streamQualitySelection === E_AUTO_STREAM_QUALITY_ID) {
     setStreamQualitySelection(null);
   } else {
     streamQualitySelection = null;

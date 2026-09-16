@@ -120,19 +120,15 @@ MJPEG is the heaviest format (every frame is a full JPEG — no inter-frame comp
 
 Changing a control while playing restarts the stream with the new settings. The `~Mbps est.` hint is a rough guide.
 
+### E Auto (experimental)
+
+`E Auto` is an isolated JPEG-only experiment; normal `Auto` is unchanged. The server emits a lightweight timestamped JPEG frame stream, and the browser parses it with `fetch()`/`ReadableStream`, decodes frames with `createImageBitmap()`, queues them within a bounded target, and renders to canvas against the separate audio clock. Late frames are dropped instead of delaying audio.
+
+The E Auto controller borrows the dual-EWMA and fast-down/slow-up ideas used by adaptive streaming players, but it does **not** use HLS video or copy hls.js code. It can select bounded 360p/480p/720p profiles with 8–24 FPS and JPEG `q:v` tiers. See [docs/E-Auto-experiment.md](docs/E-Auto-experiment.md) for the wire protocol, metrics, test evidence, and limitations.
+
 ### Sound & A/V sync
 
-The player streams **one synced H.264 + AAC stream (MPEG-TS)** played via [mpegts.js](https://github.com/xqq/mpegts.js) (MSE) in the browser — audio and video share one container and one clock, so they're **locked in sync** (no two-stream drift). Toggle sound with **🔊 / 🔇** in the player header. The player chases the live edge to stay low-latency.
-
-This also means much **lower bandwidth than MJPEG** at the same resolution/fps, so higher frame rates (e.g. 30fps) actually hold up on 4G. The Resolution / FPS / Quality controls map to the H.264 encode (scale, `-r`, and CRF + capped bitrate).
-
-**Mac CPU tip:** `libx264` (default) transcodes on the CPU. On a Mac you can switch to the hardware encoder for far lower CPU use:
-
-```bash
-VIDEO_ENCODER=h264_videotoolbox npm start
-```
-
-mpegts.js is served locally from `node_modules` at `/vendor/mpegts.js` (with a CDN fallback), so run `npm install` once after updating.
+Video remains JPEG/MJPEG-only. Audio is requested separately and is the master playback clock. The buffered players compare each video timestamp with that clock, discard obsolete frames, and never slow audio to wait for late JPEGs. Toggle sound with **🔊 / 🔇** in the player header.
 
 ---
 

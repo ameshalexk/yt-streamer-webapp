@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "check": "node --check src/server.js && node --check src/lib/store.js && node --check src/lib/ytdlp.js && node --check src/lib/stream.js && node --check src/lib/desktop-input.js && node --check src/lib/browser-renderer.js && node --check src/lib/real-chrome-renderer.js && node --check src/lib/browser-audio-capture.js && node --check src/lib/processed-library.js && node --check src/lib/youtube-oauth.js && node --check src/lib/money-dashboard.js && node --check src/lib/apne-daily.js && node --check public/buffered-mjpeg.js && node --check public/auto-quality.js && node --check public/app.js && node --check public/money.js",
+    "check": "node --check src/server.js && node --check src/lib/store.js && node --check src/lib/ytdlp.js && node --check src/lib/stream.js && node --check src/lib/eauto-framing.js && node --check src/lib/desktop-input.js && node --check src/lib/browser-renderer.js && node --check src/lib/real-chrome-renderer.js && node --check src/lib/browser-audio-capture.js && node --check src/lib/processed-library.js && node --check src/lib/youtube-oauth.js && node --check src/lib/money-dashboard.js && node --check src/lib/apne-daily.js && node --check public/buffered-mjpeg.js && node --check public/e-auto.js && node --check public/auto-quality.js && node --check public/app.js && node --check public/money.js",
     "setup": "node scripts/check-deps.js",
     "test": "node --test test/*.test.mjs"
   },

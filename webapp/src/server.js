@@ -55,6 +55,12 @@ function playbackStats(value) {
     "audioReadyMs", "audioStartMs", "firstRenderedMs", "serverResolveMs",
     "serverFirstOutputMs", "ffmpegFirstOutputMs", "resolveCache", "rebufferCount",
     "recoveryTargetSeconds", "lastAvDriftMs", "eof",
+    "lateFrames", "averageRenderMs", "maxRenderMs", "bandwidthFast", "bandwidthSlow",
+    "estimatedBandwidth", "mediaBitrate", "jpegQuality", "width", "height", "profile", "protocol",
+    "durationSeconds", "firstJpegMs", "averageBufferSeconds", "minimumBufferSeconds",
+    "stallCount", "stallDurationSeconds", "rebufferEvents", "dropPercent", "effectiveFps",
+    "totalVideoBytes", "averageVideoMbps", "estimatedBandwidthMbps", "averageAvDriftMs",
+    "selectedFps", "selectedJpegQuality", "selectedHeight",
   ];
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
 }
@@ -1179,7 +1185,25 @@ app.get("/stream/hls/browser-audio/:id/:file", (req, res) => {
 });
 
 function wantsBufferedMjpeg(req) {
-  return req.query.buffered === "1";
+  return req.query.buffered === "1" || wantsFramedJpeg(req);
+}
+
+function wantsFramedJpeg(req) {
+  return req.query.eauto === "1" || req.query.transport === "eauto";
+}
+
+function mjpegTransportOptions(req) {
+  const framed = wantsFramedJpeg(req);
+  const rawSessionId = Number.parseInt(req.query.eautoSession || req.query.session || "0", 10);
+  const requestedProfile = String(req.query.eautoProfile || "e-auto").toLowerCase();
+  const frameProfile = new Set(["economy", "low", "balanced", "smooth", "high"]).has(requestedProfile)
+    ? requestedProfile : "e-auto";
+  return {
+    allowBurst: wantsBufferedMjpeg(req),
+    framed,
+    sessionId: Number.isFinite(rawSessionId) ? rawSessionId >>> 0 : 0,
+    frameProfile,
+  };
 }
 
 // GoogleVideo increasingly rejects FFmpeg's TLS/HTTP fingerprint even when the
@@ -1269,7 +1293,7 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
       params,
       isLive: false,
       paceInput: !wantsBufferedMjpeg(req),
-      allowBurst: wantsBufferedMjpeg(req),
+      ...mjpegTransportOptions(req),
       startAt: req.query.timestamp,
       timing: { requestStartedAt, resolveMs, resolveCache },
       onTelemetry: (telemetry) => appendPlaybackEvent({
@@ -1291,7 +1315,7 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
       return res.status(403).json({ error: "file outside library" });
     }
     try { await fs.access(resolved); } catch { return res.status(404).json({ error: "file missing" }); }
-    return stream.streamMjpeg(req, res, { input: resolved, params, isLive: false, allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp });
+    return stream.streamMjpeg(req, res, { input: resolved, params, isLive: false, ...mjpegTransportOptions(req), startAt: req.query.timestamp });
   }
   // default: m3u8 / direct url (carry any saved UA/referer headers)
   return stream.streamMjpeg(req, res, {
@@ -1309,6 +1333,8 @@ app.get("/stream/url", asyncH(async (req, res) => {
   return stream.streamMjpeg(req, res, {
     input: url, params, isLive,
     userAgent: req.query.ua, referer: req.query.referer,
+    ...mjpegTransportOptions(req),
+    startAt: req.query.timestamp,
   });
 }));
 
@@ -1326,7 +1352,7 @@ app.get("/stream/youtube", asyncH(async (req, res) => {
     params,
     isLive: false,
     paceInput: !wantsBufferedMjpeg(req),
-    allowBurst: wantsBufferedMjpeg(req),
+    ...mjpegTransportOptions(req),
     startAt: req.query.timestamp,
     timing: { requestStartedAt, resolveMs, resolveCache },
     onTelemetry: (telemetry) => appendPlaybackEvent({
@@ -1349,7 +1375,7 @@ app.get("/stream/prepared/:id", asyncH(async (req, res) => {
     input: item.filePath,
     params: stream.normalizeParams(req.query),
     isLive: false,
-    allowBurst: wantsBufferedMjpeg(req),
+    ...mjpegTransportOptions(req),
     startAt: req.query.timestamp,
   });
 }));
@@ -1367,7 +1393,7 @@ app.get("/stream/legacy/:id/:resolution", asyncH(async (req, res) => {
     input,
     params: stream.normalizeParams({ ...req.query, height: req.query.height || resolution }),
     isLive: false,
-    allowBurst: wantsBufferedMjpeg(req),
+    ...mjpegTransportOptions(req),
     startAt: req.query.timestamp,
   });
 }));

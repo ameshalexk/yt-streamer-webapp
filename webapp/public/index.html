@@ -272,10 +272,11 @@
                 <button class="video-control-btn" id="muteBtn" type="button" aria-label="Mute sound" aria-pressed="false">🔊 Sound</button>
                 <div class="player-quality-slot" id="playerQualitySlot" data-v2-story="quality-presets">
                   <div class="player-quality-presets" id="playerQualityPresets" role="group" aria-label="Playback quality profile">
-                    <button class="player-quality-btn" type="button" data-stream-profile="auto" aria-pressed="false"><strong>Auto</strong><small>Adaptive</small></button>
                     <button class="player-quality-btn" type="button" data-stream-profile="low" aria-pressed="false"><strong>Low</strong><small>360p · 12</small></button>
                     <button class="player-quality-btn" type="button" data-stream-profile="medium" aria-pressed="false"><strong>Medium</strong><small>480p · 15</small></button>
                     <button class="player-quality-btn" type="button" data-stream-profile="high" aria-pressed="false"><strong>High</strong><small>480p · 24</small></button>
+                    <button class="player-quality-btn" type="button" data-stream-profile="auto" aria-pressed="false"><strong>Auto</strong><small>Adaptive</small></button>
+                    <button class="player-quality-btn experimental" type="button" data-stream-profile="e-auto" aria-pressed="false"><strong>E Auto</strong><small>Experimental</small></button>
                   </div>
                   <span class="player-quality-custom" id="playerQualityCustom">Custom</span>
                 </div>
@@ -298,10 +299,11 @@
           <div class="stream-settings-head">
             <button class="settings-toggle" id="streamSettingsBtn" type="button" aria-expanded="false" aria-controls="streamSettingsPanel">Stream settings</button>
             <div class="quality-quick" id="qualityQuick" role="group" aria-label="Quick stream quality">
-              <button type="button" data-stream-profile="auto" aria-pressed="false">Auto</button>
               <button type="button" data-stream-profile="low" aria-pressed="false">Low</button>
               <button type="button" data-stream-profile="medium" aria-pressed="false">Med</button>
               <button type="button" data-stream-profile="high" aria-pressed="false">High</button>
+              <button type="button" data-stream-profile="auto" aria-pressed="false">Auto</button>
+              <button type="button" data-stream-profile="e-auto" aria-pressed="false">E Auto</button>
             </div>
           </div>
           <div class="controls" id="streamSettingsPanel" hidden>
@@ -351,6 +353,11 @@
               </div>
             </label>
             <span class="hint" id="bwHint"></span>
+            <details class="eauto-debug" id="eAutoDebug" hidden>
+              <summary>E Auto diagnostics</summary>
+              <pre id="eAutoDebugText">Waiting for an E Auto session.</pre>
+              <div class="eauto-summary" id="eAutoSessionSummary" aria-live="polite"></div>
+            </details>
           </div>
         </section>
         </div>
@@ -808,6 +815,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
   <script src="/buffered-mjpeg.js?v=20260911-buffered-mjpeg"></script>
+  <script src="/e-auto.js?v=20260915-e-auto-experiment"></script>
   <script src="/auto-quality.js?v=20260915-v2.1-auto"></script>
   <script src="/app.js?v=20260915-v2.1-auto"></script>
 </body>
