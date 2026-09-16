@@ -116,6 +116,7 @@ MJPEG is the heaviest format (every frame is a full JPEG — no inter-frame comp
 | Resolution | 360p–480p | 720p–1080p |
 | FPS | 8–12 | 24–30 |
 | Quality | Low (4G) / Medium | High |
+| Auto mode | Low/Medium automatically when delivery is constrained | Medium/High automatically when buffer and render headroom stay healthy |
 
 Changing a control while playing restarts the stream with the new settings. The `~Mbps est.` hint is a rough guide.
 

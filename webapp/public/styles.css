@@ -537,7 +537,7 @@ body.screen-fullscreen.browser-streaming .screen .browser-keyboard-input:not([hi
 .player-quality-slot[hidden] { display: none !important; }
 .player-quality-presets {
   flex: 1 1 auto; min-width: 0;
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
 }
 .player-quality-btn {
   min-width: 0; min-height: 52px; padding: 5px 9px;

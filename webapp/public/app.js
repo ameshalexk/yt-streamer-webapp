@@ -113,6 +113,13 @@ const STREAM_QUALITY_PROFILES = Object.freeze({
   high: Object.freeze({ id: "high", label: "High", height: "480", fps: "24", quality: "4" }),
 });
 
+const AUTO_STREAM_QUALITY_ID = "auto";
+const AUTO_STREAM_INITIAL_TIER = "medium";
+const autoQualityController = window.YtAutoQuality?.AutoQualityController
+  ? new window.YtAutoQuality.AutoQualityController()
+  : null;
+let streamQualitySelection = null;
+
 const DESKTOP_AUDIO_KEY = "ytStreamerDesktopAudio";
 const DESKTOP_AUDIO_NAME_KEY = "ytStreamerDesktopAudioName";
 const DESKTOP_FEATURE_VISIBLE = false;
@@ -705,6 +712,10 @@ function readAdaptiveBufferState() {
 }
 
 function adaptiveBufferPolicy() {
+  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID && autoQualityController?.enabled) {
+    const policy = autoQualityController.getBufferPolicy();
+    return { ...policy, learnedTier: `auto-${autoQualityController.tier}` };
+  }
   const state = readAdaptiveBufferState();
   return { ...ADAPTIVE_BUFFER_PROFILES[state.tier], learnedTier: state.tier };
 }
@@ -882,7 +893,12 @@ function currentSettingsLabel() {
   const h = $("#ctlHeight");
   const hl = h.value === "0" ? "Source" : h.value + "p";
   const q = $("#ctlQuality").selectedOptions[0]?.textContent || "";
-  return `${hl} · ${$("#ctlFps").value}fps · ${q}`;
+  const settings = `${hl} · ${$("#ctlFps").value}fps · ${q}`;
+  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID && autoQualityController?.enabled) {
+    const tier = STREAM_QUALITY_PROFILES[autoQualityController.tier];
+    return `Auto ${tier?.label || "Medium"} · ${settings}`;
+  }
+  return settings;
 }
 
 function streamSettingsSnapshot() {
@@ -903,7 +919,20 @@ function streamQualityProfileForSettings(settings = streamSettingsSnapshot()) {
 
 function storedStreamQualityProfile() {
   const id = localStorage.getItem(STREAM_QUALITY_PROFILE_KEY);
+  if (id === AUTO_STREAM_QUALITY_ID) return { id: AUTO_STREAM_QUALITY_ID, auto: true };
   return id && STREAM_QUALITY_PROFILES[id] ? STREAM_QUALITY_PROFILES[id] : null;
+}
+
+function setStreamQualitySelection(selection, { persist = true } = {}) {
+  streamQualitySelection = selection || null;
+  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) {
+    if (!autoQualityController?.enabled) autoQualityController?.enable({ tier: AUTO_STREAM_INITIAL_TIER });
+  } else {
+    autoQualityController?.disable();
+  }
+  if (!persist) return;
+  if (streamQualitySelection) localStorage.setItem(STREAM_QUALITY_PROFILE_KEY, streamQualitySelection);
+  else localStorage.removeItem(STREAM_QUALITY_PROFILE_KEY);
 }
 
 function applyStreamSettings(settings) {
@@ -914,6 +943,13 @@ function applyStreamSettings(settings) {
 
 function resetStreamSettings() {
   const stored = storedStreamQualityProfile();
+  if (stored?.auto) {
+    setStreamQualitySelection(AUTO_STREAM_QUALITY_ID, { persist: false });
+    autoQualityController?.selectTier(AUTO_STREAM_INITIAL_TIER);
+    applyStreamSettings(STREAM_QUALITY_PROFILES[AUTO_STREAM_INITIAL_TIER]);
+    return;
+  }
+  setStreamQualitySelection(stored?.id || null, { persist: false });
   applyStreamSettings(stored || DEFAULT_STREAM_SETTINGS);
 }
 
@@ -926,7 +962,9 @@ function qualityProfilesAvailableForCurrentMode() {
 }
 
 function renderQuickQuality() {
-  const current = streamQualityProfileForSettings();
+  const current = streamQualitySelection === AUTO_STREAM_QUALITY_ID
+    ? { id: AUTO_STREAM_QUALITY_ID }
+    : streamQualityProfileForSettings();
   document.querySelectorAll("[data-stream-profile]").forEach((btn) => {
     const active = btn.dataset.streamProfile === current?.id;
     btn.classList.toggle("active", active);
@@ -1047,7 +1085,8 @@ function setSlowBufferSuggestionScope(streamUrl = "") {
 }
 
 function slowBufferSuggestionAllowed() {
-  return !slowBufferSuggestionScope.stopped
+  return streamQualitySelection !== AUTO_STREAM_QUALITY_ID
+    && !slowBufferSuggestionScope.stopped
     && slowBufferSuggestionScope.count < SLOW_BUFFER_SUGGESTION_MAX_PER_VIDEO;
 }
 
@@ -2349,6 +2388,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   let audioFailed = false;
   const parsed = new URL(bufferedUrl, window.location.origin);
   const requestedFps = Math.max(1, Number(parsed.searchParams.get("fps") || $("#ctlFps").value || 24));
+  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) autoQualityController?.beginAttempt();
   const bufferPolicy = adaptiveBufferPolicy();
   window.__YT_STREAMER_BUFFER_POLICY__ = { ...bufferPolicy, selectedAt: Date.now() };
   let adaptiveBufferLearned = false;
@@ -2412,15 +2452,17 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         else scheduleSlowBufferSuggestion(attempt, { reason: detail.reason || "rebuffer", label, streamUrl: bufferedUrl, stats });
         if (stats.rebufferCount > loggedRebufferCount) {
           loggedRebufferCount = stats.rebufferCount;
-          const learned = learnAdaptiveBufferProfile(stats, { force: true });
-          if (learned) {
-            reportPlaybackEvent("adaptive_buffer_learned", {
-              label,
-              streamUrl: bufferedUrl,
-              reason: learned.grade,
-              message: `${learned.previousTier}->${learned.nextTier}`,
-              stats,
-            });
+          if (streamQualitySelection !== AUTO_STREAM_QUALITY_ID) {
+            const learned = learnAdaptiveBufferProfile(stats, { force: true });
+            if (learned) {
+              reportPlaybackEvent("adaptive_buffer_learned", {
+                label,
+                streamUrl: bufferedUrl,
+                reason: learned.grade,
+                message: `${learned.previousTier}->${learned.nextTier}`,
+                stats,
+              });
+            }
           }
           reportPlaybackEvent("buffered_rebuffer", { label, streamUrl: bufferedUrl, reason: detail.reason, stats });
         }
@@ -2490,6 +2532,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     onStats: (stats) => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
       updateBufferedMjpegDebug(stats);
+      if (maybeAdaptAutoQuality(stats)) return;
       if (stats.state === "buffering") {
         const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || bufferPolicy.rebufferSeconds) : bufferPolicy.startupSeconds;
         const prefix = playbackPaused ? "Paused · buffering " : "Buffering ";
@@ -2497,7 +2540,9 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       } else if (stats.state === "paused") {
         setBadge("paused", "Ⅱ PAUSED · " + stats.queueSeconds.toFixed(1) + "s buf", { revealControls: false });
       } else if (stats.state === "playing") {
-        if (!adaptiveBufferLearned && stats.renderedFrames >= Math.max(1, Math.round(stats.fps * 8))) {
+        if (streamQualitySelection !== AUTO_STREAM_QUALITY_ID
+            && !adaptiveBufferLearned
+            && stats.renderedFrames >= Math.max(1, Math.round(stats.fps * 8))) {
           adaptiveBufferLearned = true;
           const learned = learnAdaptiveBufferProfile(stats);
           if (learned) {
@@ -3254,17 +3299,25 @@ function legacyProfileHeightFallback(requestedHeight) {
   };
 }
 
-function applyQualityProfileSettings(profileId) {
+function applyQualityProfileSettings(profileId, {
+  selection = profileId,
+  persist = true,
+} = {}) {
   const profile = STREAM_QUALITY_PROFILES[profileId];
   if (!profile) return null;
   const heightResult = legacyProfileHeightFallback(profile.height);
   applyStreamSettings({ ...profile, height: heightResult.height });
   if (legacy.playing) legacy.resolution = Number(heightResult.height);
+  if (persist && selection === profile.id) {
+    localStorage.setItem(STREAM_QUALITY_PROFILE_KEY, profile.id);
+    setStreamQualitySelection(selection, { persist: false });
+  } else {
+    setStreamQualitySelection(selection, { persist });
+  }
   renderFpsPresets();
   renderQuickQuality();
   renderSettingOptions();
   updateBwHint();
-  localStorage.setItem(STREAM_QUALITY_PROFILE_KEY, profile.id);
   return { profile, ...heightResult };
 }
 
@@ -3292,11 +3345,12 @@ function performQualityProfileSwitch(transition) {
   const fallback = transition.fallback
     ? " · " + transition.fallback.requested + "p unavailable, using " + transition.fallback.height + "p"
     : "";
+  const transitionLabel = transition.statusLabel || transition.profile.label;
   const status = transition.isLive
-    ? "Changing quality to " + transition.profile.label + fallback + " · returning to live"
-    : "Changing quality to " + transition.profile.label + fallback + "…";
+    ? "Changing quality to " + transitionLabel + fallback + " · returning to live"
+    : "Changing quality to " + transitionLabel + fallback + "…";
   setBadge("reconnecting", transition.isLive ? "Changing quality… Returning to live" : "Changing quality…");
-  toast(status);
+  if (!transition.silentToast) toast(status);
   try {
     const result = transition.replay(transition.seekable ? transition.resumeAt : undefined);
     if (result?.catch) {
@@ -3315,7 +3369,131 @@ function performQualityProfileSwitch(transition) {
   }
 }
 
+function autoQualityReasonLabel(reason) {
+  if (reason === "rebuffer") return "rebuffer";
+  if (reason === "device-overload") return "device load";
+  if (reason === "delivery-slow") return "slow delivery";
+  if (reason === "stable-headroom") return "stable headroom";
+  return String(reason || "adaptive");
+}
+
+function requestAutoQualityMode() {
+  if (!autoQualityController) {
+    toast("Auto quality is unavailable in this build", true);
+    return;
+  }
+  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID && autoQualityController.enabled) {
+    const current = STREAM_QUALITY_PROFILES[autoQualityController.tier] || STREAM_QUALITY_PROFILES.medium;
+    toast("Auto already selected · " + current.label);
+    return;
+  }
+
+  const profile = STREAM_QUALITY_PROFILES[AUTO_STREAM_INITIAL_TIER];
+  const resumeAt = qualitySwitchResumeAt();
+  const pause = qualitySwitchPauseIntent();
+  const seekable = streamSeek.seekable;
+  const isLive = Boolean(streamSeek.isLive && !seekable);
+  const replay = replayFn;
+  const previousProfile = streamQualityProfileForSettings();
+  const generation = ++qualitySwitchGeneration;
+  clearTimeout(qualitySwitchTimer);
+  qualitySwitchTimer = null;
+  pendingQualityRestore = null;
+
+  autoQualityController.enable({ tier: AUTO_STREAM_INITIAL_TIER });
+  const applied = applyQualityProfileSettings(AUTO_STREAM_INITIAL_TIER, {
+    selection: AUTO_STREAM_QUALITY_ID,
+  });
+  if (!applied) return;
+
+  reportPlaybackEvent("auto_quality_enabled", {
+    streamUrl: activeCompat?.mjpegUrl || "",
+    reason: "start-medium",
+    message: `tier=${AUTO_STREAM_INITIAL_TIER}`,
+    stats: activeCompat?.bufferedPlayer?.getStats?.(),
+  });
+
+  const fallbackText = applied.fallback
+    ? " · " + applied.requested + "p unavailable, using " + applied.height + "p"
+    : "";
+  const unchanged = previousProfile?.id === profile.id && !applied.fallback;
+  if (unchanged || !replay || !qualityProfilesAvailableForCurrentMode()) {
+    toast("Auto selected · starting " + profile.label + fallbackText);
+    return;
+  }
+
+  const transition = {
+    generation,
+    replay,
+    profile,
+    statusLabel: "Auto · " + profile.label,
+    seekable,
+    resumeAt,
+    pause,
+    isLive,
+    fallback: applied.fallback ? { requested: applied.requested, height: applied.height } : null,
+  };
+  qualitySwitchTimer = setTimeout(() => performQualityProfileSwitch(transition), STREAM_QUALITY_SWITCH_DELAY_MS);
+}
+
+function requestAutoQualityTier(decision, stats = null) {
+  if (!decision || decision.action !== "switch"
+      || streamQualitySelection !== AUTO_STREAM_QUALITY_ID
+      || !autoQualityController?.enabled) return false;
+  const profile = STREAM_QUALITY_PROFILES[decision.to];
+  if (!profile) return false;
+
+  const resumeAt = qualitySwitchResumeAt();
+  const pause = qualitySwitchPauseIntent();
+  const seekable = streamSeek.seekable;
+  const isLive = Boolean(streamSeek.isLive && !seekable);
+  const replay = replayFn;
+  const generation = ++qualitySwitchGeneration;
+  clearTimeout(qualitySwitchTimer);
+  qualitySwitchTimer = null;
+  pendingQualityRestore = null;
+
+  const applied = applyQualityProfileSettings(decision.to, {
+    selection: AUTO_STREAM_QUALITY_ID,
+  });
+  if (!applied) return false;
+
+  reportPlaybackEvent("auto_quality_switch", {
+    streamUrl: activeCompat?.mjpegUrl || "",
+    reason: decision.reason,
+    message: `${decision.from}->${decision.to}; ${autoQualityReasonLabel(decision.reason)}`,
+    stats: stats || decision.metrics,
+  });
+
+  if (!replay || !qualityProfilesAvailableForCurrentMode()) return true;
+  const transition = {
+    generation,
+    replay,
+    profile,
+    statusLabel: "Auto · " + profile.label,
+    seekable,
+    resumeAt,
+    pause,
+    isLive,
+    silentToast: true,
+    fallback: applied.fallback ? { requested: applied.requested, height: applied.height } : null,
+  };
+  qualitySwitchTimer = setTimeout(() => performQualityProfileSwitch(transition), STREAM_QUALITY_SWITCH_DELAY_MS);
+  return true;
+}
+
+function maybeAdaptAutoQuality(stats) {
+  if (streamQualitySelection !== AUTO_STREAM_QUALITY_ID || !autoQualityController?.enabled) return false;
+  const decision = autoQualityController.observe(stats);
+  if (!decision) return false;
+  return requestAutoQualityTier(decision, stats);
+}
+
 function requestQualityProfile(profileId) {
+  if (profileId === AUTO_STREAM_QUALITY_ID) {
+    requestAutoQualityMode();
+    return;
+  }
   const profile = STREAM_QUALITY_PROFILES[profileId];
   if (!profile) return;
   const resumeAt = qualitySwitchResumeAt();
@@ -3361,6 +3539,11 @@ function requestQualityProfile(profileId) {
 
 // Re-apply controls live: restart whatever is currently playing with new params.
 function reapplyControls() {
+  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) {
+    setStreamQualitySelection(null);
+  } else {
+    streamQualitySelection = null;
+  }
   renderFpsPresets();
   renderQuickQuality();
   renderSettingOptions();
