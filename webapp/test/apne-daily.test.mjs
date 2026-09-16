@@ -5,6 +5,7 @@ import {
   episodeMatchesDownloadedItem,
   filterApneEpisodesByMonths,
   normalizeApneShowInput,
+  parseActorAgeCheckEpisodeMetadata,
   parseFlashTargetFromEpisodeHtml,
   parseLatestEpisodeFromShowHtml,
   parseRecentEpisodesFromShowHtml,
@@ -89,6 +90,17 @@ test("APNE Daily never exposes serialized Sky payload as an episode title", () =
     assert.doesNotMatch(value.episodeTitle || "", /episodeNumber|synopsis|waysToWatch/);
     assert.ok((value.episodeTitle || "").length <= 160);
   }
+});
+
+
+test("APNE Daily parses full-season date, number, and title metadata", () => {
+  const fixture = [
+    '<div class="movie episode"><a href="tv/Anupamaa/116479/season/1/episode/2103" title="Anupamaa - Season 1 - Tables Turn at the Food Carnival (Episode 2103)">Tables Turn at the Food Carnival</a><div></div><span class="ageinmovie">2103</span><div class="release"><span class="seinfo">Episode Air Date: </span>Fri, Aug 07 2026</div></div>',
+    '<div class="movie episode"><a href="tv/Anupamaa/116479/season/1/episode/2138" title="Anupamaa - Season 1 - Episode 2138 (Episode 2138)">Episode 2138</a><div></div><span class="ageinmovie">2138</span><div class="release"><span class="seinfo">Episode Air Date: </span>Fri, Sep 11 2026</div></div>',
+  ].join("");
+  const meta = parseActorAgeCheckEpisodeMetadata(fixture, "Anupamaa");
+  assert.deepEqual(meta["2026-08-07"], { episodeNumber: 2103, episodeTitle: "Tables Turn at the Food Carnival" });
+  assert.deepEqual(meta["2026-09-11"], { episodeNumber: 2138, episodeTitle: "" });
 });
 
 

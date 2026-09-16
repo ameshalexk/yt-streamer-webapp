@@ -18,6 +18,20 @@ const EPISODE_METADATA_CACHE_MS = 30 * 60 * 1000;
 const SKY_EPISODE_METADATA_URLS = {
   anupamaa: "https://www.sky.com/watch/series/16f8285a-09c0-4b5b-812b-12c154d2c9f4/season-1",
 };
+const ACTOR_AGE_CHECK_EPISODE_METADATA_URLS = {
+  anupamaa: "https://actoragecheck.com/tv/Anupamaa/116479/season/1",
+};
+const ANUPAMAA_EPISODE_TITLE_OVERRIDES = {
+  2134: "Hasmukh Risks the Shah House",
+  2135: "Anupama Refuses Hasmukh's Help",
+  2136: "Paritosh's Truth Breaks Anupama",
+  2137: "Anupama Guides Rahi",
+  2138: "Leela Eyes the Shah House",
+  2139: "Ansh, Prerana Share Their Plans",
+  2140: "Anupama Gets Scammed!",
+  2141: "Anupama Vows to Fight for Justice",
+  2142: "Rahi and Anupama Remember Anuj",
+};
 const episodeMetadataCache = new Map();
 const DEFAULT_SHOWS = [{
   id: "anupamaa",
@@ -273,6 +287,7 @@ function usefulEpisodeTitle(title, showName = "") {
   const normalizedTitle = value.toLowerCase().replace(/[^a-z0-9]+/g, "");
   const normalizedShow = String(showName || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
   if (normalizedTitle === normalizedShow || normalizedTitle === "anupama" || normalizedTitle === "anupamaa") return "";
+  if (/^episode\s+\d+$/i.test(value)) return "";
   if (/^(?:mon|tue|wed|thu|fri|sat|sun)\s*-\s*[a-z]{3}\s+\d{1,2},\s+\d{4}$/i.test(value)) return "";
   return value;
 }
@@ -294,12 +309,47 @@ export function parseSkyEpisodeMetadata(html, showName = "Anupamaa") {
   return byDate;
 }
 
+function dateKeyFromAirDateLabel(value) {
+  const match = String(value || "").trim().match(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{4})$/);
+  if (!match) return "";
+  const months = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
+  const month = months[match[1]];
+  if (!month) return "";
+  return [match[3], String(month).padStart(2, "0"), String(Number(match[2])).padStart(2, "0")].join("-");
+}
+
+export function parseActorAgeCheckEpisodeMetadata(html, showName = "Anupamaa") {
+  const source = String(html || "");
+  const pattern = /<div class="movie episode">[\s\S]*?<a href="tv\/Anupamaa\/116479\/season\/1\/episode\/(\d+)"[^>]*title="Anupamaa - Season 1 - ([\s\S]*?) \(Episode \d+\)"[\s\S]*?<div class="release"><span class="seinfo">Episode Air Date: <\/span>([^<]+)<\/div><\/div>/g;
+  const byDate = {};
+  for (const match of source.matchAll(pattern)) {
+    const episodeNumber = Number(match[1]);
+    const dateKey = dateKeyFromAirDateLabel(decodeHtml(match[3]));
+    if (!dateKey || !Number.isFinite(episodeNumber)) continue;
+    const rawTitle = decodeHtml(match[2]);
+    const episodeTitle = usefulEpisodeTitle(rawTitle, showName);
+    byDate[dateKey] = { episodeNumber, episodeTitle };
+  }
+  return byDate;
+}
+
+function plusDaysDateKey(dateKey, days) {
+  const match = String(dateKey || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  date.setUTCDate(date.getUTCDate() + days);
+  return [date.getUTCFullYear(), String(date.getUTCMonth() + 1).padStart(2, "0"), String(date.getUTCDate()).padStart(2, "0")].join("-");
+}
+
 async function episodeMetadataForShow(show) {
-  const url = SKY_EPISODE_METADATA_URLS[show.id];
-  if (!url) return {};
+  const skyUrl = SKY_EPISODE_METADATA_URLS[show.id];
+  const guideUrl = ACTOR_AGE_CHECK_EPISODE_METADATA_URLS[show.id];
+  if (!skyUrl && !guideUrl) return {};
   const cached = episodeMetadataCache.get(show.id);
   if (cached && Date.now() - cached.at < EPISODE_METADATA_CACHE_MS) return cached.data;
-  try {
+
+  const fetchMetadataHtml = async (url) => {
+    if (!url) return "";
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
@@ -313,13 +363,63 @@ async function episodeMetadataForShow(show) {
         signal: controller.signal,
       });
       if (!response.ok) throw new Error("HTTP " + response.status + " from " + new URL(url).hostname);
-      const data = parseSkyEpisodeMetadata(await response.text(), show.name);
-      episodeMetadataCache.set(show.id, { at: Date.now(), data });
-      await writeApneLog("episode_metadata_ok", { showId: show.id, count: Object.keys(data).length });
-      return data;
+      return await response.text();
     } finally {
       clearTimeout(timer);
     }
+  };
+
+  try {
+    const [skyHtml, guideHtml] = await Promise.all([
+      fetchMetadataHtml(skyUrl).catch(() => ""),
+      fetchMetadataHtml(guideUrl).catch(() => ""),
+    ]);
+    const skyByDate = skyHtml ? parseSkyEpisodeMetadata(skyHtml, show.name) : {};
+    const guideByDate = guideHtml ? parseActorAgeCheckEpisodeMetadata(guideHtml, show.name) : {};
+    const skyByNumber = {};
+    for (const item of Object.values(skyByDate)) {
+      if (item?.episodeNumber && (!skyByNumber[item.episodeNumber] || item.episodeTitle)) skyByNumber[item.episodeNumber] = item;
+    }
+
+    const merged = {};
+    for (const [dateKey, item] of Object.entries(guideByDate)) {
+      const overrideTitle = show.id === "anupamaa" ? ANUPAMAA_EPISODE_TITLE_OVERRIDES[item.episodeNumber] || "" : "";
+      const skyTitle = skyByNumber[item.episodeNumber]?.episodeTitle || "";
+      merged[dateKey] = {
+        episodeNumber: item.episodeNumber,
+        episodeTitle: overrideTitle || item.episodeTitle || skyTitle || "",
+      };
+    }
+
+    // The full-season guide can lag the newest few episodes. Anupamaa airs daily,
+    // so extend episode numbers only a few days beyond the newest confirmed guide date.
+    if (show.id === "anupamaa") {
+      const confirmedDates = Object.keys(guideByDate).sort();
+      const latestConfirmedDate = confirmedDates.at(-1) || "";
+      const latestConfirmedNumber = guideByDate[latestConfirmedDate]?.episodeNumber || 0;
+      for (let offset = 1; offset <= 7 && latestConfirmedDate && latestConfirmedNumber; offset++) {
+        const dateKey = plusDaysDateKey(latestConfirmedDate, offset);
+        const episodeNumber = latestConfirmedNumber + offset;
+        merged[dateKey] = {
+          episodeNumber,
+          episodeTitle: ANUPAMAA_EPISODE_TITLE_OVERRIDES[episodeNumber] || skyByNumber[episodeNumber]?.episodeTitle || "",
+        };
+      }
+    }
+
+    // Keep Sky-only dates as a final fallback, but never overwrite a guide-backed mapping.
+    for (const [dateKey, item] of Object.entries(skyByDate)) {
+      if (!merged[dateKey]) merged[dateKey] = item;
+    }
+
+    episodeMetadataCache.set(show.id, { at: Date.now(), data: merged });
+    await writeApneLog("episode_metadata_ok", {
+      showId: show.id,
+      count: Object.keys(merged).length,
+      guideCount: Object.keys(guideByDate).length,
+      skyCount: Object.keys(skyByDate).length,
+    });
+    return merged;
   } catch (error) {
     await writeApneLog("episode_metadata_failed", { showId: show.id, error: error.message });
     return cached?.data || {};
