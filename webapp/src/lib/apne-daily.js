@@ -269,6 +269,7 @@ function decodeSkyJsonString(value) {
 function usefulEpisodeTitle(title, showName = "") {
   const value = String(title || "").trim();
   if (!value) return "";
+  if (value.length > 160 || /episodeNumber|synopsis|waysToWatch|__typename|\{\s*"/i.test(value)) return "";
   const normalizedTitle = value.toLowerCase().replace(/[^a-z0-9]+/g, "");
   const normalizedShow = String(showName || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
   if (normalizedTitle === normalizedShow || normalizedTitle === "anupama" || normalizedTitle === "anupamaa") return "";
@@ -278,7 +279,7 @@ function usefulEpisodeTitle(title, showName = "") {
 
 export function parseSkyEpisodeMetadata(html, showName = "Anupamaa") {
   const source = String(html || "");
-  const pattern = /\\"episode\\":\{\\"uuid\\":\\"[^"]+\\",\\"title\\":\\"((?:\\.|[^"\\])*)\\",\\"episodeNumber\\":(\d+)([\s\S]{0,8000}?)\\"startTime\\":\\"([^"]+)\\"/g;
+  const pattern = /\\"episode\\":\{\\"uuid\\":\\"[^"]+\\",\\"title\\":\\"([\s\S]*?)\\",\\"episodeNumber\\":(\d+)([\s\S]{0,8000}?)\\"startTime\\":\\"([^"]+)\\"/g;
   const byDate = {};
   for (const match of source.matchAll(pattern)) {
     const episodeNumber = Number(match[2]);

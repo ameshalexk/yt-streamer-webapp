@@ -78,6 +78,20 @@ test("APNE Daily enriches Anupamaa dates with episode numbers and real titles", 
 });
 
 
+test("APNE Daily never exposes serialized Sky payload as an episode title", () => {
+  const fixture =
+    'self.__next_f.push([1,"a:{\\"episode\\":{\\"uuid\\":\\"one\\",\\"title\\":\\"Sat - Aug 15, 2026\\",\\"episodeNumber\\":2111,\\"synopsis\\":\\"x\\",\\"waysToWatch\\":{\\"overTheTop\\":[{\\"startTime\\":\\"2026-08-15T20:00:00.000Z\\"}]}}}"])' +
+    'self.__next_f.push([1,"b:{\\"episode\\":{\\"uuid\\":\\"two\\",\\"title\\":\\"Anupamaa\\",\\"episodeNumber\\":2112,\\"synopsis\\":\\"x\\",\\"waysToWatch\\":{\\"overTheTop\\":[{\\"startTime\\":\\"2026-08-16T20:00:00.000Z\\"}]}}}"])';
+  const meta = parseSkyEpisodeMetadata(fixture, "Anupamaa");
+  assert.deepEqual(meta["2026-08-16"], { episodeNumber: 2111, episodeTitle: "" });
+  assert.deepEqual(meta["2026-08-17"], { episodeNumber: 2112, episodeTitle: "" });
+  for (const value of Object.values(meta)) {
+    assert.doesNotMatch(value.episodeTitle || "", /episodeNumber|synopsis|waysToWatch/);
+    assert.ok((value.episodeTitle || "").length <= 160);
+  }
+});
+
+
 
 test("APNE Daily resolves the browserless APNE to Newsportaling to Mediagraming HLS chain", () => {
   const episodeHtml = '<div data-id="252828be46d8f1433be256ee1e3f212f" data-href="https://newsportaling.com/finnance-account-insurance-yield" class="flash_link">Flash Link</div>';
