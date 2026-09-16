@@ -8,6 +8,7 @@ import {
   parseFlashTargetFromEpisodeHtml,
   parseLatestEpisodeFromShowHtml,
   parseRecentEpisodesFromShowHtml,
+  parseSkyEpisodeMetadata,
   parseMediagramingHlsFromHtml,
   parseNewsportalingRedirect,
 } from "../src/lib/apne-daily.js";
@@ -59,6 +60,21 @@ test("APNE Daily keeps a three-month episode history window", () => {
     filterApneEpisodesByMonths(episodes, 3).map((episode) => episode.dateKey),
     ["2026-09-16", "2026-08-01", "2026-06-16"],
   );
+});
+
+test("APNE Daily enriches Anupamaa dates with episode numbers and real titles", () => {
+  const fixture =
+    'self.__next_f.push([1,"x:{\\"episode\\":{\\"uuid\\":\\"one\\",\\"title\\":\\"Leela Eyes the Shah House\\",\\"episodeNumber\\":2136,\\"synopsis\\":\\"x\\",\\"waysToWatch\\":{\\"overTheTop\\":[{\\"startTime\\":\\"2026-09-09T20:00:00.000Z\\"}]}}}"])' +
+    '<script>self.__next_f.push([1,"y:{\\"episode\\":{\\"uuid\\":\\"two\\",\\"title\\":\\"Anupamaa\\",\\"episodeNumber\\":2142,\\"synopsis\\":\\"x\\",\\"waysToWatch\\":{\\"overTheTop\\":[{\\"startTime\\":\\"2026-09-15T20:00:00.000Z\\"}]}}}"])';
+  const meta = parseSkyEpisodeMetadata(fixture, "Anupamaa");
+  assert.deepEqual(meta["2026-09-10"], {
+    episodeNumber: 2136,
+    episodeTitle: "Leela Eyes the Shah House",
+  });
+  assert.deepEqual(meta["2026-09-16"], {
+    episodeNumber: 2142,
+    episodeTitle: "",
+  });
 });
 
 
@@ -151,6 +167,11 @@ test("APNE Daily UI renders latest controls, three-month history, and pagination
   assert.match(app, /apne-page-newer/);
   assert.match(app, /apne-page-older/);
   assert.match(app, /Page .* of/);
+  assert.match(app, /recent\.episodeNumber \? "Episode "/);
+  assert.match(app, /recent\.episodeTitle/);
+  assert.match(app, /apne-episode-name/);
+  assert.match(apneDailySource, /SKY_EPISODE_METADATA_URLS/);
+  assert.match(apneDailySource, /episode_metadata_ok/);
   assert.match(app, /recentAction = recentSaved \? "play-episode" : "download-episode"/);
   assert.match(app, /button\.dataset\.act === "play-episode"/);
   assert.match(app, /startApneEpisodeDownload/);

@@ -14,6 +14,11 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const APNE_HISTORY_MONTHS = 3;
 const APNE_HISTORY_FETCH_LIMIT = 250;
 const APNE_HISTORY_PAGE_SIZE = 10;
+const EPISODE_METADATA_CACHE_MS = 30 * 60 * 1000;
+const SKY_EPISODE_METADATA_URLS = {
+  anupamaa: "https://www.sky.com/watch/series/16f8285a-09c0-4b5b-812b-12c154d2c9f4/season-1",
+};
+const episodeMetadataCache = new Map();
 const DEFAULT_SHOWS = [{
   id: "anupamaa",
   name: "Anupamaa",
@@ -236,6 +241,88 @@ export function filterApneEpisodesByMonths(episodes, months = APNE_HISTORY_MONTH
 
 export function parseLatestEpisodeFromShowHtml(html, show = {}) {
   return parseRecentEpisodesFromShowHtml(html, show, 1)[0];
+}
+
+function dateKeyInTimeZone(value, timeZone) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return byType.year + "-" + byType.month + "-" + byType.day;
+}
+
+function decodeSkyJsonString(value) {
+  try {
+    return JSON.parse('"' + String(value || "") + '"');
+  } catch {
+    return String(value || "")
+      .replace(/\u0026/gi, "&")
+      .replace(/\"/g, '"')
+  }
+}
+
+function usefulEpisodeTitle(title, showName = "") {
+  const value = String(title || "").trim();
+  if (!value) return "";
+  const normalizedTitle = value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const normalizedShow = String(showName || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (normalizedTitle === normalizedShow || normalizedTitle === "anupama" || normalizedTitle === "anupamaa") return "";
+  if (/^(?:mon|tue|wed|thu|fri|sat|sun)\s*-\s*[a-z]{3}\s+\d{1,2},\s+\d{4}$/i.test(value)) return "";
+  return value;
+}
+
+export function parseSkyEpisodeMetadata(html, showName = "Anupamaa") {
+  const source = String(html || "");
+  const pattern = /\\"episode\\":\{\\"uuid\\":\\"[^"]+\\",\\"title\\":\\"((?:\\.|[^"\\])*)\\",\\"episodeNumber\\":(\d+)([\s\S]{0,8000}?)\\"startTime\\":\\"([^"]+)\\"/g;
+  const byDate = {};
+  for (const match of source.matchAll(pattern)) {
+    const episodeNumber = Number(match[2]);
+    const dateKey = dateKeyInTimeZone(match[4], "Asia/Kolkata");
+    if (!dateKey || !Number.isFinite(episodeNumber)) continue;
+    const rawTitle = decodeSkyJsonString(match[1]);
+    const episodeTitle = usefulEpisodeTitle(rawTitle, showName);
+    const current = byDate[dateKey];
+    const candidate = { episodeNumber, episodeTitle };
+    if (!current || (!current.episodeTitle && candidate.episodeTitle)) byDate[dateKey] = candidate;
+  }
+  return byDate;
+}
+
+async function episodeMetadataForShow(show) {
+  const url = SKY_EPISODE_METADATA_URLS[show.id];
+  if (!url) return {};
+  const cached = episodeMetadataCache.get(show.id);
+  if (cached && Date.now() - cached.at < EPISODE_METADATA_CACHE_MS) return cached.data;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": DESKTOP_USER_AGENT,
+          "Accept": "text/html,application/xhtml+xml",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        redirect: "follow",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status + " from " + new URL(url).hostname);
+      const data = parseSkyEpisodeMetadata(await response.text(), show.name);
+      episodeMetadataCache.set(show.id, { at: Date.now(), data });
+      await writeApneLog("episode_metadata_ok", { showId: show.id, count: Object.keys(data).length });
+      return data;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (error) {
+    await writeApneLog("episode_metadata_failed", { showId: show.id, error: error.message });
+    return cached?.data || {};
+  }
 }
 
 function readAttributes(tag) {
@@ -527,8 +614,14 @@ async function episodeStatus(show, episode, downloadedItems = null) {
 
 async function statusForShow(show) {
   try {
-    const detected = await detectRecent(show, APNE_HISTORY_FETCH_LIMIT);
-    const historyEpisodes = filterApneEpisodesByMonths(detected, APNE_HISTORY_MONTHS);
+    const [detected, episodeMetadata] = await Promise.all([
+      detectRecent(show, APNE_HISTORY_FETCH_LIMIT),
+      episodeMetadataForShow(show),
+    ]);
+    const historyEpisodes = filterApneEpisodesByMonths(detected, APNE_HISTORY_MONTHS).map((episode) => ({
+      ...episode,
+      ...(episodeMetadata[episode.dateKey] || {}),
+    }));
     const downloadedItems = await downloadedApneItems();
     const recentEpisodes = await Promise.all(historyEpisodes.map((episode) => episodeStatus(show, episode, downloadedItems)));
     const episode = recentEpisodes[0];

@@ -3789,12 +3789,17 @@ function renderApneDaily() {
             const subLabel = recentBusy
               ? (recent.detail || "Saving to Mac…")
               : (recentStatus === "Failed" ? (recent.detail || "Download failed") : (recentSaved ? "Saved on Mac" : "Available"));
+            const episodeMeta = [
+              recent.episodeNumber ? "Episode " + recent.episodeNumber : "",
+              recent.episodeTitle || "",
+            ].filter(Boolean).join(" · ");
 
             return '<div class="apne-recent-row" data-date-key="' + esc(recent.dateKey || "") + '">' +
               '<div class="apne-recent-copy">' +
                 '<div class="apne-recent-heading"><strong>' + esc(recentLabel) + '</strong>' +
                   (badge ? '<span class="apne-date-badge">' + esc(badge) + '</span>' : '') +
                 '</div>' +
+                (episodeMeta ? '<small class="apne-episode-name">' + esc(episodeMeta) + '</small>' : '') +
                 '<small class="' + (recentStatus === "Failed" ? 'apne-recent-error' : '') + '">' + esc(subLabel) + '</small>' +
               '</div>' +
               '<button class="btn small ' + (recentSaved ? 'secondary' : '') + ' apne-recent-action" type="button" data-act="' + recentAction + '" data-date-key="' + esc(recent.dateKey || "") + '" data-item-id="' + esc(recent.itemId || "") + '" ' + (recentBusy ? 'disabled' : '') + '>' + esc(recentButton) + '</button>' +
@@ -3810,11 +3815,17 @@ function renderApneDaily() {
         '</div>'
       : '';
 
+    const latestMeta = [
+      episode.episodeNumber ? "Episode " + episode.episodeNumber : "",
+      episode.episodeTitle || "",
+    ].filter(Boolean).join(" · ");
+
     return '<article class="apne-show-card ' + apneStatusClass(status) + '" data-show-id="' + esc(show.id) + '">' +
       '<div class="apne-show-main">' +
         '<div class="apne-show-copy"><h3>' + esc(show.name) + '</h3>' +
           '<div class="apne-status"><span class="apne-status-dot"></span>' + esc(status) + '</div>' +
           (detail ? '<div class="apne-episode-detail">' + esc(detail) + '</div>' : '') +
+          (latestMeta ? '<div class="apne-latest-name">' + esc(latestMeta) + '</div>' : '') +
         '</div>' +
         '<button class="btn apne-download-today ' + (saved ? 'secondary' : '') + '" data-act="' + action + '" type="button" ' + (disabled ? 'disabled' : '') + '>' + esc(buttonText) + '</button>' +
       '</div>' +
