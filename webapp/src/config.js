@@ -1,4 +1,5 @@
 // Central configuration. Override anything via environment variables (.env not required).
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +20,7 @@ export const config = {
   root: ROOT,
   dataDir: process.env.DATA_DIR || path.join(ROOT, "data"),
   libraryDir: process.env.LIBRARY_DIR || path.join(ROOT, "data", "library"),
+  apneICloudDir: process.env.APNE_ICLOUD_DIR || path.join(os.homedir(), "Library", "Mobile Documents", "com~apple~CloudDocs", "YT Streamer", "APNE Daily"),
   publicDir: path.join(ROOT, "public"),
 
   // External binaries (override if not on PATH)

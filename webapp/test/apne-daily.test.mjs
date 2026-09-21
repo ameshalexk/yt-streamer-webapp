@@ -163,7 +163,8 @@ test("APNE Daily downloads register as seekable local files in Downloaded Videos
   assert.match(apneDailySource, /"-map", "0:v:0\?"/);
   assert.match(apneDailySource, /"-map", "0:a:0\?"/);
   assert.match(apneDailySource, /"-c", "copy"/);
-  assert.match(apneDailySource, /duration \? \{ \.\.\.meta, duration \} : meta/);
+  assert.match(apneDailySource, /mirrorApneVideoToICloud\(finalPath\)/);
+  assert.match(apneDailySource, /const savedMeta = \{ \.\.\.meta, iCloudPath/);
 });
 
 test("APNE Daily show management normalizes APNE show and episode URLs", () => {

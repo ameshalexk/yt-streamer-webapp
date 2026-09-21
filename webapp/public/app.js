@@ -3741,6 +3741,10 @@ function apneStatusClass(status) {
   return "is-" + String(status || "Checking").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
+function apneStatusBusy(status) {
+  return status === "Checking" || status === "Downloading" || status === "Saving to iCloud";
+}
+
 function renderApneDaily() {
   const list = $("#apneDailyList");
   if (!list) return;
@@ -3752,7 +3756,7 @@ function renderApneDaily() {
 
   list.innerHTML = shows.map((show) => {
     const status = show.status || "Checking";
-    const busy = status === "Checking" || status === "Downloading";
+    const busy = apneStatusBusy(status);
     const saved = status === "Saved";
     const episode = show.episode || {};
     const detail = show.detail || episode.dateLabel || "";
@@ -3780,15 +3784,15 @@ function renderApneDaily() {
           pageEpisodes.map((recent, pageIndex) => {
             const recentStatus = recent.status || "Available";
             const recentSaved = recentStatus === "Saved" && recent.itemId;
-            const recentBusy = recentStatus === "Checking" || recentStatus === "Downloading";
+            const recentBusy = apneStatusBusy(recentStatus);
             const recentAction = recentSaved ? "play-episode" : "download-episode";
-            const recentButton = recentSaved ? "Play" : (recentBusy ? "Downloading…" : (recentStatus === "Failed" ? "Retry" : "Download"));
+            const recentButton = recentSaved ? "Play" : (recentBusy ? (recentStatus === "Saving to iCloud" ? "Saving…" : "Downloading…") : (recentStatus === "Failed" ? "Retry" : "Download"));
             const recentLabel = recent.dateLabel || recent.dateKey || "Episode";
             const absoluteIndex = pageStart + pageIndex;
             const badge = absoluteIndex === 0 ? "Latest" : (recent.dateKey && recent.dateKey === state.apneDaily.today ? "Today" : "");
             const subLabel = recentBusy
               ? (recent.detail || "Saving to Mac…")
-              : (recentStatus === "Failed" ? (recent.detail || "Download failed") : (recentSaved ? "Saved on Mac" : "Available"));
+              : (recentStatus === "Failed" ? (recent.detail || "Download failed") : (recentSaved ? "Saved on Mac + iCloud Drive" : "Available"));
             const episodeMeta = [
               recent.episodeNumber ? "Episode " + recent.episodeNumber : "",
               recent.episodeTitle || "",
@@ -3829,7 +3833,7 @@ function renderApneDaily() {
         '</div>' +
         '<button class="btn apne-download-today ' + (saved ? 'secondary' : '') + '" data-act="' + action + '" type="button" ' + (disabled ? 'disabled' : '') + '>' + esc(buttonText) + '</button>' +
       '</div>' +
-      (status === "Downloading" ? '<div class="apne-progress"><i></i></div>' : '') +
+      (apneStatusBusy(status) && status !== "Checking" ? '<div class="apne-progress"><i></i></div>' : '') +
       historyHtml +
     '</article>';
   }).join("");
@@ -3839,8 +3843,8 @@ function scheduleApneDailyPoll() {
   state.apneDaily.pollTimer = null;
   if (state.mode !== "apne") return;
   const hasBusyDownload = (state.apneDaily.shows || []).some((show) =>
-    show.status === "Checking" || show.status === "Downloading" ||
-    (show.recentEpisodes || []).some((episode) => episode.status === "Checking" || episode.status === "Downloading")
+    apneStatusBusy(show.status) ||
+    (show.recentEpisodes || []).some((episode) => apneStatusBusy(episode.status))
   );
   if (!hasBusyDownload) return;
   state.apneDaily.pollTimer = setTimeout(() => loadApneDaily({ quiet: true }), 1600);
@@ -3851,7 +3855,7 @@ async function loadApneDaily({ quiet = false } = {}) {
   state.apneDaily.loading = true;
   if (!quiet && state.apneDaily.shows.length) {
     state.apneDaily.shows = state.apneDaily.shows.map((show) => (
-      show.status === "Downloading" ? show : { ...show, status: "Checking", detail: "Checking APNE TV…" }
+      apneStatusBusy(show.status) && show.status !== "Checking" ? show : { ...show, status: "Checking", detail: "Checking APNE TV…" }
     ));
     renderApneDaily();
   }
@@ -3896,7 +3900,7 @@ async function startApneDailyDownload(showId) {
     renderApneDaily();
     if (show.status === "Saved") {
       await loadPlaylists().catch(() => {});
-      toast("Already saved in Downloaded Videos");
+      toast("Already saved on Mac + iCloud Drive");
     } else {
       toast("Preparing download on Mac…");
     }
@@ -3927,10 +3931,10 @@ async function startApneEpisodeDownload(showId, dateKey) {
     renderApneDaily();
     if (episode.status === "Saved") {
       await loadPlaylists().catch(() => {});
-      toast("Episode already saved on Mac");
+      toast("Episode already saved on Mac + iCloud Drive");
       await loadApneDaily({ quiet: true });
     } else {
-      toast("Downloading episode to Mac…");
+      toast("Downloading episode to Mac, then iCloud Drive…");
       scheduleApneDailyPoll();
     }
   } catch (error) {

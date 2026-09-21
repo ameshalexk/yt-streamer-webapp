@@ -145,7 +145,8 @@ test("APNE downloads register as hidden local-file library items with duration",
   assert.match(apneDaily, /registerDownloadedVideo/);
   assert.match(apneDaily, /probeLocalVideoDuration/);
   assert.match(apneDaily, /ffprobe/);
-  assert.match(apneDaily, /duration \? \{ \.\.\.meta, duration \} : meta/);
+  assert.match(apneDaily, /mirrorApneVideoToICloud\(finalPath\)/);
+  assert.match(apneDaily, /const savedMeta = \{ \.\.\.meta, iCloudPath/);
   assert.match(apneDaily, /type: "file"/);
   assert.match(apneDaily, /source: "apnetv"/);
 });

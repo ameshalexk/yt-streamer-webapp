@@ -1593,6 +1593,7 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
 .apne-show-card.is-saved .apne-status-dot { background: var(--ok); }
 .apne-show-card.is-failed .apne-status-dot { background: var(--accent); }
 .apne-show-card.is-downloading .apne-status-dot,
+.apne-show-card.is-saving-to-icloud .apne-status-dot,
 .apne-show-card.is-checking .apne-status-dot {
   background: #f1b84b; animation: apne-pulse 1s ease-in-out infinite alternate;
 }

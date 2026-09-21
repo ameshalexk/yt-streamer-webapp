@@ -581,6 +581,39 @@ async function uniqueLibraryVideoPath(title) {
   return path.join(config.libraryDir, `${base} ${Date.now()}.mp4`);
 }
 
+async function mirrorApneVideoToICloud(filePath) {
+  const targetDir = config.apneICloudDir;
+  if (!targetDir) throw new Error("APNE iCloud Drive folder is not configured.");
+
+  await fs.mkdir(targetDir, { recursive: true });
+  const targetPath = path.join(targetDir, path.basename(filePath));
+  const sourceStat = await fs.stat(filePath);
+  if (!sourceStat.isFile() || sourceStat.size <= 0) throw new Error("Downloaded APNE video is empty.");
+
+  try {
+    const targetStat = await fs.stat(targetPath);
+    if (targetStat.isFile() && targetStat.size === sourceStat.size) return targetPath;
+  } catch {}
+
+  const tempPath = path.join(targetDir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.part`);
+  try {
+    await fs.copyFile(filePath, tempPath);
+    const copiedStat = await fs.stat(tempPath);
+    if (!copiedStat.isFile() || copiedStat.size !== sourceStat.size) {
+      throw new Error("iCloud copy verification failed.");
+    }
+    await fs.rename(tempPath, targetPath);
+  } finally {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+  }
+
+  const finalStat = await fs.stat(targetPath);
+  if (!finalStat.isFile() || finalStat.size !== sourceStat.size) {
+    throw new Error("iCloud copy verification failed.");
+  }
+  return targetPath;
+}
+
 export async function downloadApneHls({ hlsUrl, referer, title, meta = {}, onStage = () => {} }) {
   const finalPath = await uniqueLibraryVideoPath(title);
   const partPath = finalPath.replace(/\.mp4$/i, ".part.mp4");
@@ -625,13 +658,26 @@ export async function downloadApneHls({ hlsUrl, referer, title, meta = {}, onSta
 
   await fs.rename(partPath, finalPath);
   const duration = await probeLocalVideoDuration(finalPath);
-  const item = await registerDownloadedVideo(finalPath, title, duration ? { ...meta, duration } : meta);
+
+  onStage("Saving to iCloud", { filePath: finalPath });
+  await writeApneLog("icloud_copy_start", {
+    showId: meta.apneShowId || null, dateKey: meta.apneEpisodeDate || null,
+    fileName: path.basename(finalPath),
+  });
+  const iCloudPath = await mirrorApneVideoToICloud(finalPath);
+  await writeApneLog("icloud_copy_saved", {
+    showId: meta.apneShowId || null, dateKey: meta.apneEpisodeDate || null,
+    fileName: path.basename(finalPath),
+  });
+
+  const savedMeta = { ...meta, iCloudPath, ...(duration ? { duration } : {}) };
+  const item = await registerDownloadedVideo(finalPath, title, savedMeta);
   await writeApneLog("download_saved", {
     showId: meta.apneShowId || null, dateKey: meta.apneEpisodeDate || null,
     fileName: path.basename(finalPath), duration: duration || null, itemId: item?.id || null,
   });
-  onStage("Saved", { filePath: finalPath, itemId: item?.id || null, duration });
-  return { filePath: finalPath, item, duration };
+  onStage("Saved", { filePath: finalPath, iCloudPath, itemId: item?.id || null, duration });
+  return { filePath: finalPath, iCloudPath, item, duration };
 }
 
 function episodeTitle(show, episode) {
@@ -693,6 +739,7 @@ function publicJob(job) {
     episode: job.episode || null,
     itemId: job.itemId || null,
     filePath: job.filePath || null,
+    iCloudPath: job.iCloudPath || null,
     error: job.error || null,
     startedAt: job.startedAt || null,
     finishedAt: job.finishedAt || null,
@@ -738,6 +785,8 @@ async function statusForShow(show) {
       detail = episode.detail || latestJob?.error || "Download failed";
     } else if (status === "Downloading") {
       detail = episode.detail || ("Downloading " + episode.dateLabel + "…");
+    } else if (status === "Saving to iCloud") {
+      detail = episode.detail || ("Saving " + episode.dateLabel + " to iCloud Drive…");
     }
 
     return {
@@ -808,7 +857,7 @@ export async function removeShow(showId) {
 async function createEpisodeDownloadJob(show, episode) {
   const key = jobKey(show.id, episode.dateKey);
   const active = jobs.get(key);
-  if (active && ["Checking", "Downloading"].includes(active.status)) return publicJob(active);
+  if (active && ["Checking", "Downloading", "Saving to iCloud"].includes(active.status)) return publicJob(active);
 
   const saved = await downloadedItemFor(show, episode);
   if (saved) {
@@ -830,6 +879,7 @@ async function createEpisodeDownloadJob(show, episode) {
     episode,
     itemId: null,
     filePath: null,
+    iCloudPath: null,
     error: null,
   };
   jobs.set(key, job);
@@ -853,15 +903,19 @@ async function createEpisodeDownloadJob(show, episode) {
         },
         onStage: (status, extra = {}) => {
           job.status = status;
-          job.detail = status === "Downloading" ? "Downloading to Mac…" : status;
+          job.detail = status === "Downloading"
+            ? "Downloading to Mac…"
+            : (status === "Saving to iCloud" ? "Saving to iCloud Drive…" : status);
           if (extra.filePath) job.filePath = extra.filePath;
+          if (extra.iCloudPath) job.iCloudPath = extra.iCloudPath;
           if (extra.itemId) job.itemId = extra.itemId;
         },
       });
       job.status = "Saved";
-      job.detail = "Saved to Downloaded Videos";
+      job.detail = "Saved to Mac + iCloud Drive";
       job.itemId = result.item?.id || job.itemId;
       job.filePath = result.filePath;
+      job.iCloudPath = result.iCloudPath || job.iCloudPath;
       job.finishedAt = Date.now();
     } catch (error) {
       job.status = "Failed";
