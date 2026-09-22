@@ -22,6 +22,13 @@ import * as apneDaily from "./lib/apne-daily.js";
 
 const app = express();
 app.disable("x-powered-by");
+app.use((req, res, next) => {
+  res.set("X-Robots-Tag", "noindex, nofollow, nosnippet");
+  next();
+});
+app.get("/robots.txt", (_req, res) => {
+  res.type("text/plain").send("User-agent: *\nDisallow: /\n");
+});
 app.use(express.json({ limit: "256kb" }));
 
 const SERVER_STARTED_AT = Date.now();
