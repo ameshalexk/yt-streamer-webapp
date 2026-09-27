@@ -657,6 +657,7 @@
     let firstPaintMs = null;
     let lastPaintMs = null;
     let renderedFrames = 0;
+    let droppedVideoFrames = 0;
     const pendingAudioBuffers = [];
 
     const scheduleAudioBuffer = (item) => {
@@ -860,7 +861,7 @@
         .then(r => { audioFeedDone = true; return r; });
 
       const prebufferDeadline = performance.now() + 3500;
-      while (decodedVideo.length < 18 || pendingAudioBuffers.length < 28) {
+      while (decodedVideo.length < 12 || pendingAudioBuffers.length < 4) {
         if (performance.now() > prebufferDeadline) {
           throw new Error("DASH prebuffer timeout: video=" + decodedVideo.length + " audio=" + pendingAudioBuffers.length);
         }
@@ -868,8 +869,8 @@
       }
       report.avPrebufferVideoFrames = decodedVideo.length;
       report.avPrebufferAudioBlocks = pendingAudioBuffers.length;
-      audioStart = audioCtx.currentTime + 0.45;
-      report.avAudioLeadSec = 0.45;
+      audioStart = audioCtx.currentTime + 0.80;
+      report.avAudioLeadSec = 0.80;
       pendingAudioBuffers.sort((a,b) => a.timestamp - b.timestamp);
       while (pendingAudioBuffers.length) scheduleAudioBuffer(pendingAudioBuffers.shift());
       await avStage("dash-prebuffer-ready", status);
@@ -901,6 +902,12 @@
             report.avLastAudioClockSec = round(elapsed, 3);
             report.avVideoFrameQueueDepth = decodedVideo.length;
             if (decodedVideo.length > 1) decodedVideo.sort((a,b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+            while (decodedVideo.length > 1 && (decodedVideo[1].timestamp ?? 0) / 1e6 < elapsed - 0.045) {
+              const stale = decodedVideo.shift();
+              stale.close();
+              droppedVideoFrames++;
+              report.avDroppedVideoFrames = droppedVideoFrames;
+            }
             while (decodedVideo.length && (decodedVideo[0].timestamp ?? 0) / 1e6 <= elapsed + 0.012) {
               const frame = decodedVideo.shift();
               if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
@@ -944,6 +951,7 @@
 
       const absDrifts = drifts.map(Math.abs);
       report.avRenderedVideoFrames = renderedFrames;
+      report.avDroppedVideoFrames = droppedVideoFrames;
       report.avDecodedAudioBlocks = decodedAudioBlocks;
       report.avScheduledAudioBlocks = scheduledAudioBlocks;
       report.avCanvasUniqueSignatures = signatures.size;
@@ -955,7 +963,7 @@
       report.avDriftFinalMs = round(drifts.length ? drifts[drifts.length - 1] : null, 1);
       report.avVideoDecodeQueueMax = maxVideoQueue;
       report.avAudioDecodeQueueMax = maxAudioQueue;
-      report.avSyncSucceeded = renderedFrames >= 80 && signatures.size >= 8 && decodedAudioBlocks >= 120 && report.avDriftP95Ms != null && report.avDriftP95Ms < 120;
+      report.avSyncSucceeded = (renderedFrames + droppedVideoFrames) >= 90 && renderedFrames >= 55 && signatures.size >= 20 && decodedAudioBlocks >= 120 && report.avDriftP95Ms != null && report.avDriftP95Ms < 120;
       report.avSyncError = "";
       await avStage("completed", status);
     } catch (e) {
