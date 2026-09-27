@@ -23,7 +23,7 @@
     .metric b{display:block;font-size:15px;margin-bottom:5px}
     .metric span{color:#c2cad4;word-break:break-word}
     pre{white-space:pre-wrap;word-break:break-word;font-size:13px;max-height:320px;overflow:auto;background:#0c0f13;padding:14px;border-radius:12px}
-    video{width:100%;max-height:280px;background:#000;border-radius:12px;margin-top:12px}
+    video,canvas{width:100%;max-height:280px;background:#000;border-radius:12px;margin-top:12px;display:block}
     .done{font-size:26px;font-weight:800}
   </style>
 </head>
@@ -38,9 +38,28 @@
   </div>
 
   <div class="card">
-    <button id="runBtn" disabled>Run media test and send report</button>
+    <button id="runBtn" disabled>1. Run native H.264 video test</button>
     <div class="muted" style="margin-top:10px">When enabled, tap this once. The video test lasts about two seconds.</div>
     <video id="probeVideo" muted playsinline preload="metadata"></video>
+  </div>
+
+  <div class="card">
+    <div class="status">What the current CyberTube code actually uses</div>
+    <div class="grid">
+      <div class="metric"><b>Video delivery</b><span>DASH-style manifest + HTTP MP4/fMP4 segments by default; HLS is also accepted</span></div>
+      <div class="metric"><b>Decode</b><span>Web Worker + WebCodecs VideoDecoder</span></div>
+      <div class="metric"><b>Display</b><span>VideoFrame painted to Canvas 2D with requestAnimationFrame pacing</span></div>
+      <div class="metric"><b>MJPEG</b><span>No CyberTube MJPEG / multipart stream path found in the current public bundles</span></div>
+      <div class="metric"><b>WebRTC</b><span>Used by the separate Mirror feature; current CyberTube code normalizes old WebRTC mode labels to manifest playback</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="status">CyberDash-style render test</div>
+    <div class="muted" style="margin:8px 0 12px">This isolated test uses the same core visual pattern found in CyberTube's current public code: H.264 bytes → WebCodecs VideoDecoder → VideoFrame → Canvas. Run it while parked.</div>
+    <button id="cyberBtn" disabled>2. Run WebCodecs + Canvas test</button>
+    <canvas id="cyberCanvas" width="640" height="360"></canvas>
+    <div id="cyberStatus" class="muted" style="margin-top:10px">Waiting for browser checks.</div>
   </div>
 
   <div class="card">
@@ -58,12 +77,64 @@
 <script>
 (() => {
   "use strict";
-  const REPORT_VERSION = "2026-09-27-v1";
+  const REPORT_VERSION = "2026-09-27-v2";
   const report = { version: REPORT_VERSION, startedAt: new Date().toISOString() };
   const $ = (id) => document.getElementById(id);
   const bool = (v) => v ? "yes" : "no";
   const safe = (fn, fallback = null) => { try { return fn(); } catch { return fallback; } };
   const round = (n, d = 1) => Number.isFinite(n) ? Number(n.toFixed(d)) : null;
+
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  function splitAnnexBAccessUnits(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const starts = [];
+    let i = 0;
+    while (i < bytes.length - 4) {
+      let nal = -1;
+      let prefix = 0;
+      if (bytes[i] === 0 && bytes[i+1] === 0 && bytes[i+2] === 0 && bytes[i+3] === 1) {
+        nal = i + 4;
+        prefix = 4;
+      } else if (bytes[i] === 0 && bytes[i+1] === 0 && bytes[i+2] === 1) {
+        nal = i + 3;
+        prefix = 3;
+      }
+      if (nal >= 0) {
+        if (nal < bytes.length && (bytes[nal] & 0x1f) === 9) starts.push(i);
+        i += prefix;
+      } else {
+        i += 1;
+      }
+    }
+    const units = [];
+    for (let i = 0; i < starts.length; i++) {
+      const end = i + 1 < starts.length ? starts[i+1] : bytes.length;
+      units.push(bytes.slice(starts[i], end));
+    }
+    return units;
+  }
+
+  function canvasSignature(ctx) {
+    try {
+      const w = ctx.canvas.width, h = ctx.canvas.height;
+      const data = ctx.getImageData(0, 0, w, h).data;
+      let hash = 2166136261 >>> 0;
+      for (let gy = 1; gy <= 8; gy++) {
+        const y = Math.min(h - 1, Math.floor((gy * h) / 9));
+        for (let gx = 1; gx <= 8; gx++) {
+          const x = Math.min(w - 1, Math.floor((gx * w) / 9));
+          const i = (y * w + x) * 4;
+          hash ^= data[i]; hash = Math.imul(hash, 16777619);
+          hash ^= data[i+1]; hash = Math.imul(hash, 16777619);
+          hash ^= data[i+2]; hash = Math.imul(hash, 16777619);
+        }
+      }
+      return (hash >>> 0).toString(16);
+    } catch {
+      return "";
+    }
+  }
 
   function mediaType(type) {
     const v = document.createElement("video");
@@ -260,6 +331,7 @@
       ["WebRTC", bool(report.webRtc)],
       ["WebRTC H.264", bool(report.rtcH264)],
       ["WebCodecs", bool(report.webCodecsVideoDecoder)],
+      ["CyberDash-style canvas", report.webcodecsCanvasAdvanced == null ? "not run" : bool(report.webcodecsCanvasAdvanced)],
       ["Range requests", report.rangeWorks == null ? "testing" : bool(report.rangeWorks)],
       ["Tunnel speed", report.tunnelMbpsAvg == null ? "testing" : report.tunnelMbpsAvg + " Mbps"]
     ];
@@ -349,14 +421,161 @@
 
     if (ok) {
       $("status").innerHTML = '<span class="done">Test complete</span>';
-      $("detail").textContent = "Report received by the streamer. You can close this tab.";
-      btn.textContent = "Report sent";
+      $("detail").textContent = "Native video report received. Now run test 2 below.";
+      btn.textContent = "Native test sent";
     } else {
       $("status").textContent = "Test complete, but report upload failed";
       $("detail").textContent = "Leave this page open and tell ChatGPT. The results are still visible below.";
       btn.textContent = "Retry send";
       btn.disabled = false;
       btn.onclick = async () => { btn.disabled = true; await sendReport("interactive-retry"); render(); };
+    }
+  }
+
+  async function runCyberDashStyleTest() {
+    const btn = $("cyberBtn");
+    const status = $("cyberStatus");
+    btn.disabled = true;
+    btn.textContent = "Testing WebCodecs + Canvas…";
+    status.textContent = "Fetching H.264 elementary stream…";
+
+    const canvas = $("cyberCanvas");
+    const ctx = canvas.getContext("2d", { alpha: false });
+    const start = performance.now();
+    let decoder = null;
+    let decoded = 0;
+    let firstFrameAt = null;
+    let lastFrameAt = null;
+    let firstSignature = "";
+    let lastSignature = "";
+    const signatures = new Set();
+    let decodeError = "";
+
+    try {
+      if (!window.VideoDecoder || !window.EncodedVideoChunk) throw new Error("WebCodecs VideoDecoder is unavailable");
+
+      const res = await fetch("/tesla-probe-h264-annexb.h264?probe=" + Date.now(), { cache: "no-store" });
+      if (!res.ok) throw new Error("H.264 test asset HTTP " + res.status);
+      const buffer = await res.arrayBuffer();
+      const units = splitAnnexBAccessUnits(buffer);
+      report.webcodecsAssetBytes = buffer.byteLength;
+      report.webcodecsAccessUnits = units.length;
+      if (units.length < 24) throw new Error("Could not parse enough H.264 access units");
+
+      const config = {
+        codec: "avc1.42E01E",
+        codedWidth: 640,
+        codedHeight: 360,
+        hardwareAcceleration: "prefer-hardware",
+        optimizeForLatency: true
+      };
+
+      if (typeof VideoDecoder.isConfigSupported === "function") {
+        const support = await VideoDecoder.isConfigSupported(config);
+        report.webcodecsConfigSupported = !!support.supported;
+        if (!support.supported) throw new Error("H.264 WebCodecs config is not supported");
+      }
+
+      const frameQueue = [];
+      let waiter = null;
+      decoder = new VideoDecoder({
+        output(frame) {
+          frameQueue.push(frame);
+          if (waiter) { const w = waiter; waiter = null; w(); }
+        },
+        error(err) {
+          decodeError = String(err && err.message || err);
+          if (waiter) { const w = waiter; waiter = null; w(); }
+        }
+      });
+      decoder.configure(config);
+      report.webcodecsDecoderStateAfterConfigure = decoder.state;
+
+      const fps = 24;
+      const frameUs = Math.round(1000000 / fps);
+
+      for (let i = 0; i < units.length; i++) {
+        if (decodeError) throw new Error(decodeError);
+        decoder.decode(new EncodedVideoChunk({
+          type: "key",
+          timestamp: i * frameUs,
+          duration: frameUs,
+          data: units[i]
+        }));
+
+        const deadline = performance.now() + 900;
+        while (!frameQueue.length && !decodeError && performance.now() < deadline) {
+          await new Promise(resolve => {
+            const timer = setTimeout(() => { if (waiter === resolve) waiter = null; resolve(); }, 30);
+            waiter = () => { clearTimeout(timer); resolve(); };
+          });
+        }
+        if (decodeError) throw new Error(decodeError);
+
+        const frame = frameQueue.shift();
+        if (frame) {
+          if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+            canvas.width = frame.displayWidth;
+            canvas.height = frame.displayHeight;
+          }
+          ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+          decoded += 1;
+          if (firstFrameAt == null) {
+            firstFrameAt = performance.now();
+            firstSignature = canvasSignature(ctx);
+          }
+          lastFrameAt = performance.now();
+          lastSignature = canvasSignature(ctx);
+          if (lastSignature) signatures.add(lastSignature);
+          frame.close();
+        }
+        await sleep(frameUs / 1000);
+      }
+
+      await decoder.flush();
+      while (frameQueue.length) {
+        const frame = frameQueue.shift();
+        ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+        decoded += 1;
+        lastFrameAt = performance.now();
+        lastSignature = canvasSignature(ctx);
+        if (lastSignature) signatures.add(lastSignature);
+        frame.close();
+      }
+
+      report.webcodecsCodec = config.codec;
+      report.webcodecsDecodedFrames = decoded;
+      report.webcodecsCanvasFirstFrameMs = firstFrameAt == null ? null : round(firstFrameAt - start);
+      report.webcodecsCanvasLastFrameMs = lastFrameAt == null ? null : round(lastFrameAt - start);
+      report.webcodecsCanvasDurationMs = firstFrameAt == null || lastFrameAt == null ? null : round(lastFrameAt - firstFrameAt);
+      report.webcodecsCanvasFirstSignature = firstSignature;
+      report.webcodecsCanvasLastSignature = lastSignature;
+      report.webcodecsCanvasUniqueSignatures = signatures.size;
+      report.webcodecsCanvasAdvanced = decoded >= 24 && signatures.size >= 2;
+      report.webcodecsDecodeError = "";
+    } catch (e) {
+      report.webcodecsCanvasAdvanced = false;
+      report.webcodecsDecodedFrames = decoded;
+      report.webcodecsDecodeError = String(e && e.message || e).slice(0, 160);
+    } finally {
+      try { decoder && decoder.state !== "closed" && decoder.close(); } catch {}
+    }
+
+    render();
+    status.textContent = "Sending WebCodecs/canvas report…";
+    const ok = await sendReport("cyberdash-style");
+    render();
+
+    if (ok) {
+      status.textContent = report.webcodecsCanvasAdvanced
+        ? "WebCodecs + Canvas test complete. Animated frames were rendered and the report was sent."
+        : "Test finished, but animated canvas rendering was not confirmed. Report sent for analysis.";
+      btn.textContent = "WebCodecs/canvas report sent";
+    } else {
+      status.textContent = "Test finished, but report upload failed. Leave this page open.";
+      btn.textContent = "Retry WebCodecs report";
+      btn.disabled = false;
+      btn.onclick = async () => { btn.disabled = true; await sendReport("cyberdash-style-retry"); render(); };
     }
   }
 
@@ -370,7 +589,10 @@
     $("status").textContent = "Browser checks complete";
     $("detail").textContent = "Now tap the button once to test real H.264 playback.";
     $("runBtn").disabled = false;
+    $("cyberBtn").disabled = false;
+    $("cyberStatus").textContent = "Ready. Run after test 1.";
     $("runBtn").addEventListener("click", runVideoTest, { once: true });
+    $("cyberBtn").addEventListener("click", runCyberDashStyleTest, { once: true });
   }
 
   boot().catch(e => {
