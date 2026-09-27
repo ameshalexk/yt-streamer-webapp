@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="robots" content="noindex,nofollow,nosnippet">
+  <meta name="theme-color" content="#111111">
+  <title>Tesla Browser Capability Probe</title>
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:dark}
+    *{box-sizing:border-box}
+    body{margin:0;background:#0f1115;color:#f5f7fa;min-height:100vh}
+    main{max-width:960px;margin:0 auto;padding:28px 22px 48px}
+    h1{font-size:34px;margin:0 0 8px}
+    .sub{color:#aeb7c4;font-size:18px;line-height:1.45;margin-bottom:24px}
+    .card{background:#181c22;border:1px solid #2a3039;border-radius:18px;padding:20px;margin:14px 0}
+    .status{font-size:22px;font-weight:700}
+    .muted{color:#aeb7c4}
+    button{width:100%;min-height:64px;border:0;border-radius:14px;font-size:22px;font-weight:700;padding:14px 18px;background:#f2f4f7;color:#0d1117;cursor:pointer}
+    button:disabled{opacity:.55;cursor:default}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:14px}
+    .metric{background:#11151a;border-radius:12px;padding:12px}
+    .metric b{display:block;font-size:15px;margin-bottom:5px}
+    .metric span{color:#c2cad4;word-break:break-word}
+    pre{white-space:pre-wrap;word-break:break-word;font-size:13px;max-height:320px;overflow:auto;background:#0c0f13;padding:14px;border-radius:12px}
+    video{width:100%;max-height:280px;background:#000;border-radius:12px;margin-top:12px}
+    .done{font-size:26px;font-weight:800}
+  </style>
+</head>
+<body>
+<main>
+  <h1>Tesla Browser Probe</h1>
+  <div class="sub">This checks what your Tesla browser can actually decode and stream. It does not sign in, control the car, or change any vehicle setting.</div>
+
+  <div class="card">
+    <div id="status" class="status">Running browser checks…</div>
+    <div id="detail" class="muted" style="margin-top:8px">Keep this page open.</div>
+  </div>
+
+  <div class="card">
+    <button id="runBtn" disabled>Run media test and send report</button>
+    <div class="muted" style="margin-top:10px">When enabled, tap this once. The video test lasts about two seconds.</div>
+    <video id="probeVideo" muted playsinline preload="metadata"></video>
+  </div>
+
+  <div class="card">
+    <div class="status">Key results</div>
+    <div id="summary" class="grid"></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Full technical report</summary>
+      <pre id="raw"></pre>
+    </details>
+  </div>
+</main>
+<script>
+(() => {
+  "use strict";
+  const REPORT_VERSION = "2026-09-27-v1";
+  const report = { version: REPORT_VERSION, startedAt: new Date().toISOString() };
+  const $ = (id) => document.getElementById(id);
+  const bool = (v) => v ? "yes" : "no";
+  const safe = (fn, fallback = null) => { try { return fn(); } catch { return fallback; } };
+  const round = (n, d = 1) => Number.isFinite(n) ? Number(n.toFixed(d)) : null;
+
+  function mediaType(type) {
+    const v = document.createElement("video");
+    return safe(() => v.canPlayType(type), "") || "";
+  }
+
+  function mseType(type) {
+    return safe(() => !!window.MediaSource && MediaSource.isTypeSupported(type), false);
+  }
+
+  function rtcCodecs() {
+    const caps = safe(() => RTCRtpReceiver.getCapabilities("video"), null);
+    const codecs = caps && Array.isArray(caps.codecs) ? caps.codecs : [];
+    return codecs.map(c => String(c.mimeType || "").toLowerCase()).filter(Boolean);
+  }
+
+  function addBaseCapabilities() {
+    const v = document.createElement("video");
+    report.userAgent = navigator.userAgent || "";
+    report.platform = navigator.platform || "";
+    report.vendor = navigator.vendor || "";
+    report.language = navigator.language || "";
+    report.languages = safe(() => (navigator.languages || []).join(","), "");
+    report.hardwareConcurrency = navigator.hardwareConcurrency || 0;
+    report.deviceMemory = navigator.deviceMemory || 0;
+    report.maxTouchPoints = navigator.maxTouchPoints || 0;
+    report.viewport = window.innerWidth + "x" + window.innerHeight;
+    report.screen = screen.width + "x" + screen.height;
+    report.devicePixelRatio = window.devicePixelRatio || 1;
+    report.secureContext = !!window.isSecureContext;
+    report.visibilityState = document.visibilityState || "";
+    report.fullscreenEnabled = !!document.fullscreenEnabled;
+    report.requestFullscreen = typeof document.documentElement.requestFullscreen === "function";
+    report.videoRequestFullscreen = typeof v.requestFullscreen === "function";
+    report.videoWebkitEnterFullscreen = typeof v.webkitEnterFullscreen === "function";
+    report.pictureInPicture = !!document.pictureInPictureEnabled;
+    report.requestVideoFrameCallback = typeof v.requestVideoFrameCallback === "function";
+    report.mediaSource = typeof window.MediaSource !== "undefined";
+    report.sourceBuffer = typeof window.SourceBuffer !== "undefined";
+    report.webRtc = typeof window.RTCPeerConnection !== "undefined";
+    report.webSocket = typeof window.WebSocket !== "undefined";
+    report.readableStream = typeof window.ReadableStream !== "undefined";
+    report.fetchStreaming = !!safe(() => new Response(new Uint8Array([1])).body?.getReader, false);
+    report.webCodecsVideoDecoder = typeof window.VideoDecoder !== "undefined";
+    report.webCodecsAudioDecoder = typeof window.AudioDecoder !== "undefined";
+    report.imageDecoder = typeof window.ImageDecoder !== "undefined";
+    report.createImageBitmap = typeof window.createImageBitmap === "function";
+    report.offscreenCanvas = typeof window.OffscreenCanvas !== "undefined";
+    report.canvas2d = !!safe(() => document.createElement("canvas").getContext("2d"), null);
+    report.webgl = !!safe(() => document.createElement("canvas").getContext("webgl"), null);
+    report.webgl2 = !!safe(() => document.createElement("canvas").getContext("webgl2"), null);
+    report.audioContext = typeof (window.AudioContext || window.webkitAudioContext) !== "undefined";
+    report.mediaCapabilities = !!navigator.mediaCapabilities?.decodingInfo;
+
+    report.canMp4H264Baseline = mediaType('video/mp4; codecs="avc1.42E01E"');
+    report.canMp4H264Main = mediaType('video/mp4; codecs="avc1.4D401F"');
+    report.canMp4H264High = mediaType('video/mp4; codecs="avc1.640028"');
+    report.canMp4H264Aac = mediaType('video/mp4; codecs="avc1.4D401F, mp4a.40.2"');
+    report.canMp4Hevc = mediaType('video/mp4; codecs="hvc1.1.6.L93.B0"');
+    report.canWebmVp9 = mediaType('video/webm; codecs="vp9"');
+    report.canMp4Av1 = mediaType('video/mp4; codecs="av01.0.05M.08"');
+
+    report.mseH264Baseline = mseType('video/mp4; codecs="avc1.42E01E"');
+    report.mseH264Main = mseType('video/mp4; codecs="avc1.4D401F"');
+    report.mseH264High = mseType('video/mp4; codecs="avc1.640028"');
+    report.mseH264Aac = mseType('video/mp4; codecs="avc1.4D401F, mp4a.40.2"');
+
+    const codecs = rtcCodecs();
+    report.rtcVideoCodecs = [...new Set(codecs)].join(",");
+    report.rtcH264 = codecs.includes("video/h264");
+    report.rtcVp8 = codecs.includes("video/vp8");
+    report.rtcVp9 = codecs.includes("video/vp9");
+    report.rtcAv1 = codecs.includes("video/av1");
+  }
+
+  async function mediaCapabilitiesProbe() {
+    if (!navigator.mediaCapabilities?.decodingInfo) return;
+    try {
+      const result = await navigator.mediaCapabilities.decodingInfo({
+        type: "file",
+        video: {
+          contentType: 'video/mp4; codecs="avc1.4D401F"',
+          width: 1280,
+          height: 720,
+          bitrate: 2500000,
+          framerate: 30
+        }
+      });
+      report.mc720Supported = !!result.supported;
+      report.mc720Smooth = !!result.smooth;
+      report.mc720PowerEfficient = !!result.powerEfficient;
+    } catch (e) {
+      report.mc720Error = String(e && e.message || e).slice(0, 120);
+    }
+  }
+
+  async function rtcOfferProbe() {
+    if (!window.RTCPeerConnection) return;
+    let pc;
+    try {
+      pc = new RTCPeerConnection();
+      pc.createDataChannel("probe");
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      report.rtcOffer = true;
+      report.rtcLocalSdpH264 = /H264\/90000/i.test(offer.sdp || "");
+    } catch (e) {
+      report.rtcOffer = false;
+      report.rtcOfferError = String(e && e.message || e).slice(0, 120);
+    } finally {
+      try { pc && pc.close(); } catch {}
+    }
+  }
+
+  async function networkProbe() {
+    const rtts = [];
+    for (let i = 0; i < 3; i++) {
+      const start = performance.now();
+      try {
+        const res = await fetch("/api/health?probe=" + Date.now() + "-" + i, { cache: "no-store" });
+        await res.text();
+        if (res.ok) rtts.push(performance.now() - start);
+      } catch {}
+    }
+    if (rtts.length) {
+      rtts.sort((a,b) => a-b);
+      report.httpRttMinMs = round(rtts[0]);
+      report.httpRttMedianMs = round(rtts[Math.floor(rtts.length/2)]);
+    }
+
+    const speed = [];
+    for (let i = 0; i < 2; i++) {
+      const start = performance.now();
+      try {
+        const res = await fetch("/tesla-probe-1mb.bin?probe=" + Date.now() + "-" + i, { cache: "no-store" });
+        const buf = await res.arrayBuffer();
+        const seconds = (performance.now() - start) / 1000;
+        if (res.ok && seconds > 0) speed.push((buf.byteLength * 8) / seconds / 1000000);
+      } catch {}
+    }
+    if (speed.length) {
+      report.tunnelMbpsBest = round(Math.max(...speed), 2);
+      report.tunnelMbpsAvg = round(speed.reduce((a,b)=>a+b,0)/speed.length, 2);
+    }
+
+    try {
+      const res = await fetch("/tesla-probe-h264.mp4", { headers: { Range: "bytes=0-1023" }, cache: "no-store" });
+      report.rangeStatus = res.status;
+      report.rangeWorks = res.status === 206;
+      report.rangeHeader = res.headers.get("content-range") || "";
+      await res.arrayBuffer();
+    } catch (e) {
+      report.rangeWorks = false;
+      report.rangeError = String(e && e.message || e).slice(0, 120);
+    }
+  }
+
+  async function sendReport(stage) {
+    report.stage = stage;
+    report.sentAt = new Date().toISOString();
+    const timing = {};
+    for (const [k,v] of Object.entries(report)) {
+      if (typeof v === "boolean") timing[k] = v ? "yes" : "no";
+      else if (typeof v === "number" && Number.isFinite(v)) timing[k] = v;
+      else if (typeof v === "string") timing[k] = v.slice(0, 120);
+    }
+    try {
+      const res = await fetch("/api/playback-event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event: "tesla_capability_probe",
+          label: stage,
+          message: "Tesla browser capability probe " + REPORT_VERSION,
+          userAgent: navigator.userAgent,
+          timing
+        }),
+        keepalive: true
+      });
+      report.reportSent = res.ok;
+      return res.ok;
+    } catch (e) {
+      report.reportSent = false;
+      report.reportSendError = String(e && e.message || e).slice(0, 120);
+      return false;
+    }
+  }
+
+  function render() {
+    const items = [
+      ["Viewport", report.viewport || "—"],
+      ["H.264 MP4", report.canMp4H264Main || "no"],
+      ["MSE H.264", bool(report.mseH264Main)],
+      ["WebRTC", bool(report.webRtc)],
+      ["WebRTC H.264", bool(report.rtcH264)],
+      ["WebCodecs", bool(report.webCodecsVideoDecoder)],
+      ["Range requests", report.rangeWorks == null ? "testing" : bool(report.rangeWorks)],
+      ["Tunnel speed", report.tunnelMbpsAvg == null ? "testing" : report.tunnelMbpsAvg + " Mbps"]
+    ];
+    $("summary").innerHTML = items.map(([k,v]) => '<div class="metric"><b>'+k+'</b><span>'+String(v)+'</span></div>').join("");
+    $("raw").textContent = JSON.stringify(report, null, 2);
+  }
+
+  async function runVideoTest() {
+    const btn = $("runBtn");
+    btn.disabled = true;
+    btn.textContent = "Testing…";
+    $("status").textContent = "Running real H.264 playback test…";
+    $("detail").textContent = "This takes about two seconds.";
+
+    const video = $("probeVideo");
+    const start = performance.now();
+    let loadedDataAt = null;
+    let playingAt = null;
+    let rvfcAt = null;
+
+    const once = (name) => new Promise(resolve => video.addEventListener(name, resolve, { once: true }));
+
+    try {
+      video.src = "/tesla-probe-h264.mp4?probe=" + Date.now();
+      video.muted = true;
+      video.playsInline = true;
+      video.load();
+
+      const loaded = once("loadeddata").then(() => { loadedDataAt = performance.now(); });
+      const playing = once("playing").then(() => { playingAt = performance.now(); });
+
+      const playPromise = video.play();
+      if (playPromise && typeof playPromise.then === "function") await playPromise;
+      report.mp4PlayPromise = true;
+
+      if (typeof video.requestVideoFrameCallback === "function") {
+        await new Promise(resolve => {
+          const timer = setTimeout(resolve, 1800);
+          video.requestVideoFrameCallback(() => {
+            rvfcAt = performance.now();
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+      } else {
+        await Promise.race([loaded, new Promise(r => setTimeout(r, 1800))]);
+      }
+
+      await Promise.race([playing, new Promise(r => setTimeout(r, 1200))]);
+      await new Promise(r => setTimeout(r, 500));
+
+      report.mp4VideoWidth = video.videoWidth || 0;
+      report.mp4VideoHeight = video.videoHeight || 0;
+      report.mp4ReadyState = video.readyState;
+      report.mp4CurrentTime = round(video.currentTime, 3);
+      report.mp4LoadedDataMs = loadedDataAt ? round(loadedDataAt - start) : null;
+      report.mp4PlayingMs = playingAt ? round(playingAt - start) : null;
+      report.mp4FirstFrameMs = rvfcAt ? round(rvfcAt - start) : null;
+      report.mp4ActuallyAdvanced = video.currentTime > 0.15;
+      report.mp4ErrorCode = video.error ? video.error.code : 0;
+      video.pause();
+    } catch (e) {
+      report.mp4PlayPromise = false;
+      report.mp4Error = String(e && e.message || e).slice(0, 120);
+      report.mp4ErrorCode = video.error ? video.error.code : 0;
+      try { video.pause(); } catch {}
+    }
+
+    if (window.AudioContext || window.webkitAudioContext) {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        const ctx = new Ctx();
+        await ctx.resume();
+        report.audioContextResume = ctx.state === "running";
+        report.audioSampleRate = ctx.sampleRate || 0;
+        await ctx.close();
+      } catch (e) {
+        report.audioContextResume = false;
+        report.audioContextError = String(e && e.message || e).slice(0, 120);
+      }
+    }
+
+    render();
+    $("status").textContent = "Sending report to your Mac…";
+    const ok = await sendReport("interactive");
+    render();
+
+    if (ok) {
+      $("status").innerHTML = '<span class="done">Test complete</span>';
+      $("detail").textContent = "Report received by the streamer. You can close this tab.";
+      btn.textContent = "Report sent";
+    } else {
+      $("status").textContent = "Test complete, but report upload failed";
+      $("detail").textContent = "Leave this page open and tell ChatGPT. The results are still visible below.";
+      btn.textContent = "Retry send";
+      btn.disabled = false;
+      btn.onclick = async () => { btn.disabled = true; await sendReport("interactive-retry"); render(); };
+    }
+  }
+
+  async function boot() {
+    addBaseCapabilities();
+    render();
+    await Promise.all([mediaCapabilitiesProbe(), rtcOfferProbe(), networkProbe()]);
+    report.automaticChecksDoneAt = new Date().toISOString();
+    await sendReport("automatic");
+    render();
+    $("status").textContent = "Browser checks complete";
+    $("detail").textContent = "Now tap the button once to test real H.264 playback.";
+    $("runBtn").disabled = false;
+    $("runBtn").addEventListener("click", runVideoTest, { once: true });
+  }
+
+  boot().catch(e => {
+    report.bootError = String(e && e.message || e).slice(0, 160);
+    render();
+    $("status").textContent = "Probe hit an error";
+    $("detail").textContent = "Tell ChatGPT what you see on this screen.";
+    $("runBtn").disabled = false;
+  });
+})();
+</script>
+</body>
+</html>
