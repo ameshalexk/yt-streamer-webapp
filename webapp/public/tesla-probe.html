@@ -63,6 +63,14 @@
   </div>
 
   <div class="card">
+    <div class="status">CyberDash-style A/V sync test</div>
+    <div class="muted" style="margin:8px 0 12px">Separate H.264 video and AAC audio are decoded with WebCodecs. Video frames are paced from the AudioContext clock and painted to canvas. You should see motion and hear a short 880 Hz tone.</div>
+    <button id="syncBtn" disabled>3. Run WebCodecs + AAC sync test</button>
+    <canvas id="syncCanvas" width="640" height="360"></canvas>
+    <div id="syncStatus" class="muted" style="margin-top:10px">Waiting for browser checks.</div>
+  </div>
+
+  <div class="card">
     <div class="status">Key results</div>
     <div id="summary" class="grid"></div>
   </div>
@@ -77,7 +85,7 @@
 <script>
 (() => {
   "use strict";
-  const REPORT_VERSION = "2026-09-27-v2";
+  const REPORT_VERSION = "2026-09-27-v3";
   const report = { version: REPORT_VERSION, startedAt: new Date().toISOString() };
   const $ = (id) => document.getElementById(id);
   const bool = (v) => v ? "yes" : "no";
@@ -113,6 +121,35 @@
       units.push(bytes.slice(starts[i], end));
     }
     return units;
+  }
+
+  function parseAdtsFrames(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const frames = [];
+    let i = 0;
+    let sampleRate = 0;
+    let channels = 0;
+    const rates = [96000,88200,64000,48000,44100,32000,24000,22050,16000,12000,11025,8000,7350];
+    while (i + 7 <= bytes.length) {
+      if (!(bytes[i] === 0xff && (bytes[i+1] & 0xf6) === 0xf0)) throw new Error("Invalid ADTS sync at byte " + i);
+      const protectionAbsent = bytes[i+1] & 1;
+      const freqIndex = (bytes[i+2] >> 2) & 0x0f;
+      const chanCfg = ((bytes[i+2] & 1) << 2) | ((bytes[i+3] >> 6) & 3);
+      const frameLength = ((bytes[i+3] & 3) << 11) | (bytes[i+4] << 3) | ((bytes[i+5] >> 5) & 7);
+      const headerLength = protectionAbsent ? 7 : 9;
+      if (!rates[freqIndex] || frameLength <= headerLength || i + frameLength > bytes.length) throw new Error("Invalid ADTS frame");
+      sampleRate ||= rates[freqIndex];
+      channels ||= chanCfg;
+      frames.push(bytes.slice(i + headerLength, i + frameLength));
+      i += frameLength;
+    }
+    return { frames, sampleRate, channels };
+  }
+
+  function percentile(values, p) {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a,b) => a-b);
+    return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * p)))];
   }
 
   function canvasSignature(ctx) {
@@ -332,6 +369,7 @@
       ["WebRTC H.264", bool(report.rtcH264)],
       ["WebCodecs", bool(report.webCodecsVideoDecoder)],
       ["CyberDash-style canvas", report.webcodecsCanvasAdvanced == null ? "not run" : bool(report.webcodecsCanvasAdvanced)],
+      ["A/V sync", report.avSyncSucceeded == null ? "not run" : (report.avSyncSucceeded ? ((report.avDriftP95Ms ?? "—") + " ms p95") : "failed")],
       ["Range requests", report.rangeWorks == null ? "testing" : bool(report.rangeWorks)],
       ["Tunnel speed", report.tunnelMbpsAvg == null ? "testing" : report.tunnelMbpsAvg + " Mbps"]
     ];
@@ -579,6 +617,235 @@
     }
   }
 
+  async function runAvSyncTest() {
+    const btn = $("syncBtn");
+    const status = $("syncStatus");
+    btn.disabled = true;
+    btn.textContent = "Testing synchronized A/V…";
+    status.textContent = "Fetching separate H.264 and AAC streams…";
+
+    const canvas = $("syncCanvas");
+    const ctx2d = canvas.getContext("2d", { alpha: false });
+    let videoDecoder = null;
+    let audioDecoder = null;
+    let audioCtx = null;
+    let source = null;
+    const decodedVideo = [];
+    const audioBlocks = [];
+    const drifts = [];
+    const signatures = new Set();
+    const startedAt = performance.now();
+
+    try {
+      if (!window.VideoDecoder || !window.AudioDecoder || !window.EncodedVideoChunk || !window.EncodedAudioChunk)
+        throw new Error("Required WebCodecs APIs are unavailable");
+
+      const [videoRes, audioRes] = await Promise.all([
+        fetch("/tesla-probe-h264-annexb.h264?probe=" + Date.now(), { cache: "no-store" }),
+        fetch("/tesla-probe-aac.adts?probe=" + Date.now(), { cache: "no-store" })
+      ]);
+      if (!videoRes.ok) throw new Error("H.264 asset HTTP " + videoRes.status);
+      if (!audioRes.ok) throw new Error("AAC asset HTTP " + audioRes.status);
+      const [videoBuffer, audioBufferRaw] = await Promise.all([videoRes.arrayBuffer(), audioRes.arrayBuffer()]);
+      const videoUnits = splitAnnexBAccessUnits(videoBuffer);
+      const parsedAudio = parseAdtsFrames(audioBufferRaw);
+      report.avVideoAssetBytes = videoBuffer.byteLength;
+      report.avAudioAssetBytes = audioBufferRaw.byteLength;
+      report.avVideoAccessUnits = videoUnits.length;
+      report.avAudioAccessUnits = parsedAudio.frames.length;
+      report.avAudioSampleRate = parsedAudio.sampleRate;
+      report.avAudioChannels = parsedAudio.channels;
+
+      const videoConfig = {
+        codec: "avc1.42E01E",
+        codedWidth: 640,
+        codedHeight: 360,
+        hardwareAcceleration: "prefer-hardware",
+        optimizeForLatency: true
+      };
+      const audioConfig = {
+        codec: "mp4a.40.2",
+        sampleRate: parsedAudio.sampleRate || 48000,
+        numberOfChannels: parsedAudio.channels || 2,
+        description: new Uint8Array([0x11, 0x90])
+      };
+
+      if (typeof VideoDecoder.isConfigSupported === "function") {
+        const v = await VideoDecoder.isConfigSupported(videoConfig);
+        report.avVideoConfigSupported = !!v.supported;
+        if (!v.supported) throw new Error("VideoDecoder H.264 config unsupported");
+      }
+      if (typeof AudioDecoder.isConfigSupported === "function") {
+        const a = await AudioDecoder.isConfigSupported(audioConfig);
+        report.avAudioConfigSupported = !!a.supported;
+        if (!a.supported) throw new Error("AudioDecoder AAC config unsupported");
+      }
+
+      videoDecoder = new VideoDecoder({
+        output(frame) { decodedVideo.push(frame); },
+        error(err) { report.avVideoDecoderError = String(err && err.message || err).slice(0,160); }
+      });
+      videoDecoder.configure(videoConfig);
+
+      audioDecoder = new AudioDecoder({
+        output(data) {
+          try {
+            const chans = [];
+            for (let c = 0; c < data.numberOfChannels; c++) {
+              const plane = new Float32Array(data.numberOfFrames);
+              data.copyTo(plane, { planeIndex: c, format: "f32-planar" });
+              chans.push(plane);
+            }
+            audioBlocks.push({
+              timestamp: data.timestamp,
+              frames: data.numberOfFrames,
+              sampleRate: data.sampleRate,
+              channels: chans
+            });
+          } finally {
+            data.close();
+          }
+        },
+        error(err) { report.avAudioDecoderError = String(err && err.message || err).slice(0,160); }
+      });
+      audioDecoder.configure(audioConfig);
+
+      const videoFrameUs = Math.round(1000000 / 24);
+      for (let i = 0; i < videoUnits.length; i++) {
+        videoDecoder.decode(new EncodedVideoChunk({
+          type: "key",
+          timestamp: i * videoFrameUs,
+          duration: videoFrameUs,
+          data: videoUnits[i]
+        }));
+      }
+
+      const audioFrameUs = Math.round(1024 * 1000000 / audioConfig.sampleRate);
+      for (let i = 0; i < parsedAudio.frames.length; i++) {
+        audioDecoder.decode(new EncodedAudioChunk({
+          type: "key",
+          timestamp: i * audioFrameUs,
+          duration: audioFrameUs,
+          data: parsedAudio.frames[i]
+        }));
+      }
+
+      await Promise.all([videoDecoder.flush(), audioDecoder.flush()]);
+      decodedVideo.sort((a,b) => a.timestamp - b.timestamp);
+      audioBlocks.sort((a,b) => a.timestamp - b.timestamp);
+      report.avDecodedVideoFrames = decodedVideo.length;
+      report.avDecodedAudioBlocks = audioBlocks.length;
+      if (decodedVideo.length < 24) throw new Error("Too few decoded video frames: " + decodedVideo.length);
+      if (!audioBlocks.length) throw new Error("No decoded AAC audio blocks");
+
+      const sampleRate = audioBlocks[0].sampleRate;
+      const channels = audioBlocks[0].channels.length;
+      const totalFrames = audioBlocks.reduce((sum,b) => sum + b.frames, 0);
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+      await audioCtx.resume();
+      report.avAudioContextState = audioCtx.state;
+      report.avAudioContextSampleRate = audioCtx.sampleRate;
+      if (audioCtx.state !== "running") throw new Error("AudioContext did not enter running state");
+
+      const pcm = audioCtx.createBuffer(channels, totalFrames, sampleRate);
+      for (let c = 0; c < channels; c++) {
+        const dst = pcm.getChannelData(c);
+        let offset = 0;
+        for (const block of audioBlocks) {
+          const src = block.channels[Math.min(c, block.channels.length - 1)];
+          dst.set(src, offset);
+          offset += src.length;
+        }
+      }
+
+      source = audioCtx.createBufferSource();
+      source.buffer = pcm;
+      source.connect(audioCtx.destination);
+
+      const leadSec = 0.30;
+      const audioStart = audioCtx.currentTime + leadSec;
+      let index = 0;
+      let firstPaintMs = null;
+      let lastPaintMs = null;
+      source.start(audioStart);
+
+      await new Promise((resolve, reject) => {
+        const deadline = performance.now() + 6000;
+        const tick = () => {
+          if (performance.now() > deadline) {
+            reject(new Error("A/V sync render timeout"));
+            return;
+          }
+          const elapsed = audioCtx.currentTime - audioStart;
+          while (index < decodedVideo.length && decodedVideo[index].timestamp / 1e6 <= elapsed + 0.010) {
+            const frame = decodedVideo[index++];
+            if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+              canvas.width = frame.displayWidth;
+              canvas.height = frame.displayHeight;
+            }
+            ctx2d.drawImage(frame, 0, 0, canvas.width, canvas.height);
+            const sig = canvasSignature(ctx2d);
+            if (sig) signatures.add(sig);
+            const videoPts = frame.timestamp / 1e6;
+            const audioClock = Math.max(0, audioCtx.currentTime - audioStart);
+            drifts.push((videoPts - audioClock) * 1000);
+            if (firstPaintMs == null) firstPaintMs = performance.now() - startedAt;
+            lastPaintMs = performance.now() - startedAt;
+            frame.close();
+          }
+          if (index >= decodedVideo.length) {
+            resolve();
+            return;
+          }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 180));
+      try { source.stop(); } catch {}
+
+      const absDrifts = drifts.map(Math.abs);
+      report.avCanvasUniqueSignatures = signatures.size;
+      report.avFirstCanvasFrameMs = round(firstPaintMs);
+      report.avLastCanvasFrameMs = round(lastPaintMs);
+      report.avAudioDurationSec = round(totalFrames / sampleRate, 3);
+      report.avDriftP50Ms = round(percentile(absDrifts, 0.50), 1);
+      report.avDriftP95Ms = round(percentile(absDrifts, 0.95), 1);
+      report.avDriftMaxMs = round(absDrifts.length ? Math.max(...absDrifts) : null, 1);
+      report.avDriftFinalMs = round(drifts.length ? drifts[drifts.length - 1] : null, 1);
+      report.avSyncSucceeded = decodedVideo.length >= 24 && signatures.size >= 2 && report.avDriftP95Ms != null && report.avDriftP95Ms < 100;
+      report.avSyncError = "";
+    } catch (e) {
+      report.avSyncSucceeded = false;
+      report.avSyncError = String(e && e.message || e).slice(0,200);
+    } finally {
+      for (const frame of decodedVideo) {
+        try { frame.close(); } catch {}
+      }
+      try { videoDecoder && videoDecoder.state !== "closed" && videoDecoder.close(); } catch {}
+      try { audioDecoder && audioDecoder.state !== "closed" && audioDecoder.close(); } catch {}
+      try { source && source.stop(); } catch {}
+      try { audioCtx && await audioCtx.close(); } catch {}
+    }
+
+    render();
+    status.textContent = "Sending synchronized A/V report…";
+    const ok = await sendReport("cyberdash-av-sync");
+    render();
+    if (ok) {
+      status.textContent = report.avSyncSucceeded
+        ? "A/V sync test complete. Motion + separate AAC audio stayed synchronized; report sent."
+        : "A/V sync test finished but did not meet the sync threshold. Report sent for analysis.";
+      btn.textContent = "A/V sync report sent";
+    } else {
+      status.textContent = "A/V test finished, but report upload failed.";
+      btn.textContent = "Retry A/V report";
+      btn.disabled = false;
+      btn.onclick = async () => { btn.disabled = true; await sendReport("cyberdash-av-sync-retry"); render(); };
+    }
+  }
+
   async function boot() {
     addBaseCapabilities();
     render();
@@ -590,9 +857,12 @@
     $("detail").textContent = "Now tap the button once to test real H.264 playback.";
     $("runBtn").disabled = false;
     $("cyberBtn").disabled = false;
+    $("syncBtn").disabled = false;
     $("cyberStatus").textContent = "Ready. Run after test 1.";
+    $("syncStatus").textContent = "Ready. Run after test 2.";
     $("runBtn").addEventListener("click", runVideoTest, { once: true });
     $("cyberBtn").addEventListener("click", runCyberDashStyleTest, { once: true });
+    $("syncBtn").addEventListener("click", runAvSyncTest, { once: true });
   }
 
   boot().catch(e => {
