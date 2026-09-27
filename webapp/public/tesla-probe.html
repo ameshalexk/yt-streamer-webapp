@@ -85,7 +85,7 @@
 <script>
 (() => {
   "use strict";
-  const REPORT_VERSION = "2026-09-27-v3";
+  const REPORT_VERSION = "2026-09-27-v4";
   const report = { version: REPORT_VERSION, startedAt: new Date().toISOString() };
   const $ = (id) => document.getElementById(id);
   const bool = (v) => v ? "yes" : "no";
@@ -93,6 +93,19 @@
   const round = (n, d = 1) => Number.isFinite(n) ? Number(n.toFixed(d)) : null;
 
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  function withTimeout(promise, ms, label) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(label + " timeout after " + ms + " ms")), ms))
+    ]);
+  }
+  async function avStage(name, statusEl) {
+    report.avStage = name;
+    report.avStageAtMs = round(performance.now(), 1);
+    if (statusEl) statusEl.textContent = "Stage: " + name;
+    render();
+    try { await withTimeout(sendReport("cyberdash-av-stage-" + name), 1800, "stage report"); } catch {}
+  }
 
   function splitAnnexBAccessUnits(buffer) {
     const bytes = new Uint8Array(buffer);
@@ -640,13 +653,14 @@
       if (!window.VideoDecoder || !window.AudioDecoder || !window.EncodedVideoChunk || !window.EncodedAudioChunk)
         throw new Error("Required WebCodecs APIs are unavailable");
 
-      const [videoRes, audioRes] = await Promise.all([
+      await avStage("fetching", status);
+      const [videoRes, audioRes] = await withTimeout(Promise.all([
         fetch("/tesla-probe-h264-annexb.h264?probe=" + Date.now(), { cache: "no-store" }),
         fetch("/tesla-probe-aac.adts?probe=" + Date.now(), { cache: "no-store" })
-      ]);
+      ]), 4000, "A/V asset fetch");
       if (!videoRes.ok) throw new Error("H.264 asset HTTP " + videoRes.status);
       if (!audioRes.ok) throw new Error("AAC asset HTTP " + audioRes.status);
-      const [videoBuffer, audioBufferRaw] = await Promise.all([videoRes.arrayBuffer(), audioRes.arrayBuffer()]);
+      const [videoBuffer, audioBufferRaw] = await withTimeout(Promise.all([videoRes.arrayBuffer(), audioRes.arrayBuffer()]), 4000, "A/V asset read");
       const videoUnits = splitAnnexBAccessUnits(videoBuffer);
       const parsedAudio = parseAdtsFrames(audioBufferRaw);
       report.avVideoAssetBytes = videoBuffer.byteLength;
@@ -655,6 +669,7 @@
       report.avAudioAccessUnits = parsedAudio.frames.length;
       report.avAudioSampleRate = parsedAudio.sampleRate;
       report.avAudioChannels = parsedAudio.channels;
+      await avStage("assets-parsed", status);
 
       const videoConfig = {
         codec: "avc1.42E01E",
@@ -671,12 +686,12 @@
       };
 
       if (typeof VideoDecoder.isConfigSupported === "function") {
-        const v = await VideoDecoder.isConfigSupported(videoConfig);
+        const v = await withTimeout(VideoDecoder.isConfigSupported(videoConfig), 2000, "VideoDecoder config probe");
         report.avVideoConfigSupported = !!v.supported;
         if (!v.supported) throw new Error("VideoDecoder H.264 config unsupported");
       }
       if (typeof AudioDecoder.isConfigSupported === "function") {
-        const a = await AudioDecoder.isConfigSupported(audioConfig);
+        const a = await withTimeout(AudioDecoder.isConfigSupported(audioConfig), 2000, "AudioDecoder config probe");
         report.avAudioConfigSupported = !!a.supported;
         if (!a.supported) throw new Error("AudioDecoder AAC config unsupported");
       }
@@ -709,6 +724,7 @@
         error(err) { report.avAudioDecoderError = String(err && err.message || err).slice(0,160); }
       });
       audioDecoder.configure(audioConfig);
+      await avStage("decoders-configured", status);
 
       const videoFrameUs = Math.round(1000000 / 24);
       for (let i = 0; i < videoUnits.length; i++) {
@@ -730,7 +746,13 @@
         }));
       }
 
-      await Promise.all([videoDecoder.flush(), audioDecoder.flush()]);
+      await avStage("chunks-queued", status);
+      await withTimeout(videoDecoder.flush(), 3000, "VideoDecoder flush");
+      report.avVideoFlushDone = true;
+      await avStage("video-flush-done", status);
+      await withTimeout(audioDecoder.flush(), 3000, "AudioDecoder flush");
+      report.avAudioFlushDone = true;
+      await avStage("audio-flush-done", status);
       decodedVideo.sort((a,b) => a.timestamp - b.timestamp);
       audioBlocks.sort((a,b) => a.timestamp - b.timestamp);
       report.avDecodedVideoFrames = decodedVideo.length;
@@ -742,10 +764,12 @@
       const channels = audioBlocks[0].channels.length;
       const totalFrames = audioBlocks.reduce((sum,b) => sum + b.frames, 0);
       audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
-      await audioCtx.resume();
+      await avStage("audio-context-created", status);
+      await withTimeout(audioCtx.resume(), 2500, "AudioContext resume");
       report.avAudioContextState = audioCtx.state;
       report.avAudioContextSampleRate = audioCtx.sampleRate;
       if (audioCtx.state !== "running") throw new Error("AudioContext did not enter running state");
+      await avStage("audio-context-running", status);
 
       const pcm = audioCtx.createBuffer(channels, totalFrames, sampleRate);
       for (let c = 0; c < channels; c++) {
@@ -768,8 +792,9 @@
       let firstPaintMs = null;
       let lastPaintMs = null;
       source.start(audioStart);
+      await avStage("playback-started", status);
 
-      await new Promise((resolve, reject) => {
+      await withTimeout(new Promise((resolve, reject) => {
         const deadline = performance.now() + 6000;
         const tick = () => {
           if (performance.now() > deadline) {
@@ -800,7 +825,7 @@
           requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
-      });
+      }), 7000, "A/V canvas render");
 
       await new Promise(resolve => setTimeout(resolve, 180));
       try { source.stop(); } catch {}
@@ -816,9 +841,12 @@
       report.avDriftFinalMs = round(drifts.length ? drifts[drifts.length - 1] : null, 1);
       report.avSyncSucceeded = decodedVideo.length >= 24 && signatures.size >= 2 && report.avDriftP95Ms != null && report.avDriftP95Ms < 100;
       report.avSyncError = "";
+      await avStage("completed", status);
     } catch (e) {
       report.avSyncSucceeded = false;
       report.avSyncError = String(e && e.message || e).slice(0,200);
+      report.avFailedStage = report.avStage || "unknown";
+      try { await avStage("failed-" + report.avFailedStage, status); } catch {}
     } finally {
       for (const frame of decodedVideo) {
         try { frame.close(); } catch {}
@@ -826,7 +854,7 @@
       try { videoDecoder && videoDecoder.state !== "closed" && videoDecoder.close(); } catch {}
       try { audioDecoder && audioDecoder.state !== "closed" && audioDecoder.close(); } catch {}
       try { source && source.stop(); } catch {}
-      try { audioCtx && await audioCtx.close(); } catch {}
+      try { audioCtx && withTimeout(audioCtx.close(), 1000, "AudioContext close").catch(() => {}); } catch {}
     }
 
     render();
