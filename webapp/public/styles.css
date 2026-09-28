@@ -409,6 +409,7 @@ body.screen-fullscreen.browser-streaming .screen .browser-keyboard-input:not([hi
   flex: 1;
   min-height: 0;
 }
+#playbackModeBtn { align-self: flex-start; flex-shrink: 0; margin: 8px 12px; }
 .player.player-collapsed .player-body {
   display: none;
 }
@@ -428,6 +429,7 @@ body.screen-fullscreen.browser-streaming .screen .browser-keyboard-input:not([hi
 .layout.mode-watch .player:not(:has(.screen.playing)) .browser-player-settings,
 .layout.mode-watch .player:not(:has(.screen.playing)) .screen,
 .layout.mode-watch .player:not(:has(.screen.playing)) #streamSeek,
+.layout.mode-watch .player:not(:has(.screen.playing)) #playbackModeBtn,
 .layout.mode-watch .player:not(:has(.screen.playing)) .quick,
 .layout.mode-watch .player:not(:has(.screen.playing)) .stream-settings {
   display: none !important;

@@ -9,6 +9,7 @@ import { config } from "./config.js";
 import * as store from "./lib/store.js";
 import * as ytdlp from "./lib/ytdlp.js";
 import * as stream from "./lib/stream.js";
+import * as dash from "./lib/dash.js";
 import * as desktopInput from "./lib/desktop-input.js";
 import * as browserRenderer from "./lib/browser-renderer.js";
 import * as realChromeRenderer from "./lib/real-chrome-renderer.js";
@@ -383,7 +384,7 @@ app.get("/api/health", (req, res) => {
     instanceId: SERVER_INSTANCE_ID,
     startedAt: SERVER_STARTED_AT,
     restartAvailable: process.env.XPC_SERVICE_NAME === LAUNCHD_SERVICE_NAME,
-    activeStreams: stream.activeStreamCount(),
+    activeStreams: stream.activeStreamCount() + dash.activeCount(),
     activeAudioStreams: stream.activeAudioCount(),
     activeBrowserSessions: browserRenderer.activeSessionCount(),
     activeRealChromeSessions: realChromeRenderer.activeSessionCount(),
@@ -422,7 +423,7 @@ app.get("/api/sessions", (req, res) => {
     browser: browserSessions,
     realChrome: realChromeSessions,
     counts: {
-      streams: stream.activeStreamCount(),
+      streams: stream.activeStreamCount() + dash.activeCount(),
       audioStreams: stream.activeAudioCount(),
       browserSessions: browserSessions.length,
       realChromeSessions: realChromeSessions.length,
@@ -1259,6 +1260,15 @@ app.get("/internal/googlevideo/:id", asyncH(async (req, res) => {
     .pipe(res);
 }));
 
+// DASH is opt-in on the existing source routes; normal MJPEG is unchanged.
+function streamMedia(req, res, options) {
+  if (req.query.transport === "dash") return dash.serveSession(req, res, options, stream.activeStreamCount());
+  return stream.streamMjpeg(req, res, options);
+}
+app.get("/stream/dash/:id/:file", dash.serveFile);
+app.post("/api/dash/:id", dash.heartbeat);
+app.delete("/api/dash/:id", asyncH(async (req, res) => { await dash.remove(req.params.id); res.sendStatus(204); }));
+
 // Stream a saved item by id (resolves type: m3u8 | youtube | file).
 app.get("/stream/item/:itemId", asyncH(async (req, res) => {
   const found = await store.findItem(req.params.itemId);
@@ -1270,7 +1280,7 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
     const requestStartedAt = Date.now();
     const maxHeight = requestedYouTubeMaxHeight(params.height);
     const { videoUrl, audioUrl, resolveCache, resolveMs } = await resolveProxiedYouTubeStreams(item.url, maxHeight);
-    return stream.streamMjpeg(req, res, {
+    return streamMedia(req, res, {
       input: videoUrl,
       audioInput: audioUrl,
       params,
@@ -1298,10 +1308,10 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
       return res.status(403).json({ error: "file outside library" });
     }
     try { await fs.access(resolved); } catch { return res.status(404).json({ error: "file missing" }); }
-    return stream.streamMjpeg(req, res, { input: resolved, params, isLive: false, allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp });
+    return streamMedia(req, res, { input: resolved, params, isLive: false, allowBurst: wantsBufferedMjpeg(req), startAt: req.query.timestamp });
   }
   // default: m3u8 / direct url (carry any saved UA/referer headers)
-  return stream.streamMjpeg(req, res, {
+  return streamMedia(req, res, {
     input: item.url, params, isLive: true,
     userAgent: item.meta?.userAgent, referer: item.meta?.referer,
   });
@@ -1313,7 +1323,7 @@ app.get("/stream/url", asyncH(async (req, res) => {
   if (!url) return res.status(400).json({ error: "url required" });
   const params = stream.normalizeParams(req.query);
   const isLive = req.query.live === "1";
-  return stream.streamMjpeg(req, res, {
+  return streamMedia(req, res, {
     input: url, params, isLive,
     userAgent: req.query.ua, referer: req.query.referer,
   });
@@ -1327,7 +1337,7 @@ app.get("/stream/youtube", asyncH(async (req, res) => {
   const params = stream.normalizeParams(req.query);
   const maxHeight = requestedYouTubeMaxHeight(params.height);
   const { videoUrl, audioUrl, resolveCache, resolveMs } = await resolveProxiedYouTubeStreams(url, maxHeight);
-  return stream.streamMjpeg(req, res, {
+  return streamMedia(req, res, {
     input: videoUrl,
     audioInput: audioUrl,
     params,
@@ -1352,7 +1362,7 @@ app.get("/stream/youtube", asyncH(async (req, res) => {
 app.get("/stream/prepared/:id", asyncH(async (req, res) => {
   const item = await preparedCache.get(req.params.id);
   if (!item) return res.status(404).json({ error: "prepared video not found" });
-  return stream.streamMjpeg(req, res, {
+  return streamMedia(req, res, {
     input: item.filePath,
     params: stream.normalizeParams(req.query),
     isLive: false,
@@ -1370,8 +1380,9 @@ app.get("/stream/legacy/:id/:resolution", asyncH(async (req, res) => {
   if (!item.resolutions.includes(resolution)) return res.status(404).json({ error: "resolution not found" });
   const input = processedLibrary.videoPath(item.id, resolution);
   try { await fs.access(input); } catch { return res.status(404).json({ error: "video missing" }); }
-  return stream.streamMjpeg(req, res, {
+  return streamMedia(req, res, {
     input,
+    audioInput: req.query.transport === "dash" ? processedLibrary.audioPath(item.id) : undefined,
     params: stream.normalizeParams({ ...req.query, height: req.query.height || resolution }),
     isLive: false,
     allowBurst: wantsBufferedMjpeg(req),
@@ -1497,4 +1508,9 @@ httpServer = app.listen(config.port, config.host, () => {
   console.log(`  → http://${config.host}:${config.port}`);
   console.log(`  → library: ${config.libraryDir}`);
   console.log(`  → point your Cloudflare Tunnel at http://${config.host}:${config.port}\n`);
+});
+
+// Release only this process's optional DASH encoders and temporary segments.
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => {
+  void dash.shutdown().finally(() => process.exit(0));
 });

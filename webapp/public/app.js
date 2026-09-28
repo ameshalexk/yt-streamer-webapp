@@ -1535,7 +1535,7 @@ function pausePlayback() {
   const audio = $("#audio");
   const bufferedPauseActive = screen.classList.contains("mjpeg-buffered-mode") && activeCompat?.bufferedPlayer;
   const restartableMjpegPause = screen.classList.contains("mjpeg-mode") && !bufferedPauseActive;
-  pausedResumeAt = legacy.playing ? (audio.currentTime || 0) : getStreamCurrentTime();
+  pausedResumeAt = legacy.playing && !activeCompat?.dash ? (audio.currentTime || 0) : getStreamCurrentTime();
   playbackPaused = true;
   try { video.pause(); } catch {}
   try { audio.pause(); } catch {}
@@ -1718,6 +1718,8 @@ function canTryMpegts() {
 }
 
 function cleanupMedia() {
+  activeModeSource = null;
+  renderPlaybackMode();
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), audio = $("#audio");
   clearFullscreenOverlayHide();
   setDesktopStreamActive(false);
@@ -2350,7 +2352,92 @@ function retryBufferedAudioFromGesture() {
   return Boolean(activeCompat?.bufferedPlayer?.retryFromGesture?.());
 }
 
+// Shared transport preference for every website tab and same-origin browser tab.
+let playbackMode = window.DashPlayback.readMode();
+let activeModeSource = null;
+function renderPlaybackMode(actual = null) {
+  const button = $("#playbackModeBtn");
+  button.textContent = actual === "mjpeg" && playbackMode === "dash" ? "Mode: MJPEG (fallback)" : playbackMode === "dash" ? "Mode: DASH" : "Mode: MJPEG";
+  button.setAttribute("aria-pressed", String(playbackMode === "dash"));
+  button.title = playbackMode === "dash" ? "Switch to MJPEG" : "Switch to DASH / WebCodecs";
+}
+function dashSourceSupported(url) {
+  try { return /^\/stream\/(item|url|youtube|prepared|legacy)(\/|$)/.test(new URL(url, location.origin).pathname); } catch { return false; }
+}
+function selectPlaybackMode(mode, persist = true) {
+  mode = window.DashPlayback.normalizeMode(mode);
+  if (mode === playbackMode) return;
+  playbackMode = mode;
+  if (persist) window.DashPlayback.writeMode(mode);
+  renderPlaybackMode();
+  if (!replayFn || !dashSourceSupported(activeCompat?.mjpegUrl || activeModeSource?.mjpegUrl)) return;
+  const resumeAt = streamSeek.seekable ? getStreamCurrentTime() : undefined;
+  const pause = playbackPaused;
+  const generation = ++qualitySwitchGeneration;
+  clearTimeout(qualitySwitchTimer);
+  clearTimeout(restreamTimer);
+  pendingQualityRestore = { generation, minAttempt: streamAttempt + 1, pause, resumeAt };
+  const result = replayFn(resumeAt);
+  if (result?.catch) result.catch(error => toast(error.message, true));
+}
+$("#playbackModeBtn").onclick = () => selectPlaybackMode(playbackMode === "dash" ? "mjpeg" : "dash");
+window.addEventListener("storage", event => {
+  if (event.key === window.DashPlayback.MODE_KEY || event.key === null) selectPlaybackMode(window.DashPlayback.readMode(), false);
+});
+renderPlaybackMode();
+
+function maybePlayDash(sources, label, meta = {}) {
+  if (playbackMode !== "dash" || meta.dashFallback || !dashSourceSupported(sources.mjpegUrl)) return false;
+  if (!window.DashPlayback.supported()) { renderPlaybackMode("mjpeg"); return false; }
+  cleanupMedia();
+  activeModeSource = sources;
+  resetPauseControl(false);
+  configureStreamSeek(meta, meta.startAt || 0);
+  if (meta.autoplayContext) setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
+  else setAutoplayContext();
+  if (legacy.playing && !meta.keepLegacyState) { state.legacyPlayingId = null; legacy.playing = null; legacy.resolution = null; renderLegacyLibrary(); }
+  const attempt = streamAttempt;
+  const screen = $("#screen");
+  screen.classList.remove("video-mode", "mjpeg-mode");
+  screen.classList.add("playing", "loading", "mjpeg-buffered-mode");
+  $("#nowPlaying").textContent = label || "Playing";
+  $("#stopBtn").disabled = false;
+  $("#restreamBtn").disabled = false;
+  setBadge("reconnecting", "Buffering…");
+  renderPlaybackMode();
+  const fallback = (error, time = 0) => {
+    if (!currentAttempt(attempt)) return;
+    const pause = playbackPaused || pendingQualityRestore?.pause;
+    const resumeAt = meta.seekable ? (Number(meta.startAt) || 0) + time : 0;
+    const nextMeta = { ...meta, dashFallback: true, startAt: resumeAt, audioElementStartAt: meta.keepLegacyState ? resumeAt : meta.audioElementStartAt };
+    const nextSources = { ...sources };
+    if (meta.seekable) for (const key of ["mjpegUrl", "audioUrl"]) {
+      if (nextSources[key] && !(key === "audioUrl" && meta.keepLegacyState)) nextSources[key] = withUrlParam(nextSources[key], "timestamp", resumeAt);
+    }
+    pendingQualityRestore = { generation: ++qualitySwitchGeneration, minAttempt: streamAttempt + 1, pause, resumeAt };
+    reportPlaybackEvent("dash_fallback", { message: error?.message, streamUrl: sources.mjpegUrl });
+    if (meta.bufferedMjpeg) playBufferedMjpegStream(nextSources, label, nextMeta);
+    else playCompatStream(nextSources, label, nextMeta);
+    renderPlaybackMode("mjpeg");
+    toast("DASH unavailable; using MJPEG");
+  };
+  let player;
+  try {
+    player = new window.DashPlayback.DashPlayer({
+      url: sources.mjpegUrl, canvas: $("#mjpegCanvas"), muted: !soundOn,
+      onPlaying: () => { if (currentAttempt(attempt)) { markBufferedStreamPlaying(attempt, player.getStats()); reportPlaybackEvent("dash_playing", { stats: player.getStats() }); } },
+      onError: fallback,
+      onEnded: () => { if (currentAttempt(attempt)) finishBufferedStream(attempt); },
+      onBlocked: () => { if (currentAttempt(attempt)) { setBadge("reconnecting", "Tap sound to play"); showStreamNotice("warning", "Playback needs a tap", "Tap Sound to start playback."); } },
+    });
+  } catch (error) { fallback(error); return true; }
+  activeCompat = { ...sources, dash: true, bufferedPlayer: player, playbackStarted: true };
+  void player.start();
+  return true;
+}
+
 function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
+  if (maybePlayDash({ mjpegUrl, audioUrl }, label, meta)) return;
   if (!bufferedMjpegSupported()) {
     playCompatStream({ mjpegUrl, audioUrl }, label, meta);
     showStreamNotice(
@@ -2372,6 +2459,8 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const canvas = $("#mjpegCanvas");
   const audio = $("#audio");
   cleanupMedia();
+  activeModeSource = { mjpegUrl, audioUrl };
+  renderPlaybackMode(playbackMode === "dash" ? "mjpeg" : null);
   resetPauseControl(false);
   if (meta.autoplayContext) {
     setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
@@ -2630,8 +2719,11 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
 }
 
 function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
+  if (maybePlayDash({ mjpegUrl, audioUrl }, label, meta)) return;
   const screen = $("#screen"), img = $("#mjpeg"), audio = $("#audio");
   cleanupMedia();
+  activeModeSource = { mjpegUrl, audioUrl };
+  renderPlaybackMode(playbackMode === "dash" ? "mjpeg" : null);
   resetPauseControl(false);
   if (meta.autoplayContext) {
     setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
@@ -2794,6 +2886,7 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
 // Play one synced MPEG-TS stream (H.264+AAC) via mpegts.js / MSE.
 async function playStream(sources, label, meta = {}) {
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
+  if (maybePlayDash({ mjpegUrl, audioUrl }, label, meta)) return;
   if (meta.bufferedMjpeg && mjpegUrl) return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta);
   const screen = $("#screen"), video = $("#video");
   if (legacy.playing) {
@@ -2806,6 +2899,7 @@ async function playStream(sources, label, meta = {}) {
   $("#stopBtn").disabled = false;
   $("#restreamBtn").disabled = false;
   cleanupMedia();
+  activeModeSource = { mjpegUrl, audioUrl };
   resetPauseControl(false);
   if (meta.autoplayContext) {
     setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
@@ -7694,6 +7788,10 @@ videoControlsOverlay.addEventListener("focusout", () => {
 $("#muteBtn").onclick = () => {
   const a = $("#audio");
   const bufferedPlayer = activeCompat?.bufferedPlayer;
+  if (activeCompat?.dash && bufferedPlayer) {
+    if (bufferedPlayer.getStats().state === "autoplay-blocked") { bufferedPlayer.retryFromGesture(); return; }
+    soundOn = !soundOn; renderMuteButton(); bufferedPlayer.setMuted(!soundOn); return;
+  }
   if (bufferedPlayer) {
     if (!playbackPaused && soundOn && activeCompat?.audioUrl && bufferedPlayer.getStats?.().state === "autoplay-blocked") {
       bufferedPlayer.retryFromGesture();
