@@ -99,7 +99,50 @@ async function waitForVideoQueue(state, maxSize = 40) {
 
 function playbackElapsed(state) {
   if (state.audioStart == null || !state.audioCtx) return 0;
-  return Math.max(0, state.audioCtx.currentTime - state.audioStart);
+  return Math.max(0, state.audioCtx.currentTime - state.audioStart - (state.audioScheduleOffsetSec || 0));
+}
+
+export function planAudioSchedule({
+  expectedStart,
+  cursor = null,
+  now = 0,
+  duration = 0,
+  minLead = 0.025,
+  continuityTolerance = 0.012,
+} = {}) {
+  const safeNow = Number.isFinite(Number(now)) ? Number(now) : 0;
+  const safeDuration = Math.max(0, Number(duration) || 0);
+  const safeExpected = Number.isFinite(Number(expectedStart))
+    ? Number(expectedStart)
+    : safeNow + minLead;
+
+  let start = safeExpected;
+  let continuityAdjusted = false;
+  let overlapPrevented = false;
+
+  if (Number.isFinite(Number(cursor))) {
+    const safeCursor = Number(cursor);
+    const delta = safeExpected - safeCursor;
+    if (delta < 0) {
+      start = safeCursor;
+      overlapPrevented = true;
+    } else if (delta <= continuityTolerance) {
+      start = safeCursor;
+      continuityAdjusted = delta > 0.00025;
+    }
+  }
+
+  const minimumStart = safeNow + minLead;
+  const lateBy = Math.max(0, minimumStart - start);
+  if (lateBy > 0) start += lateBy;
+
+  return {
+    start,
+    end: start + safeDuration,
+    lateBy,
+    continuityAdjusted,
+    overlapPrevented,
+  };
 }
 
 async function holdIfTooFarAhead(state, lastPtsSec) {
@@ -117,9 +160,28 @@ function scheduleAudioBuffer(state, item) {
     state.audioNodes.delete(node);
     try { node.disconnect(); } catch {}
   };
-  const target = state.audioStart + Math.max(0, item.timestamp / 1e6);
+
+  const expectedStart = state.audioStart
+    + (state.audioScheduleOffsetSec || 0)
+    + Math.max(0, item.timestamp / 1e6);
+  const plan = planAudioSchedule({
+    expectedStart,
+    cursor: state.audioScheduleCursor,
+    now: state.audioCtx.currentTime,
+    duration: item.buffer.duration,
+  });
+
+  if (plan.lateBy > 0) {
+    state.audioScheduleOffsetSec += plan.lateBy;
+    state.audioLateBlocks++;
+    state.maxAudioScheduleSlipMs = Math.max(state.maxAudioScheduleSlipMs, plan.lateBy * 1000);
+  }
+  if (plan.overlapPrevented) state.audioOverlapPrevented++;
+  if (plan.continuityAdjusted) state.audioContinuityCorrections++;
+
+  state.audioScheduleCursor = plan.end;
   state.audioNodes.add(node);
-  node.start(Math.max(target, state.audioCtx.currentTime + 0.006));
+  node.start(plan.start);
   state.scheduledAudioBlocks++;
 }
 
@@ -413,6 +475,10 @@ async function sendSummary(state, result, message = "") {
           droppedFrames: state.droppedFrames,
           receivedBytes: state.receivedBytes,
           lastAvDriftMs: round(lastDrift, 1),
+          audioLateBlocks: state.audioLateBlocks,
+          audioOverlapPrevented: state.audioOverlapPrevented,
+          audioContinuityCorrections: state.audioContinuityCorrections,
+          maxAudioScheduleSlipMs: round(state.maxAudioScheduleSlipMs, 1),
         },
         timing: {
           firstPictureMs: round(state.firstPictureMs, 1),
@@ -467,9 +533,18 @@ export function createCyberdashPlayer({
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) throw new Error("AudioContext unavailable");
 
+    // Prefer the browser's playback-sized output buffer. Tesla's browser can
+    // crackle when hundreds of small decoded AAC blocks are driven through an
+    // interactive/low-latency output path under rendering load.
+    let audioCtx;
+    try {
+      audioCtx = new AudioContextClass({ sampleRate: 48000, latencyHint: "playback" });
+    } catch {
+      audioCtx = new AudioContextClass({ sampleRate: 48000 });
+    }
+
     // Resume immediately while the click/tap user-activation is still live.
     // Tesla's browser can reject AudioContext.resume() if we await cleanup first.
-    const audioCtx = new AudioContextClass({ sampleRate: 48000 });
     const resumePromise = audioCtx.resume();
     await stop();
 
@@ -484,6 +559,12 @@ export function createCyberdashPlayer({
       audioCtx,
       gainNode: null,
       audioStart: null,
+      audioScheduleCursor: null,
+      audioScheduleOffsetSec: 0,
+      audioLateBlocks: 0,
+      audioOverlapPrevented: 0,
+      audioContinuityCorrections: 0,
+      maxAudioScheduleSlipMs: 0,
       audioNodes: new Set(),
       pendingAudio: [],
       decodedVideo: [],
@@ -566,8 +647,11 @@ export function createCyberdashPlayer({
   function setMuted(muted) {
     if (!state?.gainNode) return;
     const now = state.audioCtx.currentTime;
-    state.gainNode.gain.cancelScheduledValues(now);
-    state.gainNode.gain.setValueAtTime(muted ? 0 : 1, now);
+    const gain = state.gainNode.gain;
+    const current = gain.value;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(current, now);
+    gain.linearRampToValueAtTime(muted ? 0 : 1, now + 0.008);
   }
 
   function isActive() {

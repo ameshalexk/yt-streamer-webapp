@@ -132,3 +132,13 @@ test("YouTube proxy preserves unknown duration as null", () => {
   assert.match(proxy, /durationValue != null && durationValue !== ""/);
   assert.match(proxy, /: null/);
 });
+
+
+test("WebCodecs reports partial telemetry when stopped, sought, or switched", () => {
+  assert.match(app, /void stopCyberdashPlayback\(\{ report: true \}\);/);
+  assert.match(app, /await stopCyberdashPlayback\(\{ report: true \}\);[\s\S]*cleanupMedia\(\)/);
+  assert.match(embedded, /audioLateBlocks: state\.audioLateBlocks/);
+  assert.match(embedded, /audioOverlapPrevented: state\.audioOverlapPrevented/);
+  assert.match(embedded, /audioContinuityCorrections: state\.audioContinuityCorrections/);
+  assert.match(embedded, /maxAudioScheduleSlipMs: round\(state\.maxAudioScheduleSlipMs, 1\)/);
+});

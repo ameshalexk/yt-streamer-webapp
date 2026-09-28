@@ -1814,7 +1814,7 @@ function canTryMpegts() {
 
 function cleanupMedia() {
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
-  void stopCyberdashPlayback();
+  void stopCyberdashPlayback({ report: true });
   clearFullscreenOverlayHide();
   setDesktopStreamActive(false);
   setBrowserStreamActive(false);
@@ -2899,7 +2899,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   $("#stopBtn").disabled = false;
   $("#restreamBtn").disabled = false;
 
-  await stopCyberdashPlayback();
+  await stopCyberdashPlayback({ report: true });
   cleanupMedia();
   resetPauseControl(false);
   if (meta.autoplayContext) {
