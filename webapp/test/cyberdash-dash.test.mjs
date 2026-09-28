@@ -132,3 +132,38 @@ test("CyberDash session status uses the same low-FPS range as ffmpeg", () => {
   const source = fs.readFileSync(new URL("../src/lib/cyberdash-dash.js", import.meta.url), "utf8");
   assert.match(source, /fps: clampInt\(fps, 5, 60, 30\)/);
 });
+
+
+test("CyberDash DASH producer scales input readrate with playback speed", () => {
+  const args = buildCyberdashDashArgs({
+    videoInput: "https://example.test/video",
+    audioInput: "https://example.test/audio",
+    height: 480,
+    fps: 24,
+    playbackRate: 3,
+    manifestPath: "/tmp/manifest.mpd",
+  });
+  const readrateIndexes = args.flatMap((value, index) => value === "-readrate" ? [index] : []);
+  assert.equal(readrateIndexes.length, 2);
+  const rates = readrateIndexes.map((index) => Number(args[index + 1]));
+  assert.ok(rates.every((rate) => rate > 3));
+  const burstIndexes = args.flatMap((value, index) => value === "-readrate_initial_burst" ? [index] : []);
+  assert.equal(burstIndexes.length, 2);
+  assert.ok(burstIndexes.every((index) => Number(args[index + 1]) >= 9));
+});
+
+test("CyberDash DASH producer clamps playback speed to 1x-4x", () => {
+  const slow = buildCyberdashDashArgs({
+    videoInput: "/tmp/input.mp4",
+    playbackRate: 0.25,
+    manifestPath: "/tmp/manifest.mpd",
+  });
+  const fast = buildCyberdashDashArgs({
+    videoInput: "/tmp/input.mp4",
+    playbackRate: 99,
+    manifestPath: "/tmp/manifest.mpd",
+  });
+  assert.equal(Number(slow[slow.indexOf("-readrate") + 1]), 1.15);
+  assert.ok(Number(fast[fast.indexOf("-readrate") + 1]) >= 4.5);
+  assert.ok(Number(fast[fast.indexOf("-readrate") + 1]) <= 5);
+});

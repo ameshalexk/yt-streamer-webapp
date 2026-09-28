@@ -589,6 +589,7 @@ let youtubePlaybackRate = (() => {
   return YOUTUBE_PLAYBACK_RATES.includes(saved) ? saved : 1;
 })();
 let cyberdashModulePromise = null;
+let cyberdashModule = null;
 let cyberdashPlayer = null;
 let activeYoutubeSourceUrl = "";
 
@@ -613,8 +614,13 @@ function renderYoutubePlaybackRate() {
 }
 
 async function ensureCyberdashModule() {
+  if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v1");
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v2")
+      .then((module) => {
+        cyberdashModule = module;
+        return module;
+      });
   }
   return cyberdashModulePromise;
 }
@@ -2920,7 +2926,8 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   $("#stopBtn").disabled = false;
   $("#restreamBtn").disabled = false;
 
-  await stopCyberdashPlayback({ report: true });
+  // cleanupMedia detaches the old player synchronously and lets its async cleanup finish in the background.
+  // Avoiding an awaited stop here preserves the current click/change user activation for iOS/Tesla audio.
   cleanupMedia();
   resetPauseControl(false);
   if (meta.autoplayContext) {
@@ -2939,7 +2946,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   let player = null;
   let fatalHandled = false;
   try {
-    const module = await ensureCyberdashModule();
+    const module = cyberdashModule || await ensureCyberdashModule();
     if (!currentAttempt(attempt)) return;
     const settings = currentCyberdashSettings();
     player = module.createCyberdashPlayer({

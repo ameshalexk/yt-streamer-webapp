@@ -89,11 +89,19 @@ async function waitForInitialStatus(state) {
 }
 
 async function waitForVideoQueue(state, maxSize = 40) {
-  const deadline = performance.now() + 2200;
+  let lastSize = Number(state.videoDecoder?.decodeQueueSize || 0);
+  let lastProgressAt = performance.now();
   while (!state.stopRequested && state.videoDecoder?.state !== "closed" && state.videoDecoder.decodeQueueSize > maxSize) {
-    state.maxVideoQueue = Math.max(state.maxVideoQueue, state.videoDecoder.decodeQueueSize || 0);
-    if (performance.now() > deadline) throw new Error(`Video decode queue stayed above ${maxSize}`);
-    await sleep(8);
+    if (state.decoderError) throw new Error(state.decoderError);
+    const size = Number(state.videoDecoder.decodeQueueSize || 0);
+    state.maxVideoQueue = Math.max(state.maxVideoQueue, size);
+    if (size < lastSize) lastProgressAt = performance.now();
+    lastSize = size;
+    // Hardware decode can stay just above the target for a few seconds. Only fail on a true long stall.
+    if (performance.now() - lastProgressAt > 10000) {
+      throw new Error(`Video decoder stopped draining above queue ${maxSize}`);
+    }
+    await sleep(12);
   }
 }
 
@@ -153,7 +161,8 @@ export function planAudioSchedule({
 }
 
 async function holdIfTooFarAhead(state, lastPtsSec) {
-  while (!state.stopRequested && state.audioStart != null && lastPtsSec - playbackElapsed(state) > 6.5) {
+  const sourceLeadLimit = 6.5 * normalizePlaybackRate(state.playbackRate);
+  while (!state.stopRequested && state.audioStart != null && lastPtsSec - playbackElapsed(state) > sourceLeadLimit) {
     await sleep(80);
   }
 }
@@ -619,6 +628,7 @@ export function createCyberdashPlayer({
           height: Number.isFinite(Number(height)) ? Number(height) : 0,
           fps: Number(fps) || 30,
           startAt: next.startAt,
+          playbackRate: next.playbackRate,
         }),
       }, 45000);
       if (state !== next) return;

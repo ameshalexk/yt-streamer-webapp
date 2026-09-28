@@ -136,7 +136,7 @@ test("YouTube proxy preserves unknown duration as null", () => {
 
 test("WebCodecs reports partial telemetry when stopped, sought, or switched", () => {
   assert.match(app, /void stopCyberdashPlayback\(\{ report: true \}\);/);
-  assert.match(app, /await stopCyberdashPlayback\(\{ report: true \}\);[\s\S]*cleanupMedia\(\)/);
+  assert.match(app, /cleanupMedia\(\);[\s\S]*resetPauseControl\(false\)/);
   assert.match(embedded, /audioLateBlocks: state\.audioLateBlocks/);
   assert.match(embedded, /audioOverlapPrevented: state\.audioOverlapPrevented/);
   assert.match(embedded, /audioContinuityCorrections: state\.audioContinuityCorrections/);
@@ -170,4 +170,28 @@ test("WebCodecs playback rate compresses both audio scheduling and video clock",
   assert.match(embedded, /node\.playbackRate\.value = playbackRate/);
   assert.match(embedded, /item\.timestamp \/ 1e6\) \/ playbackRate/);
   assert.match(embedded, /duration: item\.buffer\.duration \/ playbackRate/);
+});
+
+
+test("WebCodecs restart preserves user activation by avoiding awaited old-player cleanup", () => {
+  const playerBlock = app.match(/async function playCyberdashStream[\s\S]*?\n\}\n\n\/\/ Play one synced MPEG-TS/)?.[0] || "";
+  assert.doesNotMatch(playerBlock, /await stopCyberdashPlayback/);
+  assert.match(playerBlock, /cleanupMedia\(\)/);
+  assert.match(playerBlock, /const module = cyberdashModule \|\| await ensureCyberdashModule\(\)/);
+  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260927-speed-v2"\)/);
+});
+
+test("WebCodecs playback rate is forwarded to the server and expands source-time buffer headroom", () => {
+  assert.match(embedded, /playbackRate: next\.playbackRate/);
+  assert.match(embedded, /sourceLeadLimit = 6\.5 \* normalizePlaybackRate\(state\.playbackRate\)/);
+  assert.match(server, /const playbackRate = Math\.max\(1, Math\.min\(4,/);
+  assert.match(server, /startYouTubeDashSession\(\{[\s\S]*playbackRate,/);
+  assert.match(dash, /const inputReadRate = Math\.min\(5, Math\.max\(1\.15, speed \* 1\.15\)\)/);
+});
+
+test("WebCodecs video queue uses long-stall detection instead of a 2.2 second fatal timeout", () => {
+  const queueBlock = embedded.match(/async function waitForVideoQueue[\s\S]*?\n\}/)?.[0] || "";
+  assert.doesNotMatch(queueBlock, /2200/);
+  assert.match(queueBlock, /10000/);
+  assert.match(queueBlock, /Video decoder stopped draining/);
 });

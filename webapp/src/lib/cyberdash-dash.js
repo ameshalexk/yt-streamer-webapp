@@ -22,6 +22,12 @@ function safeSeek(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
+function safePlaybackRate(value) {
+  const parsed = Number.parseFloat(String(value ?? ""));
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.min(4, parsed));
+}
+
 function bitrateForHeight(height) {
   if (height >= 1080) return { target: 4500, max: 5500 };
   if (height >= 720) return { target: 2500, max: 3200 };
@@ -35,6 +41,7 @@ export function buildCyberdashDashArgs({
   height = 720,
   fps = 30,
   startAt = 0,
+  playbackRate = 1,
   encoder = "h264_videotoolbox",
   manifestPath,
 }) {
@@ -45,10 +52,14 @@ export function buildCyberdashDashArgs({
   const outFps = clampInt(fps, 5, 60, 30);
   const seek = safeSeek(startAt);
   const rate = bitrateForHeight(outHeight);
+  const speed = safePlaybackRate(playbackRate);
+  // Keep ffmpeg ahead of client playback. A fixed 1.05x producer cannot sustain 1.5x-4x viewing.
+  const inputReadRate = Math.min(5, Math.max(1.15, speed * 1.15));
+  const initialBurst = Math.min(12, Math.max(4, speed * 3));
   const args = ["-hide_banner", "-loglevel", "warning", "-y"];
   const addInput = (input) => {
     if (seek) args.push("-ss", String(seek));
-    args.push("-readrate", "1.05", "-readrate_initial_burst", "4", "-i", String(input));
+    args.push("-readrate", String(inputReadRate), "-readrate_initial_burst", String(initialBurst), "-i", String(input));
   };
 
   addInput(videoInput);
@@ -191,6 +202,7 @@ export async function startYouTubeDashSession({
   height = 720,
   fps = 30,
   startAt = 0,
+  playbackRate = 1,
 } = {}) {
   await pruneIdleSessions();
   await fs.mkdir(rootDir(), { recursive: true });
@@ -206,6 +218,7 @@ export async function startYouTubeDashSession({
     height,
     fps,
     startAt,
+    playbackRate,
     manifestPath,
   });
 
@@ -217,6 +230,7 @@ export async function startYouTubeDashSession({
     height: clampInt(height, 240, 1080, 720),
     fps: clampInt(fps, 5, 60, 30),
     startAt: safeSeek(startAt),
+    playbackRate: safePlaybackRate(playbackRate),
     createdAt: now,
     lastAccessAt: now,
     stderr: "",
@@ -252,6 +266,7 @@ export async function startYouTubeDashSession({
     height: session.height,
     fps: session.fps,
     startAt: session.startAt,
+    playbackRate: session.playbackRate,
     statusUrl: `/api/experimental/cyberdash/${id}/status`,
     manifestUrl: `/stream/experimental/cyberdash/${id}/manifest.mpd`,
   };
@@ -273,6 +288,7 @@ export async function getSessionStatus(id) {
     height: session.height,
     fps: session.fps,
     startAt: session.startAt,
+    playbackRate: session.playbackRate,
     createdAt: session.createdAt,
     ...files,
   };

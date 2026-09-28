@@ -1488,6 +1488,7 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
   if (!url) return res.status(400).json({ error: "url required" });
   const maxHeight = requestedYouTubeMaxHeight(body.height);
   const fps = Math.max(5, Math.min(30, Number.parseInt(String(body.fps ?? 30), 10) || 30));
+  const playbackRate = Math.max(1, Math.min(4, Number.parseFloat(String(body.playbackRate ?? 1)) || 1));
   const requestedStartAt = Math.max(0, Number.parseFloat(String(body.startAt ?? 0)) || 0);
   const { videoUrl, audioUrl, resolveCache, resolveMs, isLive, duration, title } = await resolveProxiedYouTubeStreams(url, maxHeight);
   if (isLive) {
@@ -1507,6 +1508,7 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
     height: maxHeight,
     fps,
     startAt,
+    playbackRate,
   });
   res.json({
     ...session,
