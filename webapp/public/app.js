@@ -703,6 +703,11 @@ let browserInputLastX = 0;
 let browserInputLastY = 0;
 let browserInputTouchScroll = false;
 let browserInputTouchMoved = false;
+let browserInputMouseDragging = false;
+let browserInputStartEvent = null;
+let browserInputQueue = Promise.resolve();
+let browserInputPendingMotion = null;
+let browserInputPendingScroll = null;
 let browserFullscreenTapAt = 0;
 let browserFullscreenTapX = 0;
 let browserFullscreenTapY = 0;
@@ -6887,18 +6892,54 @@ async function stopBrowserSession({ stopRealChromeOrphans = false } = {}) {
   refreshSessionManager({ notify: false }).catch(() => {});
 }
 
-async function postBrowserInput(payload) {
-  if (!browserSessionId) return null;
-  try {
-    const base = realChromeActive ? "real-chrome" : "browser";
-    return await api.post(`/api/${base}/${encodeURIComponent(browserSessionId)}/input`, payload);
-  } catch (err) {
-    if (Date.now() - browserInputLastErrorAt > 2500) {
-      browserInputLastErrorAt = Date.now();
-      toast(err.message || "Browser input failed", true);
+function postBrowserInput(payload) {
+  // Capture the destination now: a queued gesture must never reach a new session.
+  const id = browserSessionId;
+  const base = realChromeActive ? "real-chrome" : "browser";
+  if (!id) return Promise.resolve(null);
+  const motion = payload.type === "move" || payload.type === "drag";
+  const entry = { payload: { ...payload }, started: false };
+  if (motion) {
+    if (browserInputPendingMotion && !browserInputPendingMotion.started
+      && browserInputPendingMotion.payload.type === payload.type) {
+      browserInputPendingMotion.superseded = true;
     }
-    return null;
+    browserInputPendingMotion = entry;
+    browserInputPendingScroll = null;
+  } else if (payload.type === "scroll") {
+    const pending = browserInputPendingScroll;
+    if (pending && !pending.started) {
+      pending.payload.x = entry.payload.x;
+      pending.payload.y = entry.payload.y;
+      pending.payload.dx = Math.max(-2000, Math.min(2000, (Number(pending.payload.dx) || 0) + (Number(entry.payload.dx) || 0)));
+      pending.payload.dy = Math.max(-2000, Math.min(2000, (Number(pending.payload.dy) || 0) + (Number(entry.payload.dy) || 0)));
+      return pending.result;
+    }
+    browserInputPendingScroll = entry;
+    browserInputPendingMotion = null;
+  } else {
+    browserInputPendingMotion = null;
+    browserInputPendingScroll = null;
   }
+  const result = browserInputQueue.then(async () => {
+    entry.started = true;
+    if (entry.superseded) return null;
+    if (browserInputPendingMotion === entry) browserInputPendingMotion = null;
+    if (browserInputPendingScroll === entry) browserInputPendingScroll = null;
+    if (browserSessionId !== id || realChromeActive !== (base === "real-chrome")) return null;
+    try {
+      return await api.post(`/api/${base}/${encodeURIComponent(id)}/input`, entry.payload);
+    } catch (err) {
+      if (Date.now() - browserInputLastErrorAt > 2500) {
+        browserInputLastErrorAt = Date.now();
+        toast(err.message || "Browser input failed", true);
+      }
+      return null;
+    }
+  });
+  entry.result = result;
+  browserInputQueue = result.catch(() => null);
+  return result;
 }
 
 function browserKeyboardInputMode(info = {}) {
@@ -8343,9 +8384,10 @@ function browserMediaRect() {
   };
 }
 
-function browserInputPointFromClient(clientX, clientY) {
+function browserInputPointFromClient(clientX, clientY, clamp = false) {
   const { left, top, width, height } = browserMediaRect();
-  if (clientX < left || clientX > left + width || clientY < top || clientY > top + height) return null;
+  if (!width || !height) return null;
+  if (!clamp && (clientX < left || clientX > left + width || clientY < top || clientY > top + height)) return null;
   return {
     x: Math.max(0, Math.min(1, (clientX - left) / width)),
     y: Math.max(0, Math.min(1, (clientY - top) / height)),
@@ -8357,11 +8399,12 @@ function browserInputPointOrCenter(clientX, clientY) {
 }
 
 function sendBrowserPointer(type, e) {
-  const point = browserInputPointFromClient(e.clientX, e.clientY);
+  const point = browserInputPointFromClient(e.clientX, e.clientY, type === "up" || type === "drag");
   if (!point) return false;
   const result = postBrowserInput({ type, ...point, button: desktopInputButton(e), pointerType: e.pointerType || "" });
   if (type === "tap") {
     result?.then?.((response) => {
+      if (!response) return;
       if (response?.download?.submitted) {
         toast("Preparing download on Mac…");
         hideBrowserKeyboard();
@@ -8450,7 +8493,10 @@ function handleBrowserInputPointerDown(e) {
   browserInputLastY = e.clientY;
   browserInputTouchScroll = e.pointerType !== "mouse";
   browserInputTouchMoved = false;
-  if (!browserInputTouchScroll) sendBrowserPointer("down", e);
+  browserInputMouseDragging = false;
+  browserInputStartEvent = { clientX: e.clientX, clientY: e.clientY, button: e.button, pointerType: e.pointerType };
+  // Ordinary mouse clicks are sent as one complete gesture on release.
+  // Only a real drag needs separate down/move/up commands.
   try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
   e.preventDefault();
   e.stopPropagation();
@@ -8468,7 +8514,16 @@ function handleBrowserInputPointerMove(e) {
     e.stopPropagation();
     return true;
   }
-  if (browserInputPointerId !== e.pointerId) return false;
+  if (browserInputPointerId !== e.pointerId) {
+    if (browserInputPointerId === null && e.pointerType === "mouse") {
+      const now = performance.now();
+      if (now - browserInputLastMoveAt >= 80) {
+        browserInputLastMoveAt = now;
+        sendBrowserPointer("move", e);
+      }
+    }
+    return false;
+  }
   const now = performance.now();
   const totalDx = e.clientX - browserInputStartX;
   const totalDy = e.clientY - browserInputStartY;
@@ -8488,6 +8543,13 @@ function handleBrowserInputPointerMove(e) {
     e.preventDefault();
     e.stopPropagation();
     return true;
+  }
+  // Touch jitter is neither a mouse drag nor a click until the gesture ends.
+  if (browserInputTouchScroll) return true;
+  if (!browserInputMouseDragging) {
+    if (Math.hypot(totalDx, totalDy) < 4) return true;
+    browserInputMouseDragging = true;
+    sendBrowserPointer("down", browserInputStartEvent);
   }
   if (now - browserInputLastMoveAt < 45) return true;
   browserInputLastMoveAt = now;
@@ -8513,7 +8575,7 @@ function handleBrowserInputPointerUp(e) {
   }
   if (browserInputPointerId !== e.pointerId) return false;
   if (browserInputTouchScroll) {
-    if (!browserInputTouchMoved) {
+    if (!browserInputTouchMoved && e.type !== "pointercancel" && e.type !== "lostpointercapture") {
       // Click where the finger went down, not wherever touch-end jitter happened
       // to land. This keeps small links/buttons stable on the Tesla touchscreen.
       sendBrowserPointer("tap", {
@@ -8523,9 +8585,13 @@ function handleBrowserInputPointerUp(e) {
         button: e.button,
       });
     }
-  } else {
-    sendBrowserPointer("up", e);
+  } else if (browserInputMouseDragging) {
+    sendBrowserPointer("up", { ...browserInputStartEvent, clientX: e.clientX, clientY: e.clientY });
+  } else if (e.type !== "pointercancel" && e.type !== "lostpointercapture") {
+    sendBrowserPointer("tap", e);
   }
+  browserInputMouseDragging = false;
+  browserInputStartEvent = null;
   browserInputPointerId = null;
   browserInputTouchScroll = false;
   browserInputTouchMoved = false;
@@ -8544,13 +8610,16 @@ function handleBrowserInputPointerCancel(e) {
 
   const releaseRemoteMouse = browserInputPointerId === e.pointerId
     && e.pointerType === "mouse"
-    && !browserInputTouchScroll;
+    && !browserInputTouchScroll
+    && browserInputMouseDragging;
 
   if (browserZoom.pointers.has(e.pointerId)) browserZoom.pointers.delete(e.pointerId);
   if (browserZoom.pointers.size < 2) browserZoom.pinching = false;
   if (browserInputPointerId === e.pointerId) browserInputPointerId = null;
   browserInputTouchScroll = false;
   browserInputTouchMoved = true;
+  browserInputMouseDragging = false;
+  browserInputStartEvent = null;
 
   // A cancelled touch must never be promoted to a tap. Mouse input is different:
   // if we already sent mousePressed, release it so Chrome cannot get stuck dragging.

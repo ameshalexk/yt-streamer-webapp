@@ -2145,3 +2145,14 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
     padding: 0 15px;
   }
 }
+
+/* Empty player chrome must not intercept the remote page underneath it. */
+.screen.browser-input-active .video-controls-panel {
+  pointer-events: none;
+}
+.screen.browser-input-active .video-controls-panel :is(button, input, select, textarea, a, [role="slider"]) {
+  pointer-events: auto;
+}
+body.fullscreen-controls-idle .screen.browser-input-active .video-controls-panel * {
+  pointer-events: none;
+}

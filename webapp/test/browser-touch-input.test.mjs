@@ -29,6 +29,8 @@ function makeCancelHarness({ pointerType = "touch", tracked = true, touchScroll 
     browserInputPointerId: tracked ? pointerId : 99,
     browserInputTouchScroll: touchScroll,
     browserInputTouchMoved: false,
+    browserInputMouseDragging: pointerType === "mouse" && !touchScroll,
+    browserInputStartEvent: null,
     browserZoom: {
       pointers: new Map(tracked ? [[pointerId, { clientX: 10, clientY: 10 }]] : []),
       pinching: true,
@@ -126,12 +128,20 @@ test("multi-touch pinch cancels single-tap ownership", () => {
   assert.match(pinch, /browserInputTouchMoved = true/);
 });
 
-test("Real Chrome tap input is serialized per session", async () => {
-  const context = { Promise };
+test("Real Chrome input wrapper is serialized per session", async () => {
+  const tails = new WeakMap();
+  const context = {
+    Promise,
+    enqueueBrowserInput(session, operation) {
+      const result = (tails.get(session) || Promise.resolve()).then(operation);
+      tails.set(session, result.catch(() => {}));
+      return result;
+    },
+  };
   vm.createContext(context);
   vm.runInContext(extractFunction(renderer, "queueRealChromeInput"), context);
 
-  const session = { inputTail: Promise.resolve() };
+  const session = {};
   const order = [];
   let releaseFirst;
   const gate = new Promise((resolve) => { releaseFirst = resolve; });
@@ -154,12 +164,20 @@ test("Real Chrome tap input is serialized per session", async () => {
   assert.deepEqual(order, ["first-start", "first-end", "second-start", "second-end"]);
 });
 
-test("failed Real Chrome tap does not poison the next tap", async () => {
-  const context = { Promise };
+test("failed Real Chrome input does not poison the next input", async () => {
+  const tails = new WeakMap();
+  const context = {
+    Promise,
+    enqueueBrowserInput(session, operation) {
+      const result = (tails.get(session) || Promise.resolve()).then(operation);
+      tails.set(session, result.catch(() => {}));
+      return result;
+    },
+  };
   vm.createContext(context);
   vm.runInContext(extractFunction(renderer, "queueRealChromeInput"), context);
 
-  const session = { inputTail: Promise.resolve() };
+  const session = {};
   const order = [];
   await assert.rejects(
     context.queueRealChromeInput(session, async () => {
@@ -183,13 +201,15 @@ test("Tesla tap backend uses desktop mouse click semantics", () => {
   assert.match(renderer, /Emulation\.setTouchEmulationEnabled", \{ enabled: false \}/);
 });
 
-test("tap route enters the serialized Real Chrome path before capturing CDP target", () => {
+test("all Real Chrome input enters the serialized path before choosing a CDP target", () => {
   const inputStart = renderer.indexOf("export async function input(id, payload = {})");
   const inputEnd = renderer.indexOf("export async function mediaPlayback", inputStart);
   const input = renderer.slice(inputStart, inputEnd);
-  assert.match(input, /if \(payload\.type === "tap"\)[\s\S]*queueRealChromeInput\(session, \(\) => dispatchRealChromeTap\(session, payload\)\)/);
+  assert.match(input, /return queueRealChromeInput\(session, \(\) => dispatchRealChromeInput\(session, payload\)\)/);
+  assert.match(input, /if \(payload\.type === "tap"\) return dispatchRealChromeTap\(session, payload\)/);
   assert.ok(
-    input.indexOf('if (payload.type === "tap")') < input.indexOf("const cdp = session.cdp"),
-    "tap should queue before it captures a possibly stale CDP target"
+    input.indexOf("queueRealChromeInput") < input.indexOf("const cdp ="),
+    "queue should be entered before a possibly changing CDP target is selected"
   );
+  assert.match(input, /session\.inputCdp \|\| session\.cdp/);
 });
