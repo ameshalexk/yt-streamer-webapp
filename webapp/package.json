@@ -17,6 +17,7 @@
   "dependencies": {
     "express": "^4.19.2",
     "mpegts.js": "^1.7.3",
-    "playwright-core": "^1.55.0"
+    "playwright-core": "^1.55.0",
+    "ws": "^8.22.0"
   }
 }

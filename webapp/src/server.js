@@ -1,6 +1,7 @@
 // YT Streamer webapp — single-origin Node server: serves the SPA, REST API, and MJPEG streams.
 // Designed to sit behind a Cloudflare Tunnel on your custom domain. No auth (single user).
 import express from "express";
+import { WebSocketServer } from "ws";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -45,6 +46,52 @@ const RESTART_AUTH_MAX_FAILURES = 5;
 const restartAuthFailures = new Map();
 let restartPending = false;
 let httpServer = null;
+
+const powerAlxProbeWss = new WebSocketServer({
+  noServer: true,
+  maxPayload: 16 * 1024,
+});
+
+powerAlxProbeWss.on("connection", (socket) => {
+  let messagesThisSecond = 0;
+  let windowStartedAt = Date.now();
+
+  socket.on("message", (raw, isBinary) => {
+    if (isBinary) return socket.close(1003, "text only");
+    const now = Date.now();
+    if (now - windowStartedAt >= 1000) {
+      windowStartedAt = now;
+      messagesThisSecond = 0;
+    }
+    messagesThisSecond += 1;
+    if (messagesThisSecond > 90) return socket.close(1008, "rate limit");
+
+    let message;
+    try {
+      message = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+
+    if (message?.type === "ping") {
+      socket.send(JSON.stringify({
+        type: "pong",
+        clientTs: Number(message.clientTs),
+        wallTs: Number(message.wallTs),
+        serverTs: Date.now(),
+      }));
+      return;
+    }
+
+    if (message?.type === "input") {
+      socket.send(JSON.stringify({
+        type: "input-ack",
+        seq: Number(message.seq),
+        serverTs: Date.now(),
+      }));
+    }
+  });
+});
 
 const PLAYBACK_LOG_FILE = path.join(config.dataDir, "playback-events.jsonl");
 const PLAYBACK_LOG_MAX_BYTES = 5 * 1024 * 1024;
@@ -1690,4 +1737,39 @@ httpServer = app.listen(config.port, config.host, () => {
   console.log(`  → http://${config.host}:${config.port}`);
   console.log(`  → library: ${config.libraryDir}`);
   console.log(`  → point your Cloudflare Tunnel at http://${config.host}:${config.port}\n`);
+});
+
+httpServer.on("upgrade", (req, socket, head) => {
+  let pathname = "";
+  try {
+    pathname = new URL(req.url || "/", "http://localhost").pathname;
+  } catch {
+    socket.destroy();
+    return;
+  }
+  if (pathname !== "/ws/poweralx-probe") {
+    socket.destroy();
+    return;
+  }
+
+  const origin = String(req.headers.origin || "");
+  const forwardedHost = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
+  const host = forwardedHost || String(req.headers.host || "");
+  if (!origin || !host) {
+    socket.destroy();
+    return;
+  }
+  try {
+    if (new URL(origin).host !== host) {
+      socket.destroy();
+      return;
+    }
+  } catch {
+    socket.destroy();
+    return;
+  }
+
+  powerAlxProbeWss.handleUpgrade(req, socket, head, (ws) => {
+    powerAlxProbeWss.emit("connection", ws, req);
+  });
 });

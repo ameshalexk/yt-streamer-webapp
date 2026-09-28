@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="robots" content="noindex,nofollow,nosnippet">
+  <meta name="theme-color" content="#0f1115">
+  <title>PowerALX Hybrid Tesla Probe</title>
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:dark}
+    *{box-sizing:border-box}
+    body{margin:0;background:#0f1115;color:#f5f7fa;min-height:100vh}
+    main{max-width:980px;margin:0 auto;padding:24px 18px 48px}
+    h1{font-size:32px;margin:0 0 8px}.sub{color:#aeb7c4;font-size:17px;line-height:1.45;margin-bottom:18px}
+    .card{background:#181c22;border:1px solid #2a3039;border-radius:18px;padding:18px;margin:12px 0}
+    .status{font-size:21px;font-weight:750}.muted{color:#aeb7c4}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:12px}
+    .metric{background:#11151a;border-radius:12px;padding:12px;min-height:76px}
+    .metric b{display:block;font-size:14px;margin-bottom:6px}.metric span{font-size:17px;word-break:break-word}
+    button{min-height:58px;border:0;border-radius:14px;font-size:19px;font-weight:750;padding:12px 16px;background:#f2f4f7;color:#0d1117;cursor:pointer}
+    button.secondary{background:#252b34;color:#f5f7fa;border:1px solid #3a424e}
+    button:disabled{opacity:.5}.actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+    video,canvas{display:block;width:100%;background:#000;border-radius:14px;margin-top:12px;aspect-ratio:16/9;object-fit:contain}
+    #inputPad{height:180px;border-radius:16px;border:2px dashed #586274;background:#10141a;display:grid;place-items:center;touch-action:none;user-select:none;margin-top:12px;font-size:22px;font-weight:700;text-align:center;padding:18px}
+    .ok{color:#7de39d}.warn{color:#ffd166}.bad{color:#ff8585}.pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#252b34;margin:4px 5px 0 0}
+    pre{white-space:pre-wrap;word-break:break-word;font-size:12px;max-height:300px;overflow:auto;background:#0b0e12;padding:12px;border-radius:12px}
+  </style>
+</head>
+<body>
+<main>
+  <h1>PowerALX Hybrid Tesla Probe</h1>
+  <div class="sub">MVP compatibility probe only. It runs WebRTC media + DataChannel, a real secure WebSocket echo, and WebCodecs H.264 → Canvas at the same time. Start in Park, then shift to Drive while stationary and watch which counters keep moving.</div>
+
+  <div class="card">
+    <div class="status" id="overall">Ready</div>
+    <div class="muted" id="detail" style="margin-top:7px">No PowerALX control is enabled. This probe only measures browser behavior.</div>
+    <div class="actions" style="margin-top:14px">
+      <button id="start">Start hybrid probe</button>
+      <button id="markPark" class="secondary" disabled>Mark PARK</button>
+      <button id="markDrive" class="secondary" disabled>Mark DRIVE · stationary</button>
+      <button id="stop" class="secondary" disabled>Stop + save report</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="status">Live result</div>
+    <div class="grid">
+      <div class="metric"><b>WebRTC</b><span id="rtcState">not started</span></div>
+      <div class="metric"><b>RTC video frames</b><span id="rtcFrames">0</span></div>
+      <div class="metric"><b>RTC audio/video clock</b><span id="rtcClock">0.0 s</span></div>
+      <div class="metric"><b>RTC input DataChannel</b><span id="rtcInput">0 ack</span></div>
+      <div class="metric"><b>Secure WebSocket</b><span id="wsState">not started</span></div>
+      <div class="metric"><b>WebSocket RTT</b><span id="wsRtt">—</span></div>
+      <div class="metric"><b>WebSocket input ack</b><span id="wsInput">0 ack</span></div>
+      <div class="metric"><b>WebCodecs</b><span id="wcState">not started</span></div>
+      <div class="metric"><b>WebCodecs frames</b><span id="wcFrames">0</span></div>
+      <div class="metric"><b>Touch / pointer events</b><span id="touchEvents">0</span></div>
+      <div class="metric"><b>requestAnimationFrame</b><span id="rafFps">0 fps</span></div>
+      <div class="metric"><b>Page state</b><span id="pageState">visible</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="status">1 · WebRTC media path</div>
+    <div class="muted">Animated canvas + low-volume test tone → encrypted WebRTC → remote video element. DataChannel carries the same pointer events as the input pad.</div>
+    <video id="rtcVideo" playsinline autoplay></video>
+  </div>
+
+  <div class="card">
+    <div class="status">2 · WebCodecs path</div>
+    <div class="muted">Existing H.264 Annex-B probe asset → VideoDecoder → Canvas. This is independent of WebRTC.</div>
+    <canvas id="wcCanvas" width="640" height="360"></canvas>
+  </div>
+
+  <div class="card">
+    <div class="status">3 · Input path</div>
+    <div class="muted">Touch, drag, or tap here. Each event is sent through both WebRTC DataChannel and secure WebSocket when available.</div>
+    <div id="inputPad">Touch / drag here</div>
+  </div>
+
+  <div class="card">
+    <div class="status">Phase markers</div>
+    <div id="phases" class="muted" style="margin-top:8px">None yet.</div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Technical report</summary>
+      <pre id="raw"></pre>
+    </details>
+  </div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const VERSION = "2026-09-28-mvp1";
+  const report = {
+    version: VERSION,
+    startedAt: null,
+    stoppedAt: null,
+    userAgent: navigator.userAgent,
+    secureContext: !!window.isSecureContext,
+    webRtcAvailable: typeof RTCPeerConnection !== "undefined",
+    webSocketAvailable: typeof WebSocket !== "undefined",
+    webCodecsAvailable: typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined",
+    maxTouchPoints: navigator.maxTouchPoints || 0,
+    phases: [],
+    errors: []
+  };
+
+  const $ = id => document.getElementById(id);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const errText = e => String(e && e.message || e).slice(0,220);
+
+  let running = false;
+  let rtc = null;
+  let ws = null;
+  let wcDecoder = null;
+  let wcTimer = null;
+  let wcUnits = [];
+  let wcIndex = 0;
+  let wcTimestamp = 0;
+  let sourceCanvas = null;
+  let sourceRaf = 0;
+  let rtcStatsTimer = null;
+  let wsPingTimer = null;
+  let rafCount = 0;
+  let rafLast = performance.now();
+  let rafFps = 0;
+  let rafLoopId = 0;
+
+  let rtcFrames = 0;
+  let rtcInputAck = 0;
+  let wsInputAck = 0;
+  let touchEvents = 0;
+  let wcFrames = 0;
+  let lastWsRtt = null;
+
+  function render() {
+    $("rtcState").textContent = report.rtcState || "not started";
+    $("rtcFrames").textContent = String(rtcFrames);
+    $("rtcClock").textContent = (($("rtcVideo").currentTime || 0).toFixed(1)) + " s";
+    $("rtcInput").textContent = rtcInputAck + " ack";
+    $("wsState").textContent = report.wsState || "not started";
+    $("wsRtt").textContent = lastWsRtt == null ? "—" : lastWsRtt.toFixed(1) + " ms";
+    $("wsInput").textContent = wsInputAck + " ack";
+    $("wcState").textContent = report.wcState || "not started";
+    $("wcFrames").textContent = String(wcFrames);
+    $("touchEvents").textContent = String(touchEvents);
+    $("rafFps").textContent = rafFps.toFixed(1) + " fps";
+    $("pageState").textContent = document.visibilityState + (document.hasFocus() ? " · focused" : " · blurred");
+    $("phases").innerHTML = report.phases.length
+      ? report.phases.map(p => '<span class="pill">'+p.name+' · '+new Date(p.at).toLocaleTimeString()+'</span>').join("")
+      : "None yet.";
+    report.live = {
+      rtcFrames, rtcInputAck, wsInputAck, touchEvents, wcFrames,
+      rtcClockSec: Number(($("rtcVideo").currentTime || 0).toFixed(3)),
+      wsRttMs: lastWsRtt == null ? null : Number(lastWsRtt.toFixed(2)),
+      rafFps: Number(rafFps.toFixed(1)),
+      visibilityState: document.visibilityState,
+      focused: document.hasFocus()
+    };
+    $("raw").textContent = JSON.stringify(report, null, 2);
+  }
+
+  function logError(scope, e) {
+    report.errors.push({ at: new Date().toISOString(), scope, message: errText(e) });
+    if (report.errors.length > 20) report.errors.shift();
+    render();
+  }
+
+  async function saveReport(label) {
+    render();
+    const timing = {
+      version: VERSION,
+      rtcState: report.rtcState || "",
+      wsState: report.wsState || "",
+      wcState: report.wcState || "",
+      rtcFrames,
+      rtcInputAck,
+      wsInputAck,
+      touchEvents,
+      wcFrames,
+      rtcClockSec: report.live?.rtcClockSec || 0,
+      wsRttMs: report.live?.wsRttMs ?? -1,
+      rafFps: report.live?.rafFps || 0,
+      phaseCount: report.phases.length,
+      visibilityState: document.visibilityState
+    };
+    try {
+      await fetch("/api/playback-event", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        keepalive: true,
+        body: JSON.stringify({
+          event: "poweralx_hybrid_probe",
+          label,
+          message: "PowerALX hybrid Tesla probe " + VERSION,
+          userAgent: navigator.userAgent,
+          timing
+        })
+      });
+    } catch {}
+  }
+
+  function startRafMeter() {
+    const tick = now => {
+      if (!running) return;
+      rafCount++;
+      const elapsed = now - rafLast;
+      if (elapsed >= 1000) {
+        rafFps = rafCount * 1000 / elapsed;
+        rafCount = 0;
+        rafLast = now;
+        render();
+      }
+      rafLoopId = requestAnimationFrame(tick);
+    };
+    rafLast = performance.now();
+    rafLoopId = requestAnimationFrame(tick);
+  }
+
+  async function startWebSocket() {
+    if (!window.WebSocket) throw new Error("WebSocket unavailable");
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(proto + "//" + location.host + "/ws/poweralx-probe");
+    report.wsState = "connecting";
+    render();
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("WebSocket connect timeout")), 6000);
+      ws.onopen = () => { clearTimeout(timer); resolve(); };
+      ws.onerror = () => { clearTimeout(timer); reject(new Error("WebSocket connection failed")); };
+    });
+
+    report.wsState = "connected";
+    ws.onclose = () => { report.wsState = "closed"; render(); };
+    ws.onerror = () => { report.wsState = "error"; render(); };
+    ws.onmessage = ev => {
+      try {
+        const m = JSON.parse(ev.data);
+        if (m.type === "pong" && Number.isFinite(m.clientTs)) {
+          lastWsRtt = performance.now() - m.clientTs;
+        }
+        if (m.type === "input-ack") wsInputAck++;
+        render();
+      } catch {}
+    };
+
+    wsPingTimer = setInterval(() => {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type:"ping", clientTs:performance.now(), wallTs:Date.now() }));
+      }
+    }, 1000);
+  }
+
+  function createSourceCanvas() {
+    const c = document.createElement("canvas");
+    c.width = 1280;
+    c.height = 720;
+    const ctx = c.getContext("2d", { alpha:false });
+    let start = performance.now();
+
+    const draw = now => {
+      if (!running) return;
+      const t = (now - start) / 1000;
+      const w = c.width, h = c.height;
+      ctx.fillStyle = "#101820";
+      ctx.fillRect(0,0,w,h);
+      const x = ((Math.sin(t*1.7)+1)/2) * (w-260);
+      const y = ((Math.cos(t*1.2)+1)/2) * (h-180);
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillRect(x,y,260,180);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 54px system-ui";
+      ctx.fillText("PowerALX WebRTC Probe", 48, 86);
+      ctx.font = "36px ui-monospace, monospace";
+      ctx.fillText("frame " + Math.floor(t*30), 48, 142);
+      ctx.fillText(new Date().toLocaleTimeString(), 48, 194);
+      ctx.fillStyle = "#94a3b8";
+      ctx.fillText("Shift Park → Drive while stationary", 48, h-54);
+      sourceRaf = requestAnimationFrame(draw);
+    };
+    sourceRaf = requestAnimationFrame(draw);
+    return c;
+  }
+
+  async function connectPeers(pc1, pc2) {
+    pc1.onicecandidate = e => { if (e.candidate) pc2.addIceCandidate(e.candidate).catch(()=>{}); };
+    pc2.onicecandidate = e => { if (e.candidate) pc1.addIceCandidate(e.candidate).catch(()=>{}); };
+    const offer = await pc1.createOffer();
+    await pc1.setLocalDescription(offer);
+    await pc2.setRemoteDescription(offer);
+    const answer = await pc2.createAnswer();
+    await pc2.setLocalDescription(answer);
+    await pc1.setRemoteDescription(answer);
+  }
+
+  async function startWebRtc() {
+    if (!window.RTCPeerConnection) throw new Error("RTCPeerConnection unavailable");
+    const pc1 = new RTCPeerConnection();
+    const pc2 = new RTCPeerConnection();
+    const dc = pc1.createDataChannel("input-probe", { ordered:true });
+    let remoteDc = null;
+
+    pc2.ondatachannel = e => {
+      remoteDc = e.channel;
+      remoteDc.onmessage = ev => {
+        try {
+          const m = JSON.parse(ev.data);
+          remoteDc.send(JSON.stringify({ type:"input-ack", seq:m.seq, serverTs:performance.now() }));
+        } catch {}
+      };
+    };
+
+    dc.onmessage = ev => {
+      try {
+        const m = JSON.parse(ev.data);
+        if (m.type === "input-ack") {
+          rtcInputAck++;
+          render();
+        }
+      } catch {}
+    };
+
+    sourceCanvas = createSourceCanvas();
+    const stream = sourceCanvas.captureStream ? sourceCanvas.captureStream(30) : null;
+    if (!stream) throw new Error("canvas.captureStream unavailable");
+
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioCtx();
+    await audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    const dest = audioCtx.createMediaStreamDestination();
+    gain.gain.value = 0.025;
+    osc.frequency.value = 440;
+    osc.connect(gain).connect(dest);
+    osc.start();
+
+    for (const track of stream.getVideoTracks()) pc1.addTrack(track, stream);
+    for (const track of dest.stream.getAudioTracks()) pc1.addTrack(track, dest.stream);
+
+    const remoteStream = new MediaStream();
+    pc2.ontrack = e => {
+      remoteStream.addTrack(e.track);
+      $("rtcVideo").srcObject = remoteStream;
+      $("rtcVideo").play().catch(()=>{});
+    };
+
+    await connectPeers(pc1, pc2);
+
+    await new Promise((resolve, reject) => {
+      const started = performance.now();
+      const check = () => {
+        if (dc.readyState === "open") return resolve();
+        if (performance.now() - started > 6000) return reject(new Error("RTC DataChannel timeout"));
+        setTimeout(check, 50);
+      };
+      check();
+    });
+
+    report.rtcState = "connected";
+    rtc = { pc1, pc2, dc, remoteDc, stream, audioCtx, osc, gain, dest };
+
+    rtcStatsTimer = setInterval(async () => {
+      try {
+        const stats = await pc2.getStats();
+        let frames = rtcFrames;
+        let packetsLost = 0;
+        let bytesReceived = 0;
+        stats.forEach(s => {
+          if (s.type === "inbound-rtp" && s.kind === "video") {
+            frames = Number(s.framesDecoded || s.framesReceived || frames);
+            packetsLost = Number(s.packetsLost || 0);
+            bytesReceived = Number(s.bytesReceived || 0);
+            report.rtcVideoFps = Number(s.framesPerSecond || 0);
+          }
+        });
+        rtcFrames = Math.max(rtcFrames, frames || 0);
+        report.rtcPacketsLost = packetsLost;
+        report.rtcBytesReceived = bytesReceived;
+        report.rtcConnectionState = pc2.connectionState;
+        render();
+      } catch {}
+    }, 1000);
+  }
+
+  function findStart(bytes, i) {
+    if (i + 3 < bytes.length && bytes[i]===0 && bytes[i+1]===0 && bytes[i+2]===0 && bytes[i+3]===1) return 4;
+    if (i + 2 < bytes.length && bytes[i]===0 && bytes[i+1]===0 && bytes[i+2]===1) return 3;
+    return 0;
+  }
+
+  function annexBAccessUnits(ab) {
+    const bytes = new Uint8Array(ab);
+    const starts = [];
+    for (let i=0;i<bytes.length-4;i++) {
+      const n = findStart(bytes,i);
+      if (!n) continue;
+      const nalType = bytes[i+n] & 0x1f;
+      if (nalType === 9) starts.push(i);
+      i += n-1;
+    }
+    if (!starts.length) throw new Error("No H.264 access units found");
+    const units = [];
+    for (let i=0;i<starts.length;i++) {
+      const end = i+1<starts.length ? starts[i+1] : bytes.length;
+      units.push(bytes.slice(starts[i], end));
+    }
+    return units;
+  }
+
+  function unitHasIdr(unit) {
+    for (let i=0;i<unit.length-4;i++) {
+      const n = findStart(unit,i);
+      if (!n) continue;
+      if ((unit[i+n] & 0x1f) === 5) return true;
+      i += n-1;
+    }
+    return false;
+  }
+
+  async function startWebCodecs() {
+    if (!window.VideoDecoder || !window.EncodedVideoChunk) throw new Error("WebCodecs unavailable");
+    const res = await fetch("/tesla-probe-h264-annexb.h264?poweralx=" + Date.now(), { cache:"no-store" });
+    if (!res.ok) throw new Error("H.264 probe asset HTTP " + res.status);
+    wcUnits = annexBAccessUnits(await res.arrayBuffer());
+    const canvas = $("wcCanvas");
+    const ctx = canvas.getContext("2d", { alpha:false });
+
+    wcDecoder = new VideoDecoder({
+      output(frame) {
+        try {
+          if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+            canvas.width = frame.displayWidth;
+            canvas.height = frame.displayHeight;
+          }
+          ctx.drawImage(frame,0,0,canvas.width,canvas.height);
+          wcFrames++;
+          report.wcDecodeQueue = wcDecoder?.decodeQueueSize || 0;
+          render();
+        } finally {
+          frame.close();
+        }
+      },
+      error(e) {
+        report.wcState = "decoder error";
+        logError("webcodecs", e);
+      }
+    });
+
+    wcDecoder.configure({
+      codec:"avc1.42E01E",
+      codedWidth:640,
+      codedHeight:360,
+      hardwareAcceleration:"prefer-hardware",
+      optimizeForLatency:true
+    });
+
+    wcIndex = 0;
+    wcTimestamp = 0;
+    report.wcState = "running";
+    wcTimer = setInterval(() => {
+      if (!running || !wcDecoder || wcDecoder.state === "closed" || !wcUnits.length) return;
+      if (wcDecoder.decodeQueueSize > 8) return;
+      const unit = wcUnits[wcIndex++ % wcUnits.length];
+      try {
+        wcDecoder.decode(new EncodedVideoChunk({
+          type: unitHasIdr(unit) ? "key" : "delta",
+          timestamp: wcTimestamp,
+          duration:33333,
+          data:unit
+        }));
+        wcTimestamp += 33333;
+      } catch (e) {
+        logError("webcodecs-decode", e);
+      }
+    }, 33);
+  }
+
+  function sendInput(kind, ev) {
+    touchEvents++;
+    const msg = {
+      type:"input",
+      seq:touchEvents,
+      kind,
+      x:Math.round(ev.clientX || 0),
+      y:Math.round(ev.clientY || 0),
+      pointerType:ev.pointerType || "unknown",
+      buttons:ev.buttons || 0,
+      ts:performance.now()
+    };
+    if (rtc?.dc?.readyState === "open") {
+      try { rtc.dc.send(JSON.stringify(msg)); } catch {}
+    }
+    if (ws?.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify(msg)); } catch {}
+    }
+    render();
+  }
+
+  function bindInputPad() {
+    const pad = $("inputPad");
+    ["pointerdown","pointermove","pointerup","pointercancel"].forEach(type => {
+      pad.addEventListener(type, ev => {
+        if (!running) return;
+        ev.preventDefault();
+        if (type === "pointerdown") {
+          try { pad.setPointerCapture(ev.pointerId); } catch {}
+        }
+        sendInput(type, ev);
+      }, { passive:false });
+    });
+  }
+
+  function markPhase(name) {
+    report.phases.push({
+      name,
+      at:new Date().toISOString(),
+      snapshot:JSON.parse(JSON.stringify(report.live || {}))
+    });
+    render();
+    saveReport("phase-" + name.toLowerCase().replace(/[^a-z0-9]+/g,"-"));
+  }
+
+  async function startAll() {
+    if (running) return;
+    running = true;
+    report.startedAt = new Date().toISOString();
+    $("start").disabled = true;
+    $("stop").disabled = false;
+    $("markPark").disabled = false;
+    $("markDrive").disabled = false;
+    $("overall").textContent = "Starting hybrid probe…";
+    $("detail").textContent = "Wait for all three paths, then mark PARK. After that shift to Drive while stationary and mark DRIVE.";
+    startRafMeter();
+    render();
+
+    const tasks = [
+      startWebSocket().catch(e => { report.wsState="failed"; logError("websocket",e); }),
+      startWebRtc().catch(e => { report.rtcState="failed"; logError("webrtc",e); }),
+      startWebCodecs().catch(e => { report.wcState="failed"; logError("webcodecs",e); })
+    ];
+    await Promise.all(tasks);
+    $("overall").textContent = "Probe running";
+    $("detail").textContent = "Mark PARK, wait about 10 seconds, then shift to Drive while stationary. If the browser stays interactive, tap Mark DRIVE and use the input pad.";
+    await saveReport("started");
+    render();
+  }
+
+  async function stopAll() {
+    if (!running) return;
+    running = false;
+    report.stoppedAt = new Date().toISOString();
+    clearInterval(rtcStatsTimer);
+    clearInterval(wsPingTimer);
+    clearInterval(wcTimer);
+    cancelAnimationFrame(sourceRaf);
+    cancelAnimationFrame(rafLoopId);
+    try { ws?.close(); } catch {}
+    try { rtc?.dc?.close(); } catch {}
+    try { rtc?.remoteDc?.close(); } catch {}
+    try { rtc?.pc1?.close(); } catch {}
+    try { rtc?.pc2?.close(); } catch {}
+    try { rtc?.stream?.getTracks().forEach(t=>t.stop()); } catch {}
+    try { rtc?.osc?.stop(); } catch {}
+    try { rtc?.audioCtx?.close(); } catch {}
+    try { wcDecoder && wcDecoder.state !== "closed" && wcDecoder.close(); } catch {}
+    $("stop").disabled = true;
+    $("markPark").disabled = true;
+    $("markDrive").disabled = true;
+    $("start").disabled = false;
+    $("overall").textContent = "Probe stopped";
+    $("detail").textContent = "Report saved. We can inspect it after your physical Tesla run.";
+    render();
+    await saveReport("stopped");
+  }
+
+  document.addEventListener("visibilitychange", render);
+  window.addEventListener("focus", render);
+  window.addEventListener("blur", render);
+  bindInputPad();
+  $("start").addEventListener("click", startAll);
+  $("stop").addEventListener("click", stopAll);
+  $("markPark").addEventListener("click", () => markPhase("PARK"));
+  $("markDrive").addEventListener("click", () => markPhase("DRIVE-STATIONARY"));
+  render();
+})();
+</script>
+</body>
+</html>
