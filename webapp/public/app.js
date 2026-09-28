@@ -580,6 +580,34 @@ let mpegtsPlayer = null; // active mpegts.js player instance
 let hlsAudioPlayer = null; // active hls.js player for audio-only Browser capture
 let browserPcmAudio = null; // low-latency Browser capture via Web Audio
 let activeCompat = null; // active MJPEG + audio fallback URLs
+const YOUTUBE_PLAYBACK_METHOD_KEY = "ytStreamerYoutubePlaybackMethod";
+let youtubePlaybackMethod = localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY) === "webcodecs" ? "webcodecs" : "mjpeg";
+let cyberdashModulePromise = null;
+let cyberdashPlayer = null;
+let activeYoutubeSourceUrl = "";
+
+function renderYoutubePlaybackMethod() {
+  document.querySelectorAll("[data-playback-method]").forEach((button) => {
+    const active = button.dataset.playbackMethod === youtubePlaybackMethod;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+async function ensureCyberdashModule() {
+  if (!cyberdashModulePromise) {
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-integrated");
+  }
+  return cyberdashModulePromise;
+}
+
+async function stopCyberdashPlayback(options = {}) {
+  const player = cyberdashPlayer;
+  cyberdashPlayer = null;
+  if (player) {
+    try { await player.stop(options); } catch {}
+  }
+}
 let audioPrompted = false;
 let playbackPaused = false;
 let pausedResumeAt = 0;
@@ -1285,6 +1313,8 @@ function streamSeekTarget(value) {
 
 function getStreamCurrentTime() {
   if (!streamSeek.seekable) return 0;
+  const cyberdashTime = cyberdashPlayer?.currentTime?.();
+  if (Number.isFinite(cyberdashTime) && cyberdashTime > 0) return clampStreamSeekTime(cyberdashTime);
   const bufferedTime = activeCompat?.bufferedPlayer?.currentTime?.();
   if (Number.isFinite(bufferedTime)) return clampStreamSeekTime(streamSeek.startAt + bufferedTime);
   const videoTime = $("#video").currentTime || 0;
@@ -1461,8 +1491,9 @@ function failStreamAttempt(attempt, title, detail) {
   clearStreamTimers();
   stopStreamSeekTimer(false);
   destroyPlayer();
-  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), audio = $("#audio");
-  screen.classList.remove("loading", "mjpeg-buffered-mode", "startup-preview");
+  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
+  void stopCyberdashPlayback();
+  screen.classList.remove("loading", "mjpeg-buffered-mode", "cyberdash-mode", "startup-preview");
   setBadge("error", "Stream failed");
   showStreamNotice("error", title, detail);
   try { video.pause(); } catch {}
@@ -1472,6 +1503,10 @@ function failStreamAttempt(attempt, title, detail) {
   if (canvas) {
     const context = canvas.getContext("2d");
     context?.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  if (cyberdashCanvas) {
+    const context = cyberdashCanvas.getContext("2d");
+    context?.clearRect(0, 0, cyberdashCanvas.width, cyberdashCanvas.height);
   }
   try { audio.pause(); } catch {}
   audio.removeAttribute("src");
@@ -1530,6 +1565,21 @@ function freezeMjpegFrame() {
 function pausePlayback() {
   if (playbackPaused || $("#pauseBtn")?.disabled) return;
   const screen = $("#screen");
+  if (screen.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
+    pausedResumeAt = getStreamCurrentTime();
+    playbackPaused = true;
+    void cyberdashPlayer.pause();
+    clearInterval(streamSeek.timer);
+    streamSeek.timer = null;
+    streamSeek.startAt = pausedResumeAt;
+    streamSeek.liveAtMs = 0;
+    updateStreamSeekUi(pausedResumeAt);
+    screen.classList.add("playback-paused");
+    setPauseButtonState("▶ Resume", true);
+    setBadge("paused", "Ⅱ PAUSED · WebCodecs");
+    showFullscreenOverlays();
+    return;
+  }
   const video = $("#video");
   const img = $("#mjpeg");
   const audio = $("#audio");
@@ -1571,6 +1621,19 @@ function pausePlayback() {
 async function resumePlayback() {
   if (!playbackPaused) return;
   const screen = $("#screen");
+  if (screen.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
+    playbackPaused = false;
+    screen.classList.remove("playback-paused");
+    setPauseButtonState("Ⅱ Pause", false);
+    await cyberdashPlayer.resume();
+    if (streamSeek.seekable) {
+      streamSeek.liveAtMs = Date.now();
+      startStreamSeekTimer();
+    }
+    setBadge("live", "● WebCodecs");
+    showFullscreenOverlays();
+    return;
+  }
   const wasBufferedMjpeg = screen.classList.contains("mjpeg-buffered-mode") && activeCompat?.bufferedPlayer;
   const wasMjpeg = screen.classList.contains("mjpeg-mode");
   const resumeAt = streamReplayTime(pausedResumeAt);
@@ -1718,12 +1781,13 @@ function canTryMpegts() {
 }
 
 function cleanupMedia() {
-  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), audio = $("#audio");
+  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
+  void stopCyberdashPlayback();
   clearFullscreenOverlayHide();
   setDesktopStreamActive(false);
   setBrowserStreamActive(false);
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
-  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "mjpeg-buffered-mode", "startup-preview");
+  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "mjpeg-buffered-mode", "cyberdash-mode", "startup-preview");
   streamAttempt++;
   clearStreamTimers();
   clearStreamNotice();
@@ -1749,6 +1813,10 @@ function cleanupMedia() {
   if (canvas) {
     const context = canvas.getContext("2d");
     context?.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  if (cyberdashCanvas) {
+    const context = cyberdashCanvas.getContext("2d");
+    context?.clearRect(0, 0, cyberdashCanvas.width, cyberdashCanvas.height);
   }
   try { audio.pause(); } catch {}
   audio.onloadedmetadata = null;
@@ -2791,9 +2859,70 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   }
 }
 
+async function playCyberdashStream(youtubeUrl, label, meta = {}) {
+  const screen = $("#screen");
+  const canvas = $("#cyberdashCanvas");
+  activeYoutubeSourceUrl = youtubeUrl;
+  $("#nowPlaying").textContent = label || "YouTube";
+  $("#stopBtn").disabled = false;
+  $("#restreamBtn").disabled = false;
+
+  await stopCyberdashPlayback();
+  cleanupMedia();
+  resetPauseControl(false);
+  if (meta.autoplayContext) {
+    setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
+  } else {
+    setAutoplayContext();
+  }
+  configureStreamSeek(meta, meta.startAt || 0);
+
+  const attempt = streamAttempt;
+  screen.classList.remove("video-mode", "mjpeg-mode", "mjpeg-buffered-mode");
+  screen.classList.add("playing", "loading", "cyberdash-mode");
+  setBadge("reconnecting", "↻ WebCodecs…");
+  startStreamWatchdog(attempt, "WebCodecs playback", { warnMs: 18000, failMs: 40000 });
+
+  try {
+    const module = await ensureCyberdashModule();
+    if (!currentAttempt(attempt)) return;
+    const player = module.createCyberdashPlayer({
+      canvas,
+      onPlaying() {
+        if (!currentAttempt(attempt)) return;
+        markStreamLive(attempt);
+        setBadge("live", "● WebCodecs");
+      },
+      onEnded() {
+        if (currentAttempt(attempt)) handleAutoplayEnd();
+      },
+      onError(error) {
+        if (currentAttempt(attempt)) failStreamAttempt(attempt, "WebCodecs playback failed", streamErrorDetail(error?.message || error));
+      },
+    });
+    cyberdashPlayer = player;
+    await player.play({
+      url: youtubeUrl,
+      height: Number.parseInt($("#ctlHeight").value, 10) || 720,
+      fps: 30,
+      startAt: meta.startAt || 0,
+      muted: !soundOn,
+    });
+  } catch (error) {
+    if (currentAttempt(attempt)) {
+      failStreamAttempt(attempt, "WebCodecs playback failed", streamErrorDetail(error?.message || error));
+    }
+  }
+}
+
 // Play one synced MPEG-TS stream (H.264+AAC) via mpegts.js / MSE.
 async function playStream(sources, label, meta = {}) {
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
+  const youtubeUrl = String(meta.youtubeUrl || "").trim();
+  activeYoutubeSourceUrl = youtubeUrl;
+  if (youtubeUrl && youtubePlaybackMethod === "webcodecs" && !meta.isLive) {
+    return playCyberdashStream(youtubeUrl, label, meta);
+  }
   if (meta.bufferedMjpeg && mjpegUrl) return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta);
   const screen = $("#screen"), video = $("#video");
   if (legacy.playing) {
@@ -2953,6 +3082,7 @@ async function playItem(item) {
       isLive: item.type !== "youtube" && item.type !== "file",
       bufferedMjpeg: item.type === "youtube" || item.type === "file",
       duration: item.meta?.duration,
+      youtubeUrl: item.type === "youtube" ? item.url : "",
       startAt,
       startupTrace: trace,
     });
@@ -2972,6 +3102,7 @@ function stopPlayback() {
   stopStreamSeekTimer(true);
   resetPauseControl(true);
   replayFn = null;
+  activeYoutubeSourceUrl = "";
   setAutoplayContext();
   setDesktopStreamActive(false);
   desktopInputActive = false;
@@ -2983,7 +3114,7 @@ function stopPlayback() {
   resetBrowserZoom();
   renderDesktopInputUi();
   setBadge("hidden");
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "embed-mode", "browser-mode", "startup-preview");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "cyberdash-mode", "embed-mode", "browser-mode", "startup-preview");
   $("#screen").style.height = "";
   $("#screen").style.aspectRatio = "";
   $("#nowPlaying").textContent = "Player";
@@ -3010,7 +3141,7 @@ function restreamPlayback() {
   stopDesktopAudioHlsSession();
   clearBrowserAudioRetry();
   cleanupMedia();
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "embed-mode", "browser-mode");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "cyberdash-mode", "embed-mode", "browser-mode");
   setBadge("reconnecting", "↻ Restreaming...");
   toast("Reloading stream");
   clearTimeout(restreamTimer);
@@ -4292,6 +4423,7 @@ async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
       isLive: Boolean(video.isLive),
       bufferedMjpeg: !video.isLive,
       duration: video.duration,
+      youtubeUrl: video.url,
       startAt,
       autoplayContext: !video.isLive ? {
         kind: "library-playlist",
@@ -4661,6 +4793,7 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
       isLive: Boolean(item.isLive || item.isUpcoming),
       bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
+      youtubeUrl: item.url,
       startAt,
       startupTrace: trace,
       autoplayContext: !item.isLive && !item.isUpcoming ? {
@@ -4707,6 +4840,7 @@ async function streamYoutubeHistoryItem(item) {
       isLive: Boolean(item.isLive),
       bufferedMjpeg: !item.isLive,
       duration: item.duration,
+      youtubeUrl: item.url,
       startAt,
       startupTrace: trace,
     });
@@ -5061,6 +5195,7 @@ async function streamRecommendation(item, autoplayQueue = null) {
       isLive: Boolean(item.isLive || item.isUpcoming),
       bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
+      youtubeUrl: item.url,
       startAt,
       startupTrace: trace,
       autoplayContext: !item.isLive && !item.isUpcoming ? {
@@ -7720,6 +7855,7 @@ $("#muteBtn").onclick = () => {
   }
   soundOn = !soundOn;
   renderMuteButton();
+  cyberdashPlayer?.setMuted?.(!soundOn);
   const v = $("#video");
   v.muted = !soundOn;
   a.muted = !soundOn;
@@ -7733,6 +7869,24 @@ $("#muteBtn").onclick = () => {
   if (soundOn && !playbackPaused && activeCompat?.audioUrl) startCompatAudio(true);
 };
 $("#pauseBtn").onclick = togglePlaybackPause;
+$("#playbackMethodToggle")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-playback-method]");
+  if (!button) return;
+  const next = button.dataset.playbackMethod === "webcodecs" ? "webcodecs" : "mjpeg";
+  if (next === youtubePlaybackMethod) return;
+  const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
+  youtubePlaybackMethod = next;
+  localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
+  renderYoutubePlaybackMethod();
+  if (activeYoutubeSourceUrl && replayFn) {
+    const result = replayFn(resumeAt);
+    if (result?.catch) result.catch((error) => toast(error.message, true));
+  } else {
+    toast(next === "webcodecs" ? "WebCodecs selected for YouTube" : "MJPEG selected for YouTube");
+  }
+});
+renderYoutubePlaybackMethod();
+void ensureCyberdashModule().catch(() => {});
 
 bindTap($("#playlistList"), async (e) => {
   const li = e.target.closest("li"); if (!li) return;
@@ -8357,6 +8511,58 @@ $("#quickPlayBtn").onclick = async () => {
   // YouTube -> play directly.
   if (/youtube\.com|youtu\.be/.test(url)) {
     const ytBtn = $("#quickPlayBtn");
+
+    if (youtubePlaybackMethod === "webcodecs") {
+      state.playingItemId = null;
+      state.legacyPlayingId = null;
+      state.recommendedPlayingId = null;
+      state.youtubeSearchPlayingId = null;
+      state.youtubeHistoryPlayingId = null;
+      renderItems();
+      renderLegacyLibrary();
+      renderRecommendations();
+      renderYoutubeSearch();
+      renderYoutubeHistory();
+
+      let info = null;
+      replayFn = (startAt = 0) => {
+        const q = streamQuery(startAt);
+        const u = encodeURIComponent(url);
+        return playStream({
+          tsUrl: `/stream/ts/youtube?url=${u}&${q}`,
+          mjpegUrl: `/stream/youtube?url=${u}&${q}`,
+          audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
+        }, info?.title || "YouTube", {
+          seekable: true,
+          isLive: false,
+          bufferedMjpeg: true,
+          duration: info?.duration,
+          youtubeUrl: url,
+          startAt,
+        });
+      };
+      const started = replayFn(0);
+      if (started?.catch) started.catch((error) => toast(error.message, true));
+
+      void api.get(`/api/youtube/info?url=${encodeURIComponent(url)}`).then((metadata) => {
+        info = metadata;
+        if (activeYoutubeSourceUrl === url) {
+          $("#nowPlaying").textContent = info?.title || "YouTube";
+          applyLateVodDuration(info?.duration);
+        }
+        void recordWatchHistory({
+          id: info?.id,
+          url: info?.webpage_url || url,
+          title: info?.title || "YouTube",
+          thumbnail: info?.thumbnail,
+          channelTitle: info?.uploader,
+          duration: info?.duration,
+          isLive: info?.isLive,
+        }, "pasted-url");
+      }).catch((error) => console.warn("youtube info failed during WebCodecs playback:", error.message));
+      return;
+    }
+
     let info = null;
     ytBtn.disabled = true; ytBtn.textContent = "...";
     try {
@@ -8388,6 +8594,7 @@ $("#quickPlayBtn").onclick = async () => {
         isLive: Boolean(info?.isLive),
         bufferedMjpeg: !info?.isLive,
         duration: info?.duration,
+        youtubeUrl: url,
         startAt,
       });
     };

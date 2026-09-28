@@ -101,6 +101,10 @@
         <div class="player-body" id="playerBody">
           <div class="player-toolbar" aria-label="Playback controls">
             <button class="btn small ghost" id="autoplayBtn" type="button" aria-pressed="false" title="Play the next video in Recs or Library">Autoplay Off</button>
+            <div class="playback-method-toggle" id="playbackMethodToggle" role="group" aria-label="YouTube playback method">
+              <button class="btn small ghost" type="button" data-playback-method="mjpeg" aria-pressed="true">MJPEG</button>
+              <button class="btn small ghost" type="button" data-playback-method="webcodecs" aria-pressed="false">WebCodecs</button>
+            </div>
             <button class="btn small ghost" id="restreamBtn" disabled title="Reload stream">↻ Restream</button>
             <button class="btn small ghost" id="stopBtn" disabled>■ Stop</button>
           </div>
@@ -246,6 +250,7 @@
           <video id="video" playsinline></video>
           <img id="mjpeg" alt="" />
           <canvas id="mjpegCanvas" aria-label="Buffered video"></canvas>
+          <canvas id="cyberdashCanvas" aria-label="WebCodecs video"></canvas>
           <canvas id="pauseFrame" aria-hidden="true"></canvas>
           <iframe id="embedFrame" title="Embedded player" allowfullscreen hidden></iframe>
           <audio id="audio" playsinline></audio>
@@ -291,7 +296,7 @@
         </div>
 
         <div class="quick">
-          <input id="quickUrl" type="text" inputmode="url" placeholder="Paste a channel URL, M3U playlist, or YouTube link…" />
+          <input id="quickUrl" type="text" inputmode="url" value="https://youtu.be/gF3X54sk0hc?is=WNtys9VQQKxryft4" placeholder="Paste a channel URL, M3U playlist, or YouTube link…" />
           <button class="btn" id="quickPlayBtn">Go</button>
         </div>
 
@@ -810,6 +815,6 @@
 
   <script src="/buffered-mjpeg.js?v=20260911-buffered-mjpeg"></script>
   <script src="/auto-quality.js?v=20260915-v2.1-auto"></script>
-  <script src="/app.js?v=20260915-apne-names"></script>
+  <script src="/app.js?v=20260927-webcodecs-toggle"></script>
 </body>
 </html>
