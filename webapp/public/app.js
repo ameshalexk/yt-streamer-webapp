@@ -581,7 +581,13 @@ let hlsAudioPlayer = null; // active hls.js player for audio-only Browser captur
 let browserPcmAudio = null; // low-latency Browser capture via Web Audio
 let activeCompat = null; // active MJPEG + audio fallback URLs
 const YOUTUBE_PLAYBACK_METHOD_KEY = "ytStreamerYoutubePlaybackMethod";
+const YOUTUBE_PLAYBACK_RATE_KEY = "ytStreamerYoutubePlaybackRate";
+const YOUTUBE_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 3, 4];
 let youtubePlaybackMethod = localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY) === "webcodecs" ? "webcodecs" : "mjpeg";
+let youtubePlaybackRate = (() => {
+  const saved = Number(localStorage.getItem(YOUTUBE_PLAYBACK_RATE_KEY));
+  return YOUTUBE_PLAYBACK_RATES.includes(saved) ? saved : 1;
+})();
 let cyberdashModulePromise = null;
 let cyberdashPlayer = null;
 let activeYoutubeSourceUrl = "";
@@ -592,11 +598,23 @@ function renderYoutubePlaybackMethod() {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
   });
+  renderYoutubePlaybackRate();
+}
+
+function renderYoutubePlaybackRate() {
+  const select = $("#playbackSpeedSelect");
+  if (!select) return;
+  select.value = String(youtubePlaybackRate);
+  const webcodecs = youtubePlaybackMethod === "webcodecs";
+  select.disabled = !webcodecs;
+  select.title = webcodecs ? "WebCodecs playback speed" : "Speed control is available with WebCodecs";
+  const control = select.closest(".playback-speed-control");
+  control?.classList.toggle("disabled", !webcodecs);
 }
 
 async function ensureCyberdashModule() {
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-integrated");
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v1");
   }
   return cyberdashModulePromise;
 }
@@ -683,6 +701,9 @@ const DESKTOP_ZOOM_STEP = 0.25;
 const BROWSER_ZOOM_MIN = 1;
 const BROWSER_ZOOM_MAX = 4;
 const BROWSER_ZOOM_STEP = 0.25;
+// Tesla touch coordinates can jitter several CSS pixels even during an intentional tap.
+// Keep taps forgiving while still handing deliberate movement to remote scrolling.
+const BROWSER_TOUCH_SCROLL_THRESHOLD_PX = 18;
 const desktopZoom = {
   scale: 1,
   panX: 0,
@@ -2915,22 +2936,25 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   setBadge("reconnecting", "↻ WebCodecs…");
   startStreamWatchdog(attempt, "WebCodecs playback", { warnMs: 18000, failMs: 40000 });
 
+  let player = null;
+  let fatalHandled = false;
   try {
     const module = await ensureCyberdashModule();
     if (!currentAttempt(attempt)) return;
     const settings = currentCyberdashSettings();
-    const player = module.createCyberdashPlayer({
+    player = module.createCyberdashPlayer({
       canvas,
       onPlaying() {
         if (!currentAttempt(attempt)) return;
         markStreamLive(attempt);
-        setBadge("live", "● WebCodecs · " + cyberdashSettingsLabel(settings));
+        setBadge("live", "● WebCodecs · " + cyberdashSettingsLabel(settings) + " · " + youtubePlaybackRate + "×");
       },
       onEnded() {
         if (currentAttempt(attempt)) handleAutoplayEnd();
       },
       onError(error) {
         if (!currentAttempt(attempt)) return;
+        fatalHandled = true;
         if (error?.body?.fallback === "mjpeg" && replayFn) {
           youtubePlaybackMethod = "mjpeg";
           localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
@@ -2950,9 +2974,13 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       fps: settings.fps,
       startAt: meta.startAt || 0,
       muted: !soundOn,
+      playbackRate: youtubePlaybackRate,
     });
   } catch (error) {
-    if (currentAttempt(attempt)) {
+    // Ignore a rejected promise from a player that was intentionally replaced
+    // by Stop, seek, method switch, or playback-rate change.
+    if (!currentAttempt(attempt) || (cyberdashPlayer && cyberdashPlayer !== player)) return;
+    if (!fatalHandled) {
       failStreamAttempt(attempt, "WebCodecs playback failed", streamErrorDetail(error?.message || error));
     }
   }
@@ -7934,6 +7962,31 @@ $("#playbackMethodToggle")?.addEventListener("click", (event) => {
     toast(next === "webcodecs" ? "WebCodecs selected for YouTube" : "MJPEG selected for YouTube");
   }
 });
+$("#playbackSpeedSelect")?.addEventListener("change", (event) => {
+  const requested = Number(event.target.value);
+  const next = YOUTUBE_PLAYBACK_RATES.includes(requested) ? requested : 1;
+  if (next === youtubePlaybackRate) return;
+  const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
+  const restorePause = playbackPaused;
+  const beforeAttempt = streamAttempt;
+  youtubePlaybackRate = next;
+  localStorage.setItem(YOUTUBE_PLAYBACK_RATE_KEY, String(youtubePlaybackRate));
+  renderYoutubePlaybackRate();
+
+  if (youtubePlaybackMethod !== "webcodecs") {
+    toast("Speed control is available with WebCodecs");
+    return;
+  }
+  if (activeYoutubeSourceUrl && replayFn) {
+    pendingPlaybackMethodRestore = restorePause
+      ? { minAttempt: beforeAttempt + 1, replay: replayFn }
+      : null;
+    const result = replayFn(resumeAt);
+    if (result?.catch) result.catch((error) => toast(error.message, true));
+  } else {
+    toast("Speed " + youtubePlaybackRate + "× selected");
+  }
+});
 renderYoutubePlaybackMethod();
 void ensureCyberdashModule().catch(() => {});
 
@@ -8309,15 +8362,19 @@ function handleBrowserInputPointerMove(e) {
   const now = performance.now();
   const totalDx = e.clientX - browserInputStartX;
   const totalDy = e.clientY - browserInputStartY;
-  if (browserInputTouchScroll && Math.hypot(totalDx, totalDy) > 8) {
-    browserInputTouchMoved = true;
-    if (now - browserInputLastMoveAt < 35) return true;
-    browserInputLastMoveAt = now;
-    const dx = browserInputLastX - e.clientX;
-    const dy = browserInputLastY - e.clientY;
-    browserInputLastX = e.clientX;
-    browserInputLastY = e.clientY;
-    sendBrowserScrollFromClient(e.clientX, e.clientY, dx * 1.8, dy * 1.8);
+  if (browserInputTouchScroll) {
+    if (Math.hypot(totalDx, totalDy) > BROWSER_TOUCH_SCROLL_THRESHOLD_PX) {
+      browserInputTouchMoved = true;
+      if (now - browserInputLastMoveAt < 35) return true;
+      browserInputLastMoveAt = now;
+      const dx = browserInputLastX - e.clientX;
+      const dy = browserInputLastY - e.clientY;
+      browserInputLastX = e.clientX;
+      browserInputLastY = e.clientY;
+      sendBrowserScrollFromClient(e.clientX, e.clientY, dx * 1.8, dy * 1.8);
+    }
+    // Do not turn sub-threshold touch jitter into remote mouse moves. A short
+    // touch stays a tap until it clearly crosses the scroll threshold.
     e.preventDefault();
     e.stopPropagation();
     return true;
@@ -8346,7 +8403,16 @@ function handleBrowserInputPointerUp(e) {
   }
   if (browserInputPointerId !== e.pointerId) return false;
   if (browserInputTouchScroll) {
-    if (!browserInputTouchMoved) sendBrowserPointer("tap", e);
+    if (!browserInputTouchMoved) {
+      // Click where the finger went down, not wherever touch-end jitter happened
+      // to land. This keeps small links/buttons stable on the Tesla touchscreen.
+      sendBrowserPointer("tap", {
+        clientX: browserInputStartX,
+        clientY: browserInputStartY,
+        pointerType: e.pointerType || "touch",
+        button: e.button,
+      });
+    }
   } else {
     sendBrowserPointer("up", e);
   }

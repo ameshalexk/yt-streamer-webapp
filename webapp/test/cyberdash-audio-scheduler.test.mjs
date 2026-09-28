@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planAudioSchedule } from "../public/cyberdash-embedded.mjs";
+import { normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
 
 const FRAME = 1024 / 48000;
 
@@ -72,4 +72,13 @@ test("audio scheduler preserves real discontinuities larger than jitter toleranc
   });
   assert.equal(plan.start, cursor + 0.05);
   assert.equal(plan.continuityAdjusted, false);
+});
+
+
+test("playback rate is clamped to the supported 1x-4x range", () => {
+  assert.equal(normalizePlaybackRate(0.25), 1);
+  assert.equal(normalizePlaybackRate(1.5), 1.5);
+  assert.equal(normalizePlaybackRate(4), 4);
+  assert.equal(normalizePlaybackRate(9), 4);
+  assert.equal(normalizePlaybackRate("bad"), 1);
 });

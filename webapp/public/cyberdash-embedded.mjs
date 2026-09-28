@@ -97,9 +97,16 @@ async function waitForVideoQueue(state, maxSize = 40) {
   }
 }
 
+export function normalizePlaybackRate(value = 1) {
+  const rate = Number(value);
+  if (!Number.isFinite(rate)) return 1;
+  return Math.max(1, Math.min(4, rate));
+}
+
 function playbackElapsed(state) {
   if (state.audioStart == null || !state.audioCtx) return 0;
-  return Math.max(0, state.audioCtx.currentTime - state.audioStart - (state.audioScheduleOffsetSec || 0));
+  const wallSeconds = Math.max(0, state.audioCtx.currentTime - state.audioStart - (state.audioScheduleOffsetSec || 0));
+  return wallSeconds * normalizePlaybackRate(state.playbackRate);
 }
 
 export function planAudioSchedule({
@@ -161,14 +168,16 @@ function scheduleAudioBuffer(state, item) {
     try { node.disconnect(); } catch {}
   };
 
+  const playbackRate = normalizePlaybackRate(state.playbackRate);
+  node.playbackRate.value = playbackRate;
   const expectedStart = state.audioStart
     + (state.audioScheduleOffsetSec || 0)
-    + Math.max(0, item.timestamp / 1e6);
+    + Math.max(0, item.timestamp / 1e6) / playbackRate;
   const plan = planAudioSchedule({
     expectedStart,
     cursor: state.audioScheduleCursor,
     now: state.audioCtx.currentTime,
-    duration: item.buffer.duration,
+    duration: item.buffer.duration / playbackRate,
   });
 
   if (plan.lateBy > 0) {
@@ -479,6 +488,7 @@ async function sendSummary(state, result, message = "") {
           audioOverlapPrevented: state.audioOverlapPrevented,
           audioContinuityCorrections: state.audioContinuityCorrections,
           maxAudioScheduleSlipMs: round(state.maxAudioScheduleSlipMs, 1),
+          playbackRate: normalizePlaybackRate(state.playbackRate),
         },
         timing: {
           firstPictureMs: round(state.firstPictureMs, 1),
@@ -527,6 +537,7 @@ export function createCyberdashPlayer({
     fps = 30,
     startAt = 0,
     muted = false,
+    playbackRate = 1,
   } = {}) {
     if (!url) throw new Error("YouTube URL is required");
 
@@ -551,6 +562,7 @@ export function createCyberdashPlayer({
     const next = {
       sourceUrl: url,
       startAt: Math.max(0, Number(startAt) || 0),
+      playbackRate: normalizePlaybackRate(playbackRate),
       sessionId: null,
       startedAt: performance.now(),
       resolveMs: null,
@@ -615,10 +627,12 @@ export function createCyberdashPlayer({
       await runSession(next);
       if (state === next) await sendSummary(next, "completed", "Embedded DASH/WebCodecs playback completed.");
     } catch (error) {
-      if (!next.stopRequested) {
-        await sendSummary(next, "error", String(error?.message || error));
-        onError?.(error);
-      }
+      // Stop/seek/method/rate changes intentionally abort the old session. Treat
+      // that as normal cancellation so a stale promise cannot show a fatal toast
+      // while the replacement stream is already playing.
+      if (next.stopRequested) return;
+      await sendSummary(next, "error", String(error?.message || error));
+      onError?.(error);
       throw error;
     } finally {
       // Release AudioContext/decoders/buffer-source references and the server

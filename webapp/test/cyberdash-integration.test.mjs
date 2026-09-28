@@ -142,3 +142,32 @@ test("WebCodecs reports partial telemetry when stopped, sought, or switched", ()
   assert.match(embedded, /audioContinuityCorrections: state\.audioContinuityCorrections/);
   assert.match(embedded, /maxAudioScheduleSlipMs: round\(state\.maxAudioScheduleSlipMs, 1\)/);
 });
+
+
+test("intentional WebCodecs cancellation is not surfaced as playback failure", () => {
+  const playBody = embedded.match(/async function play\(\{[\s\S]*?\n  \}\n\n  function currentTime/)?.[0] || "";
+  assert.match(playBody, /if \(next\.stopRequested\) return/);
+  const playerBlock = app.match(/async function playCyberdashStream[\s\S]*?\n\}\n\n\/\/ Play one synced MPEG-TS/)?.[0] || "";
+  assert.match(playerBlock, /let fatalHandled = false/);
+  assert.match(playerBlock, /if \(!fatalHandled\)/);
+});
+
+test("WebCodecs speed control offers 1x through 4x and persists the selection", () => {
+  assert.match(html, /id="playbackSpeedSelect"/);
+  for (const value of ["1", "1.25", "1.5", "2", "3", "4"]) {
+    assert.ok(html.includes('option value="' + value + '"'));
+  }
+  assert.match(app, /const YOUTUBE_PLAYBACK_RATE_KEY = "ytStreamerYoutubePlaybackRate"/);
+  assert.match(app, /const YOUTUBE_PLAYBACK_RATES = \[1, 1\.25, 1\.5, 2, 3, 4\]/);
+  assert.match(app, /localStorage\.setItem\(YOUTUBE_PLAYBACK_RATE_KEY, String\(youtubePlaybackRate\)\)/);
+  assert.match(app, /playbackRate: youtubePlaybackRate/);
+});
+
+test("WebCodecs playback rate compresses both audio scheduling and video clock", () => {
+  assert.match(embedded, /export function normalizePlaybackRate/);
+  assert.match(embedded, /return Math\.max\(1, Math\.min\(4, rate\)\)/);
+  assert.match(embedded, /wallSeconds \* normalizePlaybackRate\(state\.playbackRate\)/);
+  assert.match(embedded, /node\.playbackRate\.value = playbackRate/);
+  assert.match(embedded, /item\.timestamp \/ 1e6\) \/ playbackRate/);
+  assert.match(embedded, /duration: item\.buffer\.duration \/ playbackRate/);
+});
