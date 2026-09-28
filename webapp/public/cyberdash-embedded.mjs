@@ -553,6 +553,7 @@ async function sendSummary(state, result, message = "") {
         userAgent: navigator.userAgent,
         stats: {
           state: result,
+          fps: state.requestedFps,
           renderedFrames: state.renderedFrames,
           droppedFrames: state.droppedFrames,
           receivedBytes: state.receivedBytes,
@@ -649,6 +650,7 @@ export function createCyberdashPlayer({
     const next = {
       sourceUrl: url,
       startAt: Math.max(0, Number(startAt) || 0),
+      requestedFps: Math.max(5, Math.min(60, Number(fps) || 30)),
       playbackRate: normalizePlaybackRate(playbackRate),
       requestedMuted: Boolean(muted),
       externalAudioElement,

@@ -77,10 +77,11 @@ test("WebCodecs completion and failure always release browser/server resources",
 });
 
 
-test("WebCodecs uses the shared player height/FPS controls with a Tesla-safe FPS cap", () => {
-  assert.match(app, /function currentCyberdashSettings\(\)[\s\S]*selectedHeight[\s\S]*selectedFps/);
-  assert.match(app, /height: Number\.isFinite\(selectedHeight\) \? Math\.max\(0, selectedHeight\) : 0/);
-  assert.match(app, /fps: Number\.isFinite\(selectedFps\) \? Math\.max\(5, Math\.min\(30, selectedFps\)\) : 24/);
+test("WebCodecs uses the shared player controls with adaptive fast-play FPS and a 30fps source cap", () => {
+  assert.match(app, /function adaptiveCyberdashFps\(baseFps, playbackRate = youtubePlaybackRate\)/);
+  assert.match(app, /const minimumFastFps = rate >= 2 \? 30 : 24/);
+  assert.match(app, /return Math\.min\(30, Math\.max\(minimumFastFps, Math\.round\(base \* rate\)\)\)/);
+  assert.match(app, /function currentCyberdashSettings\(\)[\s\S]*baseFps[\s\S]*fps: adaptiveCyberdashFps\(baseFps\)/);
   assert.match(app, /height: settings\.height,[\s\S]*fps: settings\.fps/);
 });
 
@@ -178,7 +179,7 @@ test("WebCodecs restart preserves user activation by avoiding awaited old-player
   assert.doesNotMatch(playerBlock, /await stopCyberdashPlayback/);
   assert.match(playerBlock, /cleanupMedia\(\)/);
   assert.match(playerBlock, /const module = cyberdashModule \|\| await ensureCyberdashModule\(\)/);
-  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260927-speed-v5"\)/);
+  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260927-speed-v6"\)/);
 });
 
 test("WebCodecs playback rate is forwarded to the server and expands source-time buffer headroom", () => {
@@ -219,4 +220,21 @@ test("WebCodecs source-time buffering scales audio PTS back from server-tempo ou
   assert.match(embedded, /async function holdIfTooFarAhead\(state, lastPtsSec, kind\)/);
   assert.match(embedded, /const sourcePtsSec = kind === "audio" \? lastPtsSec \* playbackRate : lastPtsSec/);
   assert.match(embedded, /holdIfTooFarAhead\(state, lastPtsSec, kind\)/);
+});
+
+test("adaptive WebCodecs FPS raises low MJPEG-style frame rates when playback is faster", () => {
+  const fnSource = app.match(/function adaptiveCyberdashFps\(baseFps, playbackRate = youtubePlaybackRate\) \{[\s\S]*?\n\}/)?.[0] || "";
+  assert.ok(fnSource);
+  const adaptiveCyberdashFps = Function("return (" + fnSource + ")")();
+  assert.equal(adaptiveCyberdashFps(12, 1), 12);
+  assert.equal(adaptiveCyberdashFps(12, 1.5), 24);
+  assert.equal(adaptiveCyberdashFps(15, 1.5), 24);
+  assert.equal(adaptiveCyberdashFps(24, 1.5), 30);
+  assert.equal(adaptiveCyberdashFps(12, 2), 30);
+  assert.equal(adaptiveCyberdashFps(30, 4), 30);
+});
+
+test("WebCodecs telemetry records the actual requested adaptive FPS", () => {
+  assert.match(embedded, /requestedFps: Math\.max\(5, Math\.min\(60, Number\(fps\) \|\| 30\)\)/);
+  assert.match(embedded, /fps: state\.requestedFps/);
 });

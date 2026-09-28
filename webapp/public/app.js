@@ -616,7 +616,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v5")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v6")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -633,18 +633,34 @@ async function stopCyberdashPlayback(options = {}) {
   }
 }
 
+function adaptiveCyberdashFps(baseFps, playbackRate = youtubePlaybackRate) {
+  const base = Number.isFinite(Number(baseFps)) ? Math.max(5, Math.min(30, Number(baseFps))) : 24;
+  const rate = Number.isFinite(Number(playbackRate)) ? Math.max(1, Number(playbackRate)) : 1;
+  if (rate <= 1) return Math.round(base);
+
+  // YouTube-style fast playback keeps the source's frame cadence instead of
+  // throwing most frames away first. Our MJPEG-oriented low FPS setting can be
+  // 12-15 fps, so raise WebCodecs to at least 24 fps when sped up and to 30 fps
+  // at 2x+, while keeping the Tesla-safe 30 fps source cap.
+  const minimumFastFps = rate >= 2 ? 30 : 24;
+  return Math.min(30, Math.max(minimumFastFps, Math.round(base * rate)));
+}
+
 function currentCyberdashSettings() {
   const selectedHeight = Number.parseInt($("#ctlHeight")?.value || "0", 10);
   const selectedFps = Number.parseInt($("#ctlFps")?.value || "24", 10);
+  const baseFps = Number.isFinite(selectedFps) ? Math.max(5, Math.min(30, selectedFps)) : 24;
   return {
     height: Number.isFinite(selectedHeight) ? Math.max(0, selectedHeight) : 0,
-    fps: Number.isFinite(selectedFps) ? Math.max(5, Math.min(30, selectedFps)) : 24,
+    baseFps,
+    fps: adaptiveCyberdashFps(baseFps),
   };
 }
 
 function cyberdashSettingsLabel(settings = currentCyberdashSettings()) {
   const height = settings.height > 0 ? `${settings.height}p` : "Source";
-  return `${height} · ${settings.fps}fps`;
+  const adaptive = settings.fps !== settings.baseFps ? ` · adaptive from ${settings.baseFps}` : "";
+  return `${height} · ${settings.fps}fps${adaptive}`;
 }
 
 let pendingPlaybackMethodRestore = null;
