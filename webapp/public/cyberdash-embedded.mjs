@@ -108,9 +108,13 @@ function scheduleAudioBuffer(state, item) {
   const node = state.audioCtx.createBufferSource();
   node.buffer = item.buffer;
   node.connect(state.gainNode);
+  node.onended = () => {
+    state.audioNodes.delete(node);
+    try { node.disconnect(); } catch {}
+  };
   const target = state.audioStart + Math.max(0, item.timestamp / 1e6);
+  state.audioNodes.add(node);
   node.start(Math.max(target, state.audioCtx.currentTime + 0.006));
-  state.audioNodes.push(node);
   state.scheduledAudioBlocks++;
 }
 
@@ -454,10 +458,15 @@ export function createCyberdashPlayer({
     muted = false,
   } = {}) {
     if (!url) throw new Error("YouTube URL is required");
-    await stop();
 
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) throw new Error("AudioContext unavailable");
+
+    // Resume immediately while the click/tap user-activation is still live.
+    // Tesla's browser can reject AudioContext.resume() if we await cleanup first.
+    const audioCtx = new AudioContextClass({ sampleRate: 48000 });
+    const resumePromise = audioCtx.resume();
+    await stop();
 
     const next = {
       sourceUrl: url,
@@ -467,10 +476,10 @@ export function createCyberdashPlayer({
       resolveMs: null,
       stopRequested: false,
       paused: false,
-      audioCtx: new AudioContextClass({ sampleRate: 48000 }),
+      audioCtx,
       gainNode: null,
       audioStart: null,
-      audioNodes: [],
+      audioNodes: new Set(),
       pendingAudio: [],
       decodedVideo: [],
       videoDecoder: null,
@@ -500,7 +509,7 @@ export function createCyberdashPlayer({
     state = next;
 
     try {
-      await withTimeout(next.audioCtx.resume(), 2500, "AudioContext resume");
+      await withTimeout(resumePromise, 2500, "AudioContext resume");
       if (next.audioCtx.state !== "running") throw new Error("AudioContext did not enter running state");
 
       onStatus?.("resolving");
@@ -526,9 +535,9 @@ export function createCyberdashPlayer({
       }
       throw error;
     } finally {
-      if (state === next && next.videoFeedDone && next.audioFeedDone) {
-        await stopServerSession(next);
-      }
+      // Release AudioContext/decoders/buffer-source references and the server
+      // session after completion or failure. This matters for long videos.
+      if (state === next) await stop();
     }
   }
 

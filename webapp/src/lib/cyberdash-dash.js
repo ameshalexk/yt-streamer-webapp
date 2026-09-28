@@ -88,10 +88,14 @@ export function buildCyberdashDashArgs({
 
 export function parseDashManifest(text = "") {
   const manifest = String(text || "");
-  const duration = (manifest.match(/mediaPresentationDuration="PT([0-9.]+)S"/) || [])[1];
+  const durationText = (manifest.match(/mediaPresentationDuration="([^"]+)"/) || [])[1] || "";
+  const durationMatch = durationText.match(/^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/);
+  const durationSec = durationMatch
+    ? (Number(durationMatch[1] || 0) * 3600) + (Number(durationMatch[2] || 0) * 60) + Number(durationMatch[3] || 0)
+    : null;
   const adaptationSets = [...manifest.matchAll(/<AdaptationSet\b([^>]*)>([\s\S]*?)<\/AdaptationSet>/g)];
   const result = {
-    durationSec: duration ? Number(duration) : null,
+    durationSec: Number.isFinite(durationSec) ? durationSec : null,
     video: null,
     audio: null,
   };

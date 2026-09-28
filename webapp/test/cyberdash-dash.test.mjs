@@ -66,3 +66,51 @@ test("DASH manifest parser identifies video/audio representation metadata", () =
     frameRate: null,
   });
 });
+
+test("CyberDash DASH args seek both separate video and audio inputs", () => {
+  const args = buildCyberdashDashArgs({
+    videoInput: "https://example.test/video",
+    audioInput: "https://example.test/audio",
+    height: 720,
+    fps: 30,
+    startAt: 3661.25,
+    manifestPath: "/tmp/manifest.mpd",
+  });
+  const seekIndexes = args.flatMap((value, index) => value === "-ss" ? [index] : []);
+  assert.equal(seekIndexes.length, 2);
+  assert.deepEqual(seekIndexes.map((index) => args[index + 1]), ["3661.25", "3661.25"]);
+  assert.ok(seekIndexes[0] < args.indexOf("https://example.test/video"));
+  assert.ok(seekIndexes[1] < args.indexOf("https://example.test/audio"));
+});
+
+test("CyberDash DASH args clamp invalid size/fps and ignore negative seek", () => {
+  const args = buildCyberdashDashArgs({
+    videoInput: "/tmp/input.mp4",
+    height: 80,
+    fps: 999,
+    startAt: -42,
+    manifestPath: "/tmp/manifest.mpd",
+  });
+  assert.match(args[args.indexOf("-vf") + 1], /scale=-2:240,fps=60/);
+  assert.equal(args.includes("-ss"), false);
+});
+
+test("DASH manifest parser supports long ISO-8601 hour/minute durations", () => {
+  const parsed = parseDashManifest(`<?xml version="1.0"?>
+    <MPD mediaPresentationDuration="PT2H3M4.5S">
+      <Period>
+        <AdaptationSet contentType="video">
+          <Representation id="v0" codecs="avc1.64001f" bandwidth="1400000" width="854" height="480" frameRate="30/1" />
+        </AdaptationSet>
+        <AdaptationSet contentType="audio">
+          <Representation id="a0" codecs="mp4a.40.2" bandwidth="128000" />
+        </AdaptationSet>
+      </Period>
+    </MPD>`);
+  assert.equal(parsed.durationSec, 7384.5);
+});
+
+test("DASH manifest parser leaves unknown duration formats unset", () => {
+  const parsed = parseDashManifest(`<MPD mediaPresentationDuration="forever"></MPD>`);
+  assert.equal(parsed.durationSec, null);
+});
