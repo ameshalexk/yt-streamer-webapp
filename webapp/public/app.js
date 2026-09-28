@@ -608,6 +608,36 @@ async function stopCyberdashPlayback(options = {}) {
     try { await player.stop(options); } catch {}
   }
 }
+
+function currentCyberdashSettings() {
+  const selectedHeight = Number.parseInt($("#ctlHeight")?.value || "0", 10);
+  const selectedFps = Number.parseInt($("#ctlFps")?.value || "24", 10);
+  return {
+    height: Number.isFinite(selectedHeight) ? Math.max(0, selectedHeight) : 0,
+    fps: Number.isFinite(selectedFps) ? Math.max(5, Math.min(30, selectedFps)) : 24,
+  };
+}
+
+function cyberdashSettingsLabel(settings = currentCyberdashSettings()) {
+  const height = settings.height > 0 ? `${settings.height}p` : "Source";
+  return `${height} · ${settings.fps}fps`;
+}
+
+let pendingPlaybackMethodRestore = null;
+
+function maybeRestorePlaybackAfterMethodSwitch(attempt) {
+  const pending = pendingPlaybackMethodRestore;
+  if (!pending) return;
+  if (replayFn !== pending.replay) {
+    pendingPlaybackMethodRestore = null;
+    return;
+  }
+  if (attempt < pending.minAttempt || !currentAttempt(attempt)) return;
+  pendingPlaybackMethodRestore = null;
+  requestAnimationFrame(() => {
+    if (currentAttempt(attempt) && replayFn === pending.replay && !playbackPaused) pausePlayback();
+  });
+}
 let audioPrompted = false;
 let playbackPaused = false;
 let pausedResumeAt = 0;
@@ -1286,6 +1316,7 @@ function markStreamLive(attempt) {
     startStreamSeekTimer();
   }
   maybeRestorePlaybackAfterQualitySwitch(attempt);
+  maybeRestorePlaybackAfterMethodSwitch(attempt);
 }
 
 function clampStreamSeekTime(value) {
@@ -1486,6 +1517,7 @@ function seekStreamTo(time) {
 
 function failStreamAttempt(attempt, title, detail) {
   if (!currentAttempt(attempt)) return;
+  pendingPlaybackMethodRestore = null;
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
   streamAttempt++;
   clearStreamTimers();
@@ -2886,25 +2918,36 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   try {
     const module = await ensureCyberdashModule();
     if (!currentAttempt(attempt)) return;
+    const settings = currentCyberdashSettings();
     const player = module.createCyberdashPlayer({
       canvas,
       onPlaying() {
         if (!currentAttempt(attempt)) return;
         markStreamLive(attempt);
-        setBadge("live", "● WebCodecs");
+        setBadge("live", "● WebCodecs · " + cyberdashSettingsLabel(settings));
       },
       onEnded() {
         if (currentAttempt(attempt)) handleAutoplayEnd();
       },
       onError(error) {
-        if (currentAttempt(attempt)) failStreamAttempt(attempt, "WebCodecs playback failed", streamErrorDetail(error?.message || error));
+        if (!currentAttempt(attempt)) return;
+        if (error?.body?.fallback === "mjpeg" && replayFn) {
+          youtubePlaybackMethod = "mjpeg";
+          localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
+          renderYoutubePlaybackMethod();
+          toast("Live YouTube detected · using MJPEG");
+          const result = replayFn(meta.startAt || 0);
+          if (result?.catch) result.catch((fallbackError) => toast(fallbackError.message, true));
+          return;
+        }
+        failStreamAttempt(attempt, "WebCodecs playback failed", streamErrorDetail(error?.message || error));
       },
     });
     cyberdashPlayer = player;
     await player.play({
       url: youtubeUrl,
-      height: Number.parseInt($("#ctlHeight").value, 10) || 720,
-      fps: 30,
+      height: settings.height,
+      fps: settings.fps,
       startAt: meta.startAt || 0,
       muted: !soundOn,
     });
@@ -3092,6 +3135,7 @@ async function playItem(item) {
 }
 
 function stopPlayback() {
+  pendingPlaybackMethodRestore = null;
   stopDesktopHlsSession();
   stopDesktopAudioHlsSession();
   clearBrowserAudioRetry();
@@ -7875,10 +7919,15 @@ $("#playbackMethodToggle")?.addEventListener("click", (event) => {
   const next = button.dataset.playbackMethod === "webcodecs" ? "webcodecs" : "mjpeg";
   if (next === youtubePlaybackMethod) return;
   const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
+  const restorePause = playbackPaused;
+  const beforeAttempt = streamAttempt;
   youtubePlaybackMethod = next;
   localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
   renderYoutubePlaybackMethod();
   if (activeYoutubeSourceUrl && replayFn) {
+    pendingPlaybackMethodRestore = restorePause
+      ? { minAttempt: beforeAttempt + 1, replay: replayFn }
+      : null;
     const result = replayFn(resumeAt);
     if (result?.catch) result.catch((error) => toast(error.message, true));
   } else {

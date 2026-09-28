@@ -155,9 +155,15 @@ function localGoogleVideoProxyUrl(value, { headers = {}, sourceUrl = "", role = 
 
 function proxyYouTubeStreams(resolved, { sourceUrl = "", maxHeight = config.download.maxHeight } = {}) {
   const { videoUrl, audioUrl, videoHeaders, audioHeaders } = resolved;
+  const durationValue = resolved.duration;
   return {
     videoUrl: localGoogleVideoProxyUrl(videoUrl, { headers: videoHeaders, sourceUrl, role: "video", maxHeight }),
     audioUrl: audioUrl ? localGoogleVideoProxyUrl(audioUrl, { headers: audioHeaders, sourceUrl, role: "audio", maxHeight }) : null,
+    isLive: Boolean(resolved.isLive),
+    duration: durationValue != null && durationValue !== "" && Number.isFinite(Number(durationValue))
+      ? Number(durationValue)
+      : null,
+    title: resolved.title || null,
   };
 }
 
@@ -1479,10 +1485,20 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const url = String(body.url || "").trim();
   if (!url) return res.status(400).json({ error: "url required" });
-  const maxHeight = requestedYouTubeMaxHeight(body.height || 720);
-  const fps = Math.max(12, Math.min(30, Number.parseInt(String(body.fps || 30), 10) || 30));
-  const startAt = Math.max(0, Number.parseFloat(String(body.startAt || 0)) || 0);
-  const { videoUrl, audioUrl, resolveCache, resolveMs } = await resolveProxiedYouTubeStreams(url, maxHeight);
+  const maxHeight = requestedYouTubeMaxHeight(body.height);
+  const fps = Math.max(5, Math.min(30, Number.parseInt(String(body.fps ?? 30), 10) || 30));
+  const requestedStartAt = Math.max(0, Number.parseFloat(String(body.startAt ?? 0)) || 0);
+  const { videoUrl, audioUrl, resolveCache, resolveMs, isLive, duration, title } = await resolveProxiedYouTubeStreams(url, maxHeight);
+  if (isLive) {
+    return res.status(409).json({
+      error: "Live YouTube streams use MJPEG playback.",
+      fallback: "mjpeg",
+      isLive: true,
+    });
+  }
+  const startAt = Number.isFinite(duration) && duration > 0
+    ? Math.min(requestedStartAt, Math.max(0, duration - 2))
+    : requestedStartAt;
   const session = await cyberdashDash.startYouTubeDashSession({
     videoInput: videoUrl,
     audioInput: audioUrl,
@@ -1495,6 +1511,9 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
     ...session,
     resolveCache,
     resolveMs,
+    isLive: false,
+    duration,
+    title,
     player: "experimental-cyberdash-v1",
   });
 }));

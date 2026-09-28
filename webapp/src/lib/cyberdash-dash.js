@@ -42,7 +42,7 @@ export function buildCyberdashDashArgs({
   if (!manifestPath) throw new Error("manifest path required");
 
   const outHeight = clampInt(height, 240, 1080, 720);
-  const outFps = clampInt(fps, 12, 60, 30);
+  const outFps = clampInt(fps, 5, 60, 30);
   const seek = safeSeek(startAt);
   const rate = bitrateForHeight(outHeight);
   const args = ["-hide_banner", "-loglevel", "warning", "-y"];
@@ -215,7 +215,7 @@ export async function startYouTubeDashSession({
     dir,
     sourceUrl: String(sourceUrl || ""),
     height: clampInt(height, 240, 1080, 720),
-    fps: clampInt(fps, 12, 60, 30),
+    fps: clampInt(fps, 5, 60, 30),
     startAt: safeSeek(startAt),
     createdAt: now,
     lastAccessAt: now,

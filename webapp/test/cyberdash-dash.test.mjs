@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import fs from "node:fs";
 import { buildCyberdashDashArgs, parseDashManifest } from "../src/lib/cyberdash-dash.js";
 
 test("CyberDash DASH args use hardware H.264, AAC, fMP4 DASH, and separate audio mapping", () => {
@@ -113,4 +114,21 @@ test("DASH manifest parser supports long ISO-8601 hour/minute durations", () => 
 test("DASH manifest parser leaves unknown duration formats unset", () => {
   const parsed = parseDashManifest(`<MPD mediaPresentationDuration="forever"></MPD>`);
   assert.equal(parsed.durationSec, null);
+});
+
+
+test("CyberDash DASH args honor low-FPS player selections", () => {
+  const args = buildCyberdashDashArgs({
+    videoInput: "/tmp/input.mp4",
+    height: 360,
+    fps: 5,
+    manifestPath: "/tmp/manifest.mpd",
+  });
+  assert.match(args[args.indexOf("-vf") + 1], /scale=-2:360,fps=5/);
+});
+
+
+test("CyberDash session status uses the same low-FPS range as ffmpeg", () => {
+  const source = fs.readFileSync(new URL("../src/lib/cyberdash-dash.js", import.meta.url), "utf8");
+  assert.match(source, /fps: clampInt\(fps, 5, 60, 30\)/);
 });

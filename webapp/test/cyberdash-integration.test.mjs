@@ -48,7 +48,8 @@ test("WebCodecs quick-play retains MJPEG URLs so toggle-back works without a new
 
 test("existing seek path reaches WebCodecs startAt and ffmpeg input seek", () => {
   assert.match(app, /function seekStreamTo\(time\)[\s\S]*?replayFn\(target\)/);
-  assert.match(server, /const startAt = Math\.max\(0,[\s\S]*body\.startAt/);
+  assert.match(server, /const requestedStartAt = Math\.max\(0,[\s\S]*body\.startAt/);
+  assert.match(server, /const startAt = Number\.isFinite\(duration\)[\s\S]*requestedStartAt/);
   assert.match(server, /startYouTubeDashSession\(\{[\s\S]*startAt,/);
   assert.match(dash, /if \(seek\) args\.push\("-ss", String\(seek\)\)/);
 });
@@ -72,4 +73,62 @@ test("WebCodecs completion and failure always release browser/server resources",
   assert.match(embedded, /finally \{[\s\S]*if \(state === next\) await stop\(\)/);
   assert.match(embedded, /current\.audioCtx[\s\S]*await current\.audioCtx\.close\(\)/);
   assert.match(embedded, /await stopServerSession\(current\)/);
+});
+
+
+test("WebCodecs uses the shared player height/FPS controls with a Tesla-safe FPS cap", () => {
+  assert.match(app, /function currentCyberdashSettings\(\)[\s\S]*selectedHeight[\s\S]*selectedFps/);
+  assert.match(app, /height: Number\.isFinite\(selectedHeight\) \? Math\.max\(0, selectedHeight\) : 0/);
+  assert.match(app, /fps: Number\.isFinite\(selectedFps\) \? Math\.max\(5, Math\.min\(30, selectedFps\)\) : 24/);
+  assert.match(app, /height: settings\.height,[\s\S]*fps: settings\.fps/);
+});
+
+test("Source height is preserved to the server instead of being silently forced to 720p", () => {
+  assert.match(embedded, /height: Number\.isFinite\(Number\(height\)\) \? Number\(height\) : 0/);
+  assert.match(server, /const maxHeight = requestedYouTubeMaxHeight\(body\.height\)/);
+  assert.doesNotMatch(server, /requestedYouTubeMaxHeight\(body\.height \|\| 720\)/);
+});
+
+test("server clamps WebCodecs FPS to 5-30 and seek to the resolved video duration", () => {
+  assert.match(server, /const fps = Math\.max\(5, Math\.min\(30,/);
+  assert.match(server, /const requestedStartAt = Math\.max\(0,/);
+  assert.match(server, /Math\.min\(requestedStartAt, Math\.max\(0, duration - 2\)\)/);
+});
+
+test("live pasted YouTube automatically falls back from WebCodecs to MJPEG", () => {
+  const startRoute = server.match(/app\.post\("\/api\/experimental\/cyberdash\/start"[\s\S]*?\n\}\)\);/)?.[0] || "";
+  assert.match(startRoute, /if \(isLive\)/);
+  assert.match(startRoute, /status\(409\)/);
+  assert.match(startRoute, /fallback: "mjpeg"/);
+  assert.ok(startRoute.indexOf("if (isLive)") < startRoute.indexOf("startYouTubeDashSession"));
+
+  assert.match(embedded, /error\.status = res\.status/);
+  assert.match(embedded, /error\.body = body/);
+  assert.match(app, /error\?\.body\?\.fallback === "mjpeg"/);
+  assert.match(app, /youtubePlaybackMethod = "mjpeg"/);
+  assert.match(app, /Live YouTube detected · using MJPEG/);
+});
+
+test("switching playback methods while paused restores the paused state", () => {
+  const toggle = app.match(/\$\("#playbackMethodToggle"\)[\s\S]*?\n\}\);\nrenderYoutubePlaybackMethod\(\);/)?.[0] || "";
+  assert.match(toggle, /const restorePause = playbackPaused/);
+  assert.match(toggle, /const beforeAttempt = streamAttempt/);
+  assert.match(toggle, /pendingPlaybackMethodRestore = restorePause[\s\S]*minAttempt: beforeAttempt \+ 1[\s\S]*replay: replayFn/);
+  assert.match(app, /function maybeRestorePlaybackAfterMethodSwitch\(attempt\)[\s\S]*replayFn !== pending\.replay[\s\S]*requestAnimationFrame[\s\S]*pausePlayback\(\)/);
+  assert.match(app, /maybeRestorePlaybackAfterMethodSwitch\(attempt\)/);
+});
+
+
+test("paused method-switch restore is cleared on failure or explicit Stop", () => {
+  const fail = app.match(/function failStreamAttempt\(attempt, title, detail\) \{[\s\S]*?\n\}/)?.[0] || "";
+  const stop = app.match(/function stopPlayback\(\) \{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(fail, /pendingPlaybackMethodRestore = null/);
+  assert.match(stop, /pendingPlaybackMethodRestore = null/);
+});
+
+test("YouTube proxy preserves unknown duration as null", () => {
+  const proxy = server.match(/function proxyYouTubeStreams\([\s\S]*?\n\}/)?.[0] || "";
+  assert.match(proxy, /const durationValue = resolved\.duration/);
+  assert.match(proxy, /durationValue != null && durationValue !== ""/);
+  assert.match(proxy, /: null/);
 });

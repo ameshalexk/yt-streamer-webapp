@@ -16,7 +16,12 @@ async function fetchJson(url, options = {}, timeoutMs = 15000) {
     const text = await res.text();
     let body = {};
     try { body = text ? JSON.parse(text) : {}; } catch {}
-    if (!res.ok) throw new Error(body.error || text || `HTTP ${res.status}`);
+    if (!res.ok) {
+      const error = new Error(body.error || text || `HTTP ${res.status}`);
+      error.status = res.status;
+      error.body = body;
+      throw error;
+    }
     return body;
   } finally {
     clearTimeout(timer);
@@ -518,7 +523,7 @@ export function createCyberdashPlayer({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url,
-          height: Number(height) || 720,
+          height: Number.isFinite(Number(height)) ? Number(height) : 0,
           fps: Number(fps) || 30,
           startAt: next.startAt,
         }),
