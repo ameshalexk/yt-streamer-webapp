@@ -112,6 +112,10 @@ export function normalizePlaybackRate(value = 1) {
 }
 
 function playbackElapsed(state) {
+  if (state.externalAudioElement) {
+    const current = Number(state.externalAudioElement.currentTime);
+    return Number.isFinite(current) ? Math.max(0, current) : 0;
+  }
   if (state.audioStart == null || !state.audioCtx) return 0;
   const wallSeconds = Math.max(0, state.audioCtx.currentTime - state.audioStart - (state.audioScheduleOffsetSec || 0));
   return wallSeconds * normalizePlaybackRate(state.playbackRate);
@@ -162,7 +166,11 @@ export function planAudioSchedule({
 
 async function holdIfTooFarAhead(state, lastPtsSec) {
   const sourceLeadLimit = 6.5 * normalizePlaybackRate(state.playbackRate);
-  while (!state.stopRequested && state.audioStart != null && lastPtsSec - playbackElapsed(state) > sourceLeadLimit) {
+  while (
+    !state.stopRequested &&
+    (state.externalAudioElement || state.audioStart != null) &&
+    lastPtsSec - playbackElapsed(state) > sourceLeadLimit
+  ) {
     await sleep(80);
   }
 }
@@ -389,8 +397,11 @@ function startRenderLoop(state) {
 }
 
 async function runSession(state) {
-  if (!window.VideoDecoder || !window.AudioDecoder || !window.EncodedVideoChunk || !window.EncodedAudioChunk) {
-    throw new Error("This browser does not expose the required WebCodecs APIs.");
+  if (!window.VideoDecoder || !window.EncodedVideoChunk) {
+    throw new Error("This browser does not expose the required WebCodecs video APIs.");
+  }
+  if (!state.externalAudioElement && (!window.AudioDecoder || !window.EncodedAudioChunk)) {
+    throw new Error("This browser does not expose the required WebCodecs audio APIs.");
   }
 
   const MP4Box = await import("/mp4box.all.mjs?cyberdash-embedded=v1");
@@ -408,34 +419,46 @@ async function runSession(state) {
     },
   });
 
-  state.audioDecoder = new AudioDecoder({
-    output(data) {
-      try {
-        state.decodedAudioBlocks++;
-        const channels = data.numberOfChannels;
-        const buffer = state.audioCtx.createBuffer(channels, data.numberOfFrames, data.sampleRate);
-        for (let channel = 0; channel < channels; channel++) {
-          data.copyTo(buffer.getChannelData(channel), { planeIndex: channel, format: "f32-planar" });
+  let audioFeed = Promise.resolve({ lastPtsSec: 0, segments: 0 });
+  if (!state.externalAudioElement) {
+    state.audioDecoder = new AudioDecoder({
+      output(data) {
+        try {
+          state.decodedAudioBlocks++;
+          const channels = data.numberOfChannels;
+          const buffer = state.audioCtx.createBuffer(channels, data.numberOfFrames, data.sampleRate);
+          for (let channel = 0; channel < channels; channel++) {
+            data.copyTo(buffer.getChannelData(channel), { planeIndex: channel, format: "f32-planar" });
+          }
+          const item = { timestamp: data.timestamp, buffer };
+          if (state.audioStart == null) state.pendingAudio.push(item);
+          else scheduleAudioBuffer(state, item);
+          state.maxAudioQueue = Math.max(state.maxAudioQueue, state.audioDecoder.decodeQueueSize || 0);
+        } finally {
+          data.close();
         }
-        const item = { timestamp: data.timestamp, buffer };
-        if (state.audioStart == null) state.pendingAudio.push(item);
-        else scheduleAudioBuffer(state, item);
-        state.maxAudioQueue = Math.max(state.maxAudioQueue, state.audioDecoder.decodeQueueSize || 0);
-      } finally {
-        data.close();
-      }
-    },
-    error(error) {
-      state.decoderError = `AudioDecoder: ${error?.message || error}`;
-    },
-  });
+      },
+      error(error) {
+        state.decoderError = `AudioDecoder: ${error?.message || error}`;
+      },
+    });
 
-  state.audioDecoder.configure({
-    codec: state.manifest.audio.codec || "mp4a.40.2",
-    sampleRate: 48000,
-    numberOfChannels: 2,
-    description: new Uint8Array([0x11, 0x90]),
-  });
+    state.audioDecoder.configure({
+      codec: state.manifest.audio.codec || "mp4a.40.2",
+      sampleRate: 48000,
+      numberOfChannels: 2,
+      description: new Uint8Array([0x11, 0x90]),
+    });
+
+    audioFeed = feedTrack(state, MP4Box, "audio", initial.init.audio)
+      .then((result) => {
+        state.audioFeedDone = true;
+        state.mediaEndSec = Math.max(state.mediaEndSec, result.lastPtsSec);
+        return result;
+      });
+  } else {
+    state.audioFeedDone = true;
+  }
 
   const videoFeed = feedTrack(state, MP4Box, "video", initial.init.video)
     .then((result) => {
@@ -443,15 +466,12 @@ async function runSession(state) {
       state.mediaEndSec = Math.max(state.mediaEndSec, result.lastPtsSec);
       return result;
     });
-  const audioFeed = feedTrack(state, MP4Box, "audio", initial.init.audio)
-    .then((result) => {
-      state.audioFeedDone = true;
-      state.mediaEndSec = Math.max(state.mediaEndSec, result.lastPtsSec);
-      return result;
-    });
 
-  const prebufferDeadline = performance.now() + 7000;
-  while (!state.stopRequested && (state.decodedVideo.length < 3 || state.pendingAudio.length < 1)) {
+  const prebufferDeadline = performance.now() + 10000;
+  while (
+    !state.stopRequested &&
+    (state.decodedVideo.length < 3 || (!state.externalAudioElement && state.pendingAudio.length < 1))
+  ) {
     if (state.decoderError) throw new Error(state.decoderError);
     if (performance.now() > prebufferDeadline) {
       throw new Error(`Startup prebuffer timed out: video=${state.decodedVideo.length} audio=${state.pendingAudio.length}`);
@@ -460,13 +480,27 @@ async function runSession(state) {
   }
   if (state.stopRequested) return;
 
-  state.audioStart = state.audioCtx.currentTime + 0.60;
-  state.pendingAudio.sort((a, b) => a.timestamp - b.timestamp);
-  while (state.pendingAudio.length) scheduleAudioBuffer(state, state.pendingAudio.shift());
+  if (state.externalAudioElement) {
+    // The app primed this element from the original user gesture. Start the real
+    // audio only after video prebuffer is ready so source-time begins at 0 for both.
+    await withTimeout(state.externalAudioPlayPromise || Promise.resolve(), 15000, "Audio element priming");
+    try { state.externalAudioElement.currentTime = 0; } catch {}
+    state.externalAudioElement.defaultPlaybackRate = normalizePlaybackRate(state.playbackRate);
+    state.externalAudioElement.playbackRate = normalizePlaybackRate(state.playbackRate);
+    state.externalAudioElement.muted = Boolean(state.requestedMuted);
+    await withTimeout(state.externalAudioElement.play(), 10000, "Audio element start");
+    if (state.externalAudioElement.paused && !state.externalAudioElement.ended) {
+      throw new Error("Audio element did not enter playing state");
+    }
+  } else {
+    state.audioStart = state.audioCtx.currentTime + 0.60;
+    state.pendingAudio.sort((a, b) => a.timestamp - b.timestamp);
+    while (state.pendingAudio.length) scheduleAudioBuffer(state, state.pendingAudio.shift());
+  }
 
   const renderPromise = startRenderLoop(state);
   const [videoResult, audioResult] = await Promise.all([videoFeed, audioFeed]);
-  state.mediaEndSec = Math.max(videoResult.lastPtsSec, audioResult.lastPtsSec);
+  state.mediaEndSec = Math.max(videoResult.lastPtsSec, audioResult.lastPtsSec || 0);
   await renderPromise;
 
   if (state.decoderError) throw new Error(state.decoderError);
@@ -498,6 +532,7 @@ async function sendSummary(state, result, message = "") {
           audioContinuityCorrections: state.audioContinuityCorrections,
           maxAudioScheduleSlipMs: round(state.maxAudioScheduleSlipMs, 1),
           playbackRate: normalizePlaybackRate(state.playbackRate),
+          audioMode: state.externalAudioElement ? "media-element" : "web-audio",
         },
         timing: {
           firstPictureMs: round(state.firstPictureMs, 1),
@@ -533,6 +568,9 @@ export function createCyberdashPlayer({
     for (const node of current.audioNodes || []) {
       try { node.stop(); } catch {}
     }
+    if (current.externalAudioElement) {
+      try { current.externalAudioElement.pause(); } catch {}
+    }
     try { current.videoDecoder && current.videoDecoder.state !== "closed" && current.videoDecoder.close(); } catch {}
     try { current.audioDecoder && current.audioDecoder.state !== "closed" && current.audioDecoder.close(); } catch {}
     try { current.audioCtx && current.audioCtx.state !== "closed" && await current.audioCtx.close(); } catch {}
@@ -547,31 +585,37 @@ export function createCyberdashPlayer({
     startAt = 0,
     muted = false,
     playbackRate = 1,
+    audioElement = null,
+    audioPlayPromise = null,
   } = {}) {
     if (!url) throw new Error("YouTube URL is required");
 
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) throw new Error("AudioContext unavailable");
+    const externalAudioElement = audioElement || null;
+    let audioCtx = null;
+    let resumePromise = Promise.resolve();
+    if (!externalAudioElement) {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) throw new Error("AudioContext unavailable");
 
-    // Prefer the browser's playback-sized output buffer. Tesla's browser can
-    // crackle when hundreds of small decoded AAC blocks are driven through an
-    // interactive/low-latency output path under rendering load.
-    let audioCtx;
-    try {
-      audioCtx = new AudioContextClass({ sampleRate: 48000, latencyHint: "playback" });
-    } catch {
-      audioCtx = new AudioContextClass({ sampleRate: 48000 });
+      // Internal fallback for sources without a sidecar media element.
+      try {
+        audioCtx = new AudioContextClass({ sampleRate: 48000, latencyHint: "playback" });
+      } catch {
+        audioCtx = new AudioContextClass({ sampleRate: 48000 });
+      }
+
+      // Resume immediately while click/tap activation is still live.
+      resumePromise = audioCtx.resume();
     }
-
-    // Resume immediately while the click/tap user-activation is still live.
-    // Tesla's browser can reject AudioContext.resume() if we await cleanup first.
-    const resumePromise = audioCtx.resume();
     await stop();
 
     const next = {
       sourceUrl: url,
       startAt: Math.max(0, Number(startAt) || 0),
       playbackRate: normalizePlaybackRate(playbackRate),
+      requestedMuted: Boolean(muted),
+      externalAudioElement,
+      externalAudioPlayPromise: audioPlayPromise || null,
       sessionId: null,
       startedAt: performance.now(),
       resolveMs: null,
@@ -610,14 +654,18 @@ export function createCyberdashPlayer({
       onError,
       onStatus,
     };
-    next.gainNode = next.audioCtx.createGain();
-    next.gainNode.gain.value = muted ? 0 : 1;
-    next.gainNode.connect(next.audioCtx.destination);
+    if (next.audioCtx) {
+      next.gainNode = next.audioCtx.createGain();
+      next.gainNode.gain.value = muted ? 0 : 1;
+      next.gainNode.connect(next.audioCtx.destination);
+    }
     state = next;
 
     try {
-      await withTimeout(resumePromise, 2500, "AudioContext resume");
-      if (next.audioCtx.state !== "running") throw new Error("AudioContext did not enter running state");
+      if (next.audioCtx) {
+        await withTimeout(resumePromise, 2500, "AudioContext resume");
+        if (next.audioCtx.state !== "running") throw new Error("AudioContext did not enter running state");
+      }
 
       onStatus?.("resolving");
       const response = await fetchJson("/api/experimental/cyberdash/start", {
@@ -659,17 +707,31 @@ export function createCyberdashPlayer({
   async function pause() {
     if (!state || state.paused) return;
     state.paused = true;
+    if (state.externalAudioElement) {
+      state.externalAudioElement.pause();
+      return;
+    }
     await state.audioCtx.suspend();
   }
 
   async function resume() {
     if (!state || !state.paused) return;
+    if (state.externalAudioElement) {
+      await state.externalAudioElement.play();
+      state.paused = false;
+      return;
+    }
     await state.audioCtx.resume();
     state.paused = false;
   }
 
   function setMuted(muted) {
-    if (!state?.gainNode) return;
+    if (!state) return;
+    if (state.externalAudioElement) {
+      state.externalAudioElement.muted = Boolean(muted);
+      return;
+    }
+    if (!state.gainNode) return;
     const now = state.audioCtx.currentTime;
     const gain = state.gainNode.gain;
     const current = gain.value;

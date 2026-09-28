@@ -616,7 +616,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v2")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v3")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -2943,6 +2943,31 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   setBadge("reconnecting", "↻ WebCodecs…");
   startStreamWatchdog(attempt, "WebCodecs playback", { warnMs: 18000, failMs: 40000 });
 
+  // Use the normal media element for YouTube audio. Browser playbackRate with
+  // preservesPitch gives YouTube-like speed without chipmunk audio, and its
+  // currentTime becomes the WebCodecs video master clock.
+  const audio = $("#audio");
+  let audioPlayPromise = null;
+  if (meta.audioUrl && audio) {
+    audio.src = meta.audioUrl;
+    try { audio.load(); } catch {}
+    audio.defaultPlaybackRate = youtubePlaybackRate;
+    audio.playbackRate = youtubePlaybackRate;
+    if ("preservesPitch" in audio) audio.preservesPitch = true;
+    if ("webkitPreservesPitch" in audio) audio.webkitPreservesPitch = true;
+    // Prime/unlock the media element during the user gesture, but keep it silent
+    // and paused until WebCodecs video has its startup buffer. Then both start at 0.
+    audio.muted = true;
+    const primePromise = audio.play();
+    audioPlayPromise = primePromise?.then
+      ? primePromise.then(() => {
+          audio.pause();
+          try { audio.currentTime = 0; } catch {}
+        })
+      : Promise.resolve();
+    if (audioPlayPromise?.catch) audioPlayPromise.catch(() => {});
+  }
+
   let player = null;
   let fatalHandled = false;
   try {
@@ -2982,6 +3007,8 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       startAt: meta.startAt || 0,
       muted: !soundOn,
       playbackRate: youtubePlaybackRate,
+      audioElement: meta.audioUrl ? audio : null,
+      audioPlayPromise,
     });
   } catch (error) {
     // Ignore a rejected promise from a player that was intentionally replaced
@@ -2999,7 +3026,7 @@ async function playStream(sources, label, meta = {}) {
   const youtubeUrl = String(meta.youtubeUrl || "").trim();
   activeYoutubeSourceUrl = youtubeUrl;
   if (youtubeUrl && youtubePlaybackMethod === "webcodecs" && !meta.isLive) {
-    return playCyberdashStream(youtubeUrl, label, meta);
+    return playCyberdashStream(youtubeUrl, label, { ...meta, audioUrl });
   }
   if (meta.bufferedMjpeg && mjpegUrl) return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta);
   const screen = $("#screen"), video = $("#video");
@@ -7930,6 +7957,12 @@ $("#muteBtn").onclick = () => {
   }
   if (!playbackPaused && soundOn && activeCompat?.audioUrl && a.paused) {
     startCompatAudio(true);
+    return;
+  }
+  if ($("#screen")?.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
+    soundOn = !soundOn;
+    renderMuteButton();
+    cyberdashPlayer.setMuted(!soundOn);
     return;
   }
   soundOn = !soundOn;

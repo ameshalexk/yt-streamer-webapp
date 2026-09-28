@@ -54,13 +54,16 @@ test("existing seek path reaches WebCodecs startAt and ffmpeg input seek", () =>
   assert.match(dash, /if \(seek\) args\.push\("-ss", String\(seek\)\)/);
 });
 
-test("WebCodecs captures AudioContext resume before awaiting old-player cleanup", () => {
-  const playBody = embedded.match(/async function play\(\{[\s\S]*?\n  \}\n\n  function currentTime/)?.[0] || "";
-  const resumeIndex = playBody.indexOf("const resumePromise = audioCtx.resume()");
-  const stopIndex = playBody.indexOf("await stop()");
-  assert.ok(resumeIndex >= 0);
-  assert.ok(stopIndex >= 0);
-  assert.ok(resumeIndex < stopIndex);
+test("WebCodecs sidecar audio is primed from the user gesture before async module work", () => {
+  const playerBlock = app.match(/async function playCyberdashStream[\s\S]*?\n\}\n\n\/\/ Play one synced MPEG-TS/)?.[0] || "";
+  const audioPlayIndex = playerBlock.indexOf("const primePromise = audio.play()");
+  const moduleIndex = playerBlock.indexOf("const module = cyberdashModule || await ensureCyberdashModule()");
+  assert.ok(audioPlayIndex >= 0);
+  assert.ok(moduleIndex > audioPlayIndex);
+  assert.match(playerBlock, /audio\.playbackRate = youtubePlaybackRate/);
+  assert.match(playerBlock, /audio\.preservesPitch = true/);
+  assert.match(playerBlock, /audio\.muted = true/);
+  assert.match(playerBlock, /primePromise\.then\(\(\) => \{[\s\S]*audio\.pause\(\)[\s\S]*audio\.currentTime = 0/);
 });
 
 test("long playback releases ended audio source nodes instead of retaining them forever", () => {
@@ -178,7 +181,7 @@ test("WebCodecs restart preserves user activation by avoiding awaited old-player
   assert.doesNotMatch(playerBlock, /await stopCyberdashPlayback/);
   assert.match(playerBlock, /cleanupMedia\(\)/);
   assert.match(playerBlock, /const module = cyberdashModule \|\| await ensureCyberdashModule\(\)/);
-  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260927-speed-v2"\)/);
+  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260927-speed-v3"\)/);
 });
 
 test("WebCodecs playback rate is forwarded to the server and expands source-time buffer headroom", () => {
@@ -194,4 +197,22 @@ test("WebCodecs video queue uses long-stall detection instead of a 2.2 second fa
   assert.doesNotMatch(queueBlock, /2200/);
   assert.match(queueBlock, /10000/);
   assert.match(queueBlock, /Video decoder stopped draining/);
+});
+
+
+test("WebCodecs uses pitch-preserving media-element audio as the video master clock", () => {
+  assert.match(app, /return playCyberdashStream\(youtubeUrl, label, \{ \.\.\.meta, audioUrl \}\)/);
+  assert.match(app, /audioElement: meta\.audioUrl \? audio : null/);
+  assert.match(embedded, /if \(state\.externalAudioElement\) \{[\s\S]*state\.externalAudioElement\.currentTime/);
+  assert.match(embedded, /audioMode: state\.externalAudioElement \? "media-element" : "web-audio"/);
+  assert.match(embedded, /if \(!state\.externalAudioElement\)[\s\S]*state\.audioDecoder = new AudioDecoder/);
+});
+
+test("WebCodecs pause resume and mute keep the sidecar audio stream alive", () => {
+  assert.match(embedded, /if \(state\.externalAudioElement\) \{\s*state\.externalAudioElement\.pause\(\)/);
+  assert.match(embedded, /if \(state\.externalAudioElement\) \{\s*await state\.externalAudioElement\.play\(\)/);
+  assert.match(embedded, /if \(state\.externalAudioElement\) \{\s*state\.externalAudioElement\.muted = Boolean\(muted\)/);
+  const muteHandler = app.match(/\$\("#muteBtn"\)\.onclick = \(\) => \{[\s\S]*?\n\};/)?.[0] || "";
+  assert.match(muteHandler, /cyberdash-mode/);
+  assert.match(muteHandler, /cyberdashPlayer\.setMuted\(!soundOn\)/);
 });
