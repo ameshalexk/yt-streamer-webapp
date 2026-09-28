@@ -179,7 +179,7 @@ test("WebCodecs restart preserves user activation by avoiding awaited old-player
   assert.doesNotMatch(playerBlock, /await stopCyberdashPlayback/);
   assert.match(playerBlock, /cleanupMedia\(\)/);
   assert.match(playerBlock, /const module = cyberdashModule \|\| await ensureCyberdashModule\(\)/);
-  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260928-speed-v7"\)/);
+  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260928-speed-v8"\)/);
 });
 
 test("WebCodecs playback rate is forwarded to the server and expands source-time buffer headroom", () => {
@@ -187,7 +187,7 @@ test("WebCodecs playback rate is forwarded to the server and expands source-time
   assert.match(embedded, /const sourceLeadLimit = 6\.5 \* playbackRate/);
   assert.match(server, /const playbackRate = Math\.max\(1, Math\.min\(4,/);
   assert.match(server, /startYouTubeDashSession\(\{[\s\S]*playbackRate,/);
-  assert.match(dash, /const inputReadRate = Math\.min\(5, Math\.max\(1\.15, speed \* 1\.15\)\)/);
+  assert.match(dash, /speed > 1[\s\S]*Math\.min\(5, Math\.max\(1\.6, speed \* 1\.6\)\)[\s\S]*: 1\.15/);
 });
 
 test("WebCodecs video queue uses long-stall detection instead of a 2.2 second fatal timeout", () => {
@@ -242,7 +242,7 @@ test("WebCodecs telemetry records the actual requested adaptive FPS", () => {
 
 test("fast WebCodecs playback waits for a real startup buffer instead of three frames", () => {
   assert.match(embedded, /fastPlaybackBufferTargets/);
-  assert.match(embedded, /const startupWallSec = 1\.5/);
+  assert.match(embedded, /const startupWallSec = Math\.min\(4, 1\.5 \+ \(\(rate - 1\) \* 2\.5\)\)/);
   assert.match(embedded, /state\.decodedVideo\.length >= targets\.startupVideoFrames/);
   assert.match(embedded, /videoSourceSec >= targets\.startupVideoSourceSec/);
   assert.match(embedded, /audioWallSec >= targets\.startupAudioWallSec/);
@@ -274,4 +274,12 @@ test("WebCodecs summary records startup buffer and rebuffer telemetry", () => {
   assert.match(embedded, /startupAudioBufferSec: round\(state\.startupAudioBufferSec, 2\)/);
   assert.match(embedded, /rebufferMs: round\(state\.rebufferMs, 1\)/);
   assert.match(embedded, /maxRebufferMs: round\(state\.maxRebufferMs, 1\)/);
+});
+
+
+test("fast WebCodecs playback uses larger producer margin and deeper refill targets", () => {
+  assert.match(dash, /speed > 1[\s\S]*speed \* 1\.6/);
+  assert.match(dash, /speed \* 5/);
+  assert.match(embedded, /rebufferLowWallSec: 0\.65/);
+  assert.match(embedded, /const rebufferHighWallSec = Math\.min\(3, 1\.5 \+ \(rate - 1\)\)/);
 });

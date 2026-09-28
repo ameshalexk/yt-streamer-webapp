@@ -53,9 +53,15 @@ export function buildCyberdashDashArgs({
   const seek = safeSeek(startAt);
   const rate = bitrateForHeight(outHeight);
   const speed = safePlaybackRate(playbackRate);
-  // Keep ffmpeg ahead of client playback. A fixed 1.05x producer cannot sustain 1.5x-4x viewing.
-  const inputReadRate = Math.min(5, Math.max(1.15, speed * 1.15));
-  const initialBurst = Math.min(12, Math.max(4, speed * 3));
+  // Keep a large producer margin at fast playback. YouTube normally reads pre-encoded
+  // segments much faster than real time; our live transcode needs similar headroom so a brief
+  // network/decoder hiccup does not immediately drain the client buffer.
+  const inputReadRate = speed > 1
+    ? Math.min(5, Math.max(1.6, speed * 1.6))
+    : 1.15;
+  const initialBurst = speed > 1
+    ? Math.min(15, Math.max(6, speed * 5))
+    : 4;
   const args = ["-hide_banner", "-loglevel", "warning", "-y"];
   const addInput = (input) => {
     if (seek) args.push("-ss", String(seek));

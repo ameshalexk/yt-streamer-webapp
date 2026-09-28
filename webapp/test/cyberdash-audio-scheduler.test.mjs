@@ -90,15 +90,18 @@ test("fast playback prebuffer scales source video with playback rate", () => {
   assert.equal(one.startupAudioWallSec, 0);
 
   const oneFive = fastPlaybackBufferTargets({ playbackRate: 1.5, fps: 30 });
-  assert.equal(oneFive.startupWallSec, 1.5);
-  assert.equal(oneFive.startupVideoSourceSec, 2.25);
-  assert.equal(oneFive.startupVideoFrames, 68);
-  assert.equal(oneFive.startupAudioWallSec, 1.5);
-  assert.ok(oneFive.rebufferLowWallSec > 0);
-  assert.equal(oneFive.rebufferHighVideoSourceSec, 1.5);
+  assert.equal(oneFive.startupWallSec, 2.75);
+  assert.equal(oneFive.startupVideoSourceSec, 4.125);
+  assert.equal(oneFive.startupVideoFrames, 124);
+  assert.equal(oneFive.startupAudioWallSec, 2.75);
+  assert.equal(oneFive.rebufferLowWallSec, 0.65);
+  assert.equal(oneFive.rebufferHighWallSec, 2);
+  assert.equal(oneFive.rebufferHighVideoSourceSec, 3);
 
   const two = fastPlaybackBufferTargets({ playbackRate: 2, fps: 30 });
-  assert.equal(two.startupVideoSourceSec, 3);
-  assert.equal(two.startupVideoFrames, 90);
-  assert.equal(two.rebufferHighVideoSourceSec, 2);
+  assert.equal(two.startupWallSec, 4);
+  assert.equal(two.startupVideoSourceSec, 6.5);
+  assert.equal(two.startupVideoFrames, 195);
+  assert.equal(two.rebufferHighWallSec, 2.5);
+  assert.equal(two.rebufferHighVideoSourceSec, 5);
 });

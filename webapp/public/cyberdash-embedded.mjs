@@ -125,17 +125,19 @@ export function fastPlaybackBufferTargets({ playbackRate = 1, fps = 30 } = {}) {
       rebufferHighVideoSourceSec: 0,
     };
   }
-  const startupWallSec = 1.5;
-  const startupVideoSourceSec = Math.min(3, startupWallSec * rate);
-  const rebufferHighWallSec = 1.0;
+  // Trade a little startup latency for enough reserve to survive normal Wi-Fi/cellular
+  // jitter. The target grows with speed because 1.5x/2x burns source time faster.
+  const startupWallSec = Math.min(4, 1.5 + ((rate - 1) * 2.5));
+  const startupVideoSourceSec = Math.min(6.5, startupWallSec * rate);
+  const rebufferHighWallSec = Math.min(3, 1.5 + (rate - 1));
   return {
     startupWallSec,
     startupVideoSourceSec,
     startupVideoFrames: Math.max(12, Math.ceil(sourceFps * startupVideoSourceSec)),
     startupAudioWallSec: startupWallSec,
-    rebufferLowWallSec: 0.22,
+    rebufferLowWallSec: 0.65,
     rebufferHighWallSec,
-    rebufferHighVideoSourceSec: Math.min(2.5, rebufferHighWallSec * rate),
+    rebufferHighVideoSourceSec: Math.min(6.5, rebufferHighWallSec * rate),
   };
 }
 
