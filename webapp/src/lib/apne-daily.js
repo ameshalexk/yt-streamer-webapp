@@ -460,18 +460,54 @@ export function parseNewsportalingRedirect(html) {
   };
 }
 
-export function parseMediagramingHlsFromHtml(html) {
-  const source = decodeHtml(String(html || ""));
-  const match = source.match(/<iframe\b[^>]*\bsrc=["']([^"']*mediagraming\.com\/new\/video\.php\/?\?url=[^"']+)["']/i);
-  if (!match) throw new Error("Mediagraming player iframe was not found.");
-  const iframeUrl = new URL(match[1]);
-  const hlsUrl = new URL(iframeUrl.searchParams.get("url") || "");
+function validatedApneHlsUrl(value) {
+  let hlsUrl;
+  try {
+    hlsUrl = new URL(String(value || "").replace(/\\\//g, "/"));
+  } catch {
+    throw new Error("Mediagraming did not return a valid HLS URL.");
+  }
   const host = hlsUrl.hostname.toLowerCase().replace(/\.$/, "");
-  if (hlsUrl.protocol !== "https:" || (host !== "videoapne.to" && !host.endsWith(".videoapne.to"))) {
+  const allowedHost = host === "videoapne.to"
+    || host.endsWith(".videoapne.to")
+    || host === "streaming.disk.yandex.net";
+  if (hlsUrl.protocol !== "https:" || !allowedHost) {
     throw new Error("Mediagraming returned an unexpected media host.");
   }
   if (!/\.m3u8(?:$|[?#])/i.test(hlsUrl.href)) throw new Error("Mediagraming did not return an HLS playlist.");
   return hlsUrl.href;
+}
+
+export function parseMediagramingPlayerUrlFromHtml(html) {
+  const source = decodeHtml(String(html || ""));
+  for (const match of source.matchAll(/<iframe\b[^>]*\bsrc=["']([^"']+)["']/gi)) {
+    let playerUrl;
+    try {
+      playerUrl = new URL(match[1]);
+    } catch {
+      continue;
+    }
+    const host = playerUrl.hostname.toLowerCase().replace(/\.$/, "");
+    if (playerUrl.protocol !== "https:" || (host !== "mediagraming.com" && !host.endsWith(".mediagraming.com"))) continue;
+    if (playerUrl.pathname !== "/player.php" || !playerUrl.searchParams.get("id")) continue;
+    return playerUrl.href;
+  }
+  return null;
+}
+
+export function parseMediagramingHlsFromHtml(html) {
+  const source = decodeHtml(String(html || ""));
+
+  const legacy = source.match(/<iframe\b[^>]*\bsrc=["']([^"']*mediagraming\.com\/new\/video\.php\/?\?url=[^"']+)["']/i);
+  if (legacy) {
+    const iframeUrl = new URL(legacy[1]);
+    return validatedApneHlsUrl(iframeUrl.searchParams.get("url") || "");
+  }
+
+  const direct = source.match(/\b(?:var|let|const)\s+videoUrl\s*=\s*["']([^"']+)["']/i);
+  if (direct) return validatedApneHlsUrl(direct[1]);
+
+  throw new Error("Mediagraming HLS source was not found.");
 }
 
 export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
@@ -501,9 +537,22 @@ export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
       referer: flash.href,
     });
     await log("mediagraming_html_ok", { bytes: media.html.length, responseHost: hostOf(media.url) });
-    const hlsUrl = parseMediagramingHlsFromHtml(media.html);
+
+    let hlsUrl;
+    let hlsReferer = handoff.url;
+    const playerUrl = parseMediagramingPlayerUrlFromHtml(media.html);
+    if (playerUrl) {
+      await log("mediagraming_player_found", { playerHost: hostOf(playerUrl) });
+      const player = await fetchText(playerUrl, { referer: handoff.url });
+      await log("mediagraming_player_html_ok", { bytes: player.html.length, responseHost: hostOf(player.url) });
+      hlsUrl = parseMediagramingHlsFromHtml(player.html);
+      hlsReferer = player.url;
+    } else {
+      hlsUrl = parseMediagramingHlsFromHtml(media.html);
+    }
+
     await log("hls_resolved", { hlsHost: hostOf(hlsUrl) });
-    return { hlsUrl, referer: handoff.url };
+    return { hlsUrl, referer: hlsReferer };
   } catch (error) {
     await log("resolve_failed", { error: error.message });
     throw error;

@@ -11,6 +11,7 @@ import {
   parseRecentEpisodesFromShowHtml,
   parseSkyEpisodeMetadata,
   parseMediagramingHlsFromHtml,
+  parseMediagramingPlayerUrlFromHtml,
   parseNewsportalingRedirect,
 } from "../src/lib/apne-daily.js";
 
@@ -124,6 +125,23 @@ test("APNE Daily resolves the browserless APNE to Newsportaling to Mediagraming 
     parseMediagramingHlsFromHtml(mediaHtml),
     "https://s2.videoapne.to/hls/,abc,.urlset/master.m3u8",
   );
+});
+
+test("APNE Daily resolves Mediagraming's new player.php iframe and Yandex HLS source", () => {
+  const mediaHtml = "<iframe src='https://mediagraming.com/player.php?id=pxk0JsSIrE0XSQ' allowfullscreen></iframe>";
+  const playerUrl = parseMediagramingPlayerUrlFromHtml(mediaHtml);
+  assert.equal(playerUrl, "https://mediagraming.com/player.php?id=pxk0JsSIrE0XSQ");
+
+  const playerHtml = '<script>var videoUrl="https://streaming.disk.yandex.net/hls/token/asset/master-playlist.m3u8";</script>';
+  assert.equal(
+    parseMediagramingHlsFromHtml(playerHtml),
+    "https://streaming.disk.yandex.net/hls/token/asset/master-playlist.m3u8",
+  );
+});
+
+test("APNE Daily rejects untrusted HLS hosts from Mediagraming player HTML", () => {
+  const playerHtml = '<script>var videoUrl="https://example.com/video/master.m3u8";</script>';
+  assert.throws(() => parseMediagramingHlsFromHtml(playerHtml), /unexpected media host/i);
 });
 
 test("APNE Daily duplicate detection skips an already downloaded episode", () => {
