@@ -52,9 +52,68 @@ const powerAlxProbeWss = new WebSocketServer({
   maxPayload: 16 * 1024,
 });
 
+let powerAlxProbeH264UnitsPromise = null;
+
+function splitProbeAnnexBAccessUnits(buffer) {
+  const bytes = Buffer.from(buffer);
+  const starts = [];
+  const prefixLengthAt = (offset) => {
+    if (offset + 3 < bytes.length && bytes[offset] === 0 && bytes[offset + 1] === 0 && bytes[offset + 2] === 0 && bytes[offset + 3] === 1) return 4;
+    if (offset + 2 < bytes.length && bytes[offset] === 0 && bytes[offset + 1] === 0 && bytes[offset + 2] === 1) return 3;
+    return 0;
+  };
+  for (let i = 0; i < bytes.length - 4; i += 1) {
+    const prefix = prefixLengthAt(i);
+    if (!prefix) continue;
+    if ((bytes[i + prefix] & 0x1f) === 9) starts.push(i);
+    i += prefix - 1;
+  }
+  return starts.map((offset, index) => {
+    const end = index + 1 < starts.length ? starts[index + 1] : bytes.length;
+    return bytes.subarray(offset, end);
+  }).filter((unit) => unit.length > 0);
+}
+
+async function loadPowerAlxProbeH264Units() {
+  if (!powerAlxProbeH264UnitsPromise) {
+    powerAlxProbeH264UnitsPromise = fs.readFile(path.join(config.publicDir, "tesla-probe-h264-annexb.h264"))
+      .then((buffer) => {
+        const units = splitProbeAnnexBAccessUnits(buffer);
+        if (!units.length) throw new Error("PowerALX probe H.264 asset has no access units.");
+        return units;
+      });
+  }
+  return powerAlxProbeH264UnitsPromise;
+}
+
+function stopPowerAlxProbeVideo(socket) {
+  if (socket.powerAlxProbeVideoTimer) clearInterval(socket.powerAlxProbeVideoTimer);
+  socket.powerAlxProbeVideoTimer = null;
+}
+
+async function startPowerAlxProbeVideo(socket) {
+  stopPowerAlxProbeVideo(socket);
+  const units = await loadPowerAlxProbeH264Units();
+  let index = 0;
+  socket.powerAlxProbeVideoTimer = setInterval(() => {
+    if (socket.readyState !== 1) return stopPowerAlxProbeVideo(socket);
+    if (socket.bufferedAmount > 512 * 1024) return;
+    const unit = units[index % units.length];
+    index += 1;
+    try {
+      socket.send(unit, { binary: true });
+    } catch {
+      stopPowerAlxProbeVideo(socket);
+    }
+  }, 33);
+  socket.powerAlxProbeVideoTimer.unref?.();
+}
+
 powerAlxProbeWss.on("connection", (socket) => {
   let messagesThisSecond = 0;
   let windowStartedAt = Date.now();
+
+  socket.on("close", () => stopPowerAlxProbeVideo(socket));
 
   socket.on("message", (raw, isBinary) => {
     if (isBinary) return socket.close(1003, "text only");
@@ -64,7 +123,7 @@ powerAlxProbeWss.on("connection", (socket) => {
       messagesThisSecond = 0;
     }
     messagesThisSecond += 1;
-    if (messagesThisSecond > 90) return socket.close(1008, "rate limit");
+    if (messagesThisSecond > 180) return socket.close(1008, "rate limit");
 
     let message;
     try {
@@ -80,6 +139,19 @@ powerAlxProbeWss.on("connection", (socket) => {
         wallTs: Number(message.wallTs),
         serverTs: Date.now(),
       }));
+      return;
+    }
+
+    if (message?.type === "video-start") {
+      startPowerAlxProbeVideo(socket)
+        .then(() => socket.readyState === 1 && socket.send(JSON.stringify({ type: "video-started" })))
+        .catch((error) => socket.readyState === 1 && socket.send(JSON.stringify({ type: "video-error", message: error.message })));
+      return;
+    }
+
+    if (message?.type === "video-stop") {
+      stopPowerAlxProbeVideo(socket);
+      if (socket.readyState === 1) socket.send(JSON.stringify({ type: "video-stopped" }));
       return;
     }
 
