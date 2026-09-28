@@ -616,7 +616,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v6")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260928-speed-v7")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -2977,6 +2977,15 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       },
       onEnded() {
         if (currentAttempt(attempt)) handleAutoplayEnd();
+      },
+      onStatus(status, detail = {}) {
+        if (!currentAttempt(attempt)) return;
+        if (status === "buffering") {
+          const phase = detail.phase === "startup" ? "Buffering" : "Rebuffering";
+          setBadge("reconnecting", `↻ ${phase} · ${youtubePlaybackRate}×`);
+        } else if (status === "playing") {
+          setBadge("live", "● WebCodecs · " + cyberdashSettingsLabel(settings) + " · " + youtubePlaybackRate + "×");
+        }
       },
       onError(error) {
         if (!currentAttempt(attempt)) return;

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
+import { fastPlaybackBufferTargets, normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
 
 const FRAME = 1024 / 48000;
 
@@ -81,4 +81,24 @@ test("playback rate is clamped to the supported 1x-4x range", () => {
   assert.equal(normalizePlaybackRate(4), 4);
   assert.equal(normalizePlaybackRate(9), 4);
   assert.equal(normalizePlaybackRate("bad"), 1);
+});
+
+
+test("fast playback prebuffer scales source video with playback rate", () => {
+  const one = fastPlaybackBufferTargets({ playbackRate: 1, fps: 30 });
+  assert.equal(one.startupVideoFrames, 3);
+  assert.equal(one.startupAudioWallSec, 0);
+
+  const oneFive = fastPlaybackBufferTargets({ playbackRate: 1.5, fps: 30 });
+  assert.equal(oneFive.startupWallSec, 1.5);
+  assert.equal(oneFive.startupVideoSourceSec, 2.25);
+  assert.equal(oneFive.startupVideoFrames, 68);
+  assert.equal(oneFive.startupAudioWallSec, 1.5);
+  assert.ok(oneFive.rebufferLowWallSec > 0);
+  assert.equal(oneFive.rebufferHighVideoSourceSec, 1.5);
+
+  const two = fastPlaybackBufferTargets({ playbackRate: 2, fps: 30 });
+  assert.equal(two.startupVideoSourceSec, 3);
+  assert.equal(two.startupVideoFrames, 90);
+  assert.equal(two.rebufferHighVideoSourceSec, 2);
 });

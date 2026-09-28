@@ -111,6 +111,61 @@ export function normalizePlaybackRate(value = 1) {
   return Math.max(1, Math.min(4, rate));
 }
 
+export function fastPlaybackBufferTargets({ playbackRate = 1, fps = 30 } = {}) {
+  const rate = normalizePlaybackRate(playbackRate);
+  const sourceFps = Math.max(5, Math.min(60, Number(fps) || 30));
+  if (rate <= 1) {
+    return {
+      startupWallSec: 0,
+      startupVideoSourceSec: 0,
+      startupVideoFrames: 3,
+      startupAudioWallSec: 0,
+      rebufferLowWallSec: 0,
+      rebufferHighWallSec: 0,
+      rebufferHighVideoSourceSec: 0,
+    };
+  }
+  const startupWallSec = 1.5;
+  const startupVideoSourceSec = Math.min(3, startupWallSec * rate);
+  const rebufferHighWallSec = 1.0;
+  return {
+    startupWallSec,
+    startupVideoSourceSec,
+    startupVideoFrames: Math.max(12, Math.ceil(sourceFps * startupVideoSourceSec)),
+    startupAudioWallSec: startupWallSec,
+    rebufferLowWallSec: 0.22,
+    rebufferHighWallSec,
+    rebufferHighVideoSourceSec: Math.min(2.5, rebufferHighWallSec * rate),
+  };
+}
+
+function decodedVideoAheadSec(state, elapsed = playbackElapsed(state)) {
+  if (!state.decodedVideo?.length) return 0;
+  let last = 0;
+  for (const frame of state.decodedVideo) {
+    last = Math.max(last, Number(frame?.timestamp || 0) / 1e6);
+  }
+  return Math.max(0, last - Math.max(0, Number(elapsed) || 0));
+}
+
+function pendingAudioBufferedSec(state) {
+  if (!state.pendingAudio?.length) return 0;
+  let first = Infinity;
+  let last = 0;
+  for (const item of state.pendingAudio) {
+    const start = Math.max(0, Number(item?.timestamp || 0) / 1e6);
+    const end = start + Math.max(0, Number(item?.buffer?.duration || 0));
+    first = Math.min(first, start);
+    last = Math.max(last, end);
+  }
+  return Number.isFinite(first) ? Math.max(0, last - first) : 0;
+}
+
+function scheduledAudioAheadSec(state) {
+  if (!state.audioCtx || !Number.isFinite(Number(state.audioScheduleCursor))) return 0;
+  return Math.max(0, Number(state.audioScheduleCursor) - state.audioCtx.currentTime);
+}
+
 function playbackElapsed(state) {
   if (state.externalAudioElement) {
     const current = Number(state.externalAudioElement.currentTime);
@@ -329,6 +384,57 @@ function startRenderLoop(state) {
     let rafId = 0;
     let timerId = 0;
     const ctx = state.canvas.getContext("2d", { alpha: false });
+    const targets = state.bufferTargets || fastPlaybackBufferTargets({
+      playbackRate: state.playbackRate,
+      fps: state.requestedFps,
+    });
+
+    const beginRebuffer = () => {
+      if (
+        state.rebuffering ||
+        state.paused ||
+        state.externalAudioElement ||
+        !state.audioCtx ||
+        state.audioCtx.state === "closed"
+      ) return;
+      state.rebuffering = true;
+      state.rebufferCount++;
+      state.rebufferStartedAt = performance.now();
+      state.onStatus?.("buffering", {
+        phase: "rebuffer",
+        rebufferCount: state.rebufferCount,
+      });
+      Promise.resolve(state.audioCtx.suspend()).catch((error) => {
+        state.decoderError = `AudioContext rebuffer suspend: ${error?.message || error}`;
+      });
+    };
+
+    const maybeResumeFromRebuffer = () => {
+      if (!state.rebuffering || state.rebufferResumePending || state.paused) return;
+      const elapsed = playbackElapsed(state);
+      const videoAhead = decodedVideoAheadSec(state, elapsed);
+      const audioAhead = scheduledAudioAheadSec(state);
+      const videoReady = state.videoFeedDone || videoAhead >= targets.rebufferHighVideoSourceSec;
+      const audioReady = state.audioFeedDone || audioAhead >= targets.rebufferHighWallSec;
+      if (!videoReady || !audioReady) return;
+      state.rebufferResumePending = true;
+      Promise.resolve(state.audioCtx.resume()).then(() => {
+        if (state.stopRequested) return;
+        const duration = Math.max(0, performance.now() - (state.rebufferStartedAt || performance.now()));
+        state.rebufferMs += duration;
+        state.maxRebufferMs = Math.max(state.maxRebufferMs, duration);
+        state.rebuffering = false;
+        state.rebufferResumePending = false;
+        state.rebufferStartedAt = null;
+        state.onStatus?.("playing", {
+          phase: "rebuffer",
+          rebufferCount: state.rebufferCount,
+        });
+      }).catch((error) => {
+        state.rebufferResumePending = false;
+        state.decoderError = `AudioContext rebuffer resume: ${error?.message || error}`;
+      });
+    };
 
     const schedule = () => {
       let fired = false;
@@ -350,8 +456,29 @@ function startRenderLoop(state) {
           schedule();
           return;
         }
+        if (state.decoderError) throw new Error(state.decoderError);
+        if (state.rebuffering) {
+          maybeResumeFromRebuffer();
+          schedule();
+          return;
+        }
 
         const elapsed = playbackElapsed(state);
+        if (
+          normalizePlaybackRate(state.playbackRate) > 1 &&
+          state.firstPictureMs != null &&
+          !state.videoFeedDone &&
+          !state.audioFeedDone
+        ) {
+          const videoAhead = decodedVideoAheadSec(state, elapsed);
+          const audioAhead = scheduledAudioAheadSec(state);
+          const lowVideoSourceSec = targets.rebufferLowWallSec * normalizePlaybackRate(state.playbackRate);
+          if (videoAhead < lowVideoSourceSec || audioAhead < targets.rebufferLowWallSec) {
+            beginRebuffer();
+            schedule();
+            return;
+          }
+        }
         if (state.externalAudioElement) {
           const clock = Number(state.externalAudioElement.currentTime);
           if (Number.isFinite(clock) && (
@@ -494,18 +621,49 @@ async function runSession(state) {
       return result;
     });
 
-  const prebufferDeadline = performance.now() + 10000;
-  while (
-    !state.stopRequested &&
-    (state.decodedVideo.length < 3 || (!state.externalAudioElement && state.pendingAudio.length < 1))
-  ) {
+  const targets = state.bufferTargets || fastPlaybackBufferTargets({
+    playbackRate: state.playbackRate,
+    fps: state.requestedFps,
+  });
+  state.bufferTargets = targets;
+  const fastPlayback = normalizePlaybackRate(state.playbackRate) > 1;
+  const prebufferDeadline = performance.now() + (fastPlayback ? 15000 : 10000);
+  let lastBufferStatusAt = 0;
+  while (!state.stopRequested) {
     if (state.decoderError) throw new Error(state.decoderError);
+    const videoSourceSec = decodedVideoAheadSec(state, 0);
+    const audioWallSec = state.externalAudioElement ? targets.startupAudioWallSec : pendingAudioBufferedSec(state);
+    const minimumReady = state.decodedVideo.length >= 3 && (state.externalAudioElement || state.pendingAudio.length >= 1);
+    const targetReady = !fastPlayback || (
+      state.decodedVideo.length >= targets.startupVideoFrames &&
+      videoSourceSec >= targets.startupVideoSourceSec &&
+      audioWallSec >= targets.startupAudioWallSec
+    );
+    if (minimumReady && targetReady) break;
+
     if (performance.now() > prebufferDeadline) {
+      if (minimumReady) {
+        state.startupBufferShortfall = true;
+        break;
+      }
       throw new Error(`Startup prebuffer timed out: video=${state.decodedVideo.length} audio=${state.pendingAudio.length}`);
+    }
+
+    if (fastPlayback && performance.now() - lastBufferStatusAt > 300) {
+      lastBufferStatusAt = performance.now();
+      state.onStatus?.("buffering", {
+        phase: "startup",
+        videoSourceSec,
+        audioWallSec,
+        targetVideoSourceSec: targets.startupVideoSourceSec,
+        targetAudioWallSec: targets.startupAudioWallSec,
+      });
     }
     await sleep(15);
   }
   if (state.stopRequested) return;
+  state.startupVideoBufferSec = decodedVideoAheadSec(state, 0);
+  state.startupAudioBufferSec = state.externalAudioElement ? null : pendingAudioBufferedSec(state);
 
   if (state.externalAudioElement) {
     // The app primed this element from the original user gesture. Start the real
@@ -557,6 +715,7 @@ async function sendSummary(state, result, message = "") {
           renderedFrames: state.renderedFrames,
           droppedFrames: state.droppedFrames,
           receivedBytes: state.receivedBytes,
+          rebufferCount: state.rebufferCount,
           lastAvDriftMs: round(lastDrift, 1),
           audioLateBlocks: state.audioLateBlocks,
           audioOverlapPrevented: state.audioOverlapPrevented,
@@ -565,7 +724,6 @@ async function sendSummary(state, result, message = "") {
           playbackRate: normalizePlaybackRate(state.playbackRate),
           audioMode: state.externalAudioElement ? "media-element" : "web-audio",
           pitchMode: state.externalAudioElement ? "browser-preserves-pitch" : "server-atempo",
-          playbackRate: normalizePlaybackRate(state.playbackRate),
           audioClockOriginSec: round(state.externalAudioClockOrigin, 3),
           audioCurrentTimeSec: round(state.externalAudioElement?.currentTime, 3),
           audioPaused: state.externalAudioElement?.paused ?? null,
@@ -579,6 +737,11 @@ async function sendSummary(state, result, message = "") {
           videoQueueMax: state.maxVideoQueue,
           audioQueueMax: state.maxAudioQueue,
           receivedMbps: round(state.receivedBytes * 8 / Math.max(0.25, (performance.now() - state.startedAt) / 1000) / 1_000_000, 2),
+          startupVideoBufferSec: round(state.startupVideoBufferSec, 2),
+          startupAudioBufferSec: round(state.startupAudioBufferSec, 2),
+          startupBufferShortfall: state.startupBufferShortfall ? 1 : 0,
+          rebufferMs: round(state.rebufferMs, 1),
+          maxRebufferMs: round(state.maxRebufferMs, 1),
         },
       }),
     });
@@ -675,6 +838,16 @@ export function createCyberdashPlayer({
       audioNodes: new Set(),
       pendingAudio: [],
       decodedVideo: [],
+      bufferTargets: fastPlaybackBufferTargets({ playbackRate, fps }),
+      startupVideoBufferSec: 0,
+      startupAudioBufferSec: 0,
+      startupBufferShortfall: false,
+      rebuffering: false,
+      rebufferResumePending: false,
+      rebufferStartedAt: null,
+      rebufferCount: 0,
+      rebufferMs: 0,
+      maxRebufferMs: 0,
       videoDecoder: null,
       audioDecoder: null,
       videoFeedDone: false,
