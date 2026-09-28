@@ -19,6 +19,7 @@ import * as preparedCache from "./lib/prepared-cache.js";
 import * as youtubeOAuth from "./lib/youtube-oauth.js";
 import * as moneyDashboard from "./lib/money-dashboard.js";
 import * as apneDaily from "./lib/apne-daily.js";
+import * as cyberdashDash from "./lib/cyberdash-dash.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -1473,6 +1474,62 @@ app.get("/stream/audio/prepared/:id", asyncH(async (req, res) => {
   return stream.streamAudio(req, res, { input: item.filePath, startAt: req.query.timestamp });
 }));
 
+// ---- Experimental CyberDash-style DASH/fMP4 WebCodecs player ----
+app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const url = String(body.url || "").trim();
+  if (!url) return res.status(400).json({ error: "url required" });
+  const maxHeight = requestedYouTubeMaxHeight(body.height || 720);
+  const fps = Math.max(12, Math.min(30, Number.parseInt(String(body.fps || 30), 10) || 30));
+  const startAt = Math.max(0, Number.parseFloat(String(body.startAt || 0)) || 0);
+  const { videoUrl, audioUrl, resolveCache, resolveMs } = await resolveProxiedYouTubeStreams(url, maxHeight);
+  const session = await cyberdashDash.startYouTubeDashSession({
+    videoInput: videoUrl,
+    audioInput: audioUrl,
+    sourceUrl: url,
+    height: maxHeight,
+    fps,
+    startAt,
+  });
+  res.json({
+    ...session,
+    resolveCache,
+    resolveMs,
+    player: "experimental-cyberdash-v1",
+  });
+}));
+
+app.get("/api/experimental/cyberdash/:id/status", asyncH(async (req, res) => {
+  const status = await cyberdashDash.getSessionStatus(req.params.id);
+  if (!status) return res.status(404).json({ error: "session not found" });
+  res.set("Cache-Control", "no-store");
+  res.json(status);
+}));
+
+app.post("/api/experimental/cyberdash/:id/stop", asyncH(async (req, res) => {
+  const stopped = await cyberdashDash.stopSession(req.params.id);
+  if (!stopped) return res.status(404).json({ error: "session not found" });
+  res.status(204).end();
+}));
+
+app.get("/stream/experimental/cyberdash/:id/:file", asyncH(async (req, res) => {
+  const filePath = cyberdashDash.sessionFilePath(req.params.id, req.params.file);
+  if (!filePath) return res.status(404).type("text/plain").end("experimental DASH file not found");
+  try {
+    await fs.access(filePath);
+  } catch {
+    return res.status(404).type("text/plain").end("experimental DASH file not ready");
+  }
+  const name = String(req.params.file || "");
+  if (name.endsWith(".mpd")) res.type("application/dash+xml");
+  else if (name.endsWith(".m4s")) res.type("video/iso.segment");
+  res.set({
+    "Cache-Control": "no-store, max-age=0",
+    "X-Accel-Buffering": "no",
+  });
+  res.sendFile(filePath);
+}));
+
 // ---------------------------------------------------------------------------
 // Static SPA (served last so API routes win).
 // ---------------------------------------------------------------------------
@@ -1489,6 +1546,7 @@ app.get("*", (req, res) => res.sendFile(path.join(config.publicDir, "index.html"
 
 await Promise.all([
   stream.cleanupStaleHlsFiles().catch((err) => console.error("[startup] hls cleanup -", err.message)),
+  cyberdashDash.cleanupStaleDashFiles().catch((err) => console.error("[startup] cyberdash cleanup -", err.message)),
   realChromeRenderer.cleanupOrphans("startup").catch((err) => console.error("[startup] real chrome cleanup -", err.message)),
 ]);
 
