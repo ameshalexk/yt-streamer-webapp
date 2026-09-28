@@ -65,7 +65,7 @@
   <div class="card">
     <div class="status">CyberDash-style A/V sync test</div>
     <div class="muted" style="margin:8px 0 12px">DASH/fMP4 video and AAC segments are parsed incrementally, decoded continuously with WebCodecs, and painted to Canvas against the AudioContext clock. No WebCodecs decoder.flush() is used during playback.</div>
-    <button id="syncBtn" disabled>3. Run DASH/fMP4 + WebCodecs A/V test</button>
+    <button id="syncBtn" disabled>3. Run DASH/fMP4 + CyberDash queue A/V test</button>
     <canvas id="syncCanvas" width="640" height="360"></canvas>
     <div id="syncStatus" class="muted" style="margin-top:10px">Waiting for browser checks.</div>
   </div>
@@ -682,15 +682,19 @@
       if (!window.VideoDecoder || !window.AudioDecoder || !window.EncodedVideoChunk || !window.EncodedAudioChunk)
         throw new Error("Required WebCodecs APIs are unavailable");
 
-      report.avProbeVersion = "v5-dash-fmp4-incremental";
+      report.avProbeVersion = "v6-dash-fmp4-cyberdash-queue";
       report.avTransport = "DASH/fMP4 HTTP segments";
       report.avVideoPath = "fMP4 -> MP4Box -> VideoDecoder -> Canvas";
       report.avAudioPath = "fMP4 -> MP4Box -> AudioDecoder -> AudioContext";
       report.avWebCodecsFlushUsed = false;
       report.avStreamingModel = "incremental segment feed; no end-of-stream decoder flush";
+      report.avVideoAccelerationRequested = "prefer-hardware";
+      report.avVideoQueueTarget = 40;
+      report.avAudioQueueThrottle = "none-startup";
+      report.avHardwareStallObservedInPreviousTeslaRun = true;
 
       await avStage("dash-module-loading", status);
-      const MP4Box = await withTimeout(import("/mp4box.all.mjs?probe=v5"), 4000, "MP4Box module load");
+      const MP4Box = await withTimeout(import("/mp4box.all.mjs?probe=v6"), 4000, "MP4Box module load");
       report.avMp4BoxLoaded = !!MP4Box.createFile;
 
       const manifestRes = await withTimeout(fetch("/tesla-probe-dash/manifest.mpd?probe=" + Date.now(), { cache: "no-store" }), 3500, "DASH manifest fetch");
@@ -802,7 +806,7 @@
                 configured = true;
                 report.avVideoConfiguredFromFmp4 = true;
               }
-              await waitForQueue(decoder, 10, kind);
+              await waitForQueue(decoder, 40, kind);
               decoder.decode(new EncodedVideoChunk({
                 type: sample.is_sync ? "key" : "delta",
                 timestamp: Math.round(sample.cts * 1e6 / sample.timescale),
@@ -811,7 +815,6 @@
               }));
               maxVideoQueue = Math.max(maxVideoQueue, decoder.decodeQueueSize || 0);
             } else {
-              await waitForQueue(decoder, 20, kind);
               decoder.decode(new EncodedAudioChunk({
                 type: "key",
                 timestamp: Math.round(sample.cts * 1e6 / sample.timescale),
@@ -861,7 +864,7 @@
         .then(r => { audioFeedDone = true; return r; });
 
       const prebufferDeadline = performance.now() + 3500;
-      while (decodedVideo.length < 12 || pendingAudioBuffers.length < 4) {
+      while (decodedVideo.length < 3 || pendingAudioBuffers.length < 1) {
         if (performance.now() > prebufferDeadline) {
           throw new Error("DASH prebuffer timeout: video=" + decodedVideo.length + " audio=" + pendingAudioBuffers.length);
         }
@@ -869,8 +872,8 @@
       }
       report.avPrebufferVideoFrames = decodedVideo.length;
       report.avPrebufferAudioBlocks = pendingAudioBuffers.length;
-      audioStart = audioCtx.currentTime + 0.80;
-      report.avAudioLeadSec = 0.80;
+      audioStart = audioCtx.currentTime + 0.60;
+      report.avAudioLeadSec = 0.60;
       pendingAudioBuffers.sort((a,b) => a.timestamp - b.timestamp);
       while (pendingAudioBuffers.length) scheduleAudioBuffer(pendingAudioBuffers.shift());
       await avStage("dash-prebuffer-ready", status);
@@ -981,7 +984,7 @@
 
     render();
     status.textContent = "Sending DASH/fMP4 A/V report…";
-    const ok = await sendReport("cyberdash-dash-fmp4-av-v5");
+    const ok = await sendReport("cyberdash-dash-fmp4-av-v6");
     render();
     if (ok) {
       status.textContent = report.avSyncSucceeded
@@ -992,7 +995,7 @@
       status.textContent = "DASH/fMP4 test finished, but report upload failed.";
       btn.textContent = "Retry DASH/fMP4 report";
       btn.disabled = false;
-      btn.onclick = async () => { btn.disabled = true; await sendReport("cyberdash-dash-fmp4-av-v5-retry"); render(); };
+      btn.onclick = async () => { btn.disabled = true; await sendReport("cyberdash-dash-fmp4-av-v6-retry"); render(); };
     }
   }
   async function boot() {
