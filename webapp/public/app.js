@@ -8428,6 +8428,30 @@ function handleBrowserInputPointerUp(e) {
   return true;
 }
 
+function handleBrowserInputPointerCancel(e) {
+  const tracked = browserInputPointerId === e.pointerId || browserZoom.pointers.has(e.pointerId);
+  if (!tracked) return false;
+
+  const releaseRemoteMouse = browserInputPointerId === e.pointerId
+    && e.pointerType === "mouse"
+    && !browserInputTouchScroll;
+
+  if (browserZoom.pointers.has(e.pointerId)) browserZoom.pointers.delete(e.pointerId);
+  if (browserZoom.pointers.size < 2) browserZoom.pinching = false;
+  if (browserInputPointerId === e.pointerId) browserInputPointerId = null;
+  browserInputTouchScroll = false;
+  browserInputTouchMoved = true;
+
+  // A cancelled touch must never be promoted to a tap. Mouse input is different:
+  // if we already sent mousePressed, release it so Chrome cannot get stuck dragging.
+  if (releaseRemoteMouse) sendBrowserPointer("up", e);
+
+  try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
 function handleBrowserInputWheel(e) {
   if (!browserInputActiveForScreen()) return false;
   sendBrowserScrollFromClient(e.clientX, e.clientY, e.deltaX, e.deltaY);
@@ -8563,8 +8587,9 @@ function handleDesktopPanPointerUp(e) {
     screen.addEventListener("pointercancel", (e) => {
       fullscreenTapRevealOnly = false;
       handleDesktopInputPointerUp(e);
-      handleBrowserInputPointerUp(e);
+      handleBrowserInputPointerCancel(e);
     });
+    screen.addEventListener("lostpointercapture", handleBrowserInputPointerCancel);
     screen.addEventListener("pointercancel", handleDesktopPanPointerUp);
     screen.addEventListener("pointerup", (e) => {
       if (handleDesktopInputPointerUp(e)) return;
