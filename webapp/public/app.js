@@ -126,10 +126,10 @@ const DESKTOP_FEATURE_VISIBLE = false;
 const EMBED_FEATURE_VISIBLE = false;
 const BROWSER_AUDIO_KEY = "ytStreamerBrowserAudio";
 const BROWSER_AUDIO_NAME_KEY = "ytStreamerBrowserAudioName";
-const BROWSER_AUDIO_FORMAT_KEY = "ytStreamerBrowserAudioFormat";
-const BROWSER_AUDIO_BITRATE_KEY = "ytStreamerBrowserAudioBitrate";
-const BROWSER_AUDIO_DEFAULT_KEY = "ytStreamerBrowserAudioDefaultV2";
-const BROWSER_AUDIO_CAPTURE_KEY = "ytStreamerBrowserAudioCaptureV2";
+const BROWSER_AUDIO_FORMAT_KEY = "ytStreamerBrowserAudioFormatV3";
+const BROWSER_AUDIO_BITRATE_KEY = "ytStreamerBrowserAudioBitrateV3";
+const BROWSER_AUDIO_DEFAULT_KEY = "ytStreamerBrowserAudioDefaultV3";
+const BROWSER_AUDIO_CAPTURE_KEY = "ytStreamerBrowserAudioCaptureV3";
 const BROWSER_QUALITY_KEY = "ytStreamerBrowserMjpegQuality";
 const DESKTOP_INPUT_TOKEN_KEY = "ytStreamerDesktopInputToken";
 const SAVED_EMBEDS_KEY = "ytStreamerSavedEmbeds";
@@ -138,10 +138,11 @@ const AUTOPLAY_KEY = "ytStreamerAutoplay";
 const WATCH_HISTORY_LIMIT = 300;
 const RECOMMENDATION_PAGE_SIZE = 25;
 const DEFAULT_EMBED_CODE = `<iframe title="Argentina vs Algeria Player" marginheight="0" marginwidth="0" src="https://embed.st/embed/admin/ppv-argentina-vs-algeria/1" scrolling="no" allowfullscreen="yes" allow="encrypted-media; picture-in-picture;" width="100%" height="100%" frameborder="0"></iframe>`;
-const BROWSER_AUDIO_FORMATS = ["auto", "hls", "mp3"];
-const BROWSER_AUDIO_BITRATES = ["32", "64", "96", "128", "192"];
-const DEFAULT_BROWSER_AUDIO_FORMAT = "mp3";
-const BROWSER_AUDIO_CAPTURE_MODES = ["manual", "blackhole-direct", "core-tap"];
+// One production browser-audio path: process-scoped Core Tap -> raw PCM -> Web Audio.
+const BROWSER_AUDIO_FORMATS = ["auto"];
+const BROWSER_AUDIO_BITRATES = ["128"];
+const DEFAULT_BROWSER_AUDIO_FORMAT = "auto";
+const BROWSER_AUDIO_CAPTURE_MODES = ["core-tap"];
 const DEFAULT_BROWSER_AUDIO_CAPTURE = "core-tap";
 const TOAST_OK_DURATION_MS = 3200;
 const SESSION_POLL_MS = 10000;
@@ -579,6 +580,7 @@ let replayFn = null;     // rebuilds the current stream with the latest control 
 let mpegtsPlayer = null; // active mpegts.js player instance
 let hlsAudioPlayer = null; // active hls.js player for audio-only Browser capture
 let browserPcmAudio = null; // low-latency Browser capture via Web Audio
+let browserPcmSharedContext = null; // unlocked by the user's Open Chrome gesture
 let activeCompat = null; // active MJPEG + audio fallback URLs
 const YOUTUBE_PLAYBACK_METHOD_KEY = "ytStreamerYoutubePlaybackMethod";
 const YOUTUBE_PLAYBACK_RATE_KEY = "ytStreamerYoutubePlaybackRate";
@@ -1816,7 +1818,6 @@ function destroyBrowserPcmAudio() {
   try { session.controller?.abort(); } catch {}
   try { session.processor?.disconnect(); } catch {}
   try { session.gain?.disconnect(); } catch {}
-  try { session.ctx?.close?.(); } catch {}
 }
 
 function setBrowserPcmOutputHeld(held) {
@@ -2218,6 +2219,24 @@ function canUseBrowserPcmAudio() {
   return Boolean(window.AudioContext || window.webkitAudioContext);
 }
 
+function ensureBrowserPcmContext() {
+  if (!canUseBrowserPcmAudio()) return null;
+  if (browserPcmSharedContext && browserPcmSharedContext.state !== "closed") return browserPcmSharedContext;
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  try {
+    browserPcmSharedContext = new AudioCtx({ sampleRate: 48000, latencyHint: "interactive" });
+  } catch {
+    browserPcmSharedContext = new AudioCtx({ latencyHint: "interactive" });
+  }
+  return browserPcmSharedContext;
+}
+
+function primeBrowserAudioFromGesture() {
+  const ctx = ensureBrowserPcmContext();
+  const resumed = ctx?.resume?.();
+  if (resumed?.catch) resumed.catch(() => {});
+}
+
 function isBrowserPcmUrl(url) {
   return /\/stream\/browser-pcm(?:[?#]|$)/i.test(String(url || ""));
 }
@@ -2372,13 +2391,8 @@ async function startBrowserPcmAudio(audioUrl, notify = false, { holdOutput = fal
     return resumed || null;
   }
   destroyBrowserPcmAudio();
-  const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  let ctx;
-  try {
-    ctx = new AudioCtx({ sampleRate: 48000 });
-  } catch {
-    ctx = new AudioCtx();
-  }
+  const ctx = ensureBrowserPcmContext();
+  if (!ctx) throw new Error("Core Tap audio requires Web Audio support.");
   const processor = ctx.createScriptProcessor(1024, 0, 2);
   let readyResolve = null;
   const readyPromise = new Promise((resolve) => { readyResolve = resolve; });
@@ -2408,6 +2422,7 @@ async function startBrowserPcmAudio(audioUrl, notify = false, { holdOutput = fal
     starved: true,
     discontinuity: false,
     carry: null,
+    error: null,
     closed: false,
   };
   browserPcmAudio = session;
@@ -2441,11 +2456,19 @@ async function startBrowserPcmAudio(audioUrl, notify = false, { holdOutput = fal
     }
   }).catch((error) => {
     if (!session.closed && error.name !== "AbortError") {
+      session.error = error;
+      session.readyResolve?.(false);
+      session.readyResolve = null;
       console.warn("[browser-pcm-audio] stream failed:", error.message);
       if (notify) toast(error.message, true);
     }
   });
-  await browserPcmReady(session);
+  const ready = await browserPcmReady(session, 3000);
+  if (!ready) {
+    const error = session.error || new Error("Core Tap audio did not start within 3 seconds.");
+    destroyBrowserPcmAudio();
+    throw error;
+  }
   return resume || null;
 }
 
@@ -5732,9 +5755,7 @@ function validBrowserAudioCapture(value) {
 }
 
 function browserAudioCaptureValue() {
-  const saved = localStorage.getItem(BROWSER_AUDIO_CAPTURE_KEY);
-  const selected = $("#browserAudioCapture")?.value || $("#browserPlayerAudioCapture")?.value;
-  return validBrowserAudioCapture(saved || selected);
+  return DEFAULT_BROWSER_AUDIO_CAPTURE;
 }
 
 function setBrowserAudioCapture(value, { persist = true } = {}) {
@@ -5767,26 +5788,15 @@ function validBrowserAudioBitrate(value) {
 }
 
 function storedBrowserAudioFormat() {
-  const storedFormat = localStorage.getItem(BROWSER_AUDIO_FORMAT_KEY);
-  const migrated = localStorage.getItem(BROWSER_AUDIO_DEFAULT_KEY) === "1";
-  if (!migrated && (!storedFormat || storedFormat === "auto")) {
-    localStorage.setItem(BROWSER_AUDIO_FORMAT_KEY, DEFAULT_BROWSER_AUDIO_FORMAT);
-    localStorage.setItem(BROWSER_AUDIO_DEFAULT_KEY, "1");
-    return DEFAULT_BROWSER_AUDIO_FORMAT;
-  }
-  return storedFormat;
+  return DEFAULT_BROWSER_AUDIO_FORMAT;
 }
 
 function browserAudioFormatValue() {
-  const active = $("#browserAudioFormat [data-browser-audio-format].active")
-    || $("#browserPlayerAudioFormat [data-browser-audio-format].active");
-  return validBrowserAudioFormat(storedBrowserAudioFormat() || active?.dataset.browserAudioFormat);
+  return DEFAULT_BROWSER_AUDIO_FORMAT;
 }
 
 function browserAudioBitrateValue() {
-  const active = $("#browserAudioQuality [data-browser-audio-bitrate].active")
-    || $("#browserPlayerAudioQuality [data-browser-audio-bitrate].active");
-  return validBrowserAudioBitrate(active?.dataset.browserAudioBitrate || localStorage.getItem(BROWSER_AUDIO_BITRATE_KEY));
+  return "128";
 }
 
 function setBrowserAudioFormat(format, { persist = true } = {}) {
@@ -5812,9 +5822,15 @@ function setBrowserAudioBitrate(bitrate, { persist = true } = {}) {
 }
 
 function syncBrowserAudioControls() {
-  setBrowserAudioCapture(browserAudioCaptureValue());
-  setBrowserAudioFormat(storedBrowserAudioFormat() || browserAudioFormatValue());
-  setBrowserAudioBitrate(localStorage.getItem(BROWSER_AUDIO_BITRATE_KEY) || browserAudioBitrateValue());
+  // Overwrite stale A/B-test choices so BlackHole/HLS/manual settings cannot
+  // silently override the single production browser-audio path.
+  localStorage.setItem(BROWSER_AUDIO_CAPTURE_KEY, DEFAULT_BROWSER_AUDIO_CAPTURE);
+  localStorage.setItem(BROWSER_AUDIO_FORMAT_KEY, DEFAULT_BROWSER_AUDIO_FORMAT);
+  localStorage.setItem(BROWSER_AUDIO_BITRATE_KEY, "128");
+  localStorage.setItem(BROWSER_AUDIO_DEFAULT_KEY, "1");
+  setBrowserAudioCapture(DEFAULT_BROWSER_AUDIO_CAPTURE);
+  setBrowserAudioFormat(DEFAULT_BROWSER_AUDIO_FORMAT);
+  setBrowserAudioBitrate("128");
 }
 
 async function canUseAudioHls() {
@@ -5861,34 +5877,28 @@ async function desktopAudioUrl(audio) {
 
 async function browserAudioUrl(audio) {
   await stopDesktopAudioHlsSession();
-  const backend = browserAudioCaptureValue();
-  if (!audio && backend === "manual") return "";
-  if (backend === "core-tap" && !browserSessionId) throw new Error("Core Tap requires an active Real Chrome session");
-  const format = browserAudioFormatValue();
-  const bitrate = browserAudioBitrateValue();
-  const capture = new URLSearchParams({
-    backend,
-    session: browserSessionId || "",
+
+  if (realChromeActive) {
+    if (!browserSessionId) throw new Error("Core Tap requires an active Real Chrome session");
+    if (!canUseBrowserPcmAudio()) throw new Error("This browser cannot play Core Tap PCM audio.");
+    const query = new URLSearchParams({
+      backend: "core-tap",
+      session: browserSessionId,
+      _: Date.now(),
+    });
+    return `/stream/browser-pcm?${query.toString()}`;
+  }
+
+  // Legacy private-browser support remains internal. User-facing Browser mode
+  // uses Real Chrome + Core Tap only.
+  if (!audio) return "";
+  const query = new URLSearchParams({
+    backend: "manual",
+    audio,
+    bitrate: "128",
+    _: Date.now(),
   });
-  if (audio) capture.set("audio", audio);
-  capture.set("bitrate", bitrate);
-  const query = capture.toString();
-  if (backend === "core-tap" && format === "hls") {
-    throw new Error("Core Tap currently supports MP3 and Auto/PCM; choose one of those for A/B testing.");
-  }
-  if (format === "hls" && await canUseAudioHls()) {
-    const hls = await api.get(`/api/browser/audio-hls/start?${query}&_=${Date.now()}`);
-    if (hls?.id && hls?.url) {
-      desktopAudioHlsSessionId = hls.id;
-      desktopAudioHlsStopBase = "/api/browser/audio-hls";
-      return `${hls.url}?_=${Date.now()}`;
-    }
-  }
-  if (format === "hls") throw new Error("HLS audio is not supported in this browser.");
-  if (format === "auto" && canUseBrowserPcmAudio()) {
-    return `/stream/browser-pcm?${query}&_=${Date.now()}`;
-  }
-  return `/stream/browser-audio?${query}&_=${Date.now()}`;
+  return `/stream/browser-audio?${query.toString()}`;
 }
 
 function renderDesktopStatus(sources = state.desktopSources) {
@@ -7064,6 +7074,7 @@ function queueBrowserSettingsUpdate({ immediate = false } = {}) {
 }
 
 async function playBrowserStream() {
+  primeBrowserAudioFromGesture();
   const url = $("#browserUrl").value.trim();
   if (!url) {
     $("#browserUrl").focus();
@@ -7108,6 +7119,7 @@ async function playBrowserStream() {
 }
 
 async function playRealChromeStream() {
+  primeBrowserAudioFromGesture();
   const viewport = parseBrowserViewport();
   const fps = browserFpsValue();
   const quality = browserQualityValue();
@@ -7116,7 +7128,7 @@ async function playRealChromeStream() {
     ? "https://www.google.com/"
     : rawUrl;
   setBrowserStatus("Starting Real Chrome...", "");
-  await ensureBrowserAudioSourcesReady();
+  syncBrowserAudioControls();
   await stopBrowserSession({ stopRealChromeOrphans: true });
   resetBrowserZoom();
   const session = await api.post("/api/real-chrome/start", { url: startUrl, ...viewport, fps, quality });
@@ -9010,6 +9022,8 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
   window.addEventListener("pagehide", () => {
     stopDesktopAudioHlsSessionOnUnload();
     stopDesktopHlsSessionOnUnload();
+    try { browserPcmSharedContext?.close?.(); } catch {}
+    browserPcmSharedContext = null;
   });
   document.addEventListener("pointerdown", retryBrowserAudioFromGesture, true);
   document.addEventListener("keydown", retryBrowserAudioFromGesture, true);

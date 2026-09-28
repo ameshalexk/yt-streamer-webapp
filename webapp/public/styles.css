@@ -2156,3 +2156,22 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
 body.fullscreen-controls-idle .screen.browser-input-active .video-controls-panel * {
   pointer-events: none;
 }
+
+.browser-audio-fixed {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.browser-audio-fixed > span {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.browser-audio-fixed > strong {
+  font-size: 0.92rem;
+}
+.browser-audio-fixed > small {
+  color: var(--muted);
+  line-height: 1.35;
+}
