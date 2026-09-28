@@ -616,7 +616,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260928-speed-v8")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260928-speed-v9")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -2937,7 +2937,8 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
 async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   const screen = $("#screen");
   const canvas = $("#cyberdashCanvas");
-  activeYoutubeSourceUrl = youtubeUrl;
+  const preparedId = String(meta.preparedId || "").trim();
+  activeYoutubeSourceUrl = youtubeUrl || (preparedId ? `processed://${preparedId}` : "");
   $("#nowPlaying").textContent = label || "YouTube";
   $("#stopBtn").disabled = false;
   $("#restreamBtn").disabled = false;
@@ -2968,12 +2969,19 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
     const module = cyberdashModule || await ensureCyberdashModule();
     if (!currentAttempt(attempt)) return;
     const settings = currentCyberdashSettings();
+    const requestedHeight = preparedId && Number(meta.preparedResolution) > 0
+      ? Number(meta.preparedResolution)
+      : settings.height;
+    const sourceBadge = preparedId ? "CDN cache" : "WebCodecs";
+    const sourceSettingsLabel = preparedId
+      ? ((requestedHeight > 0 ? requestedHeight + "p" : "cached") + " · static fMP4")
+      : cyberdashSettingsLabel(settings);
     player = module.createCyberdashPlayer({
       canvas,
       onPlaying() {
         if (!currentAttempt(attempt)) return;
         markStreamLive(attempt);
-        setBadge("live", "● WebCodecs · " + cyberdashSettingsLabel(settings) + " · " + youtubePlaybackRate + "×");
+        setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×");
       },
       onEnded() {
         if (currentAttempt(attempt)) handleAutoplayEnd();
@@ -2984,7 +2992,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
           const phase = detail.phase === "startup" ? "Buffering" : "Rebuffering";
           setBadge("reconnecting", `↻ ${phase} · ${youtubePlaybackRate}×`);
         } else if (status === "playing") {
-          setBadge("live", "● WebCodecs · " + cyberdashSettingsLabel(settings) + " · " + youtubePlaybackRate + "×");
+          setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×");
         }
       },
       onError(error) {
@@ -2994,7 +3002,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
           youtubePlaybackMethod = "mjpeg";
           localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
           renderYoutubePlaybackMethod();
-          toast("Live YouTube detected · using MJPEG");
+          toast(preparedId ? "Prepared CDN cache unavailable · using MJPEG" : "Live YouTube detected · using MJPEG");
           const result = replayFn(meta.startAt || 0);
           if (result?.catch) result.catch((fallbackError) => toast(fallbackError.message, true));
           return;
@@ -3004,8 +3012,9 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
     });
     cyberdashPlayer = player;
     await player.play({
-      url: youtubeUrl,
-      height: settings.height,
+      url: preparedId ? null : youtubeUrl,
+      preparedId: preparedId || null,
+      height: requestedHeight,
       fps: settings.fps,
       startAt: meta.startAt || 0,
       muted: !soundOn,
@@ -4404,17 +4413,27 @@ function renderLegacyLibrary() {
         <button class="btn small secondary" data-act="play-local" type="button">Play</button>
       </div>
     </div>`).join("");
-  const processedHtml = state.legacyItems.map((item) => `
+  const processedHtml = state.legacyItems.map((item) => {
+    const cacheReady = item.webcodecsCache?.status === "ready";
+    const cacheResolutions = cacheReady && Array.isArray(item.webcodecsCache?.resolutions)
+      ? item.webcodecsCache.resolutions
+      : [];
+    const cacheLabel = cacheReady
+      ? ` · CDN ${cacheResolutions.length ? cacheResolutions.join("p/") + "p " : ""}ready`
+      : "";
+    return `
     <div class="legacy-item ${item.id === state.legacyPlayingId ? "active" : ""}" data-id="${esc(item.id)}">
       <div class="meta">
         <div class="title">${esc(item.title)}</div>
-        <div class="sub">${fmtDur(item.duration)}${item.duration ? " · " : ""}${esc((item.resolutions || []).join("p, "))}p</div>
+        <div class="sub">${fmtDur(item.duration)}${item.duration ? " · " : ""}${esc((item.resolutions || []).join("p, "))}p${cacheLabel}</div>
       </div>
       <div class="actions">
         <button class="btn small secondary" data-act="play" type="button">Play</button>
+        ${cacheReady ? "" : '<button class="btn small ghost" data-act="prepare-cdn" type="button">Prepare CDN</button>'}
         <button class="btn small ghost" data-act="delete" type="button">Delete</button>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
   list.innerHTML = localHtml + processedHtml;
 }
 
@@ -4492,6 +4511,25 @@ function pollLegacyDownload(jobId) {
     };
     tick();
   });
+}
+
+async function prepareLegacyCdn(item) {
+  if (!item?.id) return;
+  legacyStatus(`Preparing CDN cache for ${item.title || "video"}…`);
+  setLegacyProgress(0, false);
+  try {
+    const { jobId } = await api.post(`/api/legacy-library/${encodeURIComponent(item.id)}/prepare-cdn`, {});
+    await pollLegacyDownload(jobId);
+    await loadLegacyLibrary();
+    const refreshed = state.legacyItems.find((entry) => entry.id === item.id);
+    if (legacy.playing?.id === item.id && refreshed) legacy.playing = refreshed;
+    renderLegacyLibrary();
+    legacyStatus("CDN/WebCodecs cache ready");
+    toast("CDN cache ready");
+  } catch (error) {
+    legacyStatus(error.message, true);
+    toast(error.message, true);
+  }
 }
 
 async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
@@ -4578,22 +4616,49 @@ function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = nu
   replayFn = (resumeAt = getStreamCurrentTime() || startAt || 0) =>
     playLegacyItem(item, legacy.resolution, resumeAt, autoplayQueue, { skipHistory: true });
 
-  playBufferedMjpegStream({
-    mjpegUrl: legacyStreamUrl(startAt),
-    audioUrl: `/stream/legacy-audio/${encodeURIComponent(item.id)}?_=${Date.now()}`,
-  }, item.title || "Processed video", {
-    seekable: true,
-    bufferedMjpeg: true,
-    duration: item.duration,
-    startAt,
-    keepLegacyState: true,
-    audioElementStartAt: startAt,
-    autoplayContext: {
-      kind: "library",
-      itemId: item.id,
-      queue: autoplayQueue || state.legacyItems,
-    },
-  });
+  const autoplayContext = {
+    kind: "library",
+    itemId: item.id,
+    queue: autoplayQueue || state.legacyItems,
+  };
+  const cacheReady = item.webcodecsCache?.status === "ready";
+  const cachedResolutions = Array.isArray(item.webcodecsCache?.resolutions)
+    ? item.webcodecsCache.resolutions.map(Number).filter(Number.isFinite).sort((a, b) => b - a)
+    : [];
+  const preparedResolution = cachedResolutions.find((height) => height <= Number(legacy.resolution))
+    || cachedResolutions[cachedResolutions.length - 1]
+    || legacy.resolution;
+
+  if (youtubePlaybackMethod === "webcodecs" && cacheReady) {
+    const sourceUrl = item.originalUrl || (item.originalYoutubeId
+      ? `https://www.youtube.com/watch?v=${encodeURIComponent(item.originalYoutubeId)}`
+      : `processed://${item.id}`);
+    void playCyberdashStream(sourceUrl, item.title || "Processed video", {
+      preparedId: item.id,
+      preparedResolution,
+      seekable: true,
+      duration: item.duration,
+      startAt,
+      keepLegacyState: true,
+      autoplayContext,
+    });
+  } else {
+    if (youtubePlaybackMethod === "webcodecs" && !cacheReady && !options.skipHistory) {
+      toast("CDN cache is not ready yet · using MJPEG");
+    }
+    playBufferedMjpegStream({
+      mjpegUrl: legacyStreamUrl(startAt),
+      audioUrl: `/stream/legacy-audio/${encodeURIComponent(item.id)}?_=${Date.now()}`,
+    }, item.title || "Processed video", {
+      seekable: true,
+      bufferedMjpeg: true,
+      duration: item.duration,
+      startAt,
+      keepLegacyState: true,
+      audioElementStartAt: startAt,
+      autoplayContext,
+    });
+  }
 
   if (!options.skipHistory && (item.originalUrl || item.originalYoutubeId)) {
     void recordWatchHistory(item, "library");
@@ -8080,6 +8145,10 @@ bindTap($("#legacyList"), async (e) => {
   const item = state.legacyItems.find((x) => x.id === row.dataset.id);
   if (!item) return;
   const act = e.target.closest("[data-act]")?.dataset.act || "play";
+  if (act === "prepare-cdn") {
+    await prepareLegacyCdn(item);
+    return;
+  }
   if (act === "delete") {
     if (!confirm(`Delete "${item.title}" from the processed library?`)) return;
     try {

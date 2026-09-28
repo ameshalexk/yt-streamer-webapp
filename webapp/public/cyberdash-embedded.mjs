@@ -28,11 +28,11 @@ async function fetchJson(url, options = {}, timeoutMs = 15000) {
   }
 }
 
-async function fetchBytes(url, timeoutMs = 12000) {
+async function fetchBytes(url, timeoutMs = 12000, cacheMode = "no-store") {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+    const res = await fetch(url, { cache: cacheMode, signal: controller.signal });
     if (!res.ok) throw new Error(`${url} HTTP ${res.status}`);
     return await res.arrayBuffer();
   } finally {
@@ -62,13 +62,16 @@ function avcDescription(MP4Box, sample) {
 }
 
 async function stopServerSession(state) {
-  if (!state?.sessionId) return;
+  if (!state?.sessionId || state.preparedStatic) return;
   try {
     await fetch(`/api/experimental/cyberdash/${encodeURIComponent(state.sessionId)}/stop`, { method: "POST" });
   } catch {}
 }
 
 async function waitForInitialStatus(state) {
+  if (state.initialStatus?.preparedStatic && state.initialStatus.manifestReady) {
+    return state.initialStatus;
+  }
   const deadline = performance.now() + 25000;
   while (!state.stopRequested) {
     const status = await fetchJson(`/api/experimental/cyberdash/${state.sessionId}/status`, {}, 5000);
@@ -169,15 +172,16 @@ function scheduledAudioAheadSec(state) {
 }
 
 function playbackElapsed(state) {
+  const segmentOffset = Math.max(0, Number(state.segmentOffsetSourceSec) || 0);
   if (state.externalAudioElement) {
     const current = Number(state.externalAudioElement.currentTime);
     const origin = Number(state.externalAudioClockOrigin);
-    if (!Number.isFinite(current)) return 0;
-    return Math.max(0, current - (Number.isFinite(origin) ? origin : current));
+    if (!Number.isFinite(current)) return segmentOffset;
+    return segmentOffset + Math.max(0, current - (Number.isFinite(origin) ? origin : current));
   }
-  if (state.audioStart == null || !state.audioCtx) return 0;
+  if (state.audioStart == null || !state.audioCtx) return segmentOffset;
   const wallSeconds = Math.max(0, state.audioCtx.currentTime - state.audioStart - (state.audioScheduleOffsetSec || 0));
-  return wallSeconds * normalizePlaybackRate(state.playbackRate);
+  return segmentOffset + wallSeconds * normalizePlaybackRate(state.playbackRate);
 }
 
 export function planAudioSchedule({
@@ -225,10 +229,15 @@ export function planAudioSchedule({
 
 async function holdIfTooFarAhead(state, lastPtsSec, kind) {
   const playbackRate = normalizePlaybackRate(state.playbackRate);
-  const sourceLeadLimit = 6.5 * playbackRate;
+  const sourceLeadLimit = state.preparedStatic
+    ? Math.max(3, Number(state.bufferTargets?.rebufferHighVideoSourceSec || 0) + 0.75)
+    : 6.5 * playbackRate;
   // Server-side atempo compresses the audio timeline. Convert its output-time
   // PTS back to source-time before comparing it with the video master clock.
-  const sourcePtsSec = kind === "audio" ? lastPtsSec * playbackRate : lastPtsSec;
+  const segmentOffset = state.preparedStatic ? Math.max(0, Number(state.segmentOffsetSourceSec) || 0) : 0;
+  const sourcePtsSec = kind === "audio"
+    ? (lastPtsSec * playbackRate) + segmentOffset
+    : lastPtsSec;
   while (
     !state.stopRequested &&
     state.audioStart != null &&
@@ -308,8 +317,16 @@ async function feedTrack(state, MP4Box, kind, initName) {
       const sample = pendingSamples.shift();
       const rawUs = Math.round(sample.cts * 1e6 / sample.timescale);
       if (timestampOriginUs == null) timestampOriginUs = rawUs;
-      const timestamp = Math.max(0, rawUs - timestampOriginUs);
+      const relativeUs = Math.max(0, rawUs - timestampOriginUs);
       const duration = Math.max(1, Math.round(sample.duration * 1e6 / sample.timescale));
+      let timestamp = relativeUs;
+
+      if (state.preparedStatic && kind === "audio" && state.segmentOffsetSourceSec > 0) {
+        const skipAudioUs = Math.round((state.segmentOffsetSourceSec / normalizePlaybackRate(state.playbackRate)) * 1e6);
+        if (relativeUs + duration <= skipAudioUs) continue;
+        timestamp = Math.max(0, relativeUs - skipAudioUs);
+      }
+
       lastPtsSec = Math.max(lastPtsSec, (timestamp + duration) / 1e6);
 
       if (kind === "video") {
@@ -344,16 +361,87 @@ async function feedTrack(state, MP4Box, kind, initName) {
     }
   };
 
-  const appendFile = async (name) => {
-    const ab = await fetchBytes(`/stream/experimental/cyberdash/${state.sessionId}/${encodeURIComponent(name)}?t=${Date.now()}`);
+  const appendBuffer = (ab) => {
     state.receivedBytes += ab.byteLength;
     ab.fileStart = offset;
     offset += ab.byteLength;
     file.appendBuffer(ab);
   };
 
+  const appendFile = async (name) => {
+    if (state.preparedStatic) {
+      const base = state.staticTracks?.baseUrl || "";
+      const version = encodeURIComponent(String(state.staticTracks?.cacheVersion || ""));
+      const url = `${base}/${name}?v=${version}`;
+      const ab = await fetchBytes(url, 15000, "force-cache");
+      appendBuffer(ab);
+      return;
+    }
+    const ab = await fetchBytes(`/stream/experimental/cyberdash/${state.sessionId}/${encodeURIComponent(name)}?t=${Date.now()}`);
+    appendBuffer(ab);
+  };
+
   await appendFile(initName);
   await withTimeout(ready, 4000, `${kind} fMP4 init parse`);
+
+  if (state.preparedStatic) {
+    const track = state.staticTracks?.[kind];
+    if (!track) throw new Error(`Prepared ${kind} track metadata missing`);
+    const segmentSourceSeconds = Math.max(0.25, Number(state.staticTracks?.segmentSourceSeconds) || 2);
+    const prefetchSourceSeconds = 18;
+    const prefetchCount = Math.max(3, Math.ceil(prefetchSourceSeconds / segmentSourceSeconds));
+    let nextIndex = Math.max(1, Number(track.startIndex) || 1);
+    const totalSegments = Math.max(0, Number(track.totalSegments) || 0);
+
+    const segmentName = (index) => `${track.dir}/chunk-${String(index).padStart(5, "0")}.m4s`;
+
+    while (!state.stopRequested && nextIndex <= totalSegments) {
+      const batchEnd = Math.min(totalSegments, nextIndex + prefetchCount - 1);
+      const indexes = [];
+      for (let index = nextIndex; index <= batchEnd; index++) indexes.push(index);
+
+      const fetched = await Promise.all(indexes.map(async (index) => {
+        const name = segmentName(index);
+        const base = state.staticTracks?.baseUrl || "";
+        const version = encodeURIComponent(String(state.staticTracks?.cacheVersion || ""));
+        const ab = await fetchBytes(`${base}/${name}?v=${version}`, 15000, "force-cache");
+        return { index, name, ab };
+      }));
+      const batchBytes = fetched.reduce((sum, entry) => sum + entry.ab.byteLength, 0);
+      state.compressedPrefetchBytesMax = Math.max(state.compressedPrefetchBytesMax || 0, batchBytes);
+      state.compressedPrefetchSourceSec = Math.max(state.compressedPrefetchSourceSec || 0, fetched.length * segmentSourceSeconds);
+
+      for (const entry of fetched) {
+        if (state.stopRequested) break;
+
+        // Keep the long reserve compressed. Before playback begins decode only
+        // enough for the startup target; after that, normal lead limiting keeps
+        // just a few seconds of decoded frames/PCM in memory.
+        while (!state.stopRequested && state.audioStart == null) {
+          const targets = state.bufferTargets || fastPlaybackBufferTargets({
+            playbackRate: state.playbackRate,
+            fps: state.requestedFps,
+          });
+          const ready = kind === "video"
+            ? decodedVideoAheadSec(state, state.segmentOffsetSourceSec || 0) >= targets.startupVideoSourceSec + 0.5
+            : pendingAudioBufferedSec(state) >= targets.startupAudioWallSec + 0.5;
+          if (!ready) break;
+          await sleep(20);
+        }
+
+        await holdIfTooFarAhead(state, lastPtsSec, kind);
+        appendBuffer(entry.ab);
+        fed.add(entry.name);
+        await processPending();
+      }
+      nextIndex = batchEnd + 1;
+    }
+
+    if (state.stopRequested) throw new Error("Stopped");
+    file.flush();
+    await processPending();
+    return { lastPtsSec, segments: fed.size };
+  }
 
   while (!state.stopRequested) {
     const status = await fetchJson(`/api/experimental/cyberdash/${state.sessionId}/status`, {}, 5000);
@@ -633,7 +721,7 @@ async function runSession(state) {
   let lastBufferStatusAt = 0;
   while (!state.stopRequested) {
     if (state.decoderError) throw new Error(state.decoderError);
-    const videoSourceSec = decodedVideoAheadSec(state, 0);
+    const videoSourceSec = decodedVideoAheadSec(state, state.segmentOffsetSourceSec || 0);
     const audioWallSec = state.externalAudioElement ? targets.startupAudioWallSec : pendingAudioBufferedSec(state);
     const minimumReady = state.decodedVideo.length >= 3 && (state.externalAudioElement || state.pendingAudio.length >= 1);
     const targetReady = !fastPlayback || (
@@ -664,7 +752,7 @@ async function runSession(state) {
     await sleep(15);
   }
   if (state.stopRequested) return;
-  state.startupVideoBufferSec = decodedVideoAheadSec(state, 0);
+  state.startupVideoBufferSec = decodedVideoAheadSec(state, state.segmentOffsetSourceSec || 0);
   state.startupAudioBufferSec = state.externalAudioElement ? null : pendingAudioBufferedSec(state);
 
   if (state.externalAudioElement) {
@@ -726,6 +814,7 @@ async function sendSummary(state, result, message = "") {
           playbackRate: normalizePlaybackRate(state.playbackRate),
           audioMode: state.externalAudioElement ? "media-element" : "web-audio",
           pitchMode: state.externalAudioElement ? "browser-preserves-pitch" : "server-atempo",
+          cacheMode: state.preparedStatic ? "processed-static-fmp4" : "live-transcode",
           audioClockOriginSec: round(state.externalAudioClockOrigin, 3),
           audioCurrentTimeSec: round(state.externalAudioElement?.currentTime, 3),
           audioPaused: state.externalAudioElement?.paused ?? null,
@@ -744,6 +833,8 @@ async function sendSummary(state, result, message = "") {
           startupBufferShortfall: state.startupBufferShortfall ? 1 : 0,
           rebufferMs: round(state.rebufferMs, 1),
           maxRebufferMs: round(state.maxRebufferMs, 1),
+          compressedPrefetchSourceSec: round(state.compressedPrefetchSourceSec, 1),
+          compressedPrefetchBytesMax: state.compressedPrefetchBytesMax || 0,
         },
       }),
     });
@@ -783,6 +874,7 @@ export function createCyberdashPlayer({
 
   async function play({
     url,
+    preparedId = null,
     height = 720,
     fps = 30,
     startAt = 0,
@@ -791,7 +883,7 @@ export function createCyberdashPlayer({
     audioElement = null,
     audioPlayPromise = null,
   } = {}) {
-    if (!url) throw new Error("YouTube URL is required");
+    if (!url && !preparedId) throw new Error("YouTube URL or prepared item id is required");
 
     const externalAudioElement = audioElement || null;
     let audioCtx = null;
@@ -813,7 +905,12 @@ export function createCyberdashPlayer({
     await stop();
 
     const next = {
-      sourceUrl: url,
+      sourceUrl: url || `processed://${preparedId}`,
+      preparedId: preparedId || null,
+      preparedStatic: false,
+      initialStatus: null,
+      staticTracks: null,
+      segmentOffsetSourceSec: 0,
       startAt: Math.max(0, Number(startAt) || 0),
       requestedFps: Math.max(5, Math.min(60, Number(fps) || 30)),
       playbackRate: normalizePlaybackRate(playbackRate),
@@ -860,6 +957,8 @@ export function createCyberdashPlayer({
       decodedAudioBlocks: 0,
       scheduledAudioBlocks: 0,
       receivedBytes: 0,
+      compressedPrefetchSourceSec: 0,
+      compressedPrefetchBytesMax: 0,
       drifts: [],
       firstPictureMs: null,
       maxVideoQueue: 0,
@@ -885,20 +984,40 @@ export function createCyberdashPlayer({
       }
 
       onStatus?.("resolving");
-      const response = await fetchJson("/api/experimental/cyberdash/start", {
+      const endpoint = preparedId
+        ? "/api/experimental/cyberdash/prepared/start"
+        : "/api/experimental/cyberdash/start";
+      const response = await fetchJson(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(preparedId ? {
+          id: preparedId,
+          height: Number.isFinite(Number(height)) ? Number(height) : 0,
+          startAt: next.startAt,
+          playbackRate: next.playbackRate,
+        } : {
           url,
           height: Number.isFinite(Number(height)) ? Number(height) : 0,
           fps: Number(fps) || 30,
           startAt: next.startAt,
           playbackRate: next.playbackRate,
         }),
-      }, 45000);
+      }, preparedId ? 12000 : 45000);
       if (state !== next) return;
       next.sessionId = response.id;
       next.resolveMs = response.resolveMs;
+      next.preparedStatic = Boolean(response.preparedStatic);
+      next.initialStatus = next.preparedStatic ? response : null;
+      next.staticTracks = response.staticTracks || null;
+      next.segmentOffsetSourceSec = Math.max(0, Number(response.segmentOffsetSourceSec) || 0);
+      if (next.preparedStatic) {
+        next.startAt = Math.max(0, Number(response.startAt) || 0);
+        next.requestedFps = Math.max(5, Math.min(60, Number(response.fps) || next.requestedFps));
+        next.bufferTargets = fastPlaybackBufferTargets({
+          playbackRate: next.playbackRate,
+          fps: next.requestedFps,
+        });
+      }
       await runSession(next);
       if (state === next) await sendSummary(next, "completed", "Embedded DASH/WebCodecs playback completed.");
     } catch (error) {

@@ -20,6 +20,7 @@ import * as youtubeOAuth from "./lib/youtube-oauth.js";
 import * as moneyDashboard from "./lib/money-dashboard.js";
 import * as apneDaily from "./lib/apne-daily.js";
 import * as cyberdashDash from "./lib/cyberdash-dash.js";
+import * as processedDashCache from "./lib/processed-dash-cache.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -63,7 +64,7 @@ function playbackStats(value) {
     "audioReadyMs", "audioStartMs", "firstRenderedMs", "serverResolveMs",
     "serverFirstOutputMs", "ffmpegFirstOutputMs", "resolveCache", "rebufferCount",
     "recoveryTargetSeconds", "lastAvDriftMs", "audioLateBlocks", "audioOverlapPrevented",
-    "audioContinuityCorrections", "maxAudioScheduleSlipMs", "playbackRate", "audioMode", "pitchMode",
+    "audioContinuityCorrections", "maxAudioScheduleSlipMs", "playbackRate", "audioMode", "pitchMode", "cacheMode",
     "audioClockOriginSec", "audioCurrentTimeSec", "audioPaused", "audioReadyState", "audioNetworkState", "eof",
   ];
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
@@ -828,6 +829,14 @@ app.get("/api/download/:jobId", (req, res) => {
 // ---------------------------------------------------------------------------
 // Legacy-style processed YouTube library
 // ---------------------------------------------------------------------------
+function processedCdnResolutions(item) {
+  const available = Array.isArray(item?.resolutions) ? item.resolutions.map(Number).filter(Number.isFinite) : [];
+  const maxHeight = Math.max(240, Number(config.prepared?.maxHeight) || 480);
+  const selected = available.filter((height) => height <= maxHeight).sort((a, b) => b - a);
+  if (selected.length) return selected;
+  return available.length ? [Math.min(...available)] : [];
+}
+
 app.get("/api/legacy-library/formats", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
@@ -835,7 +844,12 @@ app.get("/api/legacy-library/formats", asyncH(async (req, res) => {
 }));
 
 app.get("/api/legacy-library", asyncH(async (req, res) => {
-  res.json(await processedLibrary.list());
+  const items = await processedLibrary.list();
+  const enriched = await Promise.all(items.map(async (item) => {
+    const cdn = await processedDashCache.status(item.id).catch(() => ({ status: "not-ready" }));
+    return { ...item, webcodecsCache: cdn };
+  }));
+  res.json(enriched);
 }));
 
 app.get("/api/legacy-library/playlists", asyncH(async (req, res) => {
@@ -873,18 +887,67 @@ app.post("/api/legacy-library/download", asyncH(async (req, res) => {
       const item = await processedLibrary.processDownload(url, {
         resolutions,
         onProgress: (pct, message) => {
-          job.pct = Math.max(0, Math.min(100, Math.round(pct)));
+          job.pct = Math.max(0, Math.min(65, Math.round((Number(pct) || 0) * 0.65)));
           job.message = message;
         },
       });
+      job.pct = 65;
+      job.message = "Preparing CDN/WebCodecs cache";
+      try {
+        await processedDashCache.prepare(item.id, {
+          resolutions: processedCdnResolutions(item),
+          onProgress: (pct, message) => {
+            job.pct = Math.max(65, Math.min(100, 65 + Math.round((Number(pct) || 0) * 0.35)));
+            job.message = message || "Preparing CDN/WebCodecs cache";
+          },
+        });
+        item.webcodecsCache = await processedDashCache.status(item.id);
+      } catch (cacheError) {
+        // Keep the processed-library item usable through MJPEG even if the optional
+        // pre-segmented WebCodecs cache could not be generated.
+        item.webcodecsCache = { status: "error", error: cacheError.message };
+        console.error("[processed-dash-cache]", cacheError.message);
+      }
       job.status = "done";
       job.pct = 100;
-      job.message = "Ready";
+      job.message = item.webcodecsCache?.status === "ready" ? "Ready · CDN cache prepared" : "Ready · MJPEG fallback";
       job.item = item;
     } catch (err) {
       job.status = "error";
       job.error = err.message;
       job.message = "Failed";
+    }
+  })();
+}));
+
+app.post("/api/legacy-library/:id/prepare-cdn", asyncH(async (req, res) => {
+  const item = await processedLibrary.get(req.params.id);
+  if (!item) return res.status(404).json({ error: "processed item not found" });
+  const job = newJob();
+  job.message = "Preparing CDN/WebCodecs cache";
+  res.status(202).json({ jobId: job.id });
+
+  (async () => {
+    try {
+      const index = await processedDashCache.prepare(item.id, {
+        resolutions: processedCdnResolutions(item),
+        onProgress: (pct, message) => {
+          job.pct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+          job.message = message || "Preparing CDN/WebCodecs cache";
+        },
+      });
+      job.status = "done";
+      job.pct = 100;
+      job.message = "CDN cache ready";
+      job.item = {
+        id: item.id,
+        preparedAt: index.preparedAt,
+        webcodecsCache: await processedDashCache.status(item.id),
+      };
+    } catch (error) {
+      job.status = "error";
+      job.error = error.message;
+      job.message = "CDN cache failed";
     }
   })();
 }));
@@ -896,7 +959,10 @@ app.get("/api/legacy-library/jobs/:jobId", (req, res) => {
 });
 
 app.delete("/api/legacy-library/:id", asyncH(async (req, res) => {
-  await processedLibrary.remove(req.params.id);
+  await Promise.all([
+    processedLibrary.remove(req.params.id),
+    processedDashCache.remove(req.params.id),
+  ]);
   res.json({ ok: true });
 }));
 
@@ -1480,6 +1546,52 @@ app.get("/stream/audio/prepared/:id", asyncH(async (req, res) => {
   const item = await preparedCache.get(req.params.id);
   if (!item) return res.status(404).json({ error: "prepared video not found" });
   return stream.streamAudio(req, res, { input: item.filePath, startAt: req.query.timestamp });
+}));
+
+// Prepared processed-library cache: pre-encoded H.264/AAC fMP4 segments.
+// This path does no per-play transcode and can be fetched far ahead like a small local CDN.
+app.post("/api/experimental/cyberdash/prepared/start", asyncH(async (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const id = String(body.id || "").trim();
+  if (!id) return res.status(400).json({ error: "processed item id required" });
+  try {
+    const prepared = await processedDashCache.start(id, {
+      resolution: body.height ?? body.resolution ?? 0,
+      playbackRate: body.playbackRate ?? 1,
+      startAt: body.startAt ?? 0,
+    });
+    res.set("Cache-Control", "no-store");
+    res.json({
+      ...prepared,
+      player: "processed-static-fmp4-v1",
+    });
+  } catch (error) {
+    res.status(409).json({
+      error: error.message || "prepared CDN cache unavailable",
+      fallback: "mjpeg",
+      prepared: false,
+    });
+  }
+}));
+
+app.get("/stream/processed-dash/:id/*", asyncH(async (req, res) => {
+  const relative = req.params[0] || "";
+  const filePath = processedDashCache.filePath(req.params.id, relative);
+  if (!filePath) return res.status(404).type("text/plain").end("prepared segment not found");
+  try {
+    await fs.access(filePath);
+  } catch {
+    return res.status(404).type("text/plain").end("prepared segment not found");
+  }
+  const name = path.basename(filePath);
+  if (name.endsWith(".mpd")) res.type("application/dash+xml");
+  else if (name.endsWith(".m4s")) res.type("video/iso.segment");
+  else if (name.endsWith(".json")) res.type("application/json");
+  res.set({
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "X-Accel-Buffering": "no",
+  });
+  res.sendFile(filePath);
 }));
 
 // ---- Experimental CyberDash-style DASH/fMP4 WebCodecs player ----
