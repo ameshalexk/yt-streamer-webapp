@@ -553,7 +553,10 @@ async function preparePage(session, cdp = session.cdp) {
   await cdp.call("Network.setBlockedURLs", { urls: REMOTE_BROWSER_BLOCKED_URLS }).catch(() => {});
   await cdp.call("Network.setUserAgentOverride", { userAgent: DESKTOP_USER_AGENT, platform: "macOS" }).catch(() => {});
   await cdp.call("Input.setIgnoreInputEvents", { ignore: false }).catch(() => {});
-  await cdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }).catch(() => {});
+  // The remote target is a desktop Chrome viewport. Tesla finger taps are
+  // normalized to one desktop mouse click below; leaving touch emulation enabled
+  // makes Chrome's touch-to-click synthesis intermittent on ordinary links/buttons.
+  await cdp.call("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
   await cdp.call("Emulation.setDeviceMetricsOverride", {
     width: session.width,
     height: session.height,
@@ -1481,21 +1484,14 @@ async function dispatchRealChromeTap(session, payload = {}) {
     const playNow = await tryApnePlayNowAtPoint(session, cdp, p);
     if (playNow?.matched) return { ok: true, download: playNow };
   }
-  if (payload.pointerType === "touch") {
-    await cdp.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, radiusX: 2, radiusY: 2, force: 1, id: 1 }] }, INPUT_COMMAND_TIMEOUT_MS);
-    try {
-      await cdp.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, INPUT_COMMAND_TIMEOUT_MS);
-    } catch (err) {
-      if (!/TouchStart first/i.test(String(err?.message || ""))) throw err;
-    }
-    if (session.cdp === cdp && isGooglePageUrl(session.url)) {
-      const fallback = await googleLoginClickFallback(cdp, p).catch(() => null);
-      if (fallback?.clicked) return { ok: true, fallback };
-    }
-    return { ok: true };
-  }
+  // Source input may be touch, but the rendered target is desktop Chrome.
+  // Send exactly one deterministic desktop click for every completed tap.
   await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
   await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+  if (session.cdp === cdp && isGooglePageUrl(session.url)) {
+    const fallback = await googleLoginClickFallback(cdp, p).catch(() => null);
+    if (fallback?.clicked) return { ok: true, fallback };
+  }
   return { ok: true };
 }
 
@@ -1504,8 +1500,8 @@ export async function input(id, payload = {}) {
   if (!session) throw httpError(404, "Real Chrome session not found.");
   session.lastUsedAt = Date.now();
   if (payload.type === "tap") {
-    // Keep each touchStart/touchEnd pair atomic. Fast repeated Tesla taps must not
-    // interleave CDP touch state and cause Chrome to drop one of the gestures.
+    // Serialize taps so repeated Tesla presses cannot interleave target changes or
+    // mouse down/up pairs while Chrome is navigating.
     return queueRealChromeInput(session, () => dispatchRealChromeTap(session, payload));
   }
 

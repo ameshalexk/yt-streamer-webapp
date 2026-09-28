@@ -71,7 +71,8 @@ test("APNE Download resolves the JW HLS stream and saves one synced MP4 on the M
 
 test("Real Chrome pins a gesture to one CDP target and self-paces capture", () => {
   assert.match(renderer, /const cdp = session\.cdp/);
-  assert.match(renderer, /Input\.dispatchTouchEvent/);
+  assert.match(renderer, /Input\.dispatchMouseEvent/);
+  assert.doesNotMatch(renderer, /Input\.dispatchTouchEvent/);
   assert.match(renderer, /CAPTURE_CONTROL_HEADROOM_MS = 8/);
   assert.match(renderer, /CAPTURE_COMMAND_TIMEOUT_MS = 1500/);
   assert.match(renderer, /scheduleNextCapture/);

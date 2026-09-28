@@ -174,6 +174,15 @@ test("failed Real Chrome tap does not poison the next tap", async () => {
   assert.deepEqual(order, ["bad", "good"]);
 });
 
+test("Tesla tap backend uses desktop mouse click semantics", () => {
+  const start = renderer.indexOf("async function dispatchRealChromeTap");
+  const end = renderer.indexOf("export async function input", start);
+  const tap = renderer.slice(start, end);
+  assert.doesNotMatch(tap, /Input\.dispatchTouchEvent/);
+  assert.equal((tap.match(/Input\.dispatchMouseEvent/g) || []).length, 2);
+  assert.match(renderer, /Emulation\.setTouchEmulationEnabled", \{ enabled: false \}/);
+});
+
 test("tap route enters the serialized Real Chrome path before capturing CDP target", () => {
   const inputStart = renderer.indexOf("export async function input(id, payload = {})");
   const inputEnd = renderer.indexOf("export async function mediaPlayback", inputStart);

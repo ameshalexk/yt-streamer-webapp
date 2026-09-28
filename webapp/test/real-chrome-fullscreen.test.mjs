@@ -15,16 +15,16 @@ test("Real Chrome reuses the virtual fullscreen shim", () => {
   assert.match(realChrome, /await installFullscreenShim\(session, cdp\);/);
 });
 
-test("touch taps do not send a second explicit mouse activation", () => {
+test("remote touch taps normalize to one deterministic desktop mouse activation", () => {
   const start = realChrome.indexOf("async function dispatchRealChromeTap");
   const end = realChrome.indexOf("export async function input", start);
   const tap = start >= 0 && end > start ? realChrome.slice(start, end) : "";
-  const touchStart = tap.indexOf('if (payload.pointerType === "touch") {');
-  const touchEnd = tap.indexOf('return { ok: true };', touchStart);
-  const touchBranch = touchStart >= 0 && touchEnd > touchStart
-    ? tap.slice(touchStart, touchEnd + 'return { ok: true };'.length)
-    : "";
-  assert.match(touchBranch, /Input\.dispatchTouchEvent/);
-  assert.doesNotMatch(touchBranch, /Input\.dispatchMouseEvent/);
-  assert.match(tap.slice(touchEnd), /Input\.dispatchMouseEvent/);
+  assert.doesNotMatch(tap, /Input\.dispatchTouchEvent/);
+  assert.match(tap, /type: "mousePressed"/);
+  assert.match(tap, /type: "mouseReleased"/);
+  assert.equal((tap.match(/Input\.dispatchMouseEvent/g) || []).length, 2);
+});
+
+test("Real Chrome disables touch emulation for desktop click semantics", () => {
+  assert.match(realChrome, /Emulation\.setTouchEmulationEnabled", \{ enabled: false \}/);
 });
