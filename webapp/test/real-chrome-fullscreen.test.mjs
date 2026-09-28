@@ -16,9 +16,15 @@ test("Real Chrome reuses the virtual fullscreen shim", () => {
 });
 
 test("touch taps do not send a second explicit mouse activation", () => {
-  const tap = realChrome.match(/if \(payload\.type === "tap"\) \{[\s\S]*?\n  \}/)?.[0] || "";
-  const touchBranch = tap.match(/if \(payload\.pointerType === "touch"\) \{[\s\S]*?return \{ ok: true \};\n    \}/)?.[0] || "";
+  const start = realChrome.indexOf("async function dispatchRealChromeTap");
+  const end = realChrome.indexOf("export async function input", start);
+  const tap = start >= 0 && end > start ? realChrome.slice(start, end) : "";
+  const touchStart = tap.indexOf('if (payload.pointerType === "touch") {');
+  const touchEnd = tap.indexOf('return { ok: true };', touchStart);
+  const touchBranch = touchStart >= 0 && touchEnd > touchStart
+    ? tap.slice(touchStart, touchEnd + 'return { ok: true };'.length)
+    : "";
   assert.match(touchBranch, /Input\.dispatchTouchEvent/);
   assert.doesNotMatch(touchBranch, /Input\.dispatchMouseEvent/);
-  assert.match(tap, /Input\.dispatchMouseEvent/);
+  assert.match(tap.slice(touchEnd), /Input\.dispatchMouseEvent/);
 });
