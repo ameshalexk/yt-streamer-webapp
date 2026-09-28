@@ -1061,6 +1061,7 @@ export async function start(payload = {}) {
     mainTitle: "",
     mainRecoveryAt: 0,
     apneDownload: null,
+    inputTail: Promise.resolve(),
     createdAt: Date.now(),
     lastUsedAt: Date.now(),
   };
@@ -1461,10 +1462,53 @@ async function tryApnePlayNowAtPoint(session, cdp, p) {
   return result?.result?.value || { matched: false };
 }
 
+function queueRealChromeInput(session, task) {
+  const previous = session.inputTail || Promise.resolve();
+  const run = previous.catch(() => {}).then(task);
+  // Keep the tail fulfilled so one failed gesture does not poison later input.
+  session.inputTail = run.catch(() => {});
+  return run;
+}
+
+async function dispatchRealChromeTap(session, payload = {}) {
+  const cdp = session.cdp;
+  if (!cdp) throw httpError(409, "Real Chrome target is changing. Retry the input.");
+  await cdp.ready;
+
+  const p = point(payload, session);
+  const button = payload.button === 2 ? "right" : "left";
+  if (cdp === session.mainCdp) {
+    const playNow = await tryApnePlayNowAtPoint(session, cdp, p);
+    if (playNow?.matched) return { ok: true, download: playNow };
+  }
+  if (payload.pointerType === "touch") {
+    await cdp.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, radiusX: 2, radiusY: 2, force: 1, id: 1 }] }, INPUT_COMMAND_TIMEOUT_MS);
+    try {
+      await cdp.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, INPUT_COMMAND_TIMEOUT_MS);
+    } catch (err) {
+      if (!/TouchStart first/i.test(String(err?.message || ""))) throw err;
+    }
+    if (session.cdp === cdp && isGooglePageUrl(session.url)) {
+      const fallback = await googleLoginClickFallback(cdp, p).catch(() => null);
+      if (fallback?.clicked) return { ok: true, fallback };
+    }
+    return { ok: true };
+  }
+  await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+  await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+  return { ok: true };
+}
+
 export async function input(id, payload = {}) {
   const session = get(id);
   if (!session) throw httpError(404, "Real Chrome session not found.");
   session.lastUsedAt = Date.now();
+  if (payload.type === "tap") {
+    // Keep each touchStart/touchEnd pair atomic. Fast repeated Tesla taps must not
+    // interleave CDP touch state and cause Chrome to drop one of the gestures.
+    return queueRealChromeInput(session, () => dispatchRealChromeTap(session, payload));
+  }
+
   const cdp = session.cdp;
   if (!cdp) throw httpError(409, "Real Chrome target is changing. Retry the input.");
   await cdp.ready;
@@ -1487,30 +1531,6 @@ export async function input(id, payload = {}) {
 
   const p = point(payload, session);
   const button = payload.button === 2 ? "right" : "left";
-  if (payload.type === "tap") {
-    if (cdp === session.mainCdp) {
-      const playNow = await tryApnePlayNowAtPoint(session, cdp, p);
-      if (playNow?.matched) return { ok: true, download: playNow };
-    }
-    if (payload.pointerType === "touch") {
-      await cdp.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, radiusX: 2, radiusY: 2, force: 1, id: 1 }] }, INPUT_COMMAND_TIMEOUT_MS);
-      try {
-        await cdp.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, INPUT_COMMAND_TIMEOUT_MS);
-      } catch (err) {
-        // If the page navigated during touchStart Chrome can discard touch state.
-        // The gesture has already been delivered; do not surface a fatal UI toast.
-        if (!/TouchStart first/i.test(String(err?.message || ""))) throw err;
-      }
-      if (session.cdp === cdp && isGooglePageUrl(session.url)) {
-        const fallback = await googleLoginClickFallback(cdp, p).catch(() => null);
-        if (fallback?.clicked) return { ok: true, fallback };
-      }
-      return { ok: true };
-    }
-    await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
-    await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
-    return { ok: true };
-  }
   if (payload.type === "move" || payload.type === "drag") {
     await cdp.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x, y: p.y, button: "none" }, INPUT_COMMAND_TIMEOUT_MS);
     return { ok: true };
