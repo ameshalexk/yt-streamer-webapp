@@ -63,7 +63,8 @@ test("WebCodecs sidecar audio is primed from the user gesture before async modul
   assert.match(playerBlock, /audio\.playbackRate = youtubePlaybackRate/);
   assert.match(playerBlock, /audio\.preservesPitch = true/);
   assert.match(playerBlock, /audio\.muted = true/);
-  assert.match(playerBlock, /primePromise\.then\(\(\) => \{[\s\S]*audio\.pause\(\)[\s\S]*audio\.currentTime = 0/);
+  assert.match(playerBlock, /primePromise\.then\(\(\) => \{[\s\S]*audio\.pause\(\)/);
+  assert.doesNotMatch(playerBlock, /audio\.currentTime = 0/);
 });
 
 test("long playback releases ended audio source nodes instead of retaining them forever", () => {
@@ -181,7 +182,7 @@ test("WebCodecs restart preserves user activation by avoiding awaited old-player
   assert.doesNotMatch(playerBlock, /await stopCyberdashPlayback/);
   assert.match(playerBlock, /cleanupMedia\(\)/);
   assert.match(playerBlock, /const module = cyberdashModule \|\| await ensureCyberdashModule\(\)/);
-  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260927-speed-v3"\)/);
+  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260927-speed-v4"\)/);
 });
 
 test("WebCodecs playback rate is forwarded to the server and expands source-time buffer headroom", () => {
@@ -215,4 +216,13 @@ test("WebCodecs pause resume and mute keep the sidecar audio stream alive", () =
   const muteHandler = app.match(/\$\("#muteBtn"\)\.onclick = \(\) => \{[\s\S]*?\n\};/)?.[0] || "";
   assert.match(muteHandler, /cyberdash-mode/);
   assert.match(muteHandler, /cyberdashPlayer\.setMuted\(!soundOn\)/);
+});
+
+
+test("WebCodecs media clock uses the post-prime origin instead of seeking chunked audio", () => {
+  assert.match(embedded, /externalAudioClockOrigin/);
+  assert.match(embedded, /current - \(Number\.isFinite\(origin\) \? origin : current\)/);
+  assert.match(embedded, /const primedAt = Number\(state\.externalAudioElement\.currentTime\)/);
+  assert.doesNotMatch(embedded, /externalAudioElement\.currentTime = 0/);
+  assert.match(embedded, /Audio media clock stalled/);
 });

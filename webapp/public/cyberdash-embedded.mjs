@@ -114,7 +114,9 @@ export function normalizePlaybackRate(value = 1) {
 function playbackElapsed(state) {
   if (state.externalAudioElement) {
     const current = Number(state.externalAudioElement.currentTime);
-    return Number.isFinite(current) ? Math.max(0, current) : 0;
+    const origin = Number(state.externalAudioClockOrigin);
+    if (!Number.isFinite(current)) return 0;
+    return Math.max(0, current - (Number.isFinite(origin) ? origin : current));
   }
   if (state.audioStart == null || !state.audioCtx) return 0;
   const wallSeconds = Math.max(0, state.audioCtx.currentTime - state.audioStart - (state.audioScheduleOffsetSec || 0));
@@ -346,6 +348,27 @@ function startRenderLoop(state) {
         }
 
         const elapsed = playbackElapsed(state);
+        if (state.externalAudioElement) {
+          const clock = Number(state.externalAudioElement.currentTime);
+          if (Number.isFinite(clock) && (
+            state.externalAudioLastClock == null ||
+            clock > Number(state.externalAudioLastClock) + 0.004
+          )) {
+            state.externalAudioLastClock = clock;
+            state.externalAudioLastProgressAt = performance.now();
+          } else if (
+            !state.externalAudioElement.paused &&
+            state.externalAudioLastProgressAt != null &&
+            performance.now() - state.externalAudioLastProgressAt > 5000
+          ) {
+            throw new Error(
+              "Audio media clock stalled" +
+              " rate=" + normalizePlaybackRate(state.playbackRate) +
+              " readyState=" + state.externalAudioElement.readyState +
+              " networkState=" + state.externalAudioElement.networkState
+            );
+          }
+        }
         if (state.decodedVideo.length > 1) {
           state.decodedVideo.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
         }
@@ -484,7 +507,10 @@ async function runSession(state) {
     // The app primed this element from the original user gesture. Start the real
     // audio only after video prebuffer is ready so source-time begins at 0 for both.
     await withTimeout(state.externalAudioPlayPromise || Promise.resolve(), 15000, "Audio element priming");
-    try { state.externalAudioElement.currentTime = 0; } catch {}
+    const primedAt = Number(state.externalAudioElement.currentTime);
+    state.externalAudioClockOrigin = Number.isFinite(primedAt) ? Math.max(0, primedAt) : 0;
+    state.externalAudioLastClock = state.externalAudioClockOrigin;
+    state.externalAudioLastProgressAt = performance.now();
     state.externalAudioElement.defaultPlaybackRate = normalizePlaybackRate(state.playbackRate);
     state.externalAudioElement.playbackRate = normalizePlaybackRate(state.playbackRate);
     state.externalAudioElement.muted = Boolean(state.requestedMuted);
@@ -533,6 +559,12 @@ async function sendSummary(state, result, message = "") {
           maxAudioScheduleSlipMs: round(state.maxAudioScheduleSlipMs, 1),
           playbackRate: normalizePlaybackRate(state.playbackRate),
           audioMode: state.externalAudioElement ? "media-element" : "web-audio",
+          playbackRate: normalizePlaybackRate(state.playbackRate),
+          audioClockOriginSec: round(state.externalAudioClockOrigin, 3),
+          audioCurrentTimeSec: round(state.externalAudioElement?.currentTime, 3),
+          audioPaused: state.externalAudioElement?.paused ?? null,
+          audioReadyState: state.externalAudioElement?.readyState ?? null,
+          audioNetworkState: state.externalAudioElement?.networkState ?? null,
         },
         timing: {
           firstPictureMs: round(state.firstPictureMs, 1),
@@ -616,6 +648,9 @@ export function createCyberdashPlayer({
       requestedMuted: Boolean(muted),
       externalAudioElement,
       externalAudioPlayPromise: audioPlayPromise || null,
+      externalAudioClockOrigin: null,
+      externalAudioLastClock: null,
+      externalAudioLastProgressAt: null,
       sessionId: null,
       startedAt: performance.now(),
       resolveMs: null,

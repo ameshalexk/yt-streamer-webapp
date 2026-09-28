@@ -616,7 +616,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v3")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v4")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -2961,8 +2961,9 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
     const primePromise = audio.play();
     audioPlayPromise = primePromise?.then
       ? primePromise.then(() => {
+          // Do not seek this chunked MP3 response back to zero. WebKit can leave
+          // a non-seekable streaming element pinned at time 0 after that seek.
           audio.pause();
-          try { audio.currentTime = 0; } catch {}
         })
       : Promise.resolve();
     if (audioPlayPromise?.catch) audioPlayPromise.catch(() => {});
