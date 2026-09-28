@@ -63,7 +63,8 @@ function playbackStats(value) {
     "audioReadyMs", "audioStartMs", "firstRenderedMs", "serverResolveMs",
     "serverFirstOutputMs", "ffmpegFirstOutputMs", "resolveCache", "rebufferCount",
     "recoveryTargetSeconds", "lastAvDriftMs", "audioLateBlocks", "audioOverlapPrevented",
-    "audioContinuityCorrections", "maxAudioScheduleSlipMs", "eof",
+    "audioContinuityCorrections", "maxAudioScheduleSlipMs", "playbackRate", "audioMode", "pitchMode",
+    "audioClockOriginSec", "audioCurrentTimeSec", "audioPaused", "audioReadyState", "audioNetworkState", "eof",
   ];
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
 }

@@ -167,3 +167,24 @@ test("CyberDash DASH producer clamps playback speed to 1x-4x", () => {
   assert.ok(Number(fast[fast.indexOf("-readrate") + 1]) >= 4.5);
   assert.ok(Number(fast[fast.indexOf("-readrate") + 1]) <= 5);
 });
+
+
+test("CyberDash DASH producer uses pitch-preserving atempo for playback speed", () => {
+  const args = buildCyberdashDashArgs({
+    videoInput: "https://example.test/video",
+    audioInput: "https://example.test/audio",
+    playbackRate: 1.5,
+    manifestPath: "/tmp/manifest.mpd",
+  });
+  assert.equal(args[args.indexOf("-af") + 1], "atempo=1.5");
+  assert.equal(args[args.indexOf("-c:a") + 1], "aac");
+});
+
+test("CyberDash DASH atempo is clamped with the supported playback range", () => {
+  const args = buildCyberdashDashArgs({
+    videoInput: "/tmp/input.mp4",
+    playbackRate: 99,
+    manifestPath: "/tmp/manifest.mpd",
+  });
+  assert.equal(args[args.indexOf("-af") + 1], "atempo=4");
+});

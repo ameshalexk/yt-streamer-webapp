@@ -76,6 +76,9 @@ export function buildCyberdashDashArgs({
     "-maxrate", `${rate.max}k`,
     "-bufsize", `${rate.max * 2}k`,
     "-g", String(outFps),
+    // Speed audio on the server with FFmpeg's time-stretch filter. Unlike
+    // AudioBufferSourceNode.playbackRate, atempo preserves speech pitch.
+    "-af", `atempo=${speed}`,
     "-c:a", "aac",
     "-b:a", "128k",
     "-ar", "48000",

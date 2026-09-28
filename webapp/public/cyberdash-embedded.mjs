@@ -166,12 +166,16 @@ export function planAudioSchedule({
   };
 }
 
-async function holdIfTooFarAhead(state, lastPtsSec) {
-  const sourceLeadLimit = 6.5 * normalizePlaybackRate(state.playbackRate);
+async function holdIfTooFarAhead(state, lastPtsSec, kind) {
+  const playbackRate = normalizePlaybackRate(state.playbackRate);
+  const sourceLeadLimit = 6.5 * playbackRate;
+  // Server-side atempo compresses the audio timeline. Convert its output-time
+  // PTS back to source-time before comparing it with the video master clock.
+  const sourcePtsSec = kind === "audio" ? lastPtsSec * playbackRate : lastPtsSec;
   while (
     !state.stopRequested &&
-    (state.externalAudioElement || state.audioStart != null) &&
-    lastPtsSec - playbackElapsed(state) > sourceLeadLimit
+    state.audioStart != null &&
+    sourcePtsSec - playbackElapsed(state) > sourceLeadLimit
   ) {
     await sleep(80);
   }
@@ -187,16 +191,16 @@ function scheduleAudioBuffer(state, item) {
     try { node.disconnect(); } catch {}
   };
 
-  const playbackRate = normalizePlaybackRate(state.playbackRate);
-  node.playbackRate.value = playbackRate;
+  // Audio was already tempo-compressed by FFmpeg with pitch preservation.
+  // Play decoded AAC at 1x and schedule directly on its output-time timeline.
   const expectedStart = state.audioStart
     + (state.audioScheduleOffsetSec || 0)
-    + Math.max(0, item.timestamp / 1e6) / playbackRate;
+    + Math.max(0, item.timestamp / 1e6);
   const plan = planAudioSchedule({
     expectedStart,
     cursor: state.audioScheduleCursor,
     now: state.audioCtx.currentTime,
-    duration: item.buffer.duration / playbackRate,
+    duration: item.buffer.duration,
   });
 
   if (plan.lateBy > 0) {
@@ -302,7 +306,7 @@ async function feedTrack(state, MP4Box, kind, initName) {
 
     for (const name of available) {
       if (fed.has(name)) continue;
-      await holdIfTooFarAhead(state, lastPtsSec);
+      await holdIfTooFarAhead(state, lastPtsSec, kind);
       await appendFile(name);
       fed.add(name);
       await processPending();
@@ -559,6 +563,7 @@ async function sendSummary(state, result, message = "") {
           maxAudioScheduleSlipMs: round(state.maxAudioScheduleSlipMs, 1),
           playbackRate: normalizePlaybackRate(state.playbackRate),
           audioMode: state.externalAudioElement ? "media-element" : "web-audio",
+          pitchMode: state.externalAudioElement ? "browser-preserves-pitch" : "server-atempo",
           playbackRate: normalizePlaybackRate(state.playbackRate),
           audioClockOriginSec: round(state.externalAudioClockOrigin, 3),
           audioCurrentTimeSec: round(state.externalAudioElement?.currentTime, 3),

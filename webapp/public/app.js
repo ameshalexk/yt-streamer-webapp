@@ -616,7 +616,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v4")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260927-speed-v5")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -2943,31 +2943,8 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   setBadge("reconnecting", "↻ WebCodecs…");
   startStreamWatchdog(attempt, "WebCodecs playback", { warnMs: 18000, failMs: 40000 });
 
-  // Use the normal media element for YouTube audio. Browser playbackRate with
-  // preservesPitch gives YouTube-like speed without chipmunk audio, and its
-  // currentTime becomes the WebCodecs video master clock.
-  const audio = $("#audio");
-  let audioPlayPromise = null;
-  if (meta.audioUrl && audio) {
-    audio.src = meta.audioUrl;
-    try { audio.load(); } catch {}
-    audio.defaultPlaybackRate = youtubePlaybackRate;
-    audio.playbackRate = youtubePlaybackRate;
-    if ("preservesPitch" in audio) audio.preservesPitch = true;
-    if ("webkitPreservesPitch" in audio) audio.webkitPreservesPitch = true;
-    // Prime/unlock the media element during the user gesture, but keep it silent
-    // and paused until WebCodecs video has its startup buffer. Then both start at 0.
-    audio.muted = true;
-    const primePromise = audio.play();
-    audioPlayPromise = primePromise?.then
-      ? primePromise.then(() => {
-          // Do not seek this chunked MP3 response back to zero. WebKit can leave
-          // a non-seekable streaming element pinned at time 0 after that seek.
-          audio.pause();
-        })
-      : Promise.resolve();
-    if (audioPlayPromise?.catch) audioPlayPromise.catch(() => {});
-  }
+  // WebCodecs audio stays inside the DASH session. FFmpeg applies pitch-preserving
+  // atempo on the server; AudioContext plays the resulting AAC at 1x.
 
   let player = null;
   let fatalHandled = false;
@@ -3008,8 +2985,6 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       startAt: meta.startAt || 0,
       muted: !soundOn,
       playbackRate: youtubePlaybackRate,
-      audioElement: meta.audioUrl ? audio : null,
-      audioPlayPromise,
     });
   } catch (error) {
     // Ignore a rejected promise from a player that was intentionally replaced
