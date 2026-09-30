@@ -203,9 +203,12 @@ async function fetchText(url, { method = "GET", body = null, referer = APNE_ORIG
       method,
       headers,
       body,
-      redirect: "follow",
+      redirect: "manual",
       signal: controller.signal,
     });
+    if (response.status >= 300 && response.status < 400) {
+      throw new Error(`Unexpected redirect from ${new URL(url).hostname}`);
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status} from ${new URL(url).hostname}`);
     return { html: await response.text(), url: response.url };
   } finally {
@@ -441,7 +444,21 @@ export function parseFlashTargetFromEpisodeHtml(html) {
     if (!classes.includes("flash_link")) continue;
     const href = String(attrs["data-href"] || "");
     const id = String(attrs["data-id"] || "");
-    if (!id || !/^https:\/\/(?:www\.)?newsportaling\.com\/finnance-/i.test(href)) continue;
+    let target;
+    try { target = new URL(href); } catch { continue; }
+    const host = target.hostname.toLowerCase();
+    const legacyTarget = (host === "newsportaling.com" || host === "www.newsportaling.com")
+      && /^\/finnance-[^/]+$/i.test(target.pathname);
+    const currentTarget = (host === "newscurting.com" || host === "www.newscurting.com")
+      && /^\/savvings-[^/]+$/i.test(target.pathname);
+    if (!/^[a-f0-9]{32}$/i.test(id)
+      || target.protocol !== "https:"
+      || (!legacyTarget && !currentTarget)
+      || target.port
+      || target.username
+      || target.password
+      || target.search
+      || target.hash) continue;
     return { id, href };
   }
   throw new Error("APNE Flash Link was not found for this episode.");
@@ -449,29 +466,102 @@ export function parseFlashTargetFromEpisodeHtml(html) {
 
 export function parseNewsportalingRedirect(html) {
   const source = String(html || "");
-  const redirect = source.match(/myRedirect\(\s*["'](https:\/\/[^"']*mediagraming\.com\/[^"']+)["']\s*,\s*["']id["']\s*,\s*["']([^"']+)["']\s*\)/i);
+  const redirect = source.match(/myRedirect\(\s*["']([^"']+)["']\s*,\s*["']id["']\s*,\s*["']([^"']+)["']\s*\)/i);
   if (!redirect) throw new Error("Newsportaling did not expose the Mediagraming handoff.");
+  let target;
+  try { target = new URL(decodeHtml(redirect[1])); } catch {
+    throw new Error("Newsportaling returned an invalid Mediagraming handoff.");
+  }
+  const host = target.hostname.toLowerCase();
+  if (target.protocol !== "https:"
+    || (host !== "mediagraming.com" && !host.endsWith(".mediagraming.com"))
+    || target.username
+    || target.password
+    || target.port) {
+    throw new Error("Newsportaling returned an unexpected Mediagraming host.");
+  }
   const channel = source.match(/name=["']channel["']\s+value=["']([^"']+)["']/i)
     || source.match(/name=\\?["']channel\\?["']\s+value=\\?["']([^"'\\]+)\\?["']/i);
   return {
-    url: decodeHtml(redirect[1]),
+    url: target.href,
     id: decodeHtml(redirect[2]),
     channel: decodeHtml(channel?.[1] || "starplus1"),
   };
 }
 
-export function parseMediagramingHlsFromHtml(html) {
-  const source = decodeHtml(String(html || ""));
-  const match = source.match(/<iframe\b[^>]*\bsrc=["']([^"']*mediagraming\.com\/new\/video\.php\/?\?url=[^"']+)["']/i);
-  if (!match) throw new Error("Mediagraming player iframe was not found.");
-  const iframeUrl = new URL(match[1]);
-  const hlsUrl = new URL(iframeUrl.searchParams.get("url") || "");
+function validatedApneHlsUrl(value) {
+  let hlsUrl;
+  try {
+    hlsUrl = new URL(String(value || "").replace(/\\\//g, "/"));
+  } catch {
+    throw new Error("Mediagraming did not return a valid HLS URL.");
+  }
   const host = hlsUrl.hostname.toLowerCase().replace(/\.$/, "");
-  if (hlsUrl.protocol !== "https:" || (host !== "videoapne.to" && !host.endsWith(".videoapne.to"))) {
+  const allowedHost = host === "videoapne.to"
+    || host.endsWith(".videoapne.to")
+    || host === "streaming.disk.yandex.net"
+    || (host === "cdn.justfingram.com" && !hlsUrl.port);
+  if (hlsUrl.protocol !== "https:" || !allowedHost) {
     throw new Error("Mediagraming returned an unexpected media host.");
   }
   if (!/\.m3u8(?:$|[?#])/i.test(hlsUrl.href)) throw new Error("Mediagraming did not return an HLS playlist.");
   return hlsUrl.href;
+}
+
+export function parseMediagramingPlayerUrlFromHtml(html) {
+  const source = decodeHtml(String(html || ""));
+  for (const match of source.matchAll(/<iframe\b[^>]*\bsrc=["']([^"']+)["']/gi)) {
+    let playerUrl;
+    try {
+      playerUrl = new URL(match[1]);
+    } catch {
+      continue;
+    }
+    const host = playerUrl.hostname.toLowerCase().replace(/\.$/, "");
+    const isMediagraming = host === "mediagraming.com" || host.endsWith(".mediagraming.com");
+    const isJustfingram = host === "justfingram.com";
+    if (playerUrl.protocol !== "https:" || (!isMediagraming && !isJustfingram)) continue;
+    if (isMediagraming && (playerUrl.pathname !== "/player.php" || !playerUrl.searchParams.get("id"))) continue;
+    if (isJustfingram && (playerUrl.port || playerUrl.pathname !== "/play.php" || !playerUrl.searchParams.get("id") || !playerUrl.searchParams.get("srv"))) continue;
+    return playerUrl.href;
+  }
+  return null;
+}
+
+export function parseMediagramingHlsFromHtml(html) {
+  const source = decodeHtml(String(html || ""));
+
+  const legacy = source.match(/<iframe\b[^>]*\bsrc=["']([^"']*mediagraming\.com\/new\/video\.php\/?\?url=[^"']+)["']/i);
+  if (legacy) {
+    const iframeUrl = new URL(legacy[1]);
+    return validatedApneHlsUrl(iframeUrl.searchParams.get("url") || "");
+  }
+
+  const direct = source.match(/(?:\b(?:var|let|const)\s+)?videoUrl\s*(?:=|:)\s*["']([^"']+)["']/i);
+  if (direct) return validatedApneHlsUrl(direct[1]);
+
+  // New justfingram frames keep the media URL out of the markup. They use a
+  // small, page-local XOR decoder: base64 bytes are XORed with the declared
+  // key before being assigned to videoUrl. Match that shape explicitly rather
+  // than executing arbitrary player JavaScript.
+  const keyMatch = source.match(/\b(?:var|let|const)\s+k\s*=\s*["']([^"']{1,64})["']/i);
+  const decoderMatch = source.match(/function\s+decodeUrl\s*\(\s*s\s*\)\s*\{([\s\S]{0,2000}?)\}/i);
+  const encodedMatch = source.match(/\b(?:var|let|const)\s+videoUrl\s*=\s*decodeUrl\(\s*["']([A-Za-z0-9+/_=-]{1,8192})["']\s*\)/i);
+  const decoderBody = decoderMatch?.[1] || "";
+  if (keyMatch && encodedMatch
+    && /atob\s*\(\s*s\s*\)/i.test(decoderBody)
+    && /charCodeAt\s*\(\s*i\s*\)\s*\^\s*k\.charCodeAt\s*\(\s*i\s*%\s*k\.length\s*\)/i.test(decoderBody)) {
+    const key = keyMatch[1];
+    const decodedBytes = Buffer.from(encodedMatch[1], "base64");
+    if (!decodedBytes.length || decodedBytes.length > 8192) throw new Error("Mediagraming returned an invalid encoded HLS URL.");
+    let decodedUrl = "";
+    for (let index = 0; index < decodedBytes.length; index += 1) {
+      decodedUrl += String.fromCharCode(decodedBytes[index] ^ key.charCodeAt(index % key.length));
+    }
+    return validatedApneHlsUrl(decodedUrl);
+  }
+
+  throw new Error("Mediagraming HLS source was not found.");
 }
 
 export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
@@ -501,9 +591,22 @@ export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
       referer: flash.href,
     });
     await log("mediagraming_html_ok", { bytes: media.html.length, responseHost: hostOf(media.url) });
-    const hlsUrl = parseMediagramingHlsFromHtml(media.html);
+
+    let hlsUrl;
+    let hlsReferer = handoff.url;
+    const playerUrl = parseMediagramingPlayerUrlFromHtml(media.html);
+    if (playerUrl) {
+      await log("mediagraming_player_found", { playerHost: hostOf(playerUrl) });
+      const player = await fetchText(playerUrl, { referer: handoff.url });
+      await log("mediagraming_player_html_ok", { bytes: player.html.length, responseHost: hostOf(player.url) });
+      hlsUrl = parseMediagramingHlsFromHtml(player.html);
+      hlsReferer = player.url;
+    } else {
+      hlsUrl = parseMediagramingHlsFromHtml(media.html);
+    }
+
     await log("hls_resolved", { hlsHost: hostOf(hlsUrl) });
-    return { hlsUrl, referer: handoff.url };
+    return { hlsUrl, referer: hlsReferer };
   } catch (error) {
     await log("resolve_failed", { error: error.message });
     throw error;

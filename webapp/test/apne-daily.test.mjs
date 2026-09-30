@@ -126,6 +126,53 @@ test("APNE Daily resolves the browserless APNE to Newsportaling to Mediagraming 
   );
 });
 
+test("APNE Daily accepts the live Seher Newscurting handoff and rejects untrusted flash targets", () => {
+  const id = "0123456789abcdef0123456789abcdef";
+  assert.deepEqual(
+    parseFlashTargetFromEpisodeHtml(`<div class="flash_link" data-href="https://newscurting.com/savvings-seher-hone-ko-hai" data-id="${id}"></div>`),
+    { id, href: "https://newscurting.com/savvings-seher-hone-ko-hai" },
+  );
+  const handoff = parseNewsportalingRedirect(
+    `<script>myRedirect("https://mediagraming.com/seher/", "id", "${id}");</script><input name="channel" value="colors2">`,
+  );
+  assert.deepEqual(handoff, {
+    url: "https://mediagraming.com/seher/",
+    id,
+    channel: "colors2",
+  });
+
+  const legacy = `<div class="flash_link" data-id="${id}" data-href="https://www.newsportaling.com/finnance-account-insurance-yield"></div>`;
+  assert.equal(parseFlashTargetFromEpisodeHtml(legacy).href, "https://www.newsportaling.com/finnance-account-insurance-yield");
+  for (const href of [
+    "https://example.com/savvings-seher",
+    "https://newscurting.com/other-seher",
+    "https://newscurting.com/finnance-seher",
+    "https://newsportaling.com/savvings-seher",
+    "https://newscurting.com/savvings-seher?redirect=https://example.com",
+    "https://newscurting.com.evil.example/savvings-seher",
+  ]) {
+    assert.throws(
+      () => parseFlashTargetFromEpisodeHtml(`<div class="flash_link" data-id="${id}" data-href="${href}"></div>`),
+      /Flash Link was not found/,
+    );
+  }
+  assert.throws(
+    () => parseFlashTargetFromEpisodeHtml('<div class="flash_link" data-id="not-an-id" data-href="https://newscurting.com/savvings-seher"></div>'),
+    /Flash Link was not found/,
+  );
+  for (const url of [
+    "https://evilmediagraming.com/seher/",
+    "https://mediagraming.com.evil.example/seher/",
+    "https://user@mediagraming.com/seher/",
+    "https://mediagraming.com:444/seher/",
+  ]) {
+    assert.throws(
+      () => parseNewsportalingRedirect(`<script>myRedirect("${url}", "id", "${id}");</script>`),
+      /unexpected Mediagraming host/,
+    );
+  }
+});
+
 test("APNE Daily duplicate detection skips an already downloaded episode", () => {
   const episode = {
     url: "https://apnetv.xyz/Hindi-Serial/show/286378/Anupamaa",
