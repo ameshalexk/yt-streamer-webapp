@@ -1,6 +1,6 @@
 build_from:
-  aarch64: node:22-bookworm-slim
-  amd64: node:22-bookworm-slim
+  aarch64: docker.io/library/node:22-bookworm-slim
+  amd64: docker.io/library/node:22-bookworm-slim
 args:
   APP_REF: "00155b080f724ac5941632191ef239b5846b7753"
   YTDLP_VERSION: "2026.08.19"

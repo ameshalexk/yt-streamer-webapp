@@ -9,12 +9,17 @@ LABEL org.opencontainers.image.source="https://github.com/ameshalexk/yt-streamer
 
 # Keep this compatible with the Supervisor's Docker API build path.
 RUN set -eu; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-      ca-certificates curl ffmpeg python3 python3-venv; \
+    if command -v apt-get >/dev/null 2>&1; then \
+      apt-get update; \
+      apt-get install -y --no-install-recommends \
+        ca-certificates curl ffmpeg python3 python3-venv; \
+      rm -rf /var/lib/apt/lists/*; \
+    else \
+      apk add --no-cache \
+        ca-certificates curl ffmpeg nodejs npm python3 py3-pip py3-virtualenv; \
+    fi; \
     python3 -m venv /opt/yt-dlp; \
-    /opt/yt-dlp/bin/pip install --no-cache-dir "yt-dlp==${YTDLP_VERSION}"; \
-    rm -rf /var/lib/apt/lists/*
+    /opt/yt-dlp/bin/pip install --no-cache-dir "yt-dlp==${YTDLP_VERSION}"
 
 WORKDIR /app
 RUN set -eu; \

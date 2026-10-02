@@ -20,18 +20,20 @@ STAGING="$(mktemp -d)"
 curl -fL "https://codeload.github.com/ameshalexk/yt-streamer-webapp/tar.gz/refs/heads/${SOURCE_REF}" -o "$STAGING/source.tar.gz"
 tar -xzf "$STAGING/source.tar.gz" -C "$STAGING"
 ha backups new --name yt-streamer-pre-install
-mkdir -p /addons/yt_streamer
-cp "$STAGING"/yt-streamer-webapp-*/ha-addon/* /addons/yt_streamer/
-ha addons reload
+mkdir -p /local_apps/yt_streamer
+cp "$STAGING"/yt-streamer-webapp-*/ha-addon/* /local_apps/yt_streamer/
+curl -fsS -X POST \
+  -H "Authorization: Bearer $SUPERVISOR_TOKEN" \
+  http://supervisor/addons/reload
 ha addons install local_yt_streamer
 ha addons start local_yt_streamer
 ha addons info local_yt_streamer
 ```
 
-Open `http://192.168.50.90:8099`. Verify:
+Open `http://homeassistant.local:8099` (currently `http://192.168.50.94:8099`). Verify:
 
 ```sh
-curl -f http://192.168.50.90:8099/api/health
+curl -f http://homeassistant.local:8099/api/health
 ```
 
 Once merged to the default branch, add
@@ -46,14 +48,14 @@ hostname with these values:
 
 - Hostname: `streamha.ameshalex.com`
 - Service type: HTTP
-- Service URL: `192.168.50.90:8099`
+- Service URL: `homeassistant:8099`
 
 For a locally managed Cloudflare add-on using `additional_hosts`, the entry is:
 
 ```yaml
 additional_hosts:
   - hostname: streamha.ameshalex.com
-    service: http://192.168.50.90:8099
+    service: http://homeassistant:8099
 ```
 
 Append it to the existing list. A remotely managed tunnel uses its dashboard
