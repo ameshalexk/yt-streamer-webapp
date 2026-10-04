@@ -123,12 +123,14 @@ async function load() {
 
 // Serialize writes so concurrent requests can't corrupt the file.
 function persist() {
-  writeChain = writeChain.then(async () => {
+  const write = writeChain.then(async () => {
     const tmp = STORE_FILE + ".tmp";
     await fs.writeFile(tmp, JSON.stringify(cache, null, 2), "utf8");
     await fs.rename(tmp, STORE_FILE);
   });
-  return writeChain;
+  // Keep the queue usable after a failed save, but reject that save's caller.
+  writeChain = write.catch(() => {});
+  return write;
 }
 
 // ---- Playlists ----
