@@ -178,7 +178,7 @@ test("WebCodecs speed uses server tempo audio and a faster video clock", () => {
 test("WebCodecs restart preserves user activation by avoiding awaited old-player cleanup", () => {
   const playerBlock = app.match(/async function playCyberdashStream[\s\S]*?\n\}\n\n\/\/ Play one synced MPEG-TS/)?.[0] || "";
   assert.doesNotMatch(playerBlock, /await stopCyberdashPlayback/);
-  assert.match(playerBlock, /cleanupMedia\(\)/);
+  assert.match(playerBlock, /cleanupMedia\(Boolean\(meta\.watchHistoryKey[\s\S]*?\)\)/);
   assert.match(playerBlock, /const module = cyberdashModule \|\| await ensureCyberdashModule\(\)/);
   assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260928-speed-v9"\)/);
 });

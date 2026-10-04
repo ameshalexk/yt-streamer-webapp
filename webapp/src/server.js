@@ -781,6 +781,12 @@ app.post("/api/watch-history", asyncH(async (req, res) => {
   res.status(201).json(entry);
 }));
 
+app.patch("/api/watch-history/:id/progress", asyncH(async (req, res) => {
+  const entry = await store.updateWatchProgress(req.params.id, req.body || {});
+  if (!entry) return res.status(404).json({ error: "history entry not found" });
+  res.json(entry);
+}));
+
 app.delete("/api/watch-history/:id", asyncH(async (req, res) => {
   const ok = await store.deleteWatchHistoryEntry(req.params.id);
   if (!ok) return res.status(404).json({ error: "history entry not found" });

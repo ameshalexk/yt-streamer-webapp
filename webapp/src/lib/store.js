@@ -55,6 +55,13 @@ function canonicalYoutubeId(entry = {}) {
   return String(entry.youtubeId || entry.id || youtubeIdFromUrl(entry.url) || "").trim();
 }
 
+function watchHistoryDuration(value, previous) {
+  // Missing metadata must not overwrite a known duration with a coerced zero.
+  const supplied = typeof value === "number" || (typeof value === "string" && value.trim() !== "");
+  const duration = supplied ? Number(value) : NaN;
+  return Number.isFinite(duration) && duration >= 0 ? duration : previous ?? null;
+}
+
 function canonicalCategory(meta = {}) {
   return String(meta.category || meta.group || "").trim().toLowerCase();
 }
@@ -123,12 +130,14 @@ async function load() {
 
 // Serialize writes so concurrent requests can't corrupt the file.
 function persist() {
-  writeChain = writeChain.then(async () => {
+  const write = writeChain.then(async () => {
     const tmp = STORE_FILE + ".tmp";
     await fs.writeFile(tmp, JSON.stringify(cache, null, 2), "utf8");
     await fs.rename(tmp, STORE_FILE);
   });
-  return writeChain;
+  // Keep the queue usable after a failed save, but reject that save's caller.
+  writeChain = write.catch(() => {});
+  return write;
 }
 
 // ---- Playlists ----
@@ -277,6 +286,16 @@ export async function listWatchHistory() {
 
 export async function recordWatchHistory(entry) {
   const data = await load();
+  if (entry?.restartProgress !== undefined && typeof entry.restartProgress !== "boolean") {
+    const error = new Error("restartProgress must be a boolean"); error.status = 400; throw error;
+  }
+  const hasSession = Object.prototype.hasOwnProperty.call(entry || {}, "playbackSessionId");
+  const playbackSessionId = hasSession ? entry.playbackSessionId : undefined;
+  if (hasSession && (typeof playbackSessionId !== "string" || !playbackSessionId.trim() || playbackSessionId.length > 128)) {
+    const error = new Error("playbackSessionId must be a nonempty string of at most 128 characters");
+    error.status = 400;
+    throw error;
+  }
   const url = canonicalUrl(entry?.url);
   const youtubeId = canonicalYoutubeId(entry);
   if (!url && !youtubeId) throw new Error("video url required");
@@ -291,8 +310,12 @@ export async function recordWatchHistory(entry) {
     url: url || previous?.url || (youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : ""),
     thumbnail: String(entry?.thumbnail || previous?.thumbnail || "").slice(0, 4096),
     channelTitle: String(entry?.channelTitle || entry?.uploader || previous?.channelTitle || "").slice(0, 300),
-    duration: Number.isFinite(Number(entry?.duration)) ? Number(entry.duration) : previous?.duration || null,
+    duration: watchHistoryDuration(entry?.duration, previous?.duration),
     isLive: Boolean(entry?.isLive),
+    playbackSessionId: hasSession ? playbackSessionId : (previous?.playbackSessionId ?? null),
+    progressSequence: hasSession && playbackSessionId !== previous?.playbackSessionId ? -1 : (previous?.progressSequence ?? -1),
+    positionSeconds: entry?.restartProgress ? 0 : (previous?.positionSeconds ?? 0),
+    completed: entry?.restartProgress ? false : (previous?.completed ?? false),
     source: String(entry?.source || previous?.source || "webapp").slice(0, 80),
     firstPlayedAt: previous?.firstPlayedAt || now,
     lastPlayedAt: now,
@@ -302,6 +325,40 @@ export async function recordWatchHistory(entry) {
   data.watchHistory = data.watchHistory.slice(0, MAX_WATCH_HISTORY);
   await persist();
   return item;
+}
+
+export async function updateWatchProgress(entryId, progress) {
+  const data = await load();
+  const entry = data.watchHistory.find((item) => item.id === entryId || item.youtubeId === entryId);
+  if (!entry) { const error = new Error("history entry not found"); error.status = 404; throw error; }
+  if (typeof progress?.playbackSessionId !== "string" || !progress.playbackSessionId.trim() || progress.playbackSessionId.length > 128) {
+    const error = new Error("playbackSessionId must be a nonempty string of at most 128 characters"); error.status = 400; throw error;
+  }
+  const conflict = (message) => { const error = new Error(message); error.status = 409; return error; };
+  if (entry.playbackSessionId !== progress?.playbackSessionId) throw conflict("playback session does not match");
+  if (!Number.isSafeInteger(progress?.sequence) || progress.sequence < 0 || progress.sequence <= (entry.progressSequence ?? -1)) {
+    throw conflict("progress sequence must increase");
+  }
+  if (entry.isLive || progress.isLive) { const error = new Error("live streams do not support watch progress"); error.status = 400; throw error; }
+  if (typeof progress.positionSeconds !== "number" || !Number.isFinite(progress.positionSeconds) || progress.positionSeconds < 0) {
+    const error = new Error("positionSeconds must be a finite nonnegative number"); error.status = 400; throw error;
+  }
+  if (progress.duration !== undefined && progress.duration !== null &&
+      (typeof progress.duration !== "number" || !Number.isFinite(progress.duration) || progress.duration <= 0)) {
+    const error = new Error("duration must be a positive finite number"); error.status = 400; throw error;
+  }
+  if (progress.isLive !== undefined && typeof progress.isLive !== "boolean") {
+    const error = new Error("isLive must be a boolean"); error.status = 400; throw error;
+  }
+  if (progress.isLive) { const error = new Error("live streams do not support watch progress"); error.status = 400; throw error; }
+  if (progress.duration !== undefined && progress.duration !== null) entry.duration = progress.duration;
+  const duration = entry.duration > 0 ? entry.duration : null;
+  const position = duration === null ? progress.positionSeconds : Math.min(progress.positionSeconds, duration);
+  entry.positionSeconds = position;
+  entry.progressSequence = progress.sequence;
+  entry.completed = duration !== null && (position / duration >= 0.98 || (duration > 10 && duration - position <= 5));
+  await persist();
+  return entry;
 }
 
 export async function deleteWatchHistoryEntry(entryId) {

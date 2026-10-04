@@ -1501,6 +1501,7 @@ function setAutoplayContext(kind = null, itemId = null, queue = []) {
 }
 
 async function handleAutoplayEnd() {
+  void watchProgress.save(streamSeek.duration ? { positionSeconds: streamSeek.duration } : {});
   if (!autoplayEnabled || autoplayAdvancing || !autoplayContext) return;
   const context = autoplayContext;
   const currentIndex = context.queue.findIndex((item) => String(item.id) === context.itemId);
@@ -1646,6 +1647,7 @@ function freezeMjpegFrame() {
 
 function pausePlayback() {
   if (playbackPaused || $("#pauseBtn")?.disabled) return;
+  void watchProgress.save();
   const screen = $("#screen");
   if (screen.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
     pausedResumeAt = getStreamCurrentTime();
@@ -1861,7 +1863,8 @@ function canTryMpegts() {
   return Boolean(window.MediaSource || window.ManagedMediaSource || window.mpegts);
 }
 
-function cleanupMedia() {
+function cleanupMedia(keepWatchProgress = false) {
+  if (!keepWatchProgress) void watchProgress.stop();
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
   void stopCyberdashPlayback({ report: true });
   clearFullscreenOverlayHide();
@@ -2503,6 +2506,7 @@ function markBufferedStreamPlaying(attempt, stats = null, { revealControls = tru
 
 function finishBufferedStream(attempt) {
   if (!currentAttempt(attempt)) return;
+  void watchProgress.save(streamSeek.duration ? { positionSeconds: streamSeek.duration } : {});
   clearStreamTimers();
   stopStreamSeekTimer(false);
   if (streamSeek.duration) {
@@ -2542,7 +2546,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const screen = $("#screen");
   const canvas = $("#mjpegCanvas");
   const audio = $("#audio");
-  cleanupMedia();
+  cleanupMedia(Boolean(meta.watchHistoryKey && watchProgress.session?.key === meta.watchHistoryKey));
   resetPauseControl(false);
   if (meta.autoplayContext) {
     setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
@@ -2802,7 +2806,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
 
 function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const screen = $("#screen"), img = $("#mjpeg"), audio = $("#audio");
-  cleanupMedia();
+  cleanupMedia(Boolean(meta.watchHistoryKey && watchProgress.session?.key === meta.watchHistoryKey));
   resetPauseControl(false);
   if (meta.autoplayContext) {
     setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
@@ -2973,7 +2977,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
 
   // cleanupMedia detaches the old player synchronously and lets its async cleanup finish in the background.
   // Avoiding an awaited stop here preserves the current click/change user activation for iOS/Tesla audio.
-  cleanupMedia();
+  cleanupMedia(Boolean(meta.watchHistoryKey && watchProgress.session?.key === meta.watchHistoryKey));
   resetPauseControl(false);
   if (meta.autoplayContext) {
     setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
@@ -3077,7 +3081,7 @@ async function playStream(sources, label, meta = {}) {
   $("#nowPlaying").textContent = label || "Playing";
   $("#stopBtn").disabled = false;
   $("#restreamBtn").disabled = false;
-  cleanupMedia();
+  cleanupMedia(Boolean(meta.watchHistoryKey && watchProgress.session?.key === meta.watchHistoryKey));
   resetPauseControl(false);
   if (meta.autoplayContext) {
     setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
@@ -3194,6 +3198,7 @@ function refreshYoutubeMetadataInBackground(item, trace, { savedItem = false, ac
 }
 
 async function playItem(item) {
+  void watchProgress.stop();
   const startupTrace = beginPlaybackStartupTrace(item.type === "youtube" ? "saved-youtube" : "saved-item", item);
   if (item.type === "youtube") {
     refreshYoutubeMetadataInBackground(item, startupTrace, {
@@ -3226,6 +3231,7 @@ async function playItem(item) {
       bufferedMjpeg: item.type === "youtube" || item.type === "file",
       duration: item.meta?.duration,
       youtubeUrl: item.type === "youtube" ? item.url : "",
+      watchHistoryKey: watchHistoryKey(item),
       startAt,
       startupTrace: trace,
     });
@@ -4561,6 +4567,7 @@ async function prepareLegacyCdn(item) {
 }
 
 async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
+  void watchProgress.stop();
   const url = video.url;
   if (!video.duration) {
     try {
@@ -4597,6 +4604,7 @@ async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
       bufferedMjpeg: !video.isLive,
       duration: video.duration,
       youtubeUrl: video.url,
+      watchHistoryKey: watchHistoryKey(video),
       startAt,
       autoplayContext: !video.isLive ? {
         kind: "library-playlist",
@@ -4623,7 +4631,8 @@ function legacyStreamUrl(startAt = 0) {
 }
 
 function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = null, options = {}) {
-  cleanupMedia();
+  if (!options.skipHistory) void watchProgress.stop();
+  cleanupMedia(Boolean(options.skipHistory && watchProgress.session?.key === watchHistoryKey(item)));
   stopStreamSeekTimer(true);
   state.playingItemId = null;
   state.legacyPlayingId = item.id;
@@ -4666,6 +4675,7 @@ function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = nu
       preparedResolution,
       seekable: true,
       duration: item.duration,
+      watchHistoryKey: watchHistoryKey(item),
       startAt,
       keepLegacyState: true,
       autoplayContext,
@@ -4681,6 +4691,7 @@ function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = nu
       seekable: true,
       bufferedMjpeg: true,
       duration: item.duration,
+      watchHistoryKey: watchHistoryKey(item),
       startAt,
       keepLegacyState: true,
       audioElementStartAt: startAt,
@@ -4689,7 +4700,7 @@ function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = nu
   }
 
   if (!options.skipHistory && (item.originalUrl || item.originalYoutubeId)) {
-    void recordWatchHistory(item, "library");
+    void recordWatchHistory(item, "library", { restartProgress: startAt === 0 });
   }
 }
 
@@ -4799,16 +4810,50 @@ function historyVideoPayload(item, source = "webapp") {
   };
 }
 
-async function recordWatchHistory(item, source = "webapp") {
+function watchHistoryKey(item) {
+  const payload = historyVideoPayload(item);
+  return payload.youtubeId || payload.url;
+}
+
+const watchProgress = new window.WatchProgress.Tracker({
+  record: (payload) => api.post("/api/watch-history", payload),
+  update: async (id, payload, keepalive) => api.parse(await fetchProgress(id, payload, keepalive)),
+  capture: () => {
+    if (!streamSeek.seekable || streamSeek.isLive || $("#screen").classList.contains("loading")) return null;
+    if ($("#pauseBtn")?.disabled && !playbackPaused) return null;
+    return {
+      positionSeconds: playbackPaused ? pausedResumeAt : getStreamCurrentTime(),
+      duration: streamSeek.duration || undefined,
+      isLive: false,
+    };
+  },
+  onSaved: (saved) => {
+    if (!state.youtubeHistoryLoaded) return;
+    const index = state.youtubeHistory.findIndex((entry) => entry.id === saved.id);
+    if (index >= 0) state.youtubeHistory[index] = saved;
+    else state.youtubeHistory.unshift(saved);
+    state.youtubeHistory.sort((a, b) => b.lastPlayedAt - a.lastPlayedAt);
+    state.youtubeHistory = state.youtubeHistory.slice(0, WATCH_HISTORY_LIMIT);
+    renderYoutubeHistory();
+  },
+  onError: (error) => console.warn("watch progress save failed:", error.message),
+});
+
+async function fetchProgress(id, payload, keepalive) {
+  return fetch(`/api/watch-history/${encodeURIComponent(id)}/progress`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    keepalive,
+  });
+}
+
+async function recordWatchHistory(item, source = "webapp", { restartProgress = source !== "history" } = {}) {
   const payload = historyVideoPayload(item, source);
+  payload.restartProgress = restartProgress;
   if (!payload.url && !payload.youtubeId) return;
   try {
-    const saved = await api.post("/api/watch-history", payload);
-    if (state.youtubeHistoryLoaded) {
-      state.youtubeHistory = [saved, ...state.youtubeHistory.filter((entry) => entry.id !== saved.id && entry.youtubeId !== saved.youtubeId)]
-        .slice(0, WATCH_HISTORY_LIMIT);
-      renderYoutubeHistory();
-    }
+    await watchProgress.begin(payload);
   } catch (e) {
     console.warn("watch history record failed:", e.message);
   }
@@ -4895,7 +4940,8 @@ function renderYoutubeHistory() {
     const thumb = item.thumbnail
       ? `<div class="yt-search-thumb"><img src="${esc(item.thumbnail)}" alt="" loading="lazy" /></div>`
       : `<div class="yt-search-thumb placeholder">▶</div>`;
-    const meta = [item.channelTitle, item.duration ? fmtDur(item.duration) : "", historyPlayedLabel(item)].filter(Boolean).join(" · ");
+    const resumeAt = window.WatchProgress.resumePosition(item);
+    const meta = [item.channelTitle, item.duration ? fmtDur(item.duration) : "", item.completed ? "Watched" : resumeAt > 0 ? `Resume at ${clock(resumeAt)}` : "", historyPlayedLabel(item)].filter(Boolean).join(" · ");
     return `<div class="yt-search-row${item.id === state.youtubeHistoryPlayingId ? " active" : ""}" data-video-id="${esc(item.id)}">
       ${thumb}
       <div class="yt-search-info">
@@ -4903,7 +4949,8 @@ function renderYoutubeHistory() {
         <div class="yt-search-meta">${esc(meta)}</div>
       </div>
       <div class="yt-search-actions">
-        <button class="btn small secondary" data-act="stream-history" type="button">Stream</button>
+        <button class="btn small secondary" data-act="stream-history" type="button">${resumeAt > 0 ? "Resume" : "Stream"}</button>
+        ${resumeAt > 0 ? '<button class="btn small ghost" data-act="restart-history" type="button">Start over</button>' : ""}
         <button class="btn small ghost" data-act="download-history" type="button" ${download?.status === "running" || download?.status === "done" ? "disabled" : ""}>${esc(downloadLabel)}</button>
         <button class="btn small ghost" data-act="remove-history" type="button">Remove</button>
       </div>
@@ -4962,6 +5009,7 @@ async function performYoutubeSearch() {
 
 async function streamYoutubeSearchResult(item, autoplayQueue = null) {
   if (!item) return;
+  void watchProgress.stop();
   const startupTrace = beginPlaybackStartupTrace("youtube-search", item);
   refreshYoutubeMetadataInBackground(item, startupTrace, {
     active: () => state.youtubeSearchPlayingId === item.id,
@@ -4994,6 +5042,7 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
       bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
       youtubeUrl: item.url,
+      watchHistoryKey: watchHistoryKey(item),
       startAt,
       startupTrace: trace,
       autoplayContext: !item.isLive && !item.isUpcoming ? {
@@ -5007,8 +5056,9 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
   void recordWatchHistory(item, "search");
 }
 
-async function streamYoutubeHistoryItem(item) {
+async function streamYoutubeHistoryItem(item, { restart = false } = {}) {
   if (!item) return;
+  void watchProgress.stop();
   const startupTrace = beginPlaybackStartupTrace("youtube-history", item);
   refreshYoutubeMetadataInBackground(item, startupTrace, {
     active: () => state.youtubeHistoryPlayingId === item.id,
@@ -5041,12 +5091,13 @@ async function streamYoutubeHistoryItem(item) {
       bufferedMjpeg: !item.isLive,
       duration: item.duration,
       youtubeUrl: item.url,
+      watchHistoryKey: watchHistoryKey(item),
       startAt,
       startupTrace: trace,
     });
   };
-  replayFn(0);
-  void recordWatchHistory(item, "history");
+  replayFn(restart ? 0 : window.WatchProgress.resumePosition(item));
+  void recordWatchHistory(item, "history", { restartProgress: restart || Boolean(item.completed) });
 }
 
 function recommendationMeta(item) {
@@ -5354,6 +5405,7 @@ async function disconnectYoutube() {
 
 async function streamRecommendation(item, autoplayQueue = null) {
   if (!item) return;
+  void watchProgress.stop();
   const startupTrace = beginPlaybackStartupTrace("recommendation", item);
   state.playingItemId = null;
   state.legacyPlayingId = null;
@@ -5396,6 +5448,7 @@ async function streamRecommendation(item, autoplayQueue = null) {
       bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
       youtubeUrl: item.url,
+      watchHistoryKey: watchHistoryKey(item),
       startAt,
       startupTrace: trace,
       autoplayContext: !item.isLive && !item.isUpcoming ? {
@@ -8272,7 +8325,7 @@ bindTap($("#ytHistoryResults"), async (e) => {
     await removeYoutubeHistoryItem(item);
     return;
   }
-  await streamYoutubeHistoryItem(item);
+  await streamYoutubeHistoryItem(item, { restart: act === "restart-history" });
 });
 
 function desktopInputActiveForScreen() {
@@ -8904,6 +8957,7 @@ $("#quickPlayBtn").onclick = async () => {
     } finally {
       ytBtn.disabled = false; ytBtn.textContent = "Go";
     }
+    void watchProgress.stop();
     state.playingItemId = null;
     state.legacyPlayingId = null;
     state.recommendedPlayingId = null;
@@ -8927,6 +8981,7 @@ $("#quickPlayBtn").onclick = async () => {
         bufferedMjpeg: !info?.isLive,
         duration: info?.duration,
         youtubeUrl: url,
+        watchHistoryKey: info?.id || youtubeIdFromUrl(url) || url,
         startAt,
       });
     };
@@ -9021,6 +9076,7 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
   setInterval(() => refreshSessionManager({ notify: true }), SESSION_POLL_MS);
   window.addEventListener("resize", () => setMode(state.mode));
   window.addEventListener("pagehide", () => {
+    void watchProgress.save({ keepalive: true });
     stopDesktopAudioHlsSessionOnUnload();
     stopDesktopHlsSessionOnUnload();
     try { browserPcmSharedContext?.close?.(); } catch {}
@@ -9029,6 +9085,8 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
   document.addEventListener("pointerdown", retryBrowserAudioFromGesture, true);
   document.addEventListener("keydown", retryBrowserAudioFromGesture, true);
   document.addEventListener("visibilitychange", () => {
+    if (document.hidden) void watchProgress.save({ keepalive: true });
     activeCompat?.bufferedPlayer?.setVisible?.(!document.hidden);
   });
+  setInterval(() => { void watchProgress.save(); }, 5000);
 })();
