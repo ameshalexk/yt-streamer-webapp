@@ -67,6 +67,7 @@ export const config = {
   video: {
     // "libx264" (portable, CPU) or "h264_videotoolbox" (Mac hardware, far lighter CPU).
     encoder: process.env.VIDEO_ENCODER || "libx264",
+    dashEncoder: process.env.VIDEO_ENCODER || (process.platform === "darwin" ? "h264_videotoolbox" : "libx264"),
     audioBitrateK: int("AUDIO_BITRATE_K", 128),
   },
 

@@ -70,12 +70,39 @@ test("APNE Download resolves the JW HLS stream and saves one synced MP4 on the M
 });
 
 test("Real Chrome pins a gesture to one CDP target and self-paces capture", () => {
-  assert.match(renderer, /const cdp = session\.cdp/);
-  assert.match(renderer, /Input\.dispatchTouchEvent/);
+  assert.match(renderer, /const cdp = session\.cdp;[\s\S]*?tryApnePlayNowAtPoint/);
+  assert.match(renderer, /Input\.dispatchMouseEvent[\s\S]*?mousePressed[\s\S]*?Input\.dispatchMouseEvent[\s\S]*?mouseReleased/);
   assert.match(renderer, /CAPTURE_CONTROL_HEADROOM_MS = 8/);
   assert.match(renderer, /CAPTURE_COMMAND_TIMEOUT_MS = 1500/);
   assert.match(renderer, /scheduleNextCapture/);
   assert.match(renderer, /session\.cdp !== cdp/);
+});
+
+test("Real Chrome serializes complete taps per session and recovers after a failed tap", async () => {
+  const { enqueueBrowserInput } = await import("../src/lib/browser-input-queue.js");
+  const session = {};
+  const events = [];
+  let releaseFirst;
+  const firstTap = enqueueBrowserInput(session, async () => {
+    events.push("pressed");
+    await new Promise((resolve) => { releaseFirst = resolve; });
+    events.push("released");
+  });
+  const failedTap = enqueueBrowserInput(session, async () => {
+    events.push("failed tap");
+    throw new Error("CDP timeout");
+  });
+  const nextTap = enqueueBrowserInput(session, async () => events.push("next tap"));
+
+  await Promise.resolve();
+  assert.deepEqual(events, ["pressed"]);
+  releaseFirst();
+  await firstTap;
+  await assert.rejects(failedTap, /CDP timeout/);
+  await nextTap;
+  assert.deepEqual(events, ["pressed", "released", "failed tap", "next tap"]);
+  assert.match(renderer, /mousePressed[\s\S]*?mouseReleased/);
+  assert.doesNotMatch(renderer, /Input\.dispatchTouchEvent/);
 });
 
 test("Download tap is intercepted by coordinates and resolved in a background popup", () => {

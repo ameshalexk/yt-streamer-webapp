@@ -42,7 +42,7 @@ export function buildCyberdashDashArgs({
   fps = 30,
   startAt = 0,
   playbackRate = 1,
-  encoder = "h264_videotoolbox",
+  encoder = config.video.dashEncoder,
   manifestPath,
 }) {
   if (!videoInput) throw new Error("video input required");

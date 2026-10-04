@@ -151,6 +151,50 @@ textarea {
 .col-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .col-head h2 { margin: 0; font-size: 17px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .player-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+.playback-method-toggle {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.playback-method-toggle .btn[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.playback-speed-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.playback-speed-control select {
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 800;
+}
+.playback-speed-control.disabled {
+  opacity: .5;
+}
+.video-controls-row .playback-speed-control {
+  min-height: 52px;
+  background: rgba(0, 0, 0, .58);
+  border-color: rgba(255, 255, 255, .28);
+  color: #fff;
+}
+.video-controls-row .playback-speed-control select {
+  color: #fff;
+}
 .player-toolbar {
   display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 8px;
   padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
@@ -658,6 +702,7 @@ body.fullscreen-controls-idle .video-controls-overlay .video-controls-panel { po
 }
 .screen.playing.video-mode video, .screen.playing.mjpeg-mode img { display: block; }
 .screen.playing.mjpeg-buffered-mode #mjpegCanvas { display: block; }
+.screen.playing.cyberdash-mode #cyberdashCanvas { display: block; }
 .screen.playback-paused.mjpeg-mode img { display: none; }
 .screen.playback-paused.mjpeg-mode #pauseFrame { display: block; }
 .screen.playing.embed-mode iframe { display: block; }
@@ -1669,7 +1714,8 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
   display: flex; align-items: center; gap: 14px; max-width: min(760px, calc(100vw - 32px));
   background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
   padding: 12px 14px 12px 20px; border-radius: 12px; font-size: 16px; font-weight: 700;
-  z-index: 200; box-shadow: 0 8px 30px rgba(0,0,0,.5);
+  /* Keep feedback visible above dialogs so form errors are not hidden. */
+  z-index: 400; box-shadow: 0 8px 30px rgba(0,0,0,.5);
 }
 .toast.ok { border-color: rgba(46,194,106,.9); }
 .toast.bad { border-color: var(--accent); }
@@ -2099,4 +2145,34 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
     min-height: 50px;
     padding: 0 15px;
   }
+}
+
+/* Empty player chrome must not intercept the remote page underneath it. */
+.screen.browser-input-active .video-controls-panel {
+  pointer-events: none;
+}
+.screen.browser-input-active .video-controls-panel :is(button, input, select, textarea, a, [role="slider"]) {
+  pointer-events: auto;
+}
+body.fullscreen-controls-idle .screen.browser-input-active .video-controls-panel * {
+  pointer-events: none;
+}
+
+.browser-audio-fixed {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.browser-audio-fixed > span {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.browser-audio-fixed > strong {
+  font-size: 0.92rem;
+}
+.browser-audio-fixed > small {
+  color: var(--muted);
+  line-height: 1.35;
 }

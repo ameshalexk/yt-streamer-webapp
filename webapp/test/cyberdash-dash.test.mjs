@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import fs from "node:fs";
+import { config } from "../src/config.js";
 import { buildCyberdashDashArgs, parseDashManifest } from "../src/lib/cyberdash-dash.js";
 
-test("CyberDash DASH args use hardware H.264, AAC, fMP4 DASH, and separate audio mapping", () => {
+test("CyberDash DASH args use configured H.264, AAC, fMP4 DASH, and separate audio mapping", () => {
   const manifestPath = path.join("/tmp", "session", "manifest.mpd");
   const args = buildCyberdashDashArgs({
     videoInput: "http://127.0.0.1/video",
@@ -14,7 +15,7 @@ test("CyberDash DASH args use hardware H.264, AAC, fMP4 DASH, and separate audio
     manifestPath,
   });
   assert.deepEqual(args.slice(args.indexOf("-map"), args.indexOf("-map") + 4), ["-map", "0:v:0", "-map", "1:a:0"]);
-  assert.equal(args[args.indexOf("-c:v") + 1], "h264_videotoolbox");
+  assert.equal(args[args.indexOf("-c:v") + 1], config.video.dashEncoder);
   assert.equal(args[args.indexOf("-c:a") + 1], "aac");
   assert.equal(args[args.indexOf("-f") + 1], "dash");
   assert.equal(args[args.indexOf("-seg_duration") + 1], "1");
@@ -187,4 +188,9 @@ test("CyberDash DASH atempo is clamped with the supported playback range", () =>
     manifestPath: "/tmp/manifest.mpd",
   });
   assert.equal(args[args.indexOf("-af") + 1], "atempo=4");
+});
+
+ test("portable DASH supports the Linux software encoder", () => {
+  const args = buildCyberdashDashArgs({videoInput:"/tmp/video.mp4",encoder:"libx264",manifestPath:"/tmp/manifest.mpd"});
+  assert.equal(args[args.indexOf("-c:v")+1],"libx264");
 });

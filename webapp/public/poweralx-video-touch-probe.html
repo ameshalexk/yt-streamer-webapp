@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="robots" content="noindex,nofollow,nosnippet">
+  <meta name="theme-color" content="#0f1115">
+  <title>PowerALX Final Video Touch Test</title>
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:dark}
+    *{box-sizing:border-box}
+    body{margin:0;background:#0f1115;color:#f5f7fa;min-height:100vh}
+    main{max-width:920px;margin:0 auto;padding:22px 16px 46px}
+    h1{font-size:31px;margin:0 0 8px}
+    .lead{font-size:18px;line-height:1.45;color:#c3cbd6;margin-bottom:14px}
+    .warn{background:#2b2415;color:#ffe1a6;border-radius:12px;padding:12px 14px;margin-bottom:16px}
+    .card{background:#181c22;border:1px solid #2a3039;border-radius:18px;padding:18px;margin:14px 0}
+    .title{font-size:23px;font-weight:800;margin-bottom:7px}
+    .step{font-size:21px;font-weight:800;line-height:1.35;margin:10px 0}
+    .muted{color:#aeb7c4;font-size:16px;line-height:1.45}
+    button{width:100%;min-height:62px;border:0;border-radius:14px;padding:13px 16px;font-size:21px;font-weight:800;background:#f2f4f7;color:#101317;cursor:pointer}
+    button:disabled{opacity:.45}
+    canvas{display:block;width:100%;background:#000;border-radius:14px;margin-top:14px;aspect-ratio:16/9;touch-action:none;user-select:none}
+    .status{font-size:19px;font-weight:750;margin:12px 0}
+    .good{color:#7de39d}.bad{color:#ff8b8b}.wait{color:#ffd166}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:12px}
+    .metric{background:#11151a;border-radius:12px;padding:11px}
+    .metric b{display:block;font-size:13px;color:#9ca8b7;margin-bottom:5px}
+    .metric span{font-size:17px}
+    .done{font-size:26px;font-weight:850;color:#7de39d}
+    pre{white-space:pre-wrap;word-break:break-word;font-size:12px;max-height:260px;overflow:auto;background:#0b0e12;padding:12px;border-radius:12px}
+  </style>
+</head>
+<body>
+<main>
+  <h1>Final PowerALX Touch Test</h1>
+  <div class="lead">This tests the one thing we had not proved: <b>touching directly on the live WebCodecs video itself</b>.</div>
+  <div class="warn"><b>Stationary Drive only.</b> Do not interact with this page while the vehicle is moving.</div>
+
+  <section class="card">
+    <div class="title">What you do</div>
+    <div class="step" id="instruction">Tap <b>Start Test</b>. Then follow the big numbered target inside the moving video.</div>
+    <div class="muted">You will tap three targets directly inside the live video, then drag a blue circle across the video. There are no separate touch boxes.</div>
+    <button id="startBtn">Start Test</button>
+    <canvas id="videoCanvas" width="640" height="360"></canvas>
+    <div id="status" class="status">Not started.</div>
+  </section>
+
+  <section class="card">
+    <div class="title">Automatic result</div>
+    <div id="result" class="muted">The result will appear here automatically.</div>
+    <div class="grid">
+      <div class="metric"><b>Video frames</b><span id="frames">0</span></div>
+      <div class="metric"><b>Correct target taps</b><span id="taps">0 / 3</span></div>
+      <div class="metric"><b>Drag</b><span id="drag">not done</span></div>
+      <div class="metric"><b>Server input acks</b><span id="acks">0</span></div>
+      <div class="metric"><b>Input RTT</b><span id="rtt">—</span></div>
+      <div class="metric"><b>WebSocket</b><span id="wsState">not connected</span></div>
+    </div>
+    <details style="margin-top:14px"><summary>Technical report</summary><pre id="raw"></pre></details>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const VERSION = "2026-09-28-video-touch-v3";
+  const $ = id => document.getElementById(id);
+  const report = {
+    version: VERSION,
+    startedAt: null,
+    finishedAt: null,
+    userAgent: navigator.userAgent,
+    secureContext: !!window.isSecureContext,
+    targets: [],
+    drag: {},
+    errors: []
+  };
+
+  const canvas = $("videoCanvas");
+  const ctx = canvas.getContext("2d", {alpha:false});
+
+  let ws = null;
+  let decoder = null;
+  let acceptingVideo = false;
+  let videoFrames = 0;
+  let startedFrames = 0;
+  let inputSeq = 0;
+  let inputAcks = 0;
+  let rtts = [];
+  let pending = new Map();
+  let phase = "idle";
+  let targetIndex = 0;
+  let targetAckPending = false;
+  let dragging = false;
+  let dragStartedInside = false;
+  let dragXNorm = 0.18;
+  let dragEndAckPending = false;
+  let lastVideoFrame = null;
+
+  const targets = [
+    { id:"target-1", label:"1", x:0.18, y:0.22, r:0.09, fill:"#ef4444" },
+    { id:"target-2", label:"2", x:0.78, y:0.30, r:0.09, fill:"#22c55e" },
+    { id:"target-3", label:"3", x:0.52, y:0.76, r:0.09, fill:"#eab308" }
+  ];
+  const dragYNorm = 0.50;
+  const dragRadiusNorm = 0.075;
+  const dragStartNorm = 0.18;
+  const dragFinishNorm = 0.80;
+
+  function avgRtt() {
+    return rtts.length ? rtts.reduce((a,b)=>a+b,0)/rtts.length : null;
+  }
+
+  function renderReport() {
+    $("frames").textContent = String(videoFrames);
+    $("taps").textContent = Math.min(targetIndex,3) + " / 3";
+    $("drag").textContent = report.drag.completed ? "done" : (dragging ? "dragging" : "not done");
+    $("acks").textContent = String(inputAcks);
+    const avg = avgRtt();
+    $("rtt").textContent = avg == null ? "—" : avg.toFixed(0) + " ms avg";
+    $("wsState").textContent = ws?.readyState === WebSocket.OPEN ? "connected" : (ws ? "closed" : "not connected");
+    $("raw").textContent = JSON.stringify(report, null, 2);
+  }
+
+  function addError(scope, error) {
+    report.errors.push({at:new Date().toISOString(),scope,message:String(error?.message||error).slice(0,180)});
+    renderReport();
+  }
+
+  async function record(label, extra={}) {
+    const timing = {
+      version: VERSION,
+      phase,
+      videoFrames,
+      correctTaps: Math.min(targetIndex,3),
+      dragComplete: report.drag.completed ? 1 : 0,
+      inputAcks,
+      inputRttAvgMs: avgRtt() ?? -1,
+      ...extra
+    };
+    try {
+      await fetch("/api/playback-event", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        keepalive:true,
+        body:JSON.stringify({
+          event:"poweralx_video_touch_probe",
+          label,
+          message:"PowerALX direct-on-video touch probe " + VERSION,
+          userAgent:navigator.userAgent,
+          timing
+        })
+      });
+    } catch {}
+  }
+
+  function canvasPoint(ev) {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.max(0,Math.min(canvas.width,(ev.clientX-rect.left)*canvas.width/rect.width));
+    const y = Math.max(0,Math.min(canvas.height,(ev.clientY-rect.top)*canvas.height/rect.height));
+    return {
+      x,y,
+      nx:x/canvas.width,
+      ny:y/canvas.height,
+      cssX:ev.clientX-rect.left,
+      cssY:ev.clientY-rect.top
+    };
+  }
+
+  function insideCircle(p,cx,cy,r) {
+    return Math.hypot(p.nx-cx,p.ny-cy) <= r;
+  }
+
+  function drawOverlay() {
+    if (phase === "targets" && targetIndex < targets.length) {
+      const t = targets[targetIndex];
+      const x=t.x*canvas.width, y=t.y*canvas.height, r=t.r*canvas.width;
+      ctx.save();
+      ctx.globalAlpha=0.94;
+      ctx.fillStyle=t.fill;
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+      ctx.globalAlpha=1;
+      ctx.strokeStyle="#ffffff"; ctx.lineWidth=8; ctx.stroke();
+      ctx.fillStyle="#ffffff";
+      ctx.font="900 54px system-ui";
+      ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillText(t.label,x,y+2);
+      ctx.restore();
+    } else if (phase === "drag") {
+      const y=dragYNorm*canvas.height;
+      const startX=dragStartNorm*canvas.width;
+      const finishX=dragFinishNorm*canvas.width;
+      const x=dragXNorm*canvas.width;
+      const r=dragRadiusNorm*canvas.width;
+      ctx.save();
+      ctx.strokeStyle="#ffffff";
+      ctx.lineWidth=8;
+      ctx.setLineDash([18,14]);
+      ctx.beginPath(); ctx.moveTo(startX,y); ctx.lineTo(finishX,y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle="#16a34a";
+      ctx.globalAlpha=.5;
+      ctx.beginPath(); ctx.arc(finishX,y,r*1.15,0,Math.PI*2); ctx.fill();
+      ctx.globalAlpha=1;
+      ctx.fillStyle="#38bdf8";
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle="#ffffff"; ctx.lineWidth=7; ctx.stroke();
+      ctx.fillStyle="#00131c";
+      ctx.font="900 24px system-ui";
+      ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillText("DRAG",x,y);
+      ctx.restore();
+    }
+  }
+
+  function redrawLastFrame() {
+    if (!lastVideoFrame) return;
+    try {
+      ctx.drawImage(lastVideoFrame,0,0,canvas.width,canvas.height);
+      drawOverlay();
+    } catch {}
+  }
+
+  function findStart(bytes,i) {
+    if (i+3<bytes.length && bytes[i]===0 && bytes[i+1]===0 && bytes[i+2]===0 && bytes[i+3]===1) return 4;
+    if (i+2<bytes.length && bytes[i]===0 && bytes[i+1]===0 && bytes[i+2]===1) return 3;
+    return 0;
+  }
+
+  function unitHasIdr(unit) {
+    for (let i=0;i<unit.length-4;i++) {
+      const n=findStart(unit,i);
+      if (!n) continue;
+      if ((unit[i+n]&0x1f)===5) return true;
+      i+=n-1;
+    }
+    return false;
+  }
+
+  let videoTimestamp=0;
+  function decodeUnit(unit) {
+    if (!decoder || decoder.state==="closed" || decoder.decodeQueueSize>12) return;
+    try {
+      decoder.decode(new EncodedVideoChunk({
+        type:unitHasIdr(unit)?"key":"delta",
+        timestamp:videoTimestamp,
+        duration:33333,
+        data:unit
+      }));
+      videoTimestamp+=33333;
+    } catch(e) { addError("decode",e); }
+  }
+
+  async function connectWs() {
+    return new Promise((resolve,reject)=>{
+      const proto=location.protocol==="https:"?"wss:":"ws:";
+      const socket=new WebSocket(proto+"//"+location.host+"/ws/poweralx-probe");
+      socket.binaryType="arraybuffer";
+      const timer=setTimeout(()=>reject(new Error("WebSocket timeout")),6000);
+      socket.onopen=()=>{clearTimeout(timer);ws=socket;renderReport();resolve();};
+      socket.onerror=()=>{clearTimeout(timer);reject(new Error("WebSocket failed"));};
+      socket.onclose=()=>{renderReport();};
+      socket.onmessage=event=>{
+        if (event.data instanceof ArrayBuffer) {
+          if (acceptingVideo) decodeUnit(new Uint8Array(event.data));
+          return;
+        }
+        try {
+          const m=JSON.parse(event.data);
+          if (m.type==="input-ack") {
+            inputAcks++;
+            const item=pending.get(m.seq);
+            if (item) {
+              const rtt=performance.now()-item.sentAt;
+              rtts.push(rtt); if (rtts.length>80) rtts.shift();
+              pending.delete(m.seq);
+              if (item.kind==="target-tap" && item.targetIndex===targetIndex && targetAckPending) {
+                targetAckPending=false;
+                const t=targets[targetIndex];
+                report.targets.push({
+                  id:t.id,
+                  acknowledged:true,
+                  at:new Date().toISOString(),
+                  xNorm:item.xNorm,
+                  yNorm:item.yNorm,
+                  rttMs:Number(rtt.toFixed(1))
+                });
+                targetIndex++;
+                if (targetIndex>=targets.length) {
+                  phase="drag";
+                  dragXNorm=dragStartNorm;
+                  $("instruction").innerHTML="Now <b>drag the blue circle all the way to the green circle on the right</b>.";
+                  $("status").textContent="Three video taps passed. Do the drag.";
+                } else {
+                  $("instruction").innerHTML="Tap the big <b>"+targets[targetIndex].label+"</b> target directly inside the moving video.";
+                  $("status").textContent="Correct. Next target.";
+                }
+                redrawLastFrame();
+                record("target-"+targetIndex+"-ack",{targetNumber:targetIndex,rttMs:Number(rtt.toFixed(1))});
+              } else if (item.kind==="drag-end" && dragEndAckPending) {
+                dragEndAckPending=false;
+                report.drag.acknowledged=true;
+                report.drag.rttMs=Number(rtt.toFixed(1));
+                maybeFinish();
+              }
+            }
+            renderReport();
+          }
+        } catch {}
+      };
+    });
+  }
+
+  function sendInput(kind,p,extra={}) {
+    if (!ws || ws.readyState!==WebSocket.OPEN) return null;
+    const seq=++inputSeq;
+    const payload={
+      type:"input",seq,kind,source:"video-canvas",
+      x:Math.round(p.x),y:Math.round(p.y),
+      xNorm:Number(p.nx.toFixed(4)),yNorm:Number(p.ny.toFixed(4)),
+      pointerType:extra.pointerType||"touch",
+      buttons:extra.buttons||0,
+      ts:performance.now()
+    };
+    pending.set(seq,{
+      sentAt:performance.now(),kind,
+      targetIndex:extra.targetIndex,
+      xNorm:payload.xNorm,yNorm:payload.yNorm
+    });
+    ws.send(JSON.stringify(payload));
+    return seq;
+  }
+
+  async function startVideo() {
+    videoTimestamp=0;
+    acceptingVideo=true;
+    decoder=new VideoDecoder({
+      output(frame) {
+        try {
+          if (canvas.width!==frame.displayWidth || canvas.height!==frame.displayHeight) {
+            canvas.width=frame.displayWidth;
+            canvas.height=frame.displayHeight;
+          }
+          if (lastVideoFrame) { try{lastVideoFrame.close();}catch{} }
+          lastVideoFrame=frame.clone();
+          ctx.drawImage(frame,0,0,canvas.width,canvas.height);
+          drawOverlay();
+          videoFrames++;
+          renderReport();
+        } finally { frame.close(); }
+      },
+      error:e=>addError("decoder",e)
+    });
+    decoder.configure({
+      codec:"avc1.42E01E",
+      codedWidth:640,
+      codedHeight:360,
+      hardwareAcceleration:"prefer-hardware",
+      optimizeForLatency:true
+    });
+    ws.send(JSON.stringify({type:"video-start"}));
+  }
+
+  async function maybeFinish() {
+    if (!report.drag.completed || !report.drag.acknowledged) return;
+    const gained=videoFrames-startedFrames;
+    const passed=targetIndex===3 && report.targets.length===3 && gained>=60 && inputAcks>=4;
+    phase="done";
+    report.finishedAt=new Date().toISOString();
+    report.videoFramesDuringTest=gained;
+    report.inputAcks=inputAcks;
+    report.inputRttAvgMs=avgRtt()==null?null:Number(avgRtt().toFixed(1));
+    report.passed=passed;
+    acceptingVideo=false;
+    try{ws?.send(JSON.stringify({type:"video-stop"}));}catch{}
+    $("instruction").innerHTML=passed
+      ? "<b>Done.</b> You do not need to do anything else."
+      : "<b>Done.</b> The report was saved; one part did not meet the automatic pass threshold.";
+    $("status").className="status "+(passed?"good":"bad");
+    $("status").textContent=passed?"Direct touch on the live video PASSED.":"Test completed with a problem.";
+    $("result").innerHTML=passed
+      ? '<div class="done">PASS — touch worked directly on the live video.</div><div style="margin-top:8px">All 3 target taps and the drag reached the server while WebCodecs video continued rendering.</div>'
+      : '<div class="bad"><b>Not a clean pass.</b> The technical report has been saved.</div>';
+    await record(passed?"final-pass":"final-fail",{passed:passed?1:0,videoFramesDuringTest:gained});
+    renderReport();
+  }
+
+  canvas.addEventListener("pointerdown",ev=>{
+    if (phase!=="targets" && phase!=="drag") return;
+    ev.preventDefault();
+    const p=canvasPoint(ev);
+
+    if (phase==="targets") {
+      if (targetAckPending) return;
+      const t=targets[targetIndex];
+      if (!insideCircle(p,t.x,t.y,t.r)) {
+        $("status").className="status bad";
+        $("status").textContent="Missed the target. Tap directly on the numbered circle.";
+        record("target-miss",{targetNumber:targetIndex+1,xNorm:Number(p.nx.toFixed(4)),yNorm:Number(p.ny.toFixed(4))});
+        return;
+      }
+      targetAckPending=true;
+      $("status").className="status wait";
+      $("status").textContent="Target hit — checking server acknowledgement…";
+      sendInput("target-tap",p,{targetIndex,pointerType:ev.pointerType,buttons:ev.buttons});
+      return;
+    }
+
+    const onHandle=insideCircle(p,dragXNorm,dragYNorm,dragRadiusNorm*1.15);
+    if (!onHandle) {
+      $("status").className="status bad";
+      $("status").textContent="Start the drag by touching the blue circle.";
+      return;
+    }
+    dragging=true;
+    dragStartedInside=true;
+    try{canvas.setPointerCapture(ev.pointerId);}catch{}
+    $("status").className="status wait";
+    $("status").textContent="Keep dragging right…";
+    sendInput("drag-start",p,{pointerType:ev.pointerType,buttons:ev.buttons});
+  },{passive:false});
+
+  canvas.addEventListener("pointermove",ev=>{
+    if (phase!=="drag" || !dragging) return;
+    ev.preventDefault();
+    const p=canvasPoint(ev);
+    dragXNorm=Math.max(dragStartNorm,Math.min(dragFinishNorm,p.nx));
+    redrawLastFrame();
+  },{passive:false});
+
+  canvas.addEventListener("pointerup",ev=>{
+    if (phase!=="drag" || !dragging) return;
+    ev.preventDefault();
+    const p=canvasPoint(ev);
+    dragging=false;
+    const reached=dragStartedInside && dragXNorm>=dragFinishNorm-0.035;
+    if (!reached) {
+      dragXNorm=dragStartNorm;
+      dragStartedInside=false;
+      $("status").className="status bad";
+      $("status").textContent="Drag did not reach the green circle. Try again.";
+      redrawLastFrame();
+      record("drag-short",{xNorm:Number(p.nx.toFixed(4)),yNorm:Number(p.ny.toFixed(4))});
+      return;
+    }
+    report.drag.completed=true;
+    report.drag.completedAt=new Date().toISOString();
+    report.drag.endXNorm=Number(p.nx.toFixed(4));
+    report.drag.endYNorm=Number(p.ny.toFixed(4));
+    dragEndAckPending=true;
+    $("status").className="status wait";
+    $("status").textContent="Drag reached the end — checking server acknowledgement…";
+    sendInput("drag-end",p,{pointerType:ev.pointerType,buttons:ev.buttons});
+    redrawLastFrame();
+  },{passive:false});
+
+  canvas.addEventListener("pointercancel",()=>{
+    if (phase==="drag") {
+      dragging=false;
+      dragStartedInside=false;
+      dragXNorm=dragStartNorm;
+      redrawLastFrame();
+    }
+  });
+
+  $("startBtn").onclick=async()=>{
+    $("startBtn").disabled=true;
+    $("status").className="status wait";
+    $("status").textContent="Starting live video…";
+    report.startedAt=new Date().toISOString();
+    phase="starting";
+    renderReport();
+    await record("start");
+    try {
+      if (!window.VideoDecoder || !window.EncodedVideoChunk) throw new Error("WebCodecs unavailable");
+      await connectWs();
+      await startVideo();
+      const waitStart=performance.now();
+      while (videoFrames<10 && performance.now()-waitStart<5000) await new Promise(r=>setTimeout(r,50));
+      if (videoFrames<3) throw new Error("Video frames did not start");
+      startedFrames=videoFrames;
+      phase="targets";
+      $("instruction").innerHTML="Tap the big <b>1</b> target directly inside the moving video.";
+      $("status").className="status good";
+      $("status").textContent="Video is running. Tap target 1.";
+      redrawLastFrame();
+      await record("video-ready",{videoFrames});
+    } catch(e) {
+      addError("start",e);
+      phase="failed";
+      $("status").className="status bad";
+      $("status").textContent="Could not start test: "+String(e.message||e);
+      $("result").innerHTML='<div class="bad"><b>Start failed.</b></div>';
+      await record("start-failed",{error:String(e.message||e).slice(0,100)});
+    }
+    renderReport();
+  };
+
+  renderReport();
+})();
+</script>
+</body>
+</html>

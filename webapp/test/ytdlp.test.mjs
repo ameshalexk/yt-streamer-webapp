@@ -35,3 +35,16 @@ test("yt-dlp muxed selection keeps top-level headers", () => {
   assert.equal(selected.audioUrl, null);
   assert.deepEqual(selected.videoHeaders, { "User-Agent": "muxed-agent" });
 });
+
+test("stream resolution retains live/VOD metadata for fallback and seek bounds", () => {
+  for (const requested_formats of [undefined, [{ url: "/tmp/video", vcodec: "avc1" }]]) {
+    const live = selectedStreamInfo({url:"/tmp/video", requested_formats, live_status:"is_live", title:"Live", duration:null});
+    assert.equal(live.isLive,true);
+    assert.equal(live.duration,null);
+    assert.equal(live.title,"Live");
+    const vod = selectedStreamInfo({url:"/tmp/video", requested_formats, duration:90, title:"VOD"});
+    assert.equal(vod.isLive,false);
+    assert.equal(vod.duration,90);
+    assert.equal(vod.title,"VOD");
+  }
+});

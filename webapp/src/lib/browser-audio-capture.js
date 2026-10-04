@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { config } from "../config.js";
+import { fifoReadStream } from "./nonblocking-fifo.js";
 
 const SWITCH_AUDIO_SOURCE = process.env.SWITCH_AUDIO_SOURCE_PATH || "/opt/homebrew/bin/SwitchAudioSource";
 const BLACKHOLE_NAME = process.env.BROWSER_BLACKHOLE_NAME || "BlackHole 2ch";
@@ -199,8 +200,8 @@ async function createCoreTapSessionFiles() {
   const statusPath = path.join(dir, "status.log");
   await run("/usr/bin/mkfifo", [fifoPath]);
   await fs.writeFile(statusPath, "");
-  const fifoHandle = await fs.open(fifoPath, fsNative.constants.O_RDWR);
-  const pcmStream = fifoHandle.createReadStream({ autoClose: false });
+  const fifoHandle = await fs.open(fifoPath, fsNative.constants.O_RDWR | fsNative.constants.O_NONBLOCK);
+  const pcmStream = fifoReadStream(fifoHandle);
   return { dir, fifoPath, statusPath, fifoHandle, pcmStream };
 }
 
