@@ -18,7 +18,7 @@ class PackagingTests(unittest.TestCase):
         docs = (ADDON / "DOCS.md").read_text()
         self.assertEqual(docs.count("/local_apps/yt_streamer"), 3)
         self.assertNotIn("/addons/yt_streamer", docs)
-        self.assertIn("SOURCE_REF=feb3c94729a963b3dc93a9e2cf3a038e3b5bed58", docs)
+        self.assertIn("SOURCE_REF=ccbd9cf8ee5fb824bbeb6b49959f99156a75d4b7", docs)
         self.assertIn("ha apps reload", docs)
         self.assertIn('cp -R "$STAGING"/yt-streamer-webapp-*/ha-addon/.', docs)
 
