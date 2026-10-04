@@ -104,11 +104,18 @@ export async function searchVideos(query, { limit = 20 } = {}) {
 // Keeping the headers matters because YouTube can bind signed googlevideo URLs to
 // a particular client identity.
 export function selectedStreamInfo(info) {
+  const metadata = {
+    isLive: Boolean(info?.is_live) || info?.live_status === "is_live",
+    duration: info?.duration != null && info.duration !== "" && Number.isFinite(Number(info.duration))
+      ? Number(info.duration) : null,
+    title: info?.title || null,
+  };
   const requested = Array.isArray(info?.requested_formats) ? info.requested_formats.filter(Boolean) : [];
   if (requested.length) {
     const video = requested.find((format) => format.vcodec && format.vcodec !== "none") || requested[0];
     const audio = requested.find((format) => format !== video && format.acodec && format.acodec !== "none") || null;
     return {
+      ...metadata,
       videoUrl: video?.url || null,
       audioUrl: audio?.url || null,
       videoHeaders: { ...(info.http_headers || {}), ...(video?.http_headers || {}) },
@@ -116,6 +123,7 @@ export function selectedStreamInfo(info) {
     };
   }
   return {
+    ...metadata,
     videoUrl: info?.url || null,
     audioUrl: null,
     videoHeaders: { ...(info?.http_headers || {}) },

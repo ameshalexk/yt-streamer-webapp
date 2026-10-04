@@ -112,7 +112,7 @@ async function buildVideo({ item, resolution, outDir, onProgress }) {
     "-map", "0:v:0",
     "-an",
     "-vf", `scale=-2:${resolution}`,
-    "-c:v", "h264_videotoolbox",
+    "-c:v", config.video.dashEncoder,
     "-pix_fmt", "yuv420p",
     "-b:v", `${rate.target}k`,
     "-maxrate", `${rate.max}k`,

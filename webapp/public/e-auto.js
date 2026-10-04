@@ -242,7 +242,14 @@
     }
 
     async _pumpFramed() {
-      let pendingRead = this.reader.read();
+      // Attach a rejection handler immediately: queue backpressure may delay
+      // awaiting this read until after a seek or method switch aborts fetch.
+      const readAhead = () => {
+        const pending = this.reader.read();
+        pending.catch(() => {});
+        return pending;
+      };
+      let pendingRead = readAhead();
       while (this._active() && !this.eof) {
         if (!this.queue.canReadMore()) await this.queue.waitUntilReadable(this.controller.signal);
         if (!this._active()) return;
@@ -274,7 +281,7 @@
           }
           this.lastNetworkChunkAt = now;
         }
-        pendingRead = this.reader.read();
+        pendingRead = readAhead();
         for (const frame of this.parser.push(value)) await this._enqueueFramed(frame, now);
       }
     }

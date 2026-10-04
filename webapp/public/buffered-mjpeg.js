@@ -686,7 +686,14 @@
       // Keep one read pending before doing parser/decode/queue work. WebKit's
       // streaming-fetch regression can otherwise withhold response bytes while
       // JavaScript is busy processing the previous chunk.
-      let pendingRead = this.reader.read();
+      // Attach a rejection handler immediately: queue backpressure may delay
+      // awaiting this read until after a seek or method switch aborts fetch.
+      const readAhead = () => {
+        const pending = this.reader.read();
+        pending.catch(() => {});
+        return pending;
+      };
+      let pendingRead = readAhead();
       while (this._active() && !this.eof) {
         if (!this.queue.canReadMore()) await this.queue.waitUntilReadable(this.controller.signal);
         if (!this._active()) return;
@@ -710,7 +717,7 @@
           this.stats.receivedBytes += value.byteLength;
         }
         // Start the next network read immediately, before parsing/enqueue work.
-        pendingRead = this.reader.read();
+        pendingRead = readAhead();
         const frames = this.parser.push(value);
         for (const bytes of frames) await this._enqueue(bytes);
       }
@@ -1163,7 +1170,7 @@
       this.guard.cancel();
       this._cancelRaf();
       try { this.controller.abort(); } catch {}
-      try { this.reader?.cancel?.(); } catch {}
+      try { Promise.resolve(this.reader?.cancel?.()).catch(() => {}); } catch {}
       this.audio?.removeEventListener?.("waiting", this._boundAudioWaiting);
       this.audio?.removeEventListener?.("stalled", this._boundAudioWaiting);
       this.audio?.removeEventListener?.("playing", this._boundAudioPlaying);

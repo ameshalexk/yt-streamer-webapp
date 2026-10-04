@@ -289,7 +289,7 @@ test("fast WebCodecs playback uses larger producer margin and deeper refill targ
 test("processed library builds a static H264/AAC fMP4 cache for WebCodecs", () => {
   assert.match(processedDash, /const ROOT = path\.join\(config\.dataDir, "processed-dash-cache"\)/);
   assert.match(processedDash, /SEGMENT_SOURCE_SECONDS = 2/);
-  assert.match(processedDash, /"h264_videotoolbox"/);
+  assert.match(processedDash, /"-c:v", config\.video\.dashEncoder/);
   assert.match(processedDash, /"-force_key_frames", `expr:gte\(t,n_forced\*\$\{SEGMENT_SOURCE_SECONDS\}\)`/);
   assert.match(processedDash, /"-af", `atempo=\$\{rate\}`/);
   assert.match(processedDash, /"-seg_duration", String\(SEGMENT_SOURCE_SECONDS \/ rate\)/);

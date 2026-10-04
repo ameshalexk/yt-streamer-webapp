@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 import { buildMjpegArgs, pipeFfmpegOutput } from "../src/lib/stream.js";
 import { encodeEautoFrame } from "../src/lib/eauto-framing.js";
 
@@ -12,14 +13,13 @@ const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "
 const server = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
 const streamSource = fs.readFileSync(new URL("../src/lib/stream.js", import.meta.url), "utf8");
 
-test("E Auto is a fifth mode and normal Auto remains distinct", () => {
+test("production quality controls expose adaptive Auto and the three fixed profiles", () => {
   const controls = html.match(/id="playerQualityPresets"[\s\S]*?<\/div>/)?.[0] || "";
-  assert.match(controls, /data-stream-profile="low"[\s\S]*data-stream-profile="medium"[\s\S]*data-stream-profile="high"[\s\S]*data-stream-profile="auto"[\s\S]*data-stream-profile="e-auto"/);
+  const profiles = [...controls.matchAll(/data-stream-profile="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(profiles, ["auto", "low", "medium", "high"]);
   assert.match(app, /AUTO_STREAM_QUALITY_ID = "auto"/);
-  assert.match(app, /E_AUTO_STREAM_QUALITY_ID = "e-auto"/);
-  assert.match(app, /ExperimentalMjpegPlayer/);
   assert.match(app, /maybeAdaptAutoQuality\(stats\)/);
-  assert.match(app, /maybeAdaptEAutoQuality\(stats, player\)/);
+  assert.equal(typeof globalThis.YtExperimentalAuto.ExperimentalMjpegPlayer, "function");
 });
 
 test("framed mode uses image2pipe while normal MJPEG remains multipart", () => {
@@ -51,15 +51,19 @@ test("server and browser agree on the 48-byte EAJF protocol", () => {
   assert.deepEqual(frame.jpeg, jpeg);
 });
 
-test("E Auto seek and quality restarts preserve measurements but rotate sessions", () => {
-  assert.match(app, /preserveExperimentOnCleanup = true;\s*replayFn\(target\)/);
-  assert.match(app, /withUrlParam\(bufferedUrl, "eautoSession", attempt\)/);
-  assert.match(fs.readFileSync(new URL("../public/e-auto.js", import.meta.url), "utf8"), /metadata\.sessionId >>> 0\).*expectedSessionId/);
-  assert.match(app, /finalizeExperimentMeasurement\("ended"\)/);
-  assert.match(html, /id="eAutoDebug"/);
+test("experimental EAJF preserves seek timestamps and rejects stale sessions before queueing", async () => {
+  const E = globalThis.YtExperimentalAuto;
+  let queued = 0;
+  const ctx = { expectedSessionId: 45, queue: { waitForRoom: () => { queued++; } } };
+  await E.ExperimentalMjpegPlayer.prototype._enqueueFramed.call(ctx, {sessionId: 44}, 0);
+  assert.equal(queued, 0);
+  const jpeg = new Uint8Array([255,216,255,217]);
+  const [frame] = new E.EajfParser().push(encodeEautoFrame({sessionId:45,sequence:0,videoTimestamp:35_000_000,fps:15,quality:7,height:480},jpeg));
+  assert.equal(frame.sessionId,45);
+  assert.equal(frame.videoTimestampUs,35_000_000);
 });
 
-test("framed outputs from one ffmpeg chunk survive HTTP backpressure", () => {
+test("child close waits for pending and unread stdout frames before ending", async () => {
   const req = new EventEmitter();
   const res = new EventEmitter();
   const writes = [];
@@ -72,9 +76,7 @@ test("framed outputs from one ffmpeg chunk survive HTTP backpressure", () => {
   res.destroy = () => { res.destroyed = true; };
 
   const ff = new EventEmitter();
-  ff.stdout = new EventEmitter();
-  ff.stdout.pause = () => { ff.paused = true; };
-  ff.stdout.resume = () => { ff.paused = false; };
+  ff.stdout = new Readable({ read() {} });
   ff.stdout.unpipe = () => {};
   ff.stderr = new EventEmitter();
   ff.killed = false;
@@ -82,13 +84,55 @@ test("framed outputs from one ffmpeg chunk survive HTTP backpressure", () => {
 
   pipeFfmpegOutput(req, res, ff, {
     headers: { "Content-Type": "test/framed" }, label: "test",
-    transformChunk: () => [Buffer.from("a"), Buffer.from("b"), Buffer.from("c")],
+    transformChunk: (chunk) => chunk.toString() === "first"
+      ? [Buffer.from("a"), Buffer.from("b"), Buffer.from("c")]
+      : [Buffer.from("unread")],
+  });
+  ff.stdout.push(Buffer.from("first"));
+  ff.stdout.push(Buffer.from("second"));
+  ff.stdout.push(null);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(writes, ["a"]);
+  // A natural child close must retain every already-framed output while the
+  // response is applying backpressure and stdout has unread buffered bytes.
+  ff.emit("close", 0);
+  assert.equal(res.ended, undefined);
+  res.emit("drain");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(writes, ["a", "b", "c", "unread"]);
+  assert.equal(res.ended, true);
+});
+
+test("natural close waits for delayed framed output", async () => {
+  const req = new EventEmitter();
+  const res = new EventEmitter();
+  const writes = [];
+  res.destroyed = false;
+  res.headersSent = false;
+  res.writeHead = () => { res.headersSent = true; };
+  res.write = (chunk) => { writes.push(Buffer.from(chunk).toString()); return true; };
+  res.end = () => { res.ended = true; };
+  res.destroy = () => { res.destroyed = true; };
+  const ff = new EventEmitter();
+  ff.stdout = new EventEmitter();
+  ff.stdout.pause = () => {};
+  ff.stdout.resume = () => {};
+  ff.stdout.unpipe = () => {};
+  ff.stderr = new EventEmitter();
+  ff.killed = false;
+  ff.kill = () => { ff.killed = true; };
+
+  pipeFfmpegOutput(req, res, ff, {
+    headers: { "Content-Type": "test/framed" }, label: "test", outputDelayMs: 20,
+    transformChunk: () => [Buffer.from("delayed")],
   });
   ff.stdout.emit("data", Buffer.from("source"));
-  assert.deepEqual(writes, ["a"]);
-  assert.equal(ff.paused, true);
-  res.emit("drain");
-  assert.deepEqual(writes, ["a", "b", "c"]);
+  ff.emit("close", 0);
   ff.stdout.emit("end");
+  assert.equal(res.ended, undefined);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(writes, ["delayed"]);
   assert.equal(res.ended, true);
+  ff.stdout.emit("data", Buffer.from("late"));
+  assert.deepEqual(writes, ["delayed"]);
 });

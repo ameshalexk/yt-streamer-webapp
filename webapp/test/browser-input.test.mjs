@@ -15,7 +15,7 @@ function harness(post) {
     $: () => ({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 1000 }) }),
     activeScreenMediaElement: () => ({ naturalWidth: 1280, naturalHeight: 720 }),
   });
-  const declarations = app.slice(app.indexOf('let browserSessionId ='), app.indexOf('let browserFullscreenTapAt ='));
+  const declarations = `${app.slice(app.indexOf('let browserSessionId ='), app.indexOf('let browserFullscreenTapAt ='))}\nconst BROWSER_TOUCH_SCROLL_THRESHOLD_PX = 18;`;
   const queue = app.slice(app.indexOf('function postBrowserInput('), app.indexOf('function browserKeyboardInputMode('));
   const handlers = app.slice(app.indexOf('function browserMediaBaseRect('), app.indexOf('function handleBrowserZoomWheel('));
   vm.runInContext(`${declarations}
@@ -109,12 +109,35 @@ test('backend queue serializes asynchronous gestures and recovers after failure'
   assert.deepEqual(order,['down','up','next','recovered']);
 });
 
+test('Real Chrome input wrapper queues dispatch before it selects a CDP target', async () => {
+  const renderer = fs.readFileSync(new URL('../src/lib/real-chrome-renderer.js', import.meta.url), 'utf8');
+  const start = renderer.indexOf('export async function input(id, payload = {})');
+  const end = renderer.indexOf('\n}\n', start) + 2;
+  const calls = [];
+  const session = { cdp: { ready: Promise.resolve(), call: async (...args) => { calls.push(args); return {}; } } };
+  const context = vm.createContext({
+    enqueueBrowserInput,
+    get: () => session,
+    httpError: (status, message) => Object.assign(new Error(message), { status }),
+    dispatchRealChromeInput: async (_session, payload) => { calls.push(['dispatch', payload.type]); return { ok: true }; },
+  });
+  const queueStart = renderer.indexOf('function queueRealChromeInput(');
+  const queueEnd = renderer.indexOf('\n}\n', queueStart) + 2;
+  vm.runInContext(renderer.slice(queueStart, queueEnd), context);
+  vm.runInContext(renderer.slice(start, end).replace('export async function input', 'async function input'), context);
+  context.input = vm.runInContext('input', context);
+  await context.input('session', { type: 'tap' });
+  assert.deepEqual(calls, [['dispatch', 'tap']]);
+  assert.ok(start >= 0 && end > start);
+  assert.match(renderer.slice(start, end), /queueRealChromeInput\(session, \(\) => dispatchRealChromeInput\(session, payload\)\)/);
+});
+
 test('Mac viewport preserves native display scale and scales only the JPEG capture', async () => {
   const renderer=fs.readFileSync(new URL('../src/lib/real-chrome-renderer.js',import.meta.url),'utf8');
   const start=renderer.indexOf('async function preparePage(');
   const end=renderer.indexOf('\n}\n',start)+2;
   const calls=[];const cdp={ready:Promise.resolve(),call:async(method,params)=>{calls.push({method,params});return {result:{value:2}};}};
-  const ctx=vm.createContext({installFullscreenShim:async()=>{},installApneFlashGuard:async()=>{},REMOTE_BROWSER_BLOCKED_URLS:[],DESKTOP_USER_AGENT:'test'});
+  const ctx=vm.createContext({installFullscreenShim:async()=>{},installApneFlashGuard:async()=>{},REMOTE_BROWSER_BLOCKED_URLS:[],DESKTOP_USER_AGENT:'test',DEFAULT_WIDTH:1280,DEFAULT_HEIGHT:720,MIN_WIDTH:640,MIN_HEIGHT:360,MAX_WIDTH:1920,MAX_HEIGHT:1080});
   vm.runInContext(renderer.slice(start,end),ctx);
   await ctx.preparePage({width:1280,height:720,cdp});
   assert.equal(calls.find(c=>c.method==='Emulation.setDeviceMetricsOverride').params.deviceScaleFactor,0);

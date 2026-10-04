@@ -561,9 +561,16 @@ async function preparePage(session, cdp = session.cdp) {
   await cdp.call("Emulation.setDeviceMetricsOverride", {
     width: session.width,
     height: session.height,
-    deviceScaleFactor: 1,
+    // Preserve the host's native display scale so CSS input coordinates stay
+    // aligned; scale only the captured image to the requested stream size.
+    deviceScaleFactor: 0,
     mobile: false,
   }).catch(() => {});
+  const deviceScale = await cdp.call("Runtime.evaluate", {
+    expression: "window.devicePixelRatio",
+    returnByValue: true,
+  }).then((result) => Number(result?.result?.value)).catch(() => 1);
+  cdp.captureScale = Number.isFinite(deviceScale) && deviceScale > 1 ? 1 / deviceScale : 1;
 }
 
 async function recoverMainFromApneTvDevtoolRedirect(session) {
@@ -1156,6 +1163,7 @@ async function capture(session) {
       format: "jpeg",
       quality: screenshotQuality(session.quality),
       fromSurface: true,
+      clip: { x: 0, y: 0, width: session.width, height: session.height, scale: cdp.captureScale || 1 },
     }, CAPTURE_COMMAND_TIMEOUT_MS);
     const frame = Buffer.from(result.data || "", "base64");
     if (!frame.length) return { ok: false, empty: true, elapsedMs: Date.now() - startedAt };
@@ -1409,8 +1417,24 @@ async function dispatchRealChromeTap(session, payload = {}) {
   }
   // Source input may be touch, but the rendered target is desktop Chrome.
   // Send exactly one deterministic desktop click for every completed tap.
-  await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
-  await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+  const release = () => cdp.call("Input.dispatchMouseEvent", {
+    type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1,
+  }, INPUT_COMMAND_TIMEOUT_MS);
+  try {
+    await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+  } catch (error) {
+    // A timeout can arrive after Chrome accepted the press. Clear button state
+    // on the same target before allowing the session queue to advance.
+    await release().catch(() => {});
+    throw error;
+  }
+  try {
+    await release();
+  } catch (error) {
+    // Retry a release that may not have reached Chrome before advancing input.
+    await release().catch(() => {});
+    throw error;
+  }
   return { ok: true };
 }
 
