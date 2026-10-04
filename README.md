@@ -256,3 +256,10 @@ brew upgrade yt-dlp
 ## More Detail
 
 See `webapp/README.md` for deeper webapp usage, endpoints, and deployment notes.
+
+## Shared Mac and Home Assistant releases
+
+Changes target both `stream.ameshalex.com` and `streamha.ameshalex.com`.
+The [shared release pipeline](docs/SHARED_RELEASE.md) tests both platforms and
+packages them from one commit. Follow that guide for publishing, coordinated
+rollout, version verification and rollback.
