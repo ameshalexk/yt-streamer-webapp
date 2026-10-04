@@ -47,6 +47,31 @@ assert.equal(config.desktop.inputEnabled, false);
 ''')
         docker('exec', name, 'yt-dlp', '--version')
         docker('exec', name, 'ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x120:rate=6', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '1', '-c:v', 'libx264', '-c:a', 'aac', '/data/library/ci-fixture.mp4')
+        # Exercise the real WebCodecs producer with the image's FFmpeg, not just
+        # a generic encode or argument assertions on a newer CI-host binary.
+        docker('exec', name, 'node', '--input-type=module', '-e', '''
+import assert from 'node:assert/strict';
+import { startYouTubeDashSession, getSessionStatus, stopSession } from '/app/src/lib/cyberdash-dash.js';
+const session = await startYouTubeDashSession({
+  videoInput: '/data/library/ci-fixture.mp4', height: 240, fps: 6,
+});
+try {
+  let status;
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    status = await getSessionStatus(session.id);
+    assert.equal(status.error, null, JSON.stringify(status));
+    if (status.done) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(status.exitCode, 0, JSON.stringify(status));
+  assert.equal(status.manifestReady, true);
+  assert.ok(status.init.video && status.init.audio);
+  assert.ok(status.available.video.length && status.available.audio.length);
+} finally {
+  await stopSession(session.id);
+}
+''')
         docker('exec', name, 'node', '-e', "require('fs').writeFileSync('/data/ci-persistence.txt','retained')")
         before = docker('exec', name, 'sha256sum', '/data/library/ci-fixture.mp4', '/data/ci-persistence.txt')
         # Recreate the container, reusing only its named data volume.
@@ -56,7 +81,7 @@ assert.equal(config.desktop.inputEnabled, false);
         wait_health(port, revision)
         after = docker('exec', name, 'sha256sum', '/data/library/ci-fixture.mp4', '/data/ci-persistence.txt')
         assert before == after, 'Persistent files changed across container replacement'
-        print(f'{image}: revision, Linux paths, FFmpeg fixture and persistence passed')
+        print(f'{image}: revision, Linux paths, WebCodecs DASH encode and persistence passed')
     except Exception:
         subprocess.run(['docker', 'logs', '--tail', '80', name], check=False)
         raise

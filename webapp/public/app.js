@@ -1316,6 +1316,7 @@ function applySlowBufferSuggestion() {
 
 function streamErrorDetail(reason) {
   const s = String(reason || "");
+  if (/Unrecognized option|Error splitting the argument list|Unknown encoder/i.test(s)) return `The server could not encode this stream: ${s}`;
   if (/403|forbidden|denied|access/i.test(s)) return "The source denied the request. VPN/geo blocking or a missing referer/user-agent is likely.";
   if (/404|not found/i.test(s)) return "The stream URL was not found. The channel may have moved or gone offline.";
   if (/429|too many/i.test(s)) return "Too many streams are active. Stop the current stream and retry.";
