@@ -127,3 +127,18 @@ test("same-mode resizing preserves the user's selected section", () => {
   context.syncWatchMode("watch", "watch");
   assert.equal(accordion.open, "downloads");
 });
+
+
+test("external drawer shortcuts reveal the new section once without scrolling on resize or header taps", () => {
+  const { context, accordion } = harness();
+  let scrolls = 0;
+  const button = accordion.rows.get("downloads").button;
+  button.scrollIntoView = options => { assert.equal(options.block, "nearest"); scrolls++; };
+  context.setWatchSection("downloads", { reveal: true });
+  assert.equal(scrolls, 1);
+  context.setWatchSection("downloads", { reveal: true });
+  assert.equal(scrolls, 1);
+  context.setWatchSection(null);
+  button.onclick();
+  assert.equal(scrolls, 1);
+});

@@ -1,9 +1,10 @@
 // Reuse the existing controls and views. Disclosure changes never touch media.
 let watchAccordion = null;
 
-function setWatchSection(key) {
+function setWatchSection(key, { reveal = false } = {}) {
   if (!watchAccordion) return;
   const { rows } = watchAccordion;
+  const previousOpen = watchAccordion.open;
   if (key) setPlayerDropdownOpen(true);
   for (const [name, row] of rows) {
     const open = name === key;
@@ -25,6 +26,9 @@ function setWatchSection(key) {
   }
   $('#savedDrawerBackdrop').hidden = true;
   $('#downloadsDrawerBackdrop').hidden = true;
+  if (reveal && key && key !== previousOpen) {
+    rows.get(key).button.scrollIntoView({ block: 'nearest' });
+  }
 }
 
 function syncWatchMode(mode, previousMode) {

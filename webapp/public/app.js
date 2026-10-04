@@ -297,7 +297,7 @@ function setPanelHidden(el, hidden) {
 
 function syncSavedDrawer() {
   if (watchAccordion) {
-    if (state.savedDrawerOpen) setWatchSection("saved");
+    if (state.savedDrawerOpen) setWatchSection("saved", { reveal: true });
     else if (watchAccordion.open === "saved") setWatchSection(null);
     return;
   }
@@ -317,7 +317,7 @@ function setSavedDrawerOpen(open) {
 
 function syncDownloadsDrawer() {
   if (watchAccordion) {
-    if (state.downloadsDrawerOpen) setWatchSection("downloads");
+    if (state.downloadsDrawerOpen) setWatchSection("downloads", { reveal: true });
     else if (watchAccordion.open === "downloads") setWatchSection(null);
     return;
   }
