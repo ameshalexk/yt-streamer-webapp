@@ -18,7 +18,7 @@ Acceptance used Google Chrome in the profile signed in as ameshalex@gmail.com. A
 
 Verified MJPEG with separate audio, WebCodecs with internal audio, pause/resume, seek, quality changes, method switching with position/pause/mute preserved, desktop fullscreen fallback, Continue Watching after reload, Start over, natural completion, and server-directed WebCodecs-to-MJPEG fallback. Live inputs remain MJPEG. Streamed Chrome input delivered one trusted click; keyboard input and Restream recovered normally. External YouTube extraction and Tesla-specific browser behavior are separate from deterministic transport acceptance.
 
-Final application suite: 221 tests passed, zero failures/skips; syntax checks and diff whitespace checks passed. Independent review findings about queued-frame EOF and failed mouse release were fixed with regression tests.
+Final application suite: 223 tests passed, zero failures/skips; syntax checks and diff whitespace checks passed. Independent review findings about queued-frame EOF and failed mouse release were fixed with regression tests.
 
 ## Later Tesla acceptance
 
@@ -27,3 +27,9 @@ Final application suite: 221 tests passed, zero failures/skips; syntax checks an
 - Reload and resume Continue Watching; verify Start over and reconnection after a network interruption.
 
 Tesla testing does not block desktop software consolidation or deployment. Deployment commit, rollback path, and HA hosting evidence are recorded in the project notes and GitHub PRs.
+
+## Native audio cancellation follow-up
+
+The additional Chrome audio check exposed silent FIFO reads occupying all libuv filesystem workers after stopped Core Tap sessions. Health continued responding while file-backed pages and CDP screenshots stalled. Core Tap now opens its FIFO nonblocking and polls only when the reader requests bytes; cancellation clears polling and permits the descriptor to close. Real FIFO tests cover eight silent readers, filesystem responsiveness, descriptor closure, byte ordering, and backpressure.
+
+After the fix, actual Core Tap capture from a trusted remote Chrome tone returned 96,000 PCM samples, peak 1,638, with 95,922 nonzero samples. Page requests returned 200 through cancellation/restream. This verifies native capture data without changing global audio routing or rebuilding the helper; it does not claim an independent human listening test.
