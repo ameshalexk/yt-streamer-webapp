@@ -1,5 +1,5 @@
 name: YT Streamer
-version: "2.1.0-ha.3"
+version: "2.1.0-ha.4"
 slug: yt_streamer
 description: Standalone YT Streamer webapp from the shared Mac and Home Assistant source
 url: https://github.com/ameshalexk/yt-streamer-webapp

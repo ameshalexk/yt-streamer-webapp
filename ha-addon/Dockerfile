@@ -2,8 +2,8 @@
 ARG BUILD_FROM=node:22-bookworm-slim
 FROM ${BUILD_FROM}
 
-ARG APP_REF=00155b080f724ac5941632191ef239b5846b7753
-ARG YTDLP_VERSION=2026.08.19
+ARG APP_REF=54c513413958c8ef723e92dc7ca02689589cb074
+ARG YTDLP_VERSION=2026.8.19
 LABEL org.opencontainers.image.source="https://github.com/ameshalexk/yt-streamer-webapp" \
       org.opencontainers.image.revision="${APP_REF}"
 
@@ -19,7 +19,7 @@ RUN set -eu; \
         ca-certificates curl ffmpeg nodejs npm python3 py3-pip py3-virtualenv; \
     fi; \
     python3 -m venv /opt/yt-dlp; \
-    /opt/yt-dlp/bin/pip install --no-cache-dir "yt-dlp==${YTDLP_VERSION}"
+    /opt/yt-dlp/bin/pip install --no-cache-dir "yt-dlp[default]==${YTDLP_VERSION}"
 
 WORKDIR /app
 RUN set -eu; \

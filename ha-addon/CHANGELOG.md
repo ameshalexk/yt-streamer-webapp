@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.0-ha.4
+
+- Pin consolidated main application commit `54c513413958c8ef723e92dc7ca02689589cb074`, including native audio FIFO cancellation.
+- Install pinned yt-dlp default extras for the challenge solver.
+- Validate Supervisor options and correct local installation/update instructions.
+
 ## 2.1.0-ha.3
 
 - Use fully qualified build image names accepted by current Home Assistant Supervisor.
