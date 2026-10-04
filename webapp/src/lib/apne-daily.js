@@ -11,6 +11,28 @@ const LOG_FILE = path.join(config.dataDir, "apne-daily.log");
 const LOG_MAX_BYTES = 2 * 1024 * 1024;
 const DESKTOP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/145 Safari/537.36";
 const REQUEST_TIMEOUT_MS = 15_000;
+const APNE_HISTORY_MONTHS = 3;
+const APNE_HISTORY_FETCH_LIMIT = 250;
+const APNE_HISTORY_PAGE_SIZE = 10;
+const EPISODE_METADATA_CACHE_MS = 30 * 60 * 1000;
+const SKY_EPISODE_METADATA_URLS = {
+  anupamaa: "https://www.sky.com/watch/series/16f8285a-09c0-4b5b-812b-12c154d2c9f4/season-1",
+};
+const ACTOR_AGE_CHECK_EPISODE_METADATA_URLS = {
+  anupamaa: "https://actoragecheck.com/tv/Anupamaa/116479/season/1",
+};
+const ANUPAMAA_EPISODE_TITLE_OVERRIDES = {
+  2134: "Hasmukh Risks the Shah House",
+  2135: "Anupama Refuses Hasmukh's Help",
+  2136: "Paritosh's Truth Breaks Anupama",
+  2137: "Anupama Guides Rahi",
+  2138: "Leela Eyes the Shah House",
+  2139: "Ansh, Prerana Share Their Plans",
+  2140: "Anupama Gets Scammed!",
+  2141: "Anupama Vows to Fight for Justice",
+  2142: "Rahi and Anupama Remember Anuj",
+};
+const episodeMetadataCache = new Map();
 const DEFAULT_SHOWS = [{
   id: "anupamaa",
   name: "Anupamaa",
@@ -181,9 +203,12 @@ async function fetchText(url, { method = "GET", body = null, referer = APNE_ORIG
       method,
       headers,
       body,
-      redirect: "follow",
+      redirect: "manual",
       signal: controller.signal,
     });
+    if (response.status >= 300 && response.status < 400) {
+      throw new Error(`Unexpected redirect from ${new URL(url).hostname}`);
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status} from ${new URL(url).hostname}`);
     return { html: await response.text(), url: response.url };
   } finally {
@@ -210,12 +235,198 @@ export function parseRecentEpisodesFromShowHtml(html, show = {}, limit = 10) {
   }
   if (!matches.length) throw new Error("APNE did not return any dated episodes for this show.");
   matches.sort((a, b) => b.dateKey.localeCompare(a.dateKey));
-  const count = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(25, Math.trunc(Number(limit)))) : 10;
+  const count = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(APNE_HISTORY_FETCH_LIMIT, Math.trunc(Number(limit)))) : 10;
   return matches.slice(0, count);
+}
+
+export function filterApneEpisodesByMonths(episodes, months = APNE_HISTORY_MONTHS) {
+  const list = Array.isArray(episodes)
+    ? episodes.filter((episode) => /^\d{4}-\d{2}-\d{2}$/.test(String(episode?.dateKey || "")))
+    : [];
+  if (!list.length) return [];
+  const newest = list[0].dateKey;
+  const parts = newest.split("-").map(Number);
+  const cutoff = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  cutoff.setUTCMonth(cutoff.getUTCMonth() - Math.max(1, Math.trunc(Number(months) || APNE_HISTORY_MONTHS)));
+  const cutoffKey = [
+    cutoff.getUTCFullYear(),
+    String(cutoff.getUTCMonth() + 1).padStart(2, "0"),
+    String(cutoff.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+  return list.filter((episode) => episode.dateKey >= cutoffKey);
 }
 
 export function parseLatestEpisodeFromShowHtml(html, show = {}) {
   return parseRecentEpisodesFromShowHtml(html, show, 1)[0];
+}
+
+function dateKeyInTimeZone(value, timeZone) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return byType.year + "-" + byType.month + "-" + byType.day;
+}
+
+function decodeSkyJsonString(value) {
+  try {
+    return JSON.parse('"' + String(value || "") + '"');
+  } catch {
+    return String(value || "")
+      .replace(/\u0026/gi, "&")
+      .replace(/\"/g, '"')
+  }
+}
+
+function usefulEpisodeTitle(title, showName = "") {
+  const value = String(title || "").trim();
+  if (!value) return "";
+  if (value.length > 160 || /episodeNumber|synopsis|waysToWatch|__typename|\{\s*"/i.test(value)) return "";
+  const normalizedTitle = value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const normalizedShow = String(showName || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (normalizedTitle === normalizedShow || normalizedTitle === "anupama" || normalizedTitle === "anupamaa") return "";
+  if (/^episode\s+\d+$/i.test(value)) return "";
+  if (/^(?:mon|tue|wed|thu|fri|sat|sun)\s*-\s*[a-z]{3}\s+\d{1,2},\s+\d{4}$/i.test(value)) return "";
+  return value;
+}
+
+export function parseSkyEpisodeMetadata(html, showName = "Anupamaa") {
+  const source = String(html || "");
+  const pattern = /\\"episode\\":\{\\"uuid\\":\\"[^"]+\\",\\"title\\":\\"([\s\S]*?)\\",\\"episodeNumber\\":(\d+)([\s\S]{0,8000}?)\\"startTime\\":\\"([^"]+)\\"/g;
+  const byDate = {};
+  for (const match of source.matchAll(pattern)) {
+    const episodeNumber = Number(match[2]);
+    const dateKey = dateKeyInTimeZone(match[4], "Asia/Kolkata");
+    if (!dateKey || !Number.isFinite(episodeNumber)) continue;
+    const rawTitle = decodeSkyJsonString(match[1]);
+    const episodeTitle = usefulEpisodeTitle(rawTitle, showName);
+    const current = byDate[dateKey];
+    const candidate = { episodeNumber, episodeTitle };
+    if (!current || (!current.episodeTitle && candidate.episodeTitle)) byDate[dateKey] = candidate;
+  }
+  return byDate;
+}
+
+function dateKeyFromAirDateLabel(value) {
+  const match = String(value || "").trim().match(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{4})$/);
+  if (!match) return "";
+  const months = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
+  const month = months[match[1]];
+  if (!month) return "";
+  return [match[3], String(month).padStart(2, "0"), String(Number(match[2])).padStart(2, "0")].join("-");
+}
+
+export function parseActorAgeCheckEpisodeMetadata(html, showName = "Anupamaa") {
+  const source = String(html || "");
+  const pattern = /<div class="movie episode">[\s\S]*?<a href="tv\/Anupamaa\/116479\/season\/1\/episode\/(\d+)"[^>]*title="Anupamaa - Season 1 - ([\s\S]*?) \(Episode \d+\)"[\s\S]*?<div class="release"><span class="seinfo">Episode Air Date: <\/span>([^<]+)<\/div><\/div>/g;
+  const byDate = {};
+  for (const match of source.matchAll(pattern)) {
+    const episodeNumber = Number(match[1]);
+    const dateKey = dateKeyFromAirDateLabel(decodeHtml(match[3]));
+    if (!dateKey || !Number.isFinite(episodeNumber)) continue;
+    const rawTitle = decodeHtml(match[2]);
+    const episodeTitle = usefulEpisodeTitle(rawTitle, showName);
+    byDate[dateKey] = { episodeNumber, episodeTitle };
+  }
+  return byDate;
+}
+
+function plusDaysDateKey(dateKey, days) {
+  const match = String(dateKey || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  date.setUTCDate(date.getUTCDate() + days);
+  return [date.getUTCFullYear(), String(date.getUTCMonth() + 1).padStart(2, "0"), String(date.getUTCDate()).padStart(2, "0")].join("-");
+}
+
+async function episodeMetadataForShow(show) {
+  const skyUrl = SKY_EPISODE_METADATA_URLS[show.id];
+  const guideUrl = ACTOR_AGE_CHECK_EPISODE_METADATA_URLS[show.id];
+  if (!skyUrl && !guideUrl) return {};
+  const cached = episodeMetadataCache.get(show.id);
+  if (cached && Date.now() - cached.at < EPISODE_METADATA_CACHE_MS) return cached.data;
+
+  const fetchMetadataHtml = async (url) => {
+    if (!url) return "";
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": DESKTOP_USER_AGENT,
+          "Accept": "text/html,application/xhtml+xml",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        redirect: "follow",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status + " from " + new URL(url).hostname);
+      return await response.text();
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  try {
+    const [skyHtml, guideHtml] = await Promise.all([
+      fetchMetadataHtml(skyUrl).catch(() => ""),
+      fetchMetadataHtml(guideUrl).catch(() => ""),
+    ]);
+    const skyByDate = skyHtml ? parseSkyEpisodeMetadata(skyHtml, show.name) : {};
+    const guideByDate = guideHtml ? parseActorAgeCheckEpisodeMetadata(guideHtml, show.name) : {};
+    const skyByNumber = {};
+    for (const item of Object.values(skyByDate)) {
+      if (item?.episodeNumber && (!skyByNumber[item.episodeNumber] || item.episodeTitle)) skyByNumber[item.episodeNumber] = item;
+    }
+
+    const merged = {};
+    for (const [dateKey, item] of Object.entries(guideByDate)) {
+      const overrideTitle = show.id === "anupamaa" ? ANUPAMAA_EPISODE_TITLE_OVERRIDES[item.episodeNumber] || "" : "";
+      const skyTitle = skyByNumber[item.episodeNumber]?.episodeTitle || "";
+      merged[dateKey] = {
+        episodeNumber: item.episodeNumber,
+        episodeTitle: overrideTitle || item.episodeTitle || skyTitle || "",
+      };
+    }
+
+    // The full-season guide can lag the newest few episodes. Anupamaa airs daily,
+    // so extend episode numbers only a few days beyond the newest confirmed guide date.
+    if (show.id === "anupamaa") {
+      const confirmedDates = Object.keys(guideByDate).sort();
+      const latestConfirmedDate = confirmedDates.at(-1) || "";
+      const latestConfirmedNumber = guideByDate[latestConfirmedDate]?.episodeNumber || 0;
+      for (let offset = 1; offset <= 7 && latestConfirmedDate && latestConfirmedNumber; offset++) {
+        const dateKey = plusDaysDateKey(latestConfirmedDate, offset);
+        const episodeNumber = latestConfirmedNumber + offset;
+        merged[dateKey] = {
+          episodeNumber,
+          episodeTitle: ANUPAMAA_EPISODE_TITLE_OVERRIDES[episodeNumber] || skyByNumber[episodeNumber]?.episodeTitle || "",
+        };
+      }
+    }
+
+    // Keep Sky-only dates as a final fallback, but never overwrite a guide-backed mapping.
+    for (const [dateKey, item] of Object.entries(skyByDate)) {
+      if (!merged[dateKey]) merged[dateKey] = item;
+    }
+
+    episodeMetadataCache.set(show.id, { at: Date.now(), data: merged });
+    await writeApneLog("episode_metadata_ok", {
+      showId: show.id,
+      count: Object.keys(merged).length,
+      guideCount: Object.keys(guideByDate).length,
+      skyCount: Object.keys(skyByDate).length,
+    });
+    return merged;
+  } catch (error) {
+    await writeApneLog("episode_metadata_failed", { showId: show.id, error: error.message });
+    return cached?.data || {};
+  }
 }
 
 function readAttributes(tag) {
@@ -233,7 +444,21 @@ export function parseFlashTargetFromEpisodeHtml(html) {
     if (!classes.includes("flash_link")) continue;
     const href = String(attrs["data-href"] || "");
     const id = String(attrs["data-id"] || "");
-    if (!id || !/^https:\/\/(?:www\.)?newsportaling\.com\/finnance-/i.test(href)) continue;
+    let target;
+    try { target = new URL(href); } catch { continue; }
+    const host = target.hostname.toLowerCase();
+    const legacyTarget = (host === "newsportaling.com" || host === "www.newsportaling.com")
+      && /^\/finnance-[^/]+$/i.test(target.pathname);
+    const currentTarget = (host === "newscurting.com" || host === "www.newscurting.com")
+      && /^\/savvings-[^/]+$/i.test(target.pathname);
+    if (!/^[a-f0-9]{32}$/i.test(id)
+      || target.protocol !== "https:"
+      || (!legacyTarget && !currentTarget)
+      || target.port
+      || target.username
+      || target.password
+      || target.search
+      || target.hash) continue;
     return { id, href };
   }
   throw new Error("APNE Flash Link was not found for this episode.");
@@ -241,29 +466,102 @@ export function parseFlashTargetFromEpisodeHtml(html) {
 
 export function parseNewsportalingRedirect(html) {
   const source = String(html || "");
-  const redirect = source.match(/myRedirect\(\s*["'](https:\/\/[^"']*mediagraming\.com\/[^"']+)["']\s*,\s*["']id["']\s*,\s*["']([^"']+)["']\s*\)/i);
+  const redirect = source.match(/myRedirect\(\s*["']([^"']+)["']\s*,\s*["']id["']\s*,\s*["']([^"']+)["']\s*\)/i);
   if (!redirect) throw new Error("Newsportaling did not expose the Mediagraming handoff.");
+  let target;
+  try { target = new URL(decodeHtml(redirect[1])); } catch {
+    throw new Error("Newsportaling returned an invalid Mediagraming handoff.");
+  }
+  const host = target.hostname.toLowerCase();
+  if (target.protocol !== "https:"
+    || (host !== "mediagraming.com" && !host.endsWith(".mediagraming.com"))
+    || target.username
+    || target.password
+    || target.port) {
+    throw new Error("Newsportaling returned an unexpected Mediagraming host.");
+  }
   const channel = source.match(/name=["']channel["']\s+value=["']([^"']+)["']/i)
     || source.match(/name=\\?["']channel\\?["']\s+value=\\?["']([^"'\\]+)\\?["']/i);
   return {
-    url: decodeHtml(redirect[1]),
+    url: target.href,
     id: decodeHtml(redirect[2]),
     channel: decodeHtml(channel?.[1] || "starplus1"),
   };
 }
 
-export function parseMediagramingHlsFromHtml(html) {
-  const source = decodeHtml(String(html || ""));
-  const match = source.match(/<iframe\b[^>]*\bsrc=["']([^"']*mediagraming\.com\/new\/video\.php\/?\?url=[^"']+)["']/i);
-  if (!match) throw new Error("Mediagraming player iframe was not found.");
-  const iframeUrl = new URL(match[1]);
-  const hlsUrl = new URL(iframeUrl.searchParams.get("url") || "");
+function validatedApneHlsUrl(value) {
+  let hlsUrl;
+  try {
+    hlsUrl = new URL(String(value || "").replace(/\\\//g, "/"));
+  } catch {
+    throw new Error("Mediagraming did not return a valid HLS URL.");
+  }
   const host = hlsUrl.hostname.toLowerCase().replace(/\.$/, "");
-  if (hlsUrl.protocol !== "https:" || (host !== "videoapne.to" && !host.endsWith(".videoapne.to"))) {
+  const allowedHost = host === "videoapne.to"
+    || host.endsWith(".videoapne.to")
+    || host === "streaming.disk.yandex.net"
+    || (host === "cdn.justfingram.com" && !hlsUrl.port);
+  if (hlsUrl.protocol !== "https:" || !allowedHost) {
     throw new Error("Mediagraming returned an unexpected media host.");
   }
   if (!/\.m3u8(?:$|[?#])/i.test(hlsUrl.href)) throw new Error("Mediagraming did not return an HLS playlist.");
   return hlsUrl.href;
+}
+
+export function parseMediagramingPlayerUrlFromHtml(html) {
+  const source = decodeHtml(String(html || ""));
+  for (const match of source.matchAll(/<iframe\b[^>]*\bsrc=["']([^"']+)["']/gi)) {
+    let playerUrl;
+    try {
+      playerUrl = new URL(match[1]);
+    } catch {
+      continue;
+    }
+    const host = playerUrl.hostname.toLowerCase().replace(/\.$/, "");
+    const isMediagraming = host === "mediagraming.com" || host.endsWith(".mediagraming.com");
+    const isJustfingram = host === "justfingram.com";
+    if (playerUrl.protocol !== "https:" || (!isMediagraming && !isJustfingram)) continue;
+    if (isMediagraming && (playerUrl.pathname !== "/player.php" || !playerUrl.searchParams.get("id"))) continue;
+    if (isJustfingram && (playerUrl.port || playerUrl.pathname !== "/play.php" || !playerUrl.searchParams.get("id") || !playerUrl.searchParams.get("srv"))) continue;
+    return playerUrl.href;
+  }
+  return null;
+}
+
+export function parseMediagramingHlsFromHtml(html) {
+  const source = decodeHtml(String(html || ""));
+
+  const legacy = source.match(/<iframe\b[^>]*\bsrc=["']([^"']*mediagraming\.com\/new\/video\.php\/?\?url=[^"']+)["']/i);
+  if (legacy) {
+    const iframeUrl = new URL(legacy[1]);
+    return validatedApneHlsUrl(iframeUrl.searchParams.get("url") || "");
+  }
+
+  const direct = source.match(/(?:\b(?:var|let|const)\s+)?videoUrl\s*(?:=|:)\s*["']([^"']+)["']/i);
+  if (direct) return validatedApneHlsUrl(direct[1]);
+
+  // New justfingram frames keep the media URL out of the markup. They use a
+  // small, page-local XOR decoder: base64 bytes are XORed with the declared
+  // key before being assigned to videoUrl. Match that shape explicitly rather
+  // than executing arbitrary player JavaScript.
+  const keyMatch = source.match(/\b(?:var|let|const)\s+k\s*=\s*["']([^"']{1,64})["']/i);
+  const decoderMatch = source.match(/function\s+decodeUrl\s*\(\s*s\s*\)\s*\{([\s\S]{0,2000}?)\}/i);
+  const encodedMatch = source.match(/\b(?:var|let|const)\s+videoUrl\s*=\s*decodeUrl\(\s*["']([A-Za-z0-9+/_=-]{1,8192})["']\s*\)/i);
+  const decoderBody = decoderMatch?.[1] || "";
+  if (keyMatch && encodedMatch
+    && /atob\s*\(\s*s\s*\)/i.test(decoderBody)
+    && /charCodeAt\s*\(\s*i\s*\)\s*\^\s*k\.charCodeAt\s*\(\s*i\s*%\s*k\.length\s*\)/i.test(decoderBody)) {
+    const key = keyMatch[1];
+    const decodedBytes = Buffer.from(encodedMatch[1], "base64");
+    if (!decodedBytes.length || decodedBytes.length > 8192) throw new Error("Mediagraming returned an invalid encoded HLS URL.");
+    let decodedUrl = "";
+    for (let index = 0; index < decodedBytes.length; index += 1) {
+      decodedUrl += String.fromCharCode(decodedBytes[index] ^ key.charCodeAt(index % key.length));
+    }
+    return validatedApneHlsUrl(decodedUrl);
+  }
+
+  throw new Error("Mediagraming HLS source was not found.");
 }
 
 export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
@@ -293,9 +591,22 @@ export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
       referer: flash.href,
     });
     await log("mediagraming_html_ok", { bytes: media.html.length, responseHost: hostOf(media.url) });
-    const hlsUrl = parseMediagramingHlsFromHtml(media.html);
+
+    let hlsUrl;
+    let hlsReferer = handoff.url;
+    const playerUrl = parseMediagramingPlayerUrlFromHtml(media.html);
+    if (playerUrl) {
+      await log("mediagraming_player_found", { playerHost: hostOf(playerUrl) });
+      const player = await fetchText(playerUrl, { referer: handoff.url });
+      await log("mediagraming_player_html_ok", { bytes: player.html.length, responseHost: hostOf(player.url) });
+      hlsUrl = parseMediagramingHlsFromHtml(player.html);
+      hlsReferer = player.url;
+    } else {
+      hlsUrl = parseMediagramingHlsFromHtml(media.html);
+    }
+
     await log("hls_resolved", { hlsHost: hostOf(hlsUrl) });
-    return { hlsUrl, referer: handoff.url };
+    return { hlsUrl, referer: hlsReferer };
   } catch (error) {
     await log("resolve_failed", { error: error.message });
     throw error;
@@ -373,6 +684,39 @@ async function uniqueLibraryVideoPath(title) {
   return path.join(config.libraryDir, `${base} ${Date.now()}.mp4`);
 }
 
+async function mirrorApneVideoToICloud(filePath) {
+  const targetDir = config.apneICloudDir;
+  if (!targetDir) throw new Error("APNE iCloud Drive folder is not configured.");
+
+  await fs.mkdir(targetDir, { recursive: true });
+  const targetPath = path.join(targetDir, path.basename(filePath));
+  const sourceStat = await fs.stat(filePath);
+  if (!sourceStat.isFile() || sourceStat.size <= 0) throw new Error("Downloaded APNE video is empty.");
+
+  try {
+    const targetStat = await fs.stat(targetPath);
+    if (targetStat.isFile() && targetStat.size === sourceStat.size) return targetPath;
+  } catch {}
+
+  const tempPath = path.join(targetDir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.part`);
+  try {
+    await fs.copyFile(filePath, tempPath);
+    const copiedStat = await fs.stat(tempPath);
+    if (!copiedStat.isFile() || copiedStat.size !== sourceStat.size) {
+      throw new Error("iCloud copy verification failed.");
+    }
+    await fs.rename(tempPath, targetPath);
+  } finally {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+  }
+
+  const finalStat = await fs.stat(targetPath);
+  if (!finalStat.isFile() || finalStat.size !== sourceStat.size) {
+    throw new Error("iCloud copy verification failed.");
+  }
+  return targetPath;
+}
+
 export async function downloadApneHls({ hlsUrl, referer, title, meta = {}, onStage = () => {} }) {
   const finalPath = await uniqueLibraryVideoPath(title);
   const partPath = finalPath.replace(/\.mp4$/i, ".part.mp4");
@@ -417,13 +761,26 @@ export async function downloadApneHls({ hlsUrl, referer, title, meta = {}, onSta
 
   await fs.rename(partPath, finalPath);
   const duration = await probeLocalVideoDuration(finalPath);
-  const item = await registerDownloadedVideo(finalPath, title, duration ? { ...meta, duration } : meta);
+
+  onStage("Saving to iCloud", { filePath: finalPath });
+  await writeApneLog("icloud_copy_start", {
+    showId: meta.apneShowId || null, dateKey: meta.apneEpisodeDate || null,
+    fileName: path.basename(finalPath),
+  });
+  const iCloudPath = await mirrorApneVideoToICloud(finalPath);
+  await writeApneLog("icloud_copy_saved", {
+    showId: meta.apneShowId || null, dateKey: meta.apneEpisodeDate || null,
+    fileName: path.basename(finalPath),
+  });
+
+  const savedMeta = { ...meta, iCloudPath, ...(duration ? { duration } : {}) };
+  const item = await registerDownloadedVideo(finalPath, title, savedMeta);
   await writeApneLog("download_saved", {
     showId: meta.apneShowId || null, dateKey: meta.apneEpisodeDate || null,
     fileName: path.basename(finalPath), duration: duration || null, itemId: item?.id || null,
   });
-  onStage("Saved", { filePath: finalPath, itemId: item?.id || null, duration });
-  return { filePath: finalPath, item, duration };
+  onStage("Saved", { filePath: finalPath, iCloudPath, itemId: item?.id || null, duration });
+  return { filePath: finalPath, iCloudPath, item, duration };
 }
 
 function episodeTitle(show, episode) {
@@ -443,10 +800,17 @@ export function episodeMatchesDownloadedItem(item, show, episode) {
   return Boolean(itemTitle && showName && shortDate && itemTitle.includes(showName) && itemTitle.includes(shortDate));
 }
 
-async function downloadedItemFor(show, episode) {
+async function downloadedApneItems() {
   const playlists = await store.listPlaylists();
-  const items = playlists.filter((playlist) => playlist?.meta?.kind === "downloaded-files").flatMap((playlist) => playlist.items || []);
-  return items.find((item) => episodeMatchesDownloadedItem(item, show, episode)) || null;
+  return playlists
+    .filter((playlist) => playlist?.meta?.kind === "downloaded-files")
+    .flatMap((playlist) => playlist.items || [])
+    .filter((item) => item?.type === "file" && item?.meta?.source === "apnetv");
+}
+
+async function downloadedItemFor(show, episode, items = null) {
+  const candidates = items || await downloadedApneItems();
+  return candidates.find((item) => episodeMatchesDownloadedItem(item, show, episode)) || null;
 }
 
 async function detectRecent(show, limit = 10) {
@@ -478,14 +842,15 @@ function publicJob(job) {
     episode: job.episode || null,
     itemId: job.itemId || null,
     filePath: job.filePath || null,
+    iCloudPath: job.iCloudPath || null,
     error: job.error || null,
     startedAt: job.startedAt || null,
     finishedAt: job.finishedAt || null,
   };
 }
 
-async function episodeStatus(show, episode) {
-  const saved = await downloadedItemFor(show, episode);
+async function episodeStatus(show, episode, downloadedItems = null) {
+  const saved = await downloadedItemFor(show, episode, downloadedItems);
   const job = jobs.get(jobKey(show.id, episode.dateKey));
   let status = saved ? "Saved" : "Available";
   let itemId = saved?.id || null;
@@ -500,26 +865,64 @@ async function episodeStatus(show, episode) {
 
 async function statusForShow(show) {
   try {
-    const detected = await detectRecent(show, 10);
-    const recentEpisodes = await Promise.all(detected.map((episode) => episodeStatus(show, episode)));
+    const [detected, episodeMetadata] = await Promise.all([
+      detectRecent(show, APNE_HISTORY_FETCH_LIMIT),
+      episodeMetadataForShow(show),
+    ]);
+    const historyEpisodes = filterApneEpisodesByMonths(detected, APNE_HISTORY_MONTHS).map((episode) => ({
+      ...episode,
+      ...(episodeMetadata[episode.dateKey] || {}),
+    }));
+    const downloadedItems = await downloadedApneItems();
+    const recentEpisodes = await Promise.all(historyEpisodes.map((episode) => episodeStatus(show, episode, downloadedItems)));
     const episode = recentEpisodes[0];
-    const isToday = episode.dateKey === todayKey();
-    let status = isToday ? episode.status : "Not available yet";
-    let detail = isToday ? episode.dateLabel : `Latest: ${episode.dateLabel}`;
-    let itemId = isToday ? episode.itemId : null;
+    const status = episode.status;
+    let detail = "Latest: " + episode.dateLabel;
+    const itemId = episode.itemId || null;
     const latestJob = jobs.get(jobKey(show.id, episode.dateKey));
 
-    // Preserve the existing convenient Play state when the latest APNE episode is already saved.
-    if (!isToday && episode.status === "Saved") {
-      status = "Saved";
-      detail = episode.dateLabel;
-      itemId = episode.itemId;
-    } else if (isToday && episode.status === "Failed") {
+    // APNE follows the Indian TV date, which can already be tomorrow in America/Chicago.
+    // If APNE has published the newest dated episode, treat it as the current available
+    // episode instead of greying it out purely because the local calendar date differs.
+    if (status === "Failed") {
       detail = episode.detail || latestJob?.error || "Download failed";
+    } else if (status === "Downloading") {
+      detail = episode.detail || ("Downloading " + episode.dateLabel + "…");
+    } else if (status === "Saving to iCloud") {
+      detail = episode.detail || ("Saving " + episode.dateLabel + " to iCloud Drive…");
     }
-    return { ...show, status, detail, episode, recentEpisodes, itemId, job: publicJob(latestJob) };
+
+    return {
+      ...show,
+      status,
+      detail,
+      episode,
+      recentEpisodes,
+      itemId,
+      job: publicJob(latestJob),
+      history: {
+        months: APNE_HISTORY_MONTHS,
+        total: recentEpisodes.length,
+        pageSize: APNE_HISTORY_PAGE_SIZE,
+        pageCount: Math.max(1, Math.ceil(recentEpisodes.length / APNE_HISTORY_PAGE_SIZE)),
+      },
+    };
   } catch (error) {
-    return { ...show, status: "Failed", detail: error.message, episode: null, recentEpisodes: [], itemId: null, job: null };
+    return {
+      ...show,
+      status: "Failed",
+      detail: error.message,
+      episode: null,
+      recentEpisodes: [],
+      itemId: null,
+      job: null,
+      history: {
+        months: APNE_HISTORY_MONTHS,
+        total: 0,
+        pageSize: APNE_HISTORY_PAGE_SIZE,
+        pageCount: 1,
+      },
+    };
   }
 }
 
@@ -557,7 +960,7 @@ export async function removeShow(showId) {
 async function createEpisodeDownloadJob(show, episode) {
   const key = jobKey(show.id, episode.dateKey);
   const active = jobs.get(key);
-  if (active && ["Checking", "Downloading"].includes(active.status)) return publicJob(active);
+  if (active && ["Checking", "Downloading", "Saving to iCloud"].includes(active.status)) return publicJob(active);
 
   const saved = await downloadedItemFor(show, episode);
   if (saved) {
@@ -579,6 +982,7 @@ async function createEpisodeDownloadJob(show, episode) {
     episode,
     itemId: null,
     filePath: null,
+    iCloudPath: null,
     error: null,
   };
   jobs.set(key, job);
@@ -602,15 +1006,19 @@ async function createEpisodeDownloadJob(show, episode) {
         },
         onStage: (status, extra = {}) => {
           job.status = status;
-          job.detail = status === "Downloading" ? "Downloading to Mac…" : status;
+          job.detail = status === "Downloading"
+            ? "Downloading to Mac…"
+            : (status === "Saving to iCloud" ? "Saving to iCloud Drive…" : status);
           if (extra.filePath) job.filePath = extra.filePath;
+          if (extra.iCloudPath) job.iCloudPath = extra.iCloudPath;
           if (extra.itemId) job.itemId = extra.itemId;
         },
       });
       job.status = "Saved";
-      job.detail = "Saved to Downloaded Videos";
+      job.detail = "Saved to Mac + iCloud Drive";
       job.itemId = result.item?.id || job.itemId;
       job.filePath = result.filePath;
+      job.iCloudPath = result.iCloudPath || job.iCloudPath;
       job.finishedAt = Date.now();
     } catch (error) {
       job.status = "Failed";
@@ -631,9 +1039,10 @@ export async function startEpisodeDownload(showId, dateKey) {
   const shows = await loadShows();
   const show = shows.find((item) => item.id === showId);
   if (!show) throw httpError(404, "APNE Daily show not found.");
-  const recent = await detectRecent(show, 25);
-  const episode = recent.find((item) => item.dateKey === key);
-  if (!episode) throw httpError(404, "That episode is no longer in APNE's recent episode list.");
+  const detected = await detectRecent(show, APNE_HISTORY_FETCH_LIMIT);
+  const history = filterApneEpisodesByMonths(detected, APNE_HISTORY_MONTHS);
+  const episode = history.find((item) => item.dateKey === key);
+  if (!episode) throw httpError(404, "That episode is outside APNE Daily's " + APNE_HISTORY_MONTHS + "-month history window.");
   return createEpisodeDownloadJob(show, episode);
 }
 
@@ -642,11 +1051,5 @@ export async function startShowDownload(showId) {
   const show = shows.find((item) => item.id === showId);
   if (!show) throw httpError(404, "APNE Daily show not found.");
   const episode = await detectLatest(show);
-  if (episode.dateKey !== todayKey()) {
-    return {
-      id: null, showId: show.id, status: "Not available yet", detail: `Latest: ${episode.dateLabel}`,
-      episode, itemId: null, filePath: null, error: null, startedAt: null, finishedAt: null,
-    };
-  }
   return createEpisodeDownloadJob(show, episode);
 }

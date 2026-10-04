@@ -116,6 +116,7 @@ MJPEG is the heaviest format (every frame is a full JPEG — no inter-frame comp
 | Resolution | 360p–480p | 720p–1080p |
 | FPS | 8–12 | 24–30 |
 | Quality | Low (4G) / Medium | High |
+| Auto mode | Low/Medium automatically when delivery is constrained | Medium/High automatically when buffer and render headroom stay healthy |
 
 Changing a control while playing restarts the stream with the new settings. The `~Mbps est.` hint is a rough guide.
 
@@ -151,10 +152,11 @@ Override defaults with environment variables (e.g. in the launchd plist or your 
 | `DESKTOP_INPUT_TOKEN` | unset | Optional shared code required before desktop input events are accepted |
 | `DESKTOP_INPUT_WIDTH` / `DESKTOP_INPUT_HEIGHT` | auto | Optional coordinate mapping override |
 | `MAX_STREAMS` | `3` | Concurrent ffmpeg streams cap |
-| `LIBRARY_DIR` | `./data/library` | Where downloads are stored |
+| `LIBRARY_DIR` | `./data/library` | Where local playback downloads are stored |
+| `APNE_ICLOUD_DIR` | `~/Library/Mobile Documents/com~apple~CloudDocs/YT Streamer/APNE Daily` | iCloud Drive mirror for completed APNE Daily downloads |
 | `FFMPEG_PATH` / `YTDLP_PATH` | on PATH | Override binary locations |
 
-Playlists are stored server-side in `data/store.json`. Downloads live in `data/library/`.
+Playlists are stored server-side in `data/store.json`. Downloads live in `data/library/`. Completed APNE Daily downloads are also verified and mirrored to iCloud Drive under `YT Streamer/APNE Daily/` before the UI marks them saved.
 
 ---
 

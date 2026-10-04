@@ -151,6 +151,50 @@ textarea {
 .col-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .col-head h2 { margin: 0; font-size: 17px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .player-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+.playback-method-toggle {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.playback-method-toggle .btn[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.playback-speed-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.playback-speed-control select {
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 800;
+}
+.playback-speed-control.disabled {
+  opacity: .5;
+}
+.video-controls-row .playback-speed-control {
+  min-height: 52px;
+  background: rgba(0, 0, 0, .58);
+  border-color: rgba(255, 255, 255, .28);
+  color: #fff;
+}
+.video-controls-row .playback-speed-control select {
+  color: #fff;
+}
 .player-toolbar {
   display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 8px;
   padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
@@ -537,7 +581,7 @@ body.screen-fullscreen.browser-streaming .screen .browser-keyboard-input:not([hi
 .player-quality-slot[hidden] { display: none !important; }
 .player-quality-presets {
   flex: 1 1 auto; min-width: 0;
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
 }
 .player-quality-btn {
   min-width: 0; min-height: 52px; padding: 5px 9px;
@@ -658,6 +702,7 @@ body.fullscreen-controls-idle .video-controls-overlay .video-controls-panel { po
 }
 .screen.playing.video-mode video, .screen.playing.mjpeg-mode img { display: block; }
 .screen.playing.mjpeg-buffered-mode #mjpegCanvas { display: block; }
+.screen.playing.cyberdash-mode #cyberdashCanvas { display: block; }
 .screen.playback-paused.mjpeg-mode img { display: none; }
 .screen.playback-paused.mjpeg-mode #pauseFrame { display: block; }
 .screen.playing.embed-mode iframe { display: block; }
@@ -1593,10 +1638,12 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
 .apne-show-card.is-saved .apne-status-dot { background: var(--ok); }
 .apne-show-card.is-failed .apne-status-dot { background: var(--accent); }
 .apne-show-card.is-downloading .apne-status-dot,
+.apne-show-card.is-saving-to-icloud .apne-status-dot,
 .apne-show-card.is-checking .apne-status-dot {
   background: #f1b84b; animation: apne-pulse 1s ease-in-out infinite alternate;
 }
 .apne-episode-detail { margin-top: 7px; color: var(--muted); font-size: 13px; }
+.apne-latest-name { margin-top: 4px; color: var(--text); font-size: 12px; font-weight: 700; line-height: 1.3; }
 .apne-download-today {
   min-width: 190px; min-height: 58px; padding: 0 22px; font-size: 17px; font-weight: 900;
 }
@@ -1611,16 +1658,32 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
 .apne-recent {
   display: grid; gap: 6px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
 }
+.apne-recent-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 2px;
+}
 .apne-recent-title { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.apne-history-range { color: var(--muted); font-size: 11px; text-align: right; }
 .apne-recent-row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   min-height: 48px; padding: 8px 10px; border-radius: 9px; background: var(--panel-2);
 }
-.apne-recent-copy { min-width: 0; display: grid; gap: 2px; }
+.apne-recent-copy { min-width: 0; flex: 1 1 auto; display: grid; gap: 3px; }
+.apne-recent-heading { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .apne-recent-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.apne-date-badge {
+  flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em;
+}
 .apne-recent-copy small { color: var(--muted); font-size: 11px; }
+.apne-recent-copy .apne-episode-name { color: var(--text); font-size: 12px; font-weight: 700; line-height: 1.25; white-space: normal; overflow-wrap: anywhere; }
 .apne-recent-copy .apne-recent-error { color: var(--accent); white-space: normal; overflow-wrap: anywhere; }
-.apne-recent-action { flex: 0 0 auto; min-width: 92px; }
+.apne-recent-action { flex: 0 0 auto; width: auto; min-width: 104px; }
+.apne-pagination {
+  display: grid; grid-template-columns: minmax(84px, 1fr) auto minmax(84px, 1fr);
+  align-items: center; gap: 10px; margin-top: 6px; padding-top: 8px;
+}
+.apne-pagination .apne-page-btn { width: auto; min-width: 0; }
+.apne-page-label { color: var(--muted); font-size: 12px; font-weight: 800; white-space: nowrap; text-align: center; }
 .apne-manage-list { display: grid; gap: 8px; margin: 0 0 16px; }
 .apne-manage-row {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -1638,9 +1701,11 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
   .apne-daily-body { padding: 10px; }
   .apne-show-card { padding: 14px; }
   .apne-show-main { display: grid; grid-template-columns: minmax(0, 1fr); }
-  .apne-download-today { width: 100%; min-width: 0; }
+  .apne-download-today { width: 100%; min-width: 0; min-height: 50px; font-size: 16px; }
+  .apne-recent-head { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .apne-history-range { text-align: left; }
   .apne-recent-row { gap: 8px; }
-  .apne-recent-action { min-width: 86px; }
+  .apne-recent-action { width: auto; min-width: 104px; }
 }
 
 /* Toast */
@@ -1649,7 +1714,8 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
   display: flex; align-items: center; gap: 14px; max-width: min(760px, calc(100vw - 32px));
   background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
   padding: 12px 14px 12px 20px; border-radius: 12px; font-size: 16px; font-weight: 700;
-  z-index: 200; box-shadow: 0 8px 30px rgba(0,0,0,.5);
+  /* Keep feedback visible above dialogs so form errors are not hidden. */
+  z-index: 400; box-shadow: 0 8px 30px rgba(0,0,0,.5);
 }
 .toast.ok { border-color: rgba(46,194,106,.9); }
 .toast.bad { border-color: var(--accent); }
@@ -1857,6 +1923,30 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
     min-height: 42px;
     padding: 0 14px;
   }
+  .apne-recent-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 104px;
+    align-items: center;
+    gap: 10px;
+  }
+  .apne-recent-row .btn.apne-recent-action {
+    width: 104px;
+    min-width: 104px;
+    padding: 0 10px;
+  }
+  .apne-recent-copy strong {
+    white-space: normal;
+    line-height: 1.2;
+  }
+  .apne-pagination {
+    grid-template-columns: minmax(76px, 1fr) auto minmax(76px, 1fr);
+    gap: 8px;
+  }
+  .apne-pagination .btn.apne-page-btn {
+    width: auto;
+    min-width: 0;
+    padding: 0 10px;
+  }
   .panel-head {
     min-height: 58px;
     padding: 10px 12px;
@@ -2055,4 +2145,34 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
     min-height: 50px;
     padding: 0 15px;
   }
+}
+
+/* Empty player chrome must not intercept the remote page underneath it. */
+.screen.browser-input-active .video-controls-panel {
+  pointer-events: none;
+}
+.screen.browser-input-active .video-controls-panel :is(button, input, select, textarea, a, [role="slider"]) {
+  pointer-events: auto;
+}
+body.fullscreen-controls-idle .screen.browser-input-active .video-controls-panel * {
+  pointer-events: none;
+}
+
+.browser-audio-fixed {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.browser-audio-fixed > span {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.browser-audio-fixed > strong {
+  font-size: 0.92rem;
+}
+.browser-audio-fixed > small {
+  color: var(--muted);
+  line-height: 1.35;
 }

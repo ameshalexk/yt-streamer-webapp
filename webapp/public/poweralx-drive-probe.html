@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="robots" content="noindex,nofollow,nosnippet">
+  <meta name="theme-color" content="#0f1115">
+  <title>PowerALX Drive Probe</title>
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:dark}
+    *{box-sizing:border-box}
+    body{margin:0;background:#0f1115;color:#f5f7fa;min-height:100vh}
+    main{max-width:900px;margin:0 auto;padding:22px 16px 48px}
+    h1{font-size:32px;margin:0 0 8px}
+    .lead{font-size:18px;line-height:1.45;color:#c2cad4;margin:0 0 14px}
+    .warning{padding:12px 14px;border-radius:12px;background:#2b2415;color:#ffe2a8;margin-bottom:16px}
+    .card{background:#181c22;border:1px solid #2a3039;border-radius:18px;padding:18px;margin:14px 0}
+    .locked{opacity:.42}
+    .hidden{display:none!important}
+    .title{font-size:24px;font-weight:800;margin-bottom:7px}
+    .what{font-size:19px;line-height:1.45;margin:8px 0 14px}
+    .plain{color:#aeb7c4;font-size:16px;line-height:1.45}
+    .status{font-size:19px;font-weight:750;margin:12px 0}
+    .good{color:#7de39d}.bad{color:#ff8b8b}.wait{color:#ffd166}
+    button{width:100%;min-height:62px;border:0;border-radius:14px;padding:13px 16px;font-size:20px;font-weight:800;background:#f2f4f7;color:#101317;cursor:pointer;margin-top:8px}
+    button.secondary{background:#252b34;color:#f5f7fa;border:1px solid #3a424e}
+    button.yes{background:#d8ffe4;color:#0d2a17}
+    button.no{background:#ffe0e0;color:#3a1111}
+    button:disabled{opacity:.45;cursor:default}
+    .choice{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    canvas{width:100%;background:#000;border-radius:14px;display:block;aspect-ratio:16/9;margin-top:12px}
+    audio{width:100%;margin-top:12px}
+    .counter{font-size:42px;font-weight:850;text-align:center;margin:14px 0}
+    .tapbox{min-height:150px;border-radius:16px;background:#166534;display:grid;place-items:center;text-align:center;font-size:28px;font-weight:850;touch-action:none;user-select:none;margin-top:12px;padding:18px}
+    .dragzone{height:100px;border-radius:16px;background:#11151a;border:1px solid #39414d;position:relative;margin-top:14px;touch-action:none}
+    .handle{width:74px;height:74px;border-radius:50%;background:#38bdf8;position:absolute;left:12px;top:13px;display:grid;place-items:center;color:#00131c;font-weight:900;touch-action:none}
+    .mini{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:12px}
+    .metric{background:#11151a;border-radius:12px;padding:11px}.metric b{display:block;font-size:13px;color:#9ca8b7;margin-bottom:5px}.metric span{font-size:17px}
+    .done{font-size:22px;font-weight:800;color:#7de39d}
+    pre{white-space:pre-wrap;word-break:break-word;font-size:12px;max-height:260px;overflow:auto;background:#0b0e12;padding:12px;border-radius:12px}
+  </style>
+</head>
+<body>
+<main>
+  <h1>PowerALX Drive Probe</h1>
+  <p class="lead">Four simple tests. Do them in order. You do <b>not</b> need to test Park.</p>
+  <div class="warning"><b>Only run this while the car is stationary.</b> The goal is to measure what the browser allows in stationary Drive, not to interact while the vehicle is moving.</div>
+
+  <section class="card" id="test1">
+    <div class="title">Test 1 — Video</div>
+    <div class="what"><b>What to do:</b> Tap Start. Watch the moving video for 15 seconds. There is <b>no audio</b> in this test.</div>
+    <div class="plain">Path being tested: <b>WebSocket → H.264 → WebCodecs → Canvas</b>.</div>
+    <button id="t1Start">Start Test 1</button>
+    <canvas id="t1Canvas" width="640" height="360" class="hidden"></canvas>
+    <div id="t1Status" class="status">Not started.</div>
+    <div id="t1Choice" class="choice hidden">
+      <button class="yes" id="t1Yes">YES — video kept moving</button>
+      <button class="no" id="t1No">NO — video froze / never showed</button>
+    </div>
+  </section>
+
+  <section class="card locked" id="test2">
+    <div class="title">Test 2 — Audio</div>
+    <div class="what"><b>What to do:</b> Tap Start. Listen for a soft steady tone for 10 seconds. There is <b>no video</b> in this test.</div>
+    <div class="plain">Path being tested: <b>WebRTC audio only</b>. This tells us exactly whether the audio path survives in stationary Drive.</div>
+    <button id="t2Start" disabled>Start Test 2</button>
+    <audio id="rtcAudio" autoplay playsinline></audio>
+    <div id="t2Status" class="status">Locked until Test 1 is answered.</div>
+    <div id="t2Choice" class="choice hidden">
+      <button class="yes" id="t2Yes">YES — I heard the tone</button>
+      <button class="no" id="t2No">NO — no tone</button>
+    </div>
+  </section>
+
+  <section class="card locked" id="test3">
+    <div class="title">Test 3 — Touch input</div>
+    <div class="what"><b>What to do:</b> Tap the green box <b>5 times</b>. Then drag the blue circle all the way to the right once.</div>
+    <div class="plain">Path being tested: <b>touch/pointer → secure WebSocket → server acknowledgment</b>. No video or audio.</div>
+    <button id="t3Start" disabled>Start Test 3</button>
+    <div id="t3Area" class="hidden">
+      <div class="tapbox" id="tapBox">Tap me 5 times<br><span id="tapCount">0 / 5</span></div>
+      <div id="dragText" class="status">After 5 taps, drag the blue circle to the right.</div>
+      <div class="dragzone" id="dragZone"><div class="handle" id="dragHandle">DRAG</div></div>
+    </div>
+    <div id="t3Status" class="status">Locked until Test 2 is answered.</div>
+  </section>
+
+  <section class="card locked" id="test4">
+    <div class="title">Test 4 — Combined PowerALX-style path</div>
+    <div class="what"><b>What to do:</b> Tap Start. For 20 seconds, confirm the video keeps moving and you hear the tone. While it runs, tap the green button 5 times.</div>
+    <div class="plain"><b>VIDEO:</b> WebSocket → WebCodecs. &nbsp; <b>AUDIO:</b> WebRTC. &nbsp; <b>TOUCH:</b> WebSocket. This is the client stack we care about for PowerALX.</div>
+    <button id="t4Start" disabled>Start Test 4</button>
+    <canvas id="t4Canvas" width="640" height="360" class="hidden"></canvas>
+    <div id="t4Tap" class="tapbox hidden">Tap while video/audio run<br><span id="t4TapCount">0 / 5</span></div>
+    <div id="t4Status" class="status">Locked until Test 3 passes.</div>
+    <div id="t4VideoChoice" class="choice hidden">
+      <button class="yes" id="t4VideoYes">VIDEO YES</button>
+      <button class="no" id="t4VideoNo">VIDEO NO</button>
+    </div>
+    <div id="t4AudioChoice" class="choice hidden">
+      <button class="yes" id="t4AudioYes">AUDIO YES</button>
+      <button class="no" id="t4AudioNo">AUDIO NO</button>
+    </div>
+  </section>
+
+  <section class="card" id="resultCard">
+    <div class="title">Recorded results</div>
+    <div id="finalResult" class="plain">Complete the tests above. Each stage is recorded automatically.</div>
+    <div class="mini">
+      <div class="metric"><b>WebSocket</b><span id="wsState">not connected</span></div>
+      <div class="metric"><b>Video frames</b><span id="frames">0</span></div>
+      <div class="metric"><b>Touch acks</b><span id="acks">0</span></div>
+      <div class="metric"><b>Input RTT</b><span id="inputRtt">—</span></div>
+    </div>
+    <details style="margin-top:14px"><summary>Technical report</summary><pre id="raw"></pre></details>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const VERSION = "2026-09-28-drive-v2";
+  const $ = id => document.getElementById(id);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const report = {
+    version: VERSION,
+    startedAt: new Date().toISOString(),
+    userAgent: navigator.userAgent,
+    secureContext: !!window.isSecureContext,
+    tests: {},
+    errors: []
+  };
+
+  let ws = null;
+  let wsPromise = null;
+  let activeDecoder = null;
+  let activeCanvas = null;
+  let videoFrames = 0;
+  let inputSeq = 0;
+  let inputAcks = 0;
+  let inputRtts = [];
+  let pendingInputs = new Map();
+  let acceptingVideo = false;
+  let rtcAudio = null;
+  let t3TapLocal = 0;
+  let t3TapAckBase = 0;
+  let t3DragComplete = false;
+  let t4TapLocal = 0;
+  let t4TapAckBase = 0;
+  let t4VideoVerdict = null;
+  let t4AudioVerdict = null;
+
+  function renderTech() {
+    $("wsState").textContent = ws?.readyState === WebSocket.OPEN ? "connected" : (ws ? "closed" : "not connected");
+    $("frames").textContent = String(videoFrames);
+    $("acks").textContent = String(inputAcks);
+    const avg = inputRtts.length ? inputRtts.reduce((a,b)=>a+b,0)/inputRtts.length : null;
+    $("inputRtt").textContent = avg == null ? "—" : avg.toFixed(0) + " ms avg";
+    $("raw").textContent = JSON.stringify(report, null, 2);
+  }
+
+  function addError(scope, error) {
+    report.errors.push({ at:new Date().toISOString(), scope, message:String(error?.message || error).slice(0,180) });
+    renderTech();
+  }
+
+  async function record(label, extra={}) {
+    const timing = {
+      version: VERSION,
+      test: String(extra.test || ""),
+      stage: String(extra.stage || ""),
+      verdict: String(extra.verdict || ""),
+      wsState: ws?.readyState === WebSocket.OPEN ? "connected" : "closed",
+      videoFrames,
+      inputAcks,
+      inputRttAvgMs: inputRtts.length ? inputRtts.reduce((a,b)=>a+b,0)/inputRtts.length : -1
+    };
+    for (const [k,v] of Object.entries(extra.metrics || {})) {
+      if (typeof v === "number" && Number.isFinite(v)) timing[k] = v;
+      else if (typeof v === "string") timing[k] = v;
+    }
+    try {
+      await fetch("/api/playback-event", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        keepalive:true,
+        body:JSON.stringify({
+          event:"poweralx_drive_probe",
+          label,
+          message:"PowerALX Drive Probe " + VERSION,
+          userAgent:navigator.userAgent,
+          timing
+        })
+      });
+    } catch {}
+  }
+
+  function unlock(testNum) {
+    const card = $("test" + testNum);
+    card.classList.remove("locked");
+    const btn = $("t" + testNum + "Start");
+    if (btn) btn.disabled = false;
+  }
+
+  async function ensureWs() {
+    if (ws?.readyState === WebSocket.OPEN) return ws;
+    if (wsPromise) return wsPromise;
+
+    wsPromise = new Promise((resolve, reject) => {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const socket = new WebSocket(proto + "//" + location.host + "/ws/poweralx-probe");
+      socket.binaryType = "arraybuffer";
+      const timer = setTimeout(() => {
+        try { socket.close(); } catch {}
+        reject(new Error("WebSocket connection timeout"));
+      }, 6000);
+
+      socket.onopen = () => {
+        clearTimeout(timer);
+        ws = socket;
+        renderTech();
+        resolve(socket);
+      };
+      socket.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error("WebSocket connection failed"));
+      };
+      socket.onclose = () => {
+        if (ws === socket) ws = null;
+        wsPromise = null;
+        renderTech();
+      };
+      socket.onmessage = event => {
+        if (event.data instanceof ArrayBuffer) {
+          if (acceptingVideo && activeDecoder && activeDecoder.state !== "closed") {
+            decodeUnit(new Uint8Array(event.data));
+          }
+          return;
+        }
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "input-ack") {
+            inputAcks++;
+            const sentAt = pendingInputs.get(msg.seq);
+            if (sentAt != null) {
+              inputRtts.push(performance.now() - sentAt);
+              if (inputRtts.length > 100) inputRtts.shift();
+              pendingInputs.delete(msg.seq);
+            }
+            updateInputProgress();
+            renderTech();
+          }
+        } catch {}
+      };
+    }).finally(() => { wsPromise = null; });
+
+    return wsPromise;
+  }
+
+  function findStart(bytes, i) {
+    if (i + 3 < bytes.length && bytes[i]===0 && bytes[i+1]===0 && bytes[i+2]===0 && bytes[i+3]===1) return 4;
+    if (i + 2 < bytes.length && bytes[i]===0 && bytes[i+1]===0 && bytes[i+2]===1) return 3;
+    return 0;
+  }
+
+  function unitHasIdr(unit) {
+    for (let i=0;i<unit.length-4;i++) {
+      const n = findStart(unit,i);
+      if (!n) continue;
+      if ((unit[i+n] & 0x1f) === 5) return true;
+      i += n-1;
+    }
+    return false;
+  }
+
+  let videoTimestamp = 0;
+
+  function decodeUnit(unit) {
+    if (!activeDecoder || activeDecoder.state === "closed") return;
+    if (activeDecoder.decodeQueueSize > 12) return;
+    try {
+      activeDecoder.decode(new EncodedVideoChunk({
+        type:unitHasIdr(unit) ? "key" : "delta",
+        timestamp:videoTimestamp,
+        duration:33333,
+        data:unit
+      }));
+      videoTimestamp += 33333;
+    } catch (e) {
+      addError("decode", e);
+    }
+  }
+
+  async function startVideo(canvas) {
+    if (!window.VideoDecoder || !window.EncodedVideoChunk) throw new Error("WebCodecs VideoDecoder unavailable");
+    const socket = await ensureWs();
+    stopVideo();
+
+    activeCanvas = canvas;
+    const ctx = canvas.getContext("2d", {alpha:false});
+    videoTimestamp = 0;
+    acceptingVideo = true;
+    activeDecoder = new VideoDecoder({
+      output(frame) {
+        try {
+          if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+            canvas.width = frame.displayWidth;
+            canvas.height = frame.displayHeight;
+          }
+          ctx.drawImage(frame,0,0,canvas.width,canvas.height);
+          videoFrames++;
+          renderTech();
+        } finally {
+          frame.close();
+        }
+      },
+      error(e) {
+        addError("video-decoder", e);
+      }
+    });
+    activeDecoder.configure({
+      codec:"avc1.42E01E",
+      codedWidth:640,
+      codedHeight:360,
+      hardwareAcceleration:"prefer-hardware",
+      optimizeForLatency:true
+    });
+    socket.send(JSON.stringify({type:"video-start"}));
+  }
+
+  function stopVideo() {
+    acceptingVideo = false;
+    try {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:"video-stop"}));
+    } catch {}
+    try {
+      if (activeDecoder && activeDecoder.state !== "closed") activeDecoder.close();
+    } catch {}
+    activeDecoder = null;
+    activeCanvas = null;
+  }
+
+  async function createRtcAudio() {
+    if (!window.RTCPeerConnection) throw new Error("WebRTC unavailable");
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) throw new Error("AudioContext unavailable");
+
+    const audioCtx = new AudioCtx();
+    await audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    const dest = audioCtx.createMediaStreamDestination();
+    osc.frequency.value = 660;
+    gain.gain.value = 0.035;
+    osc.connect(gain).connect(dest);
+    osc.start();
+
+    const sender = new RTCPeerConnection();
+    const receiver = new RTCPeerConnection();
+    sender.onicecandidate = e => { if (e.candidate) receiver.addIceCandidate(e.candidate).catch(()=>{}); };
+    receiver.onicecandidate = e => { if (e.candidate) sender.addIceCandidate(e.candidate).catch(()=>{}); };
+
+    for (const track of dest.stream.getAudioTracks()) sender.addTrack(track, dest.stream);
+
+    const remote = new MediaStream();
+    receiver.ontrack = e => {
+      remote.addTrack(e.track);
+      $("rtcAudio").srcObject = remote;
+      $("rtcAudio").play().catch(()=>{});
+    };
+
+    const offer = await sender.createOffer();
+    await sender.setLocalDescription(offer);
+    await receiver.setRemoteDescription(offer);
+    const answer = await receiver.createAnswer();
+    await receiver.setLocalDescription(answer);
+    await sender.setRemoteDescription(answer);
+
+    await $("rtcAudio").play().catch(()=>{});
+    return {audioCtx,osc,gain,dest,sender,receiver,remote};
+  }
+
+  function stopRtcAudio() {
+    const a = rtcAudio;
+    rtcAudio = null;
+    if (!a) return;
+    try { a.osc.stop(); } catch {}
+    try { a.sender.close(); } catch {}
+    try { a.receiver.close(); } catch {}
+    try { a.dest.stream.getTracks().forEach(t=>t.stop()); } catch {}
+    try { a.audioCtx.close(); } catch {}
+    try { $("rtcAudio").srcObject = null; } catch {}
+  }
+
+  function sendInput(kind, ev, source) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    inputSeq++;
+    pendingInputs.set(inputSeq, performance.now());
+    const payload = {
+      type:"input", seq:inputSeq, kind, source,
+      x:Math.round(ev?.clientX || 0),
+      y:Math.round(ev?.clientY || 0),
+      pointerType:ev?.pointerType || "touch",
+      buttons:ev?.buttons || 0,
+      ts:performance.now()
+    };
+    ws.send(JSON.stringify(payload));
+  }
+
+  function updateInputProgress() {
+    if (!report.tests.test3) return;
+    $("tapCount").textContent = Math.min(t3TapLocal,5) + " / 5";
+    if (t3TapLocal >= 5 && !t3DragComplete) {
+      $("dragText").textContent = "Good. Now drag the blue circle all the way to the right.";
+    }
+    if (t3TapLocal >= 5 && t3DragComplete && inputAcks >= t3TapAckBase + 6) {
+      finishTest3();
+    }
+    if (report.tests.test4?.running) {
+      $("t4TapCount").textContent = Math.min(t4TapLocal,5) + " / 5";
+    }
+  }
+
+  async function countdown(statusEl, seconds, prefix) {
+    for (let n=seconds;n>0;n--) {
+      statusEl.textContent = prefix + " " + n + "s";
+      await sleep(1000);
+    }
+  }
+
+  $("t1Start").onclick = async () => {
+    $("t1Start").disabled = true;
+    $("t1Canvas").classList.remove("hidden");
+    $("t1Status").className = "status wait";
+    report.tests.test1 = {startedAt:new Date().toISOString(), path:"WSS -> H264 -> WebCodecs -> Canvas"};
+    const startFrames = videoFrames;
+    await record("test1-start",{test:"1",stage:"start"});
+    try {
+      await startVideo($("t1Canvas"));
+      await countdown($("t1Status"),15,"Watch the video. No audio. Remaining:");
+      stopVideo();
+      const gained = videoFrames - startFrames;
+      report.tests.test1.decodedFrames = gained;
+      $("t1Status").className = "status";
+      $("t1Status").textContent = "15 seconds done. Did the video stay visibly moving?";
+      $("t1Choice").classList.remove("hidden");
+      await record("test1-finished",{test:"1",stage:"finished",metrics:{decodedFrames:gained}});
+    } catch(e) {
+      stopVideo();
+      addError("test1",e);
+      report.tests.test1.error = String(e.message || e);
+      $("t1Status").className = "status bad";
+      $("t1Status").textContent = "Test 1 could not run: " + String(e.message || e);
+      $("t1Choice").classList.remove("hidden");
+    }
+    renderTech();
+  };
+
+  async function answerTest1(verdict) {
+    report.tests.test1.verdict = verdict;
+    report.tests.test1.answeredAt = new Date().toISOString();
+    $("t1Choice").classList.add("hidden");
+    $("t1Status").className = "status " + (verdict==="yes" ? "good" : "bad");
+    $("t1Status").textContent = verdict==="yes" ? "Recorded: video worked." : "Recorded: video failed or froze.";
+    await record("test1-" + verdict,{test:"1",stage:"verdict",verdict});
+    unlock(2);
+    $("t2Status").textContent = "Ready.";
+    renderTech();
+  }
+  $("t1Yes").onclick = () => answerTest1("yes");
+  $("t1No").onclick = () => answerTest1("no");
+
+  $("t2Start").onclick = async () => {
+    $("t2Start").disabled = true;
+    report.tests.test2 = {startedAt:new Date().toISOString(),path:"WebRTC audio only"};
+    $("t2Status").className = "status wait";
+    await record("test2-start",{test:"2",stage:"start"});
+    try {
+      rtcAudio = await createRtcAudio();
+      await countdown($("t2Status"),10,"Listen for the tone. Remaining:");
+      stopRtcAudio();
+      $("t2Status").className = "status";
+      $("t2Status").textContent = "10 seconds done. Did you hear the tone?";
+      $("t2Choice").classList.remove("hidden");
+      await record("test2-finished",{test:"2",stage:"finished"});
+    } catch(e) {
+      stopRtcAudio();
+      addError("test2",e);
+      report.tests.test2.error = String(e.message || e);
+      $("t2Status").className = "status bad";
+      $("t2Status").textContent = "Test 2 could not run: " + String(e.message || e);
+      $("t2Choice").classList.remove("hidden");
+    }
+    renderTech();
+  };
+
+  async function answerTest2(verdict) {
+    report.tests.test2.verdict = verdict;
+    report.tests.test2.answeredAt = new Date().toISOString();
+    $("t2Choice").classList.add("hidden");
+    $("t2Status").className = "status " + (verdict==="yes" ? "good" : "bad");
+    $("t2Status").textContent = verdict==="yes" ? "Recorded: WebRTC audio worked." : "Recorded: WebRTC audio did not work.";
+    await record("test2-" + verdict,{test:"2",stage:"verdict",verdict});
+    unlock(3);
+    $("t3Status").textContent = "Ready.";
+    renderTech();
+  }
+  $("t2Yes").onclick = () => answerTest2("yes");
+  $("t2No").onclick = () => answerTest2("no");
+
+  $("t3Start").onclick = async () => {
+    $("t3Start").disabled = true;
+    report.tests.test3 = {startedAt:new Date().toISOString(),path:"touch -> WSS -> server ack"};
+    $("t3Status").className = "status wait";
+    $("t3Status").textContent = "Connecting…";
+    try {
+      await ensureWs();
+      t3TapLocal = 0;
+      t3DragComplete = false;
+      t3TapAckBase = inputAcks;
+      $("t3Area").classList.remove("hidden");
+      $("t3Status").textContent = "Tap the green box 5 times.";
+      await record("test3-start",{test:"3",stage:"start"});
+    } catch(e) {
+      addError("test3",e);
+      $("t3Status").className = "status bad";
+      $("t3Status").textContent = "Touch test could not connect: " + String(e.message || e);
+    }
+  };
+
+  $("tapBox").addEventListener("pointerdown", ev => {
+    if (!report.tests.test3 || report.tests.test3.finishedAt) return;
+    ev.preventDefault();
+    t3TapLocal++;
+    sendInput("tap",ev,"test3-tap");
+    updateInputProgress();
+  },{passive:false});
+
+  let dragStartX = null;
+  let lastDragSend = 0;
+  $("dragHandle").addEventListener("pointerdown", ev => {
+    if (!report.tests.test3 || report.tests.test3.finishedAt) return;
+    dragStartX = ev.clientX;
+    try { $("dragHandle").setPointerCapture(ev.pointerId); } catch {}
+    sendInput("drag-start",ev,"test3-drag");
+    ev.preventDefault();
+  },{passive:false});
+
+  $("dragHandle").addEventListener("pointermove", ev => {
+    if (dragStartX == null) return;
+    const zone = $("dragZone").getBoundingClientRect();
+    const max = zone.width - 98;
+    const x = Math.max(12,Math.min(max,ev.clientX-zone.left-37));
+    $("dragHandle").style.left = x + "px";
+    if (performance.now() - lastDragSend > 45) {
+      lastDragSend = performance.now();
+      sendInput("drag-move",ev,"test3-drag");
+    }
+    if (x >= max - 8) t3DragComplete = true;
+    ev.preventDefault();
+  },{passive:false});
+
+  $("dragHandle").addEventListener("pointerup", ev => {
+    if (dragStartX == null) return;
+    sendInput("drag-end",ev,"test3-drag");
+    dragStartX = null;
+    updateInputProgress();
+    ev.preventDefault();
+  },{passive:false});
+
+  async function finishTest3() {
+    if (report.tests.test3.finishedAt) return;
+    report.tests.test3.finishedAt = new Date().toISOString();
+    report.tests.test3.tapCount = t3TapLocal;
+    report.tests.test3.dragComplete = t3DragComplete;
+    report.tests.test3.ackCount = inputAcks - t3TapAckBase;
+    $("t3Status").className = "status good";
+    $("t3Status").textContent = "Recorded: taps and drag reached the server.";
+    $("t3Area").classList.add("hidden");
+    await record("test3-pass",{test:"3",stage:"finished",verdict:"pass",metrics:{
+      taps:t3TapLocal,
+      acks:inputAcks-t3TapAckBase
+    }});
+    unlock(4);
+    $("t4Status").textContent = "Ready.";
+    renderTech();
+  }
+
+  $("t4Start").onclick = async () => {
+    $("t4Start").disabled = true;
+    $("t4Canvas").classList.remove("hidden");
+    $("t4Tap").classList.remove("hidden");
+    t4TapLocal = 0;
+    t4TapAckBase = inputAcks;
+    t4VideoVerdict = null;
+    t4AudioVerdict = null;
+    report.tests.test4 = {startedAt:new Date().toISOString(),running:true,path:"WSS video + WebCodecs; WebRTC audio; WSS touch"};
+    const startFrames = videoFrames;
+    $("t4Status").className = "status wait";
+    await record("test4-start",{test:"4",stage:"start"});
+    try {
+      await ensureWs();
+      await startVideo($("t4Canvas"));
+      rtcAudio = await createRtcAudio();
+      await countdown($("t4Status"),20,"Watch video, listen to tone, and tap the green box. Remaining:");
+      stopVideo();
+      stopRtcAudio();
+      report.tests.test4.running = false;
+      report.tests.test4.decodedFrames = videoFrames - startFrames;
+      report.tests.test4.touchAcks = inputAcks - t4TapAckBase;
+      $("t4Tap").classList.add("hidden");
+      $("t4Status").className = "status";
+      $("t4Status").textContent = "20 seconds done. First: did the VIDEO keep moving?";
+      $("t4VideoChoice").classList.remove("hidden");
+      await record("test4-finished",{test:"4",stage:"finished",metrics:{
+        decodedFrames:report.tests.test4.decodedFrames,
+        touchAcks:report.tests.test4.touchAcks
+      }});
+    } catch(e) {
+      stopVideo();
+      stopRtcAudio();
+      report.tests.test4.running = false;
+      report.tests.test4.error = String(e.message || e);
+      addError("test4",e);
+      $("t4Tap").classList.add("hidden");
+      $("t4Status").className = "status bad";
+      $("t4Status").textContent = "Combined test hit an error: " + String(e.message || e);
+      $("t4VideoChoice").classList.remove("hidden");
+    }
+    renderTech();
+  };
+
+  $("t4Tap").addEventListener("pointerdown", ev => {
+    if (!report.tests.test4?.running) return;
+    ev.preventDefault();
+    t4TapLocal++;
+    sendInput("tap",ev,"test4-tap");
+    updateInputProgress();
+  },{passive:false});
+
+  async function answerT4Video(verdict) {
+    t4VideoVerdict = verdict;
+    report.tests.test4.videoVerdict = verdict;
+    $("t4VideoChoice").classList.add("hidden");
+    $("t4Status").textContent = "Now: did you hear the AUDIO tone?";
+    $("t4AudioChoice").classList.remove("hidden");
+    await record("test4-video-" + verdict,{test:"4",stage:"video-verdict",verdict});
+    renderTech();
+  }
+  $("t4VideoYes").onclick = () => answerT4Video("yes");
+  $("t4VideoNo").onclick = () => answerT4Video("no");
+
+  async function answerT4Audio(verdict) {
+    t4AudioVerdict = verdict;
+    report.tests.test4.audioVerdict = verdict;
+    report.tests.test4.finishedAt = new Date().toISOString();
+    $("t4AudioChoice").classList.add("hidden");
+    const touchOk = (report.tests.test4.touchAcks || 0) >= Math.min(5,t4TapLocal);
+    const all = t4VideoVerdict === "yes" && verdict === "yes" && touchOk;
+    $("t4Status").className = "status " + (all ? "good" : "bad");
+    $("t4Status").textContent = all
+      ? "Recorded: combined video + audio + touch path worked."
+      : "Recorded. One or more parts failed; the report shows which one.";
+    await record("test4-audio-" + verdict,{test:"4",stage:"audio-verdict",verdict,metrics:{
+      taps:t4TapLocal,
+      touchAcks:report.tests.test4.touchAcks || 0
+    }});
+
+    const t1 = report.tests.test1?.verdict || "—";
+    const t2 = report.tests.test2?.verdict || "—";
+    const t3 = report.tests.test3?.finishedAt ? "pass" : "—";
+    const t4 = all ? "pass" : "partial/fail";
+    $("finalResult").innerHTML =
+      '<div class="done">All four tests recorded.</div>' +
+      '<div style="margin-top:10px">Test 1 video: <b>'+t1+'</b><br>' +
+      'Test 2 audio: <b>'+t2+'</b><br>' +
+      'Test 3 touch: <b>'+t3+'</b><br>' +
+      'Test 4 combined: <b>'+t4+'</b></div>';
+    renderTech();
+  }
+  $("t4AudioYes").onclick = () => answerT4Audio("yes");
+  $("t4AudioNo").onclick = () => answerT4Audio("no");
+
+  renderTech();
+})();
+</script>
+</body>
+</html>

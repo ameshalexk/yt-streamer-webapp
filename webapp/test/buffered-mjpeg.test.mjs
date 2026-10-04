@@ -333,3 +333,26 @@ test("buffered player destroy cancels fetch state and makes stale callbacks inac
   assert.equal(player.controller.signal.aborted, true);
   assert.equal(player._active(), false);
 });
+
+
+test("destroy handles rejected reader cancellation without an unhandled rejection", async () => {
+  const player = new globalThis.BufferedMjpeg.BufferedMjpegPlayer({url:"/fixture",canvas:{getContext:()=>({drawImage(){},clearRect(){}})},audioEnabled:()=>false});
+  player.reader = {cancel:()=>Promise.reject(new DOMException("Cancelled", "AbortError"))};
+  player.destroy();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(player.controller.signal.aborted,true);
+});
+
+test("read-ahead failure during queue backpressure remains handled on abort", async () => {
+  const player = new globalThis.BufferedMjpeg.BufferedMjpegPlayer({url:"/fixture",canvas:{getContext:()=>({drawImage(){},clearRect(){}})},audioEnabled:()=>false});
+  let rejectRead;
+  player.reader = {read:()=>new Promise((_,reject)=>{rejectRead=reject;}),cancel:()=>Promise.resolve()};
+  player.queue.canReadMore = () => false;
+  player.queue.waitUntilReadable = () => new Promise((_,reject)=>player.controller.signal.addEventListener("abort",()=>reject(new DOMException("Cancelled","AbortError")),{once:true}));
+  const pumped = player._pump();
+  const rejected = assert.rejects(pumped, {name:"AbortError"});
+  rejectRead(new DOMException("Cancelled","AbortError"));
+  player.destroy();
+  await rejected;
+  await new Promise(resolve=>setImmediate(resolve));
+});
