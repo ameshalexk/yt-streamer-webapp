@@ -296,6 +296,11 @@ function setPanelHidden(el, hidden) {
 }
 
 function syncSavedDrawer() {
+  if (watchAccordion) {
+    if (state.savedDrawerOpen) setWatchSection("saved");
+    else if (watchAccordion.open === "saved") setWatchSection(null);
+    return;
+  }
   const drawer = $("#playlistDrawer");
   const backdrop = $("#savedDrawerBackdrop");
   const open = state.mode === "browse" && state.savedDrawerOpen;
@@ -311,6 +316,11 @@ function setSavedDrawerOpen(open) {
 }
 
 function syncDownloadsDrawer() {
+  if (watchAccordion) {
+    if (state.downloadsDrawerOpen) setWatchSection("downloads");
+    else if (watchAccordion.open === "downloads") setWatchSection(null);
+    return;
+  }
   const drawer = $("#downloadsDrawer");
   const backdrop = $("#downloadsDrawerBackdrop");
   const open = state.mode === "library" && state.downloadsDrawerOpen;
@@ -360,6 +370,7 @@ function syncPlayerDropdownForMode(mode) {
 
 function setMode(mode) {
   if (mode === "embed" && !EMBED_FEATURE_VISIBLE) mode = "watch";
+  const previousMode = state.mode;
   state.mode = mode;
   setMobileNavOpen(false);
   if (mode !== "browse") state.savedDrawerOpen = false;
@@ -393,6 +404,7 @@ function setMode(mode) {
   player.inert = false;
   player.setAttribute("aria-hidden", "false");
   syncPlayerDropdownForMode(mode);
+  syncWatchMode(mode, previousMode);
 }
 
 function closePlaylistDrawer() {
@@ -5673,6 +5685,7 @@ const ch = {
 function revealChannels() {
   const view = $("#channelsView");
   setMode("browse");
+  if (watchAccordion) setWatchSection("browse");
   setBrowseYoutubePanel(state.browseYoutubePanel);
   view.scrollTop = 0;
 }
@@ -7773,8 +7786,8 @@ bindTap($("#apneDailyList"), async (event) => {
   }
 });
 $("#emptyPasteBtn").onclick = () => {
-  // Home hides the idle player, including the URL field.
-  setMode("browse");
+  setMode("watch");
+  if (watchAccordion) setWatchSection("playback");
   setPlayerDropdownOpen(true);
   const input = $("#quickUrl");
   input.focus();
@@ -9059,6 +9072,7 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
 // ---- Init ----
 (async function init() {
   initTheme();
+  initWatchAccordion();
   renderAutoplayButton();
   renderMuteButton();
   $("#themeToggleBtn").onclick = () => {
