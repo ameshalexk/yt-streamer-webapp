@@ -34,10 +34,12 @@ RUN set -eu; \
     npm run check
 
 COPY run.py /run-streamer.py
+COPY yt-dlp /usr/local/bin/yt-dlp
+RUN chmod +x /usr/local/bin/yt-dlp
 ENV HOST=0.0.0.0 PORT=8099 DATA_DIR=/data \
     LIBRARY_DIR=/data/library APNE_ICLOUD_DIR=/data/apne-exports \
     YOUTUBE_OAUTH_TOKEN_FILE=/data/youtube-oauth.json \
-    YTDLP_PATH=/opt/yt-dlp/bin/yt-dlp VIDEO_ENCODER=libx264 \
+    YTDLP_PATH=/usr/local/bin/yt-dlp VIDEO_ENCODER=libx264 \
     DESKTOP_STREAM_ENABLED=0 DESKTOP_INPUT_ENABLED=0 MAX_FPS=30
 EXPOSE 8099
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \

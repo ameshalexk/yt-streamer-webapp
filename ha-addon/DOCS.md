@@ -16,7 +16,7 @@ Terminal & SSH add-on, run:
 ```sh
 set -eu
 # Reviewed immutable packaging revision; APP_REF below pins the application.
-SOURCE_REF=26b9f804041439111df658a841fcc789f5deac73
+SOURCE_REF=feb3c94729a963b3dc93a9e2cf3a038e3b5bed58
 STAGING="$(mktemp -d)"
 curl -fL "https://codeload.github.com/ameshalexk/yt-streamer-webapp/tar.gz/${SOURCE_REF}" -o "$STAGING/source.tar.gz"
 tar -xzf "$STAGING/source.tar.gz" -C "$STAGING"

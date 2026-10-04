@@ -18,7 +18,7 @@ class PackagingTests(unittest.TestCase):
         docs = (ADDON / "DOCS.md").read_text()
         self.assertEqual(docs.count("/local_apps/yt_streamer"), 3)
         self.assertNotIn("/addons/yt_streamer", docs)
-        self.assertIn("SOURCE_REF=26b9f804041439111df658a841fcc789f5deac73", docs)
+        self.assertIn("SOURCE_REF=feb3c94729a963b3dc93a9e2cf3a038e3b5bed58", docs)
         self.assertIn("ha apps reload", docs)
         self.assertIn('cp -R "$STAGING"/yt-streamer-webapp-*/ha-addon/.', docs)
 
@@ -33,6 +33,8 @@ class PackagingTests(unittest.TestCase):
         self.assertIn('yt-dlp[default]==${YTDLP_VERSION}', dockerfile)
         self.assertIn("ARG YTDLP_VERSION=2026.8.19", dockerfile)
         self.assertIn("ffmpeg", dockerfile)
+        self.assertIn("YTDLP_PATH=/usr/local/bin/yt-dlp", dockerfile)
+        self.assertIn("COPY yt-dlp /usr/local/bin/yt-dlp", dockerfile)
 
     def test_supervisor_option_defaults_and_string_selectors(self):
         addon_run.apply_options({"mjpeg_height": "720", "download_max_height": "360"})

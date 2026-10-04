@@ -1,0 +1,4 @@
+#!/bin/sh
+# The application ignores configuration files; enable the bundled Node runtime
+# explicitly so yt-dlp's installed challenge solver can use it on this host.
+exec /opt/yt-dlp/bin/yt-dlp --js-runtimes node "$@"
