@@ -210,6 +210,11 @@ http://127.0.0.1:8099
 
 ## Home Assistant Integration Files
 
+For standalone hosting of this same webapp on Home Assistant OS, see the
+[YT Streamer add-on](ha-addon/DOCS.md). It packages the October 1 application
+commit for a 64-bit Raspberry Pi or amd64 host and documents
+`streamha.ameshalex.com`. Mac desktop and browser audio features require macOS.
+
 The Python files at the repo root are for a Home Assistant custom integration named `yt_streamer`. They define setup, services, camera/view behavior, and stream/download coordination.
 
 The exposed services are:
