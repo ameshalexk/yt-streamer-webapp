@@ -51,7 +51,7 @@ helper identity. Restart only the `com.ytstreamer.webapp` LaunchAgent. The launc
 configuration, OAuth values and public tunnel are not part of a release.
 
 HA: extract `ha-addon/` into a staging folder, copy its files (including
-`release.json`) into `/local_apps/yt_streamer`, and run `ha apps reload`.
+`release.json`) into `/local_apps/yt_streamer`, and run `ha store reload`.
 Rebuild/update only `local_yt_streamer` through Supervisor. The generated Dockerfile
 fetches the same application SHA as the Mac bundle. Preserve `/data` and all
 existing Supervisor options; do not uninstall the app to update it.

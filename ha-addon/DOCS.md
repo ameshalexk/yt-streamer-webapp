@@ -23,7 +23,7 @@ tar -xzf "$STAGING/source.tar.gz" -C "$STAGING"
 ha backups new --name yt-streamer-pre-install
 mkdir -p /local_apps/yt_streamer
 cp -R "$STAGING"/yt-streamer-webapp-*/ha-addon/. /local_apps/yt_streamer/
-ha apps reload
+ha store reload
 ha apps install local_yt_streamer
 ha apps start local_yt_streamer
 ha apps info local_yt_streamer
@@ -103,7 +103,7 @@ or packaging. Deploy the same application SHA to the Mac to keep both on the
 same version. Neither host automatically changes branches or pulls code.
 
 From the Terminal & SSH app, copy the updated packaging files into
-`/local_apps/yt_streamer`, run `ha apps reload`, then rebuild/update using the
+`/local_apps/yt_streamer`, run `ha store reload`, then rebuild/update using the
 add-on page. Take a backup before upgrading. To roll back, restore the previous
 packaging and SHA, rebuild, and restart; preserve `/data`. To disable this
 deployment, stop the add-on and remove only the `streamha` tunnel hostname.
