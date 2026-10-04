@@ -1,3 +1,4 @@
+import { enqueueBrowserInput } from "./browser-input-queue.js";
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -553,7 +554,10 @@ async function preparePage(session, cdp = session.cdp) {
   await cdp.call("Network.setBlockedURLs", { urls: REMOTE_BROWSER_BLOCKED_URLS }).catch(() => {});
   await cdp.call("Network.setUserAgentOverride", { userAgent: DESKTOP_USER_AGENT, platform: "macOS" }).catch(() => {});
   await cdp.call("Input.setIgnoreInputEvents", { ignore: false }).catch(() => {});
-  await cdp.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }).catch(() => {});
+  // The remote target is a desktop Chrome viewport. Tesla finger taps are
+  // normalized to one desktop mouse click below; leaving touch emulation enabled
+  // makes Chrome's touch-to-click synthesis intermittent on ordinary links/buttons.
+  await cdp.call("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
   await cdp.call("Emulation.setDeviceMetricsOverride", {
     width: session.width,
     height: session.height,
@@ -1061,6 +1065,7 @@ export async function start(payload = {}) {
     mainTitle: "",
     mainRecoveryAt: 0,
     apneDownload: null,
+    inputTail: Promise.resolve(),
     createdAt: Date.now(),
     lastUsedAt: Date.now(),
   };
@@ -1345,80 +1350,6 @@ async function pressKey(session, key) {
   await session.cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code });
 }
 
-function isGooglePageUrl(raw) {
-  try {
-    const hostname = new URL(String(raw || "")).hostname.toLowerCase();
-    return hostname === "google.com" || hostname.endsWith(".google.com");
-  } catch {
-    return false;
-  }
-}
-
-async function googleLoginClickFallback(cdp, p) {
-  const result = await cdp.call("Runtime.evaluate", {
-    returnByValue: true,
-    expression: `(() => {
-      if (!/\\.google\\.com$/i.test(location.hostname)) return { ok: false, skipped: true };
-      const tapX = ${Math.round(p.x)};
-      const tapY = ${Math.round(p.y)};
-      const selectors = "button, a, [role='button'], input[type='button'], input[type='submit']";
-      const label = [
-        el => el.innerText,
-        el => el.textContent,
-        el => el.value,
-        el => el.getAttribute("aria-label"),
-        el => el.getAttribute("title")
-      ];
-      function textFor(el) {
-        return label.map(fn => {
-          try { return fn(el); } catch { return ""; }
-        }).filter(Boolean).join(" ").replace(/\\s+/g, " ").trim();
-      }
-      function visible(el) {
-        const rect = el.getBoundingClientRect();
-        const style = getComputedStyle(el);
-        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
-      }
-      function clickTarget(target, reason) {
-        const text = textFor(target);
-        target.scrollIntoView({ block: "center", inline: "center" });
-        target.focus?.();
-        target.click();
-        return { ok: true, clicked: true, reason, label: text };
-      }
-      const direct = document.elementFromPoint(tapX, tapY)?.closest?.(selectors);
-      if (direct && visible(direct)) return clickTarget(direct, "direct");
-      const candidates = [...document.querySelectorAll(selectors)]
-        .filter(visible)
-        .map(el => ({ el, rect: el.getBoundingClientRect(), text: textFor(el) }));
-      const tryAnother = candidates.find(item => /try\\s+another\\s+way/i.test(item.text));
-      if (tryAnother) {
-        const r = tryAnother.rect;
-        const pad = 56;
-        const near = tapX >= r.left - pad && tapX <= r.right + pad && tapY >= r.top - pad && tapY <= r.bottom + pad;
-        if (near) return clickTarget(tryAnother.el, "near-try-another-way");
-      }
-      const nearest = candidates
-        .map(item => {
-          const cx = item.rect.left + item.rect.width / 2;
-          const cy = item.rect.top + item.rect.height / 2;
-          return { ...item, distance: Math.hypot(tapX - cx, tapY - cy) };
-        })
-        .sort((a, b) => a.distance - b.distance)[0];
-      if (nearest && nearest.distance < 72) return clickTarget(nearest.el, "nearest");
-      return {
-        ok: false,
-        clicked: false,
-        candidates: candidates.slice(0, 8).map(item => ({
-          text: item.text,
-          rect: { left: Math.round(item.rect.left), top: Math.round(item.rect.top), width: Math.round(item.rect.width), height: Math.round(item.rect.height) }
-        }))
-      };
-    })()`,
-  });
-  return result.result?.value || { ok: false, clicked: false };
-}
-
 async function tryApnePlayNowAtPoint(session, cdp, p) {
   if (session.secondaryTargetId) return { matched: false };
   if (!isApneTvUrl(session.url) && !isApneTvUrl(session.mainSafeUrl)) return { matched: false };
@@ -1461,11 +1392,40 @@ async function tryApnePlayNowAtPoint(session, cdp, p) {
   return result?.result?.value || { matched: false };
 }
 
+function queueRealChromeInput(session, task) {
+  return enqueueBrowserInput(session, task);
+}
+
+async function dispatchRealChromeTap(session, payload = {}) {
+  const cdp = session.cdp;
+  if (!cdp) throw httpError(409, "Real Chrome target is changing. Retry the input.");
+  await cdp.ready;
+
+  const p = point(payload, session);
+  const button = payload.button === 2 ? "right" : "left";
+  if (cdp === session.mainCdp) {
+    const playNow = await tryApnePlayNowAtPoint(session, cdp, p);
+    if (playNow?.matched) return { ok: true, download: playNow };
+  }
+  // Source input may be touch, but the rendered target is desktop Chrome.
+  // Send exactly one deterministic desktop click for every completed tap.
+  await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+  await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+  return { ok: true };
+}
+
 export async function input(id, payload = {}) {
   const session = get(id);
   if (!session) throw httpError(404, "Real Chrome session not found.");
+  return queueRealChromeInput(session, () => dispatchRealChromeInput(session, payload));
+}
+
+async function dispatchRealChromeInput(session, payload = {}) {
   session.lastUsedAt = Date.now();
-  const cdp = session.cdp;
+  if (payload.type === "tap") return dispatchRealChromeTap(session, payload);
+
+  const continuingDrag = payload.type === "drag" || payload.type === "up";
+  const cdp = continuingDrag ? (session.inputCdp || session.cdp) : session.cdp;
   if (!cdp) throw httpError(409, "Real Chrome target is changing. Retry the input.");
   await cdp.ready;
 
@@ -1487,45 +1447,40 @@ export async function input(id, payload = {}) {
 
   const p = point(payload, session);
   const button = payload.button === 2 ? "right" : "left";
-  if (payload.type === "tap") {
-    if (cdp === session.mainCdp) {
-      const playNow = await tryApnePlayNowAtPoint(session, cdp, p);
-      if (playNow?.matched) return { ok: true, download: playNow };
-    }
-    if (payload.pointerType === "touch") {
-      await cdp.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, radiusX: 2, radiusY: 2, force: 1, id: 1 }] }, INPUT_COMMAND_TIMEOUT_MS);
-      try {
-        await cdp.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, INPUT_COMMAND_TIMEOUT_MS);
-      } catch (err) {
-        // If the page navigated during touchStart Chrome can discard touch state.
-        // The gesture has already been delivered; do not surface a fatal UI toast.
-        if (!/TouchStart first/i.test(String(err?.message || ""))) throw err;
-      }
-      if (session.cdp === cdp && isGooglePageUrl(session.url)) {
-        const fallback = await googleLoginClickFallback(cdp, p).catch(() => null);
-        if (fallback?.clicked) return { ok: true, fallback };
-      }
-      return { ok: true };
-    }
-    await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
-    await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
-    return { ok: true };
-  }
+  const buttons = button === "right" ? 2 : 1;
   if (payload.type === "move" || payload.type === "drag") {
-    await cdp.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x, y: p.y, button: "none" }, INPUT_COMMAND_TIMEOUT_MS);
+    await cdp.call("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: p.x,
+      y: p.y,
+      button: payload.type === "drag" ? button : "none",
+      buttons: payload.type === "drag" ? buttons : 0,
+    }, INPUT_COMMAND_TIMEOUT_MS);
     return { ok: true };
   }
   if (payload.type === "down") {
-    await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: 1, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+    session.inputCdp = cdp;
+    try {
+      await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+    } catch (error) {
+      if (session.inputCdp === cdp) session.inputCdp = null;
+      throw error;
+    }
     return { ok: true };
   }
   if (payload.type === "up") {
-    await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+    try {
+      await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 }, INPUT_COMMAND_TIMEOUT_MS);
+    } finally {
+      if (session.inputCdp === cdp) session.inputCdp = null;
+    }
     return { ok: true };
   }
   if (payload.type === "scroll") {
     await cdp.call("Input.dispatchMouseEvent", {
-      type: "mouseWheel", x: p.x, y: p.y,
+      type: "mouseWheel",
+      x: p.x,
+      y: p.y,
       deltaX: Math.max(-2000, Math.min(2000, Number(payload.dx) || 0)),
       deltaY: Math.max(-2000, Math.min(2000, Number(payload.dy) || 0)),
     }, INPUT_COMMAND_TIMEOUT_MS);

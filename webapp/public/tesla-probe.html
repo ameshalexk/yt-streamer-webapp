@@ -1,0 +1,1033 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="robots" content="noindex,nofollow,nosnippet">
+  <meta name="theme-color" content="#111111">
+  <title>Tesla Browser Capability Probe</title>
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color-scheme:dark}
+    *{box-sizing:border-box}
+    body{margin:0;background:#0f1115;color:#f5f7fa;min-height:100vh}
+    main{max-width:960px;margin:0 auto;padding:28px 22px 48px}
+    h1{font-size:34px;margin:0 0 8px}
+    .sub{color:#aeb7c4;font-size:18px;line-height:1.45;margin-bottom:24px}
+    .card{background:#181c22;border:1px solid #2a3039;border-radius:18px;padding:20px;margin:14px 0}
+    .status{font-size:22px;font-weight:700}
+    .muted{color:#aeb7c4}
+    button{width:100%;min-height:64px;border:0;border-radius:14px;font-size:22px;font-weight:700;padding:14px 18px;background:#f2f4f7;color:#0d1117;cursor:pointer}
+    button:disabled{opacity:.55;cursor:default}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:14px}
+    .metric{background:#11151a;border-radius:12px;padding:12px}
+    .metric b{display:block;font-size:15px;margin-bottom:5px}
+    .metric span{color:#c2cad4;word-break:break-word}
+    pre{white-space:pre-wrap;word-break:break-word;font-size:13px;max-height:320px;overflow:auto;background:#0c0f13;padding:14px;border-radius:12px}
+    video,canvas{width:100%;max-height:280px;background:#000;border-radius:12px;margin-top:12px;display:block}
+    .done{font-size:26px;font-weight:800}
+  </style>
+</head>
+<body>
+<main>
+  <h1>Tesla Browser Probe</h1>
+  <div class="sub">This checks what your Tesla browser can actually decode and stream. It does not sign in, control the car, or change any vehicle setting.</div>
+
+  <div class="card">
+    <div id="status" class="status">Running browser checks…</div>
+    <div id="detail" class="muted" style="margin-top:8px">Keep this page open.</div>
+  </div>
+
+  <div class="card">
+    <button id="runBtn" disabled>1. Run native H.264 video test</button>
+    <div class="muted" style="margin-top:10px">When enabled, tap this once. The video test lasts about two seconds.</div>
+    <video id="probeVideo" muted playsinline preload="metadata"></video>
+  </div>
+
+  <div class="card">
+    <div class="status">What the current CyberTube code actually uses</div>
+    <div class="grid">
+      <div class="metric"><b>Video delivery</b><span>DASH-style manifest + HTTP MP4/fMP4 segments by default; HLS is also accepted</span></div>
+      <div class="metric"><b>Decode</b><span>Web Worker + WebCodecs VideoDecoder</span></div>
+      <div class="metric"><b>Display</b><span>VideoFrame painted to Canvas 2D with requestAnimationFrame pacing</span></div>
+      <div class="metric"><b>MJPEG</b><span>No CyberTube MJPEG / multipart stream path found in the current public bundles</span></div>
+      <div class="metric"><b>WebRTC</b><span>Used by the separate Mirror feature; current CyberTube code normalizes old WebRTC mode labels to manifest playback</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="status">CyberDash-style render test</div>
+    <div class="muted" style="margin:8px 0 12px">This isolated test uses the same core visual pattern found in CyberTube's current public code: H.264 bytes → WebCodecs VideoDecoder → VideoFrame → Canvas. Run it while parked.</div>
+    <button id="cyberBtn" disabled>2. Run WebCodecs + Canvas test</button>
+    <canvas id="cyberCanvas" width="640" height="360"></canvas>
+    <div id="cyberStatus" class="muted" style="margin-top:10px">Waiting for browser checks.</div>
+  </div>
+
+  <div class="card">
+    <div class="status">CyberDash-style A/V sync test</div>
+    <div class="muted" style="margin:8px 0 12px">DASH/fMP4 video and AAC segments are parsed incrementally, decoded continuously with WebCodecs, and painted to Canvas against the AudioContext clock. No WebCodecs decoder.flush() is used during playback.</div>
+    <button id="syncBtn" disabled>3. Run DASH/fMP4 + CyberDash queue A/V test</button>
+    <canvas id="syncCanvas" width="640" height="360"></canvas>
+    <div id="syncStatus" class="muted" style="margin-top:10px">Waiting for browser checks.</div>
+  </div>
+
+  <div class="card">
+    <div class="status">Key results</div>
+    <div id="summary" class="grid"></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Full technical report</summary>
+      <pre id="raw"></pre>
+    </details>
+  </div>
+</main>
+<script>
+(() => {
+  "use strict";
+  const REPORT_VERSION = "2026-09-27-v5";
+  const report = { version: REPORT_VERSION, startedAt: new Date().toISOString() };
+  const $ = (id) => document.getElementById(id);
+  const bool = (v) => v ? "yes" : "no";
+  const safe = (fn, fallback = null) => { try { return fn(); } catch { return fallback; } };
+  const round = (n, d = 1) => Number.isFinite(n) ? Number(n.toFixed(d)) : null;
+
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  function withTimeout(promise, ms, label) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(label + " timeout after " + ms + " ms")), ms))
+    ]);
+  }
+  async function avStage(name, statusEl) {
+    report.avStage = name;
+    report.avStageAtMs = round(performance.now(), 1);
+    if (statusEl) statusEl.textContent = "Stage: " + name;
+    render();
+    try { await withTimeout(sendReport("cyberdash-av-stage-" + name), 1800, "stage report"); } catch {}
+  }
+
+  function splitAnnexBAccessUnits(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const starts = [];
+    let i = 0;
+    while (i < bytes.length - 4) {
+      let nal = -1;
+      let prefix = 0;
+      if (bytes[i] === 0 && bytes[i+1] === 0 && bytes[i+2] === 0 && bytes[i+3] === 1) {
+        nal = i + 4;
+        prefix = 4;
+      } else if (bytes[i] === 0 && bytes[i+1] === 0 && bytes[i+2] === 1) {
+        nal = i + 3;
+        prefix = 3;
+      }
+      if (nal >= 0) {
+        if (nal < bytes.length && (bytes[nal] & 0x1f) === 9) starts.push(i);
+        i += prefix;
+      } else {
+        i += 1;
+      }
+    }
+    const units = [];
+    for (let i = 0; i < starts.length; i++) {
+      const end = i + 1 < starts.length ? starts[i+1] : bytes.length;
+      units.push(bytes.slice(starts[i], end));
+    }
+    return units;
+  }
+
+  function parseAdtsFrames(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const frames = [];
+    let i = 0;
+    let sampleRate = 0;
+    let channels = 0;
+    const rates = [96000,88200,64000,48000,44100,32000,24000,22050,16000,12000,11025,8000,7350];
+    while (i + 7 <= bytes.length) {
+      if (!(bytes[i] === 0xff && (bytes[i+1] & 0xf6) === 0xf0)) throw new Error("Invalid ADTS sync at byte " + i);
+      const protectionAbsent = bytes[i+1] & 1;
+      const freqIndex = (bytes[i+2] >> 2) & 0x0f;
+      const chanCfg = ((bytes[i+2] & 1) << 2) | ((bytes[i+3] >> 6) & 3);
+      const frameLength = ((bytes[i+3] & 3) << 11) | (bytes[i+4] << 3) | ((bytes[i+5] >> 5) & 7);
+      const headerLength = protectionAbsent ? 7 : 9;
+      if (!rates[freqIndex] || frameLength <= headerLength || i + frameLength > bytes.length) throw new Error("Invalid ADTS frame");
+      sampleRate ||= rates[freqIndex];
+      channels ||= chanCfg;
+      frames.push(bytes.slice(i + headerLength, i + frameLength));
+      i += frameLength;
+    }
+    return { frames, sampleRate, channels };
+  }
+
+  function percentile(values, p) {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a,b) => a-b);
+    return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * p)))];
+  }
+
+  function canvasSignature(ctx) {
+    try {
+      const w = ctx.canvas.width, h = ctx.canvas.height;
+      const data = ctx.getImageData(0, 0, w, h).data;
+      let hash = 2166136261 >>> 0;
+      for (let gy = 1; gy <= 8; gy++) {
+        const y = Math.min(h - 1, Math.floor((gy * h) / 9));
+        for (let gx = 1; gx <= 8; gx++) {
+          const x = Math.min(w - 1, Math.floor((gx * w) / 9));
+          const i = (y * w + x) * 4;
+          hash ^= data[i]; hash = Math.imul(hash, 16777619);
+          hash ^= data[i+1]; hash = Math.imul(hash, 16777619);
+          hash ^= data[i+2]; hash = Math.imul(hash, 16777619);
+        }
+      }
+      return (hash >>> 0).toString(16);
+    } catch {
+      return "";
+    }
+  }
+
+  function mediaType(type) {
+    const v = document.createElement("video");
+    return safe(() => v.canPlayType(type), "") || "";
+  }
+
+  function mseType(type) {
+    return safe(() => !!window.MediaSource && MediaSource.isTypeSupported(type), false);
+  }
+
+  function rtcCodecs() {
+    const caps = safe(() => RTCRtpReceiver.getCapabilities("video"), null);
+    const codecs = caps && Array.isArray(caps.codecs) ? caps.codecs : [];
+    return codecs.map(c => String(c.mimeType || "").toLowerCase()).filter(Boolean);
+  }
+
+  function addBaseCapabilities() {
+    const v = document.createElement("video");
+    report.userAgent = navigator.userAgent || "";
+    report.platform = navigator.platform || "";
+    report.vendor = navigator.vendor || "";
+    report.language = navigator.language || "";
+    report.languages = safe(() => (navigator.languages || []).join(","), "");
+    report.hardwareConcurrency = navigator.hardwareConcurrency || 0;
+    report.deviceMemory = navigator.deviceMemory || 0;
+    report.maxTouchPoints = navigator.maxTouchPoints || 0;
+    report.viewport = window.innerWidth + "x" + window.innerHeight;
+    report.screen = screen.width + "x" + screen.height;
+    report.devicePixelRatio = window.devicePixelRatio || 1;
+    report.secureContext = !!window.isSecureContext;
+    report.visibilityState = document.visibilityState || "";
+    report.fullscreenEnabled = !!document.fullscreenEnabled;
+    report.requestFullscreen = typeof document.documentElement.requestFullscreen === "function";
+    report.videoRequestFullscreen = typeof v.requestFullscreen === "function";
+    report.videoWebkitEnterFullscreen = typeof v.webkitEnterFullscreen === "function";
+    report.pictureInPicture = !!document.pictureInPictureEnabled;
+    report.requestVideoFrameCallback = typeof v.requestVideoFrameCallback === "function";
+    report.mediaSource = typeof window.MediaSource !== "undefined";
+    report.sourceBuffer = typeof window.SourceBuffer !== "undefined";
+    report.webRtc = typeof window.RTCPeerConnection !== "undefined";
+    report.webSocket = typeof window.WebSocket !== "undefined";
+    report.readableStream = typeof window.ReadableStream !== "undefined";
+    report.fetchStreaming = !!safe(() => new Response(new Uint8Array([1])).body?.getReader, false);
+    report.webCodecsVideoDecoder = typeof window.VideoDecoder !== "undefined";
+    report.webCodecsAudioDecoder = typeof window.AudioDecoder !== "undefined";
+    report.imageDecoder = typeof window.ImageDecoder !== "undefined";
+    report.createImageBitmap = typeof window.createImageBitmap === "function";
+    report.offscreenCanvas = typeof window.OffscreenCanvas !== "undefined";
+    report.canvas2d = !!safe(() => document.createElement("canvas").getContext("2d"), null);
+    report.webgl = !!safe(() => document.createElement("canvas").getContext("webgl"), null);
+    report.webgl2 = !!safe(() => document.createElement("canvas").getContext("webgl2"), null);
+    report.audioContext = typeof (window.AudioContext || window.webkitAudioContext) !== "undefined";
+    report.mediaCapabilities = !!navigator.mediaCapabilities?.decodingInfo;
+
+    report.canMp4H264Baseline = mediaType('video/mp4; codecs="avc1.42E01E"');
+    report.canMp4H264Main = mediaType('video/mp4; codecs="avc1.4D401F"');
+    report.canMp4H264High = mediaType('video/mp4; codecs="avc1.640028"');
+    report.canMp4H264Aac = mediaType('video/mp4; codecs="avc1.4D401F, mp4a.40.2"');
+    report.canMp4Hevc = mediaType('video/mp4; codecs="hvc1.1.6.L93.B0"');
+    report.canWebmVp9 = mediaType('video/webm; codecs="vp9"');
+    report.canMp4Av1 = mediaType('video/mp4; codecs="av01.0.05M.08"');
+
+    report.mseH264Baseline = mseType('video/mp4; codecs="avc1.42E01E"');
+    report.mseH264Main = mseType('video/mp4; codecs="avc1.4D401F"');
+    report.mseH264High = mseType('video/mp4; codecs="avc1.640028"');
+    report.mseH264Aac = mseType('video/mp4; codecs="avc1.4D401F, mp4a.40.2"');
+
+    const codecs = rtcCodecs();
+    report.rtcVideoCodecs = [...new Set(codecs)].join(",");
+    report.rtcH264 = codecs.includes("video/h264");
+    report.rtcVp8 = codecs.includes("video/vp8");
+    report.rtcVp9 = codecs.includes("video/vp9");
+    report.rtcAv1 = codecs.includes("video/av1");
+  }
+
+  async function mediaCapabilitiesProbe() {
+    if (!navigator.mediaCapabilities?.decodingInfo) return;
+    try {
+      const result = await navigator.mediaCapabilities.decodingInfo({
+        type: "file",
+        video: {
+          contentType: 'video/mp4; codecs="avc1.4D401F"',
+          width: 1280,
+          height: 720,
+          bitrate: 2500000,
+          framerate: 30
+        }
+      });
+      report.mc720Supported = !!result.supported;
+      report.mc720Smooth = !!result.smooth;
+      report.mc720PowerEfficient = !!result.powerEfficient;
+    } catch (e) {
+      report.mc720Error = String(e && e.message || e).slice(0, 120);
+    }
+  }
+
+  async function rtcOfferProbe() {
+    if (!window.RTCPeerConnection) return;
+    let pc;
+    try {
+      pc = new RTCPeerConnection();
+      pc.createDataChannel("probe");
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      report.rtcOffer = true;
+      report.rtcLocalSdpH264 = /H264\/90000/i.test(offer.sdp || "");
+    } catch (e) {
+      report.rtcOffer = false;
+      report.rtcOfferError = String(e && e.message || e).slice(0, 120);
+    } finally {
+      try { pc && pc.close(); } catch {}
+    }
+  }
+
+  async function networkProbe() {
+    const rtts = [];
+    for (let i = 0; i < 3; i++) {
+      const start = performance.now();
+      try {
+        const res = await fetch("/api/health?probe=" + Date.now() + "-" + i, { cache: "no-store" });
+        await res.text();
+        if (res.ok) rtts.push(performance.now() - start);
+      } catch {}
+    }
+    if (rtts.length) {
+      rtts.sort((a,b) => a-b);
+      report.httpRttMinMs = round(rtts[0]);
+      report.httpRttMedianMs = round(rtts[Math.floor(rtts.length/2)]);
+    }
+
+    const speed = [];
+    for (let i = 0; i < 2; i++) {
+      const start = performance.now();
+      try {
+        const res = await fetch("/tesla-probe-1mb.bin?probe=" + Date.now() + "-" + i, { cache: "no-store" });
+        const buf = await res.arrayBuffer();
+        const seconds = (performance.now() - start) / 1000;
+        if (res.ok && seconds > 0) speed.push((buf.byteLength * 8) / seconds / 1000000);
+      } catch {}
+    }
+    if (speed.length) {
+      report.tunnelMbpsBest = round(Math.max(...speed), 2);
+      report.tunnelMbpsAvg = round(speed.reduce((a,b)=>a+b,0)/speed.length, 2);
+    }
+
+    try {
+      const res = await fetch("/tesla-probe-h264.mp4", { headers: { Range: "bytes=0-1023" }, cache: "no-store" });
+      report.rangeStatus = res.status;
+      report.rangeWorks = res.status === 206;
+      report.rangeHeader = res.headers.get("content-range") || "";
+      await res.arrayBuffer();
+    } catch (e) {
+      report.rangeWorks = false;
+      report.rangeError = String(e && e.message || e).slice(0, 120);
+    }
+  }
+
+  async function sendReport(stage) {
+    report.stage = stage;
+    report.sentAt = new Date().toISOString();
+    const timing = {};
+    for (const [k,v] of Object.entries(report)) {
+      if (typeof v === "boolean") timing[k] = v ? "yes" : "no";
+      else if (typeof v === "number" && Number.isFinite(v)) timing[k] = v;
+      else if (typeof v === "string") timing[k] = v.slice(0, 120);
+    }
+    try {
+      const res = await fetch("/api/playback-event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event: "tesla_capability_probe",
+          label: stage,
+          message: "Tesla browser capability probe " + REPORT_VERSION,
+          userAgent: navigator.userAgent,
+          timing
+        }),
+        keepalive: true
+      });
+      report.reportSent = res.ok;
+      return res.ok;
+    } catch (e) {
+      report.reportSent = false;
+      report.reportSendError = String(e && e.message || e).slice(0, 120);
+      return false;
+    }
+  }
+
+  function render() {
+    const items = [
+      ["Viewport", report.viewport || "—"],
+      ["H.264 MP4", report.canMp4H264Main || "no"],
+      ["MSE H.264", bool(report.mseH264Main)],
+      ["WebRTC", bool(report.webRtc)],
+      ["WebRTC H.264", bool(report.rtcH264)],
+      ["WebCodecs", bool(report.webCodecsVideoDecoder)],
+      ["CyberDash-style canvas", report.webcodecsCanvasAdvanced == null ? "not run" : bool(report.webcodecsCanvasAdvanced)],
+      ["A/V sync", report.avSyncSucceeded == null ? "not run" : (report.avSyncSucceeded ? ((report.avDriftP95Ms ?? "—") + " ms p95") : "failed")],
+      ["Range requests", report.rangeWorks == null ? "testing" : bool(report.rangeWorks)],
+      ["Tunnel speed", report.tunnelMbpsAvg == null ? "testing" : report.tunnelMbpsAvg + " Mbps"]
+    ];
+    $("summary").innerHTML = items.map(([k,v]) => '<div class="metric"><b>'+k+'</b><span>'+String(v)+'</span></div>').join("");
+    $("raw").textContent = JSON.stringify(report, null, 2);
+  }
+
+  async function runVideoTest() {
+    const btn = $("runBtn");
+    btn.disabled = true;
+    btn.textContent = "Testing…";
+    $("status").textContent = "Running real H.264 playback test…";
+    $("detail").textContent = "This takes about two seconds.";
+
+    const video = $("probeVideo");
+    const start = performance.now();
+    let loadedDataAt = null;
+    let playingAt = null;
+    let rvfcAt = null;
+
+    const once = (name) => new Promise(resolve => video.addEventListener(name, resolve, { once: true }));
+
+    try {
+      video.src = "/tesla-probe-h264.mp4?probe=" + Date.now();
+      video.muted = true;
+      video.playsInline = true;
+      video.load();
+
+      const loaded = once("loadeddata").then(() => { loadedDataAt = performance.now(); });
+      const playing = once("playing").then(() => { playingAt = performance.now(); });
+
+      const playPromise = video.play();
+      if (playPromise && typeof playPromise.then === "function") await playPromise;
+      report.mp4PlayPromise = true;
+
+      if (typeof video.requestVideoFrameCallback === "function") {
+        await new Promise(resolve => {
+          const timer = setTimeout(resolve, 1800);
+          video.requestVideoFrameCallback(() => {
+            rvfcAt = performance.now();
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+      } else {
+        await Promise.race([loaded, new Promise(r => setTimeout(r, 1800))]);
+      }
+
+      await Promise.race([playing, new Promise(r => setTimeout(r, 1200))]);
+      await new Promise(r => setTimeout(r, 500));
+
+      report.mp4VideoWidth = video.videoWidth || 0;
+      report.mp4VideoHeight = video.videoHeight || 0;
+      report.mp4ReadyState = video.readyState;
+      report.mp4CurrentTime = round(video.currentTime, 3);
+      report.mp4LoadedDataMs = loadedDataAt ? round(loadedDataAt - start) : null;
+      report.mp4PlayingMs = playingAt ? round(playingAt - start) : null;
+      report.mp4FirstFrameMs = rvfcAt ? round(rvfcAt - start) : null;
+      report.mp4ActuallyAdvanced = video.currentTime > 0.15;
+      report.mp4ErrorCode = video.error ? video.error.code : 0;
+      video.pause();
+    } catch (e) {
+      report.mp4PlayPromise = false;
+      report.mp4Error = String(e && e.message || e).slice(0, 120);
+      report.mp4ErrorCode = video.error ? video.error.code : 0;
+      try { video.pause(); } catch {}
+    }
+
+    if (window.AudioContext || window.webkitAudioContext) {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        const ctx = new Ctx();
+        await ctx.resume();
+        report.audioContextResume = ctx.state === "running";
+        report.audioSampleRate = ctx.sampleRate || 0;
+        await ctx.close();
+      } catch (e) {
+        report.audioContextResume = false;
+        report.audioContextError = String(e && e.message || e).slice(0, 120);
+      }
+    }
+
+    render();
+    $("status").textContent = "Sending report to your Mac…";
+    const ok = await sendReport("interactive");
+    render();
+
+    if (ok) {
+      $("status").innerHTML = '<span class="done">Test complete</span>';
+      $("detail").textContent = "Native video report received. Now run test 2 below.";
+      btn.textContent = "Native test sent";
+    } else {
+      $("status").textContent = "Test complete, but report upload failed";
+      $("detail").textContent = "Leave this page open and tell ChatGPT. The results are still visible below.";
+      btn.textContent = "Retry send";
+      btn.disabled = false;
+      btn.onclick = async () => { btn.disabled = true; await sendReport("interactive-retry"); render(); };
+    }
+  }
+
+  async function runCyberDashStyleTest() {
+    const btn = $("cyberBtn");
+    const status = $("cyberStatus");
+    btn.disabled = true;
+    btn.textContent = "Testing WebCodecs + Canvas…";
+    status.textContent = "Fetching H.264 elementary stream…";
+
+    const canvas = $("cyberCanvas");
+    const ctx = canvas.getContext("2d", { alpha: false });
+    const start = performance.now();
+    let decoder = null;
+    let decoded = 0;
+    let firstFrameAt = null;
+    let lastFrameAt = null;
+    let firstSignature = "";
+    let lastSignature = "";
+    const signatures = new Set();
+    let decodeError = "";
+
+    try {
+      if (!window.VideoDecoder || !window.EncodedVideoChunk) throw new Error("WebCodecs VideoDecoder is unavailable");
+
+      const res = await fetch("/tesla-probe-h264-annexb.h264?probe=" + Date.now(), { cache: "no-store" });
+      if (!res.ok) throw new Error("H.264 test asset HTTP " + res.status);
+      const buffer = await res.arrayBuffer();
+      const units = splitAnnexBAccessUnits(buffer);
+      report.webcodecsAssetBytes = buffer.byteLength;
+      report.webcodecsAccessUnits = units.length;
+      if (units.length < 24) throw new Error("Could not parse enough H.264 access units");
+
+      const config = {
+        codec: "avc1.42E01E",
+        codedWidth: 640,
+        codedHeight: 360,
+        hardwareAcceleration: "prefer-hardware",
+        optimizeForLatency: true
+      };
+
+      if (typeof VideoDecoder.isConfigSupported === "function") {
+        const support = await VideoDecoder.isConfigSupported(config);
+        report.webcodecsConfigSupported = !!support.supported;
+        if (!support.supported) throw new Error("H.264 WebCodecs config is not supported");
+      }
+
+      const frameQueue = [];
+      let waiter = null;
+      decoder = new VideoDecoder({
+        output(frame) {
+          frameQueue.push(frame);
+          if (waiter) { const w = waiter; waiter = null; w(); }
+        },
+        error(err) {
+          decodeError = String(err && err.message || err);
+          if (waiter) { const w = waiter; waiter = null; w(); }
+        }
+      });
+      decoder.configure(config);
+      report.webcodecsDecoderStateAfterConfigure = decoder.state;
+
+      const fps = 24;
+      const frameUs = Math.round(1000000 / fps);
+
+      for (let i = 0; i < units.length; i++) {
+        if (decodeError) throw new Error(decodeError);
+        decoder.decode(new EncodedVideoChunk({
+          type: "key",
+          timestamp: i * frameUs,
+          duration: frameUs,
+          data: units[i]
+        }));
+
+        const deadline = performance.now() + 900;
+        while (!frameQueue.length && !decodeError && performance.now() < deadline) {
+          await new Promise(resolve => {
+            const timer = setTimeout(() => { if (waiter === resolve) waiter = null; resolve(); }, 30);
+            waiter = () => { clearTimeout(timer); resolve(); };
+          });
+        }
+        if (decodeError) throw new Error(decodeError);
+
+        const frame = frameQueue.shift();
+        if (frame) {
+          if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+            canvas.width = frame.displayWidth;
+            canvas.height = frame.displayHeight;
+          }
+          ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+          decoded += 1;
+          if (firstFrameAt == null) {
+            firstFrameAt = performance.now();
+            firstSignature = canvasSignature(ctx);
+          }
+          lastFrameAt = performance.now();
+          lastSignature = canvasSignature(ctx);
+          if (lastSignature) signatures.add(lastSignature);
+          frame.close();
+        }
+        await sleep(frameUs / 1000);
+      }
+
+      await decoder.flush();
+      while (frameQueue.length) {
+        const frame = frameQueue.shift();
+        ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+        decoded += 1;
+        lastFrameAt = performance.now();
+        lastSignature = canvasSignature(ctx);
+        if (lastSignature) signatures.add(lastSignature);
+        frame.close();
+      }
+
+      report.webcodecsCodec = config.codec;
+      report.webcodecsDecodedFrames = decoded;
+      report.webcodecsCanvasFirstFrameMs = firstFrameAt == null ? null : round(firstFrameAt - start);
+      report.webcodecsCanvasLastFrameMs = lastFrameAt == null ? null : round(lastFrameAt - start);
+      report.webcodecsCanvasDurationMs = firstFrameAt == null || lastFrameAt == null ? null : round(lastFrameAt - firstFrameAt);
+      report.webcodecsCanvasFirstSignature = firstSignature;
+      report.webcodecsCanvasLastSignature = lastSignature;
+      report.webcodecsCanvasUniqueSignatures = signatures.size;
+      report.webcodecsCanvasAdvanced = decoded >= 24 && signatures.size >= 2;
+      report.webcodecsDecodeError = "";
+    } catch (e) {
+      report.webcodecsCanvasAdvanced = false;
+      report.webcodecsDecodedFrames = decoded;
+      report.webcodecsDecodeError = String(e && e.message || e).slice(0, 160);
+    } finally {
+      try { decoder && decoder.state !== "closed" && decoder.close(); } catch {}
+    }
+
+    render();
+    status.textContent = "Sending WebCodecs/canvas report…";
+    const ok = await sendReport("cyberdash-style");
+    render();
+
+    if (ok) {
+      status.textContent = report.webcodecsCanvasAdvanced
+        ? "WebCodecs + Canvas test complete. Animated frames were rendered and the report was sent."
+        : "Test finished, but animated canvas rendering was not confirmed. Report sent for analysis.";
+      btn.textContent = "WebCodecs/canvas report sent";
+    } else {
+      status.textContent = "Test finished, but report upload failed. Leave this page open.";
+      btn.textContent = "Retry WebCodecs report";
+      btn.disabled = false;
+      btn.onclick = async () => { btn.disabled = true; await sendReport("cyberdash-style-retry"); render(); };
+    }
+  }
+
+  async function runAvSyncTest() {
+    const btn = $("syncBtn");
+    const status = $("syncStatus");
+    btn.disabled = true;
+    btn.textContent = "Testing DASH/fMP4 A/V…";
+    status.textContent = "Loading DASH/fMP4 streaming probe…";
+
+    const canvas = $("syncCanvas");
+    const ctx2d = canvas.getContext("2d", { alpha: false });
+    let videoDecoder = null;
+    let audioDecoder = null;
+    let audioCtx = null;
+    const audioNodes = [];
+    const decodedVideo = [];
+    const drifts = [];
+    const signatures = new Set();
+    const startedAt = performance.now();
+    let audioStart = null;
+    let videoFeedDone = false;
+    let audioFeedDone = false;
+    let decodedAudioBlocks = 0;
+    let scheduledAudioBlocks = 0;
+    let maxVideoQueue = 0;
+    let maxAudioQueue = 0;
+    let firstPaintMs = null;
+    let lastPaintMs = null;
+    let renderedFrames = 0;
+    let droppedVideoFrames = 0;
+    const pendingAudioBuffers = [];
+
+    const scheduleAudioBuffer = (item) => {
+      const node = audioCtx.createBufferSource();
+      node.buffer = item.buffer;
+      node.connect(audioCtx.destination);
+      const target = audioStart + Math.max(0, item.timestamp / 1e6);
+      node.start(Math.max(target, audioCtx.currentTime + 0.006));
+      audioNodes.push(node);
+      scheduledAudioBlocks++;
+    };
+
+    const waitForQueue = async (decoder, maxSize, label) => {
+      const deadline = performance.now() + 1800;
+      while (decoder && decoder.state !== "closed" && decoder.decodeQueueSize > maxSize) {
+        if (performance.now() > deadline) throw new Error(label + " decode queue stayed above " + maxSize);
+        await sleep(8);
+      }
+    };
+
+    try {
+      if (!window.VideoDecoder || !window.AudioDecoder || !window.EncodedVideoChunk || !window.EncodedAudioChunk)
+        throw new Error("Required WebCodecs APIs are unavailable");
+
+      report.avProbeVersion = "v6-dash-fmp4-cyberdash-queue";
+      report.avTransport = "DASH/fMP4 HTTP segments";
+      report.avVideoPath = "fMP4 -> MP4Box -> VideoDecoder -> Canvas";
+      report.avAudioPath = "fMP4 -> MP4Box -> AudioDecoder -> AudioContext";
+      report.avWebCodecsFlushUsed = false;
+      report.avStreamingModel = "incremental segment feed; no end-of-stream decoder flush";
+      report.avVideoAccelerationRequested = "prefer-hardware";
+      report.avVideoQueueTarget = 40;
+      report.avAudioQueueThrottle = "none-startup";
+      report.avHardwareStallObservedInPreviousTeslaRun = true;
+
+      await avStage("dash-module-loading", status);
+      const MP4Box = await withTimeout(import("/mp4box.all.mjs?probe=v6"), 4000, "MP4Box module load");
+      report.avMp4BoxLoaded = !!MP4Box.createFile;
+
+      const manifestRes = await withTimeout(fetch("/tesla-probe-dash/manifest.mpd?probe=" + Date.now(), { cache: "no-store" }), 3500, "DASH manifest fetch");
+      if (!manifestRes.ok) throw new Error("DASH manifest HTTP " + manifestRes.status);
+      const manifestText = await manifestRes.text();
+      report.avDashManifestBytes = manifestText.length;
+      report.avDashManifestDetected = /<MPD[\s>]/.test(manifestText) && /SegmentTemplate/.test(manifestText);
+      report.avDashVideoCodec = (manifestText.match(/contentType="video"[\s\S]*?codecs="([^"]+)"/) || [])[1] || "avc1.42c01e";
+      report.avDashAudioCodec = (manifestText.match(/contentType="audio"[\s\S]*?codecs="([^"]+)"/) || [])[1] || "mp4a.40.2";
+      await avStage("dash-manifest-ready", status);
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+      await withTimeout(audioCtx.resume(), 2500, "AudioContext resume");
+      if (audioCtx.state !== "running") throw new Error("AudioContext did not enter running state");
+      report.avAudioContextState = audioCtx.state;
+      report.avAudioContextSampleRate = audioCtx.sampleRate;
+
+      let decodedVideoFrames = 0;
+      videoDecoder = new VideoDecoder({
+        output(frame) {
+          decodedVideoFrames++;
+          report.avDecodedVideoFrames = decodedVideoFrames;
+          if (decodedVideoFrames === 1) report.avFirstDecodedVideoTimestampUs = frame.timestamp;
+          decodedVideo.push(frame);
+          maxVideoQueue = Math.max(maxVideoQueue, videoDecoder.decodeQueueSize || 0);
+        },
+        error(err) { report.avVideoDecoderError = String(err && err.message || err).slice(0,160); }
+      });
+
+      audioDecoder = new AudioDecoder({
+        output(data) {
+          try {
+            decodedAudioBlocks++;
+            report.avDecodedAudioBlocks = decodedAudioBlocks;
+            if (decodedAudioBlocks === 1) report.avFirstDecodedAudioTimestampUs = data.timestamp;
+            const channels = data.numberOfChannels;
+            const buffer = audioCtx.createBuffer(channels, data.numberOfFrames, data.sampleRate);
+            for (let c = 0; c < channels; c++) {
+              data.copyTo(buffer.getChannelData(c), { planeIndex: c, format: "f32-planar" });
+            }
+            const item = { timestamp: data.timestamp, buffer };
+            if (audioStart == null) pendingAudioBuffers.push(item);
+            else scheduleAudioBuffer(item);
+            maxAudioQueue = Math.max(maxAudioQueue, audioDecoder.decodeQueueSize || 0);
+          } finally {
+            data.close();
+          }
+        },
+        error(err) { report.avAudioDecoderError = String(err && err.message || err).slice(0,160); }
+      });
+      audioDecoder.configure({
+        codec: report.avDashAudioCodec,
+        sampleRate: 48000,
+        numberOfChannels: 2,
+        description: new Uint8Array([0x11, 0x90])
+      });
+      await avStage("stream-decoders-created", status);
+
+      const avcDescription = (sample) => {
+        const avcC = sample && sample.description && sample.description.avcC;
+        if (!avcC) throw new Error("fMP4 video sample missing avcC decoder configuration");
+        const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
+        avcC.write(stream);
+        return new Uint8Array(stream.buffer.slice(8));
+      };
+
+      const feedTrack = async ({ kind, initName, segmentNames, decoder }) => {
+        const file = MP4Box.createFile();
+        let offset = 0;
+        let configured = kind === "audio";
+        let extracted = 0;
+        let bytes = 0;
+        let trackId = null;
+        const pendingSamples = [];
+        let readyResolve;
+        let readyReject;
+        const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+
+        file.onError = (e) => readyReject(new Error("MP4Box " + kind + " error: " + e));
+        file.onReady = (info) => {
+          try {
+            const track = kind === "video" ? info.videoTracks[0] : info.audioTracks[0];
+            if (!track) throw new Error("No " + kind + " track in fMP4 init segment");
+            trackId = track.id;
+            file.setExtractionOptions(track.id, kind, { nbSamples: 1, rapAlignement: false });
+            file.start();
+            readyResolve(track);
+          } catch (e) { readyReject(e); }
+        };
+
+        file.onSamples = (id, user, samples) => {
+          pendingSamples.push(...samples);
+          extracted += samples.length;
+        };
+
+        const processPending = async () => {
+          while (pendingSamples.length) {
+            const sample = pendingSamples.shift();
+            if (kind === "video") {
+              if (!configured) {
+                decoder.configure({
+                  codec: report.avDashVideoCodec,
+                  codedWidth: 640,
+                  codedHeight: 360,
+                  hardwareAcceleration: "prefer-hardware",
+                  optimizeForLatency: true,
+                  description: avcDescription(sample)
+                });
+                configured = true;
+                report.avVideoConfiguredFromFmp4 = true;
+              }
+              await waitForQueue(decoder, 40, kind);
+              decoder.decode(new EncodedVideoChunk({
+                type: sample.is_sync ? "key" : "delta",
+                timestamp: Math.round(sample.cts * 1e6 / sample.timescale),
+                duration: Math.max(1, Math.round(sample.duration * 1e6 / sample.timescale)),
+                data: sample.data
+              }));
+              maxVideoQueue = Math.max(maxVideoQueue, decoder.decodeQueueSize || 0);
+            } else {
+              decoder.decode(new EncodedAudioChunk({
+                type: "key",
+                timestamp: Math.round(sample.cts * 1e6 / sample.timescale),
+                duration: Math.max(1, Math.round(sample.duration * 1e6 / sample.timescale)),
+                data: sample.data
+              }));
+              maxAudioQueue = Math.max(maxAudioQueue, decoder.decodeQueueSize || 0);
+            }
+          }
+        };
+
+        const appendUrl = async (name) => {
+          const res = await withTimeout(fetch("/tesla-probe-dash/" + name + "?probe=" + Date.now(), { cache: "no-store" }), 3500, kind + " segment fetch");
+          if (!res.ok) throw new Error(name + " HTTP " + res.status);
+          const ab = await res.arrayBuffer();
+          bytes += ab.byteLength;
+          ab.fileStart = offset;
+          offset += ab.byteLength;
+          file.appendBuffer(ab);
+        };
+
+        await appendUrl(initName);
+        await withTimeout(ready, 2000, kind + " fMP4 init parse");
+        for (let i = 0; i < segmentNames.length; i++) {
+          await appendUrl(segmentNames[i]);
+          await processPending();
+          report[kind === "video" ? "avVideoSegmentsFed" : "avAudioSegmentsFed"] = i + 1;
+          render();
+          await sleep(18);
+        }
+        file.flush();
+        await processPending();
+        return { extracted, bytes, trackId };
+      };
+
+      const videoSegments = [1,2,3,4].map(n => "chunk-stream0-" + String(n).padStart(5,"0") + ".m4s");
+      const audioSegments = [1,2,3,4,5].map(n => "chunk-stream1-" + String(n).padStart(5,"0") + ".m4s");
+
+      await avStage("dash-segment-feed-started", status);
+      report.avRenderTicks = 0;
+      report.avRafTicks = 0;
+      report.avTimerFallbackTicks = 0;
+
+      const videoFeedPromise = feedTrack({ kind: "video", initName: "init-stream0.m4s", segmentNames: videoSegments, decoder: videoDecoder })
+        .then(r => { videoFeedDone = true; return r; });
+      const audioFeedPromise = feedTrack({ kind: "audio", initName: "init-stream1.m4s", segmentNames: audioSegments, decoder: audioDecoder })
+        .then(r => { audioFeedDone = true; return r; });
+
+      const prebufferDeadline = performance.now() + 3500;
+      while (decodedVideo.length < 3 || pendingAudioBuffers.length < 1) {
+        if (performance.now() > prebufferDeadline) {
+          throw new Error("DASH prebuffer timeout: video=" + decodedVideo.length + " audio=" + pendingAudioBuffers.length);
+        }
+        await sleep(15);
+      }
+      report.avPrebufferVideoFrames = decodedVideo.length;
+      report.avPrebufferAudioBlocks = pendingAudioBuffers.length;
+      audioStart = audioCtx.currentTime + 0.60;
+      report.avAudioLeadSec = 0.60;
+      pendingAudioBuffers.sort((a,b) => a.timestamp - b.timestamp);
+      while (pendingAudioBuffers.length) scheduleAudioBuffer(pendingAudioBuffers.shift());
+      await avStage("dash-prebuffer-ready", status);
+
+      const renderPromise = withTimeout(new Promise((resolve, reject) => {
+        const deadline = performance.now() + 9000;
+        let rafId = 0;
+        let timerId = 0;
+        const scheduleTick = () => {
+          let fired = false;
+          const run = (source) => {
+            if (fired) return;
+            fired = true;
+            if (rafId) cancelAnimationFrame(rafId);
+            if (timerId) clearTimeout(timerId);
+            if (source === "raf") report.avRafTicks++;
+            else report.avTimerFallbackTicks++;
+            tick();
+          };
+          rafId = requestAnimationFrame(() => run("raf"));
+          timerId = setTimeout(() => run("timer"), 50);
+        };
+        const tick = () => {
+          try {
+            report.avRenderTicks++;
+            if (!audioCtx || audioStart == null) return reject(new Error("A/V clock unavailable"));
+            if (performance.now() > deadline) return reject(new Error("Incremental A/V render timeout"));
+            const elapsed = audioCtx.currentTime - audioStart;
+            report.avLastAudioClockSec = round(elapsed, 3);
+            report.avVideoFrameQueueDepth = decodedVideo.length;
+            if (decodedVideo.length > 1) decodedVideo.sort((a,b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+            while (decodedVideo.length > 1 && (decodedVideo[1].timestamp ?? 0) / 1e6 < elapsed - 0.045) {
+              const stale = decodedVideo.shift();
+              stale.close();
+              droppedVideoFrames++;
+              report.avDroppedVideoFrames = droppedVideoFrames;
+            }
+            while (decodedVideo.length && (decodedVideo[0].timestamp ?? 0) / 1e6 <= elapsed + 0.012) {
+              const frame = decodedVideo.shift();
+              if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+                canvas.width = frame.displayWidth;
+                canvas.height = frame.displayHeight;
+              }
+              ctx2d.drawImage(frame, 0, 0, canvas.width, canvas.height);
+              const sig = canvasSignature(ctx2d);
+              if (sig) signatures.add(sig);
+              const videoPts = (frame.timestamp ?? 0) / 1e6;
+              const audioClock = Math.max(0, elapsed);
+              drifts.push((videoPts - audioClock) * 1000);
+              renderedFrames++;
+              report.avRenderedVideoFrames = renderedFrames;
+              if (firstPaintMs == null) firstPaintMs = performance.now() - startedAt;
+              lastPaintMs = performance.now() - startedAt;
+              frame.close();
+            }
+            if (videoFeedDone && audioFeedDone && elapsed > 4.18 && decodedVideo.length === 0) return resolve();
+            scheduleTick();
+          } catch (err) {
+            report.avRenderError = String(err && err.message || err).slice(0,180);
+            reject(err);
+          }
+        };
+        scheduleTick();
+      }), 9500, "incremental A/V canvas render");
+
+      const [videoResult, audioResult] = await Promise.all([videoFeedPromise, audioFeedPromise]);
+      report.avVideoSamplesExtracted = videoResult.extracted;
+      report.avAudioSamplesExtracted = audioResult.extracted;
+      report.avVideoFmp4Bytes = videoResult.bytes;
+      report.avAudioFmp4Bytes = audioResult.bytes;
+      report.avStage = "dash-segments-fed";
+      status.textContent = "Stage: dash-segments-fed";
+      render();
+      sendReport("cyberdash-av-stage-dash-segments-fed").catch(() => {});
+
+      await renderPromise;
+      await sleep(120);
+
+      const absDrifts = drifts.map(Math.abs);
+      report.avRenderedVideoFrames = renderedFrames;
+      report.avDroppedVideoFrames = droppedVideoFrames;
+      report.avDecodedAudioBlocks = decodedAudioBlocks;
+      report.avScheduledAudioBlocks = scheduledAudioBlocks;
+      report.avCanvasUniqueSignatures = signatures.size;
+      report.avFirstCanvasFrameMs = round(firstPaintMs);
+      report.avLastCanvasFrameMs = round(lastPaintMs);
+      report.avDriftP50Ms = round(percentile(absDrifts, 0.50), 1);
+      report.avDriftP95Ms = round(percentile(absDrifts, 0.95), 1);
+      report.avDriftMaxMs = round(absDrifts.length ? Math.max(...absDrifts) : null, 1);
+      report.avDriftFinalMs = round(drifts.length ? drifts[drifts.length - 1] : null, 1);
+      report.avVideoDecodeQueueMax = maxVideoQueue;
+      report.avAudioDecodeQueueMax = maxAudioQueue;
+      report.avSyncSucceeded = (renderedFrames + droppedVideoFrames) >= 90 && renderedFrames >= 55 && signatures.size >= 20 && decodedAudioBlocks >= 120 && report.avDriftP95Ms != null && report.avDriftP95Ms < 120;
+      report.avSyncError = "";
+      await avStage("completed", status);
+    } catch (e) {
+      report.avSyncSucceeded = false;
+      report.avSyncError = String(e && e.message || e).slice(0,220);
+      report.avFailedStage = report.avStage || "unknown";
+      try { await avStage("failed-" + report.avFailedStage, status); } catch {}
+    } finally {
+      for (const frame of decodedVideo) { try { frame.close(); } catch {} }
+      for (const node of audioNodes) { try { node.stop(); } catch {} }
+      try { videoDecoder && videoDecoder.state !== "closed" && videoDecoder.close(); } catch {}
+      try { audioDecoder && audioDecoder.state !== "closed" && audioDecoder.close(); } catch {}
+      try { audioCtx && withTimeout(audioCtx.close(), 1000, "AudioContext close").catch(() => {}); } catch {}
+    }
+
+    render();
+    status.textContent = "Sending DASH/fMP4 A/V report…";
+    const ok = await sendReport("cyberdash-dash-fmp4-av-v6");
+    render();
+    if (ok) {
+      status.textContent = report.avSyncSucceeded
+        ? "DASH/fMP4 A/V test complete. Segmented video + AAC audio streamed without decoder flush; report sent."
+        : "DASH/fMP4 A/V test finished but did not meet the streaming threshold. Report sent for analysis.";
+      btn.textContent = "DASH/fMP4 report sent";
+    } else {
+      status.textContent = "DASH/fMP4 test finished, but report upload failed.";
+      btn.textContent = "Retry DASH/fMP4 report";
+      btn.disabled = false;
+      btn.onclick = async () => { btn.disabled = true; await sendReport("cyberdash-dash-fmp4-av-v6-retry"); render(); };
+    }
+  }
+  async function boot() {
+    addBaseCapabilities();
+    render();
+    await Promise.all([mediaCapabilitiesProbe(), rtcOfferProbe(), networkProbe()]);
+    report.automaticChecksDoneAt = new Date().toISOString();
+    await sendReport("automatic");
+    render();
+    $("status").textContent = "Browser checks complete";
+    $("detail").textContent = "Now tap the button once to test real H.264 playback.";
+    $("runBtn").disabled = false;
+    $("cyberBtn").disabled = false;
+    $("syncBtn").disabled = false;
+    $("cyberStatus").textContent = "Ready. Run after test 1.";
+    $("syncStatus").textContent = "Ready. Run after test 2.";
+    $("runBtn").addEventListener("click", runVideoTest, { once: true });
+    $("cyberBtn").addEventListener("click", runCyberDashStyleTest, { once: true });
+    $("syncBtn").addEventListener("click", runAvSyncTest, { once: true });
+    if (new URLSearchParams(location.search).get("autorun") === "3") {
+      setTimeout(() => $("syncBtn").click(), 150);
+    }
+  }
+
+  boot().catch(e => {
+    report.bootError = String(e && e.message || e).slice(0, 160);
+    render();
+    $("status").textContent = "Probe hit an error";
+    $("detail").textContent = "Tell ChatGPT what you see on this screen.";
+    $("runBtn").disabled = false;
+  });
+})();
+</script>
+</body>
+</html>

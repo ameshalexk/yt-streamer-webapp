@@ -126,10 +126,10 @@ const DESKTOP_FEATURE_VISIBLE = false;
 const EMBED_FEATURE_VISIBLE = false;
 const BROWSER_AUDIO_KEY = "ytStreamerBrowserAudio";
 const BROWSER_AUDIO_NAME_KEY = "ytStreamerBrowserAudioName";
-const BROWSER_AUDIO_FORMAT_KEY = "ytStreamerBrowserAudioFormat";
-const BROWSER_AUDIO_BITRATE_KEY = "ytStreamerBrowserAudioBitrate";
-const BROWSER_AUDIO_DEFAULT_KEY = "ytStreamerBrowserAudioDefaultV2";
-const BROWSER_AUDIO_CAPTURE_KEY = "ytStreamerBrowserAudioCaptureV2";
+const BROWSER_AUDIO_FORMAT_KEY = "ytStreamerBrowserAudioFormatV3";
+const BROWSER_AUDIO_BITRATE_KEY = "ytStreamerBrowserAudioBitrateV3";
+const BROWSER_AUDIO_DEFAULT_KEY = "ytStreamerBrowserAudioDefaultV3";
+const BROWSER_AUDIO_CAPTURE_KEY = "ytStreamerBrowserAudioCaptureV3";
 const BROWSER_QUALITY_KEY = "ytStreamerBrowserMjpegQuality";
 const DESKTOP_INPUT_TOKEN_KEY = "ytStreamerDesktopInputToken";
 const SAVED_EMBEDS_KEY = "ytStreamerSavedEmbeds";
@@ -138,10 +138,11 @@ const AUTOPLAY_KEY = "ytStreamerAutoplay";
 const WATCH_HISTORY_LIMIT = 300;
 const RECOMMENDATION_PAGE_SIZE = 25;
 const DEFAULT_EMBED_CODE = `<iframe title="Argentina vs Algeria Player" marginheight="0" marginwidth="0" src="https://embed.st/embed/admin/ppv-argentina-vs-algeria/1" scrolling="no" allowfullscreen="yes" allow="encrypted-media; picture-in-picture;" width="100%" height="100%" frameborder="0"></iframe>`;
-const BROWSER_AUDIO_FORMATS = ["auto", "hls", "mp3"];
-const BROWSER_AUDIO_BITRATES = ["32", "64", "96", "128", "192"];
-const DEFAULT_BROWSER_AUDIO_FORMAT = "mp3";
-const BROWSER_AUDIO_CAPTURE_MODES = ["manual", "blackhole-direct", "core-tap"];
+// One production browser-audio path: process-scoped Core Tap -> raw PCM -> Web Audio.
+const BROWSER_AUDIO_FORMATS = ["auto"];
+const BROWSER_AUDIO_BITRATES = ["128"];
+const DEFAULT_BROWSER_AUDIO_FORMAT = "auto";
+const BROWSER_AUDIO_CAPTURE_MODES = ["core-tap"];
 const DEFAULT_BROWSER_AUDIO_CAPTURE = "core-tap";
 const TOAST_OK_DURATION_MS = 3200;
 const SESSION_POLL_MS = 10000;
@@ -579,7 +580,106 @@ let replayFn = null;     // rebuilds the current stream with the latest control 
 let mpegtsPlayer = null; // active mpegts.js player instance
 let hlsAudioPlayer = null; // active hls.js player for audio-only Browser capture
 let browserPcmAudio = null; // low-latency Browser capture via Web Audio
+let browserPcmSharedContext = null; // unlocked by the user's Open Chrome gesture
 let activeCompat = null; // active MJPEG + audio fallback URLs
+const YOUTUBE_PLAYBACK_METHOD_KEY = "ytStreamerYoutubePlaybackMethod";
+const YOUTUBE_PLAYBACK_RATE_KEY = "ytStreamerYoutubePlaybackRate";
+const YOUTUBE_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 3, 4];
+let youtubePlaybackMethod = localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY) === "webcodecs" ? "webcodecs" : "mjpeg";
+let youtubePlaybackRate = (() => {
+  const saved = Number(localStorage.getItem(YOUTUBE_PLAYBACK_RATE_KEY));
+  return YOUTUBE_PLAYBACK_RATES.includes(saved) ? saved : 1;
+})();
+let cyberdashModulePromise = null;
+let cyberdashModule = null;
+let cyberdashPlayer = null;
+let activeYoutubeSourceUrl = "";
+
+function renderYoutubePlaybackMethod() {
+  document.querySelectorAll("[data-playback-method]").forEach((button) => {
+    const active = button.dataset.playbackMethod === youtubePlaybackMethod;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  renderYoutubePlaybackRate();
+}
+
+function renderYoutubePlaybackRate() {
+  const select = $("#playbackSpeedSelect");
+  if (!select) return;
+  select.value = String(youtubePlaybackRate);
+  const webcodecs = youtubePlaybackMethod === "webcodecs";
+  select.disabled = !webcodecs;
+  select.title = webcodecs ? "WebCodecs playback speed" : "Speed control is available with WebCodecs";
+  const control = select.closest(".playback-speed-control");
+  control?.classList.toggle("disabled", !webcodecs);
+}
+
+async function ensureCyberdashModule() {
+  if (cyberdashModule) return cyberdashModule;
+  if (!cyberdashModulePromise) {
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260928-speed-v9")
+      .then((module) => {
+        cyberdashModule = module;
+        return module;
+      });
+  }
+  return cyberdashModulePromise;
+}
+
+async function stopCyberdashPlayback(options = {}) {
+  const player = cyberdashPlayer;
+  cyberdashPlayer = null;
+  if (player) {
+    try { await player.stop(options); } catch {}
+  }
+}
+
+function adaptiveCyberdashFps(baseFps, playbackRate = youtubePlaybackRate) {
+  const base = Number.isFinite(Number(baseFps)) ? Math.max(5, Math.min(30, Number(baseFps))) : 24;
+  const rate = Number.isFinite(Number(playbackRate)) ? Math.max(1, Number(playbackRate)) : 1;
+  if (rate <= 1) return Math.round(base);
+
+  // YouTube-style fast playback keeps the source's frame cadence instead of
+  // throwing most frames away first. Our MJPEG-oriented low FPS setting can be
+  // 12-15 fps, so raise WebCodecs to at least 24 fps when sped up and to 30 fps
+  // at 2x+, while keeping the Tesla-safe 30 fps source cap.
+  const minimumFastFps = rate >= 2 ? 30 : 24;
+  return Math.min(30, Math.max(minimumFastFps, Math.round(base * rate)));
+}
+
+function currentCyberdashSettings() {
+  const selectedHeight = Number.parseInt($("#ctlHeight")?.value || "0", 10);
+  const selectedFps = Number.parseInt($("#ctlFps")?.value || "24", 10);
+  const baseFps = Number.isFinite(selectedFps) ? Math.max(5, Math.min(30, selectedFps)) : 24;
+  return {
+    height: Number.isFinite(selectedHeight) ? Math.max(0, selectedHeight) : 0,
+    baseFps,
+    fps: adaptiveCyberdashFps(baseFps),
+  };
+}
+
+function cyberdashSettingsLabel(settings = currentCyberdashSettings()) {
+  const height = settings.height > 0 ? `${settings.height}p` : "Source";
+  const adaptive = settings.fps !== settings.baseFps ? ` · adaptive from ${settings.baseFps}` : "";
+  return `${height} · ${settings.fps}fps${adaptive}`;
+}
+
+let pendingPlaybackMethodRestore = null;
+
+function maybeRestorePlaybackAfterMethodSwitch(attempt) {
+  const pending = pendingPlaybackMethodRestore;
+  if (!pending) return;
+  if (replayFn !== pending.replay) {
+    pendingPlaybackMethodRestore = null;
+    return;
+  }
+  if (attempt < pending.minAttempt || !currentAttempt(attempt)) return;
+  pendingPlaybackMethodRestore = null;
+  requestAnimationFrame(() => {
+    if (currentAttempt(attempt) && replayFn === pending.replay && !playbackPaused) pausePlayback();
+  });
+}
 let audioPrompted = false;
 let playbackPaused = false;
 let pausedResumeAt = 0;
@@ -605,6 +705,11 @@ let browserInputLastX = 0;
 let browserInputLastY = 0;
 let browserInputTouchScroll = false;
 let browserInputTouchMoved = false;
+let browserInputMouseDragging = false;
+let browserInputStartEvent = null;
+let browserInputQueue = Promise.resolve();
+let browserInputPendingMotion = null;
+let browserInputPendingScroll = null;
 let browserFullscreenTapAt = 0;
 let browserFullscreenTapX = 0;
 let browserFullscreenTapY = 0;
@@ -625,6 +730,9 @@ const DESKTOP_ZOOM_STEP = 0.25;
 const BROWSER_ZOOM_MIN = 1;
 const BROWSER_ZOOM_MAX = 4;
 const BROWSER_ZOOM_STEP = 0.25;
+// Tesla touch coordinates can jitter several CSS pixels even during an intentional tap.
+// Keep taps forgiving while still handing deliberate movement to remote scrolling.
+const BROWSER_TOUCH_SCROLL_THRESHOLD_PX = 18;
 const desktopZoom = {
   scale: 1,
   panX: 0,
@@ -1258,6 +1366,7 @@ function markStreamLive(attempt) {
     startStreamSeekTimer();
   }
   maybeRestorePlaybackAfterQualitySwitch(attempt);
+  maybeRestorePlaybackAfterMethodSwitch(attempt);
 }
 
 function clampStreamSeekTime(value) {
@@ -1285,6 +1394,8 @@ function streamSeekTarget(value) {
 
 function getStreamCurrentTime() {
   if (!streamSeek.seekable) return 0;
+  const cyberdashTime = cyberdashPlayer?.currentTime?.();
+  if (Number.isFinite(cyberdashTime) && cyberdashTime > 0) return clampStreamSeekTime(cyberdashTime);
   const bufferedTime = activeCompat?.bufferedPlayer?.currentTime?.();
   if (Number.isFinite(bufferedTime)) return clampStreamSeekTime(streamSeek.startAt + bufferedTime);
   const videoTime = $("#video").currentTime || 0;
@@ -1456,13 +1567,15 @@ function seekStreamTo(time) {
 
 function failStreamAttempt(attempt, title, detail) {
   if (!currentAttempt(attempt)) return;
+  pendingPlaybackMethodRestore = null;
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
   streamAttempt++;
   clearStreamTimers();
   stopStreamSeekTimer(false);
   destroyPlayer();
-  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), audio = $("#audio");
-  screen.classList.remove("loading", "mjpeg-buffered-mode", "startup-preview");
+  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
+  void stopCyberdashPlayback();
+  screen.classList.remove("loading", "mjpeg-buffered-mode", "cyberdash-mode", "startup-preview");
   setBadge("error", "Stream failed");
   showStreamNotice("error", title, detail);
   try { video.pause(); } catch {}
@@ -1472,6 +1585,10 @@ function failStreamAttempt(attempt, title, detail) {
   if (canvas) {
     const context = canvas.getContext("2d");
     context?.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  if (cyberdashCanvas) {
+    const context = cyberdashCanvas.getContext("2d");
+    context?.clearRect(0, 0, cyberdashCanvas.width, cyberdashCanvas.height);
   }
   try { audio.pause(); } catch {}
   audio.removeAttribute("src");
@@ -1530,6 +1647,21 @@ function freezeMjpegFrame() {
 function pausePlayback() {
   if (playbackPaused || $("#pauseBtn")?.disabled) return;
   const screen = $("#screen");
+  if (screen.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
+    pausedResumeAt = getStreamCurrentTime();
+    playbackPaused = true;
+    void cyberdashPlayer.pause();
+    clearInterval(streamSeek.timer);
+    streamSeek.timer = null;
+    streamSeek.startAt = pausedResumeAt;
+    streamSeek.liveAtMs = 0;
+    updateStreamSeekUi(pausedResumeAt);
+    screen.classList.add("playback-paused");
+    setPauseButtonState("▶ Resume", true);
+    setBadge("paused", "Ⅱ PAUSED · WebCodecs");
+    showFullscreenOverlays();
+    return;
+  }
   const video = $("#video");
   const img = $("#mjpeg");
   const audio = $("#audio");
@@ -1571,6 +1703,19 @@ function pausePlayback() {
 async function resumePlayback() {
   if (!playbackPaused) return;
   const screen = $("#screen");
+  if (screen.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
+    playbackPaused = false;
+    screen.classList.remove("playback-paused");
+    setPauseButtonState("Ⅱ Pause", false);
+    await cyberdashPlayer.resume();
+    if (streamSeek.seekable) {
+      streamSeek.liveAtMs = Date.now();
+      startStreamSeekTimer();
+    }
+    setBadge("live", "● WebCodecs");
+    showFullscreenOverlays();
+    return;
+  }
   const wasBufferedMjpeg = screen.classList.contains("mjpeg-buffered-mode") && activeCompat?.bufferedPlayer;
   const wasMjpeg = screen.classList.contains("mjpeg-mode");
   const resumeAt = streamReplayTime(pausedResumeAt);
@@ -1673,7 +1818,6 @@ function destroyBrowserPcmAudio() {
   try { session.controller?.abort(); } catch {}
   try { session.processor?.disconnect(); } catch {}
   try { session.gain?.disconnect(); } catch {}
-  try { session.ctx?.close?.(); } catch {}
 }
 
 function setBrowserPcmOutputHeld(held) {
@@ -1718,12 +1862,13 @@ function canTryMpegts() {
 }
 
 function cleanupMedia() {
-  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), audio = $("#audio");
+  const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
+  void stopCyberdashPlayback({ report: true });
   clearFullscreenOverlayHide();
   setDesktopStreamActive(false);
   setBrowserStreamActive(false);
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
-  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "mjpeg-buffered-mode", "startup-preview");
+  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "mjpeg-buffered-mode", "cyberdash-mode", "startup-preview");
   streamAttempt++;
   clearStreamTimers();
   clearStreamNotice();
@@ -1749,6 +1894,10 @@ function cleanupMedia() {
   if (canvas) {
     const context = canvas.getContext("2d");
     context?.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  if (cyberdashCanvas) {
+    const context = cyberdashCanvas.getContext("2d");
+    context?.clearRect(0, 0, cyberdashCanvas.width, cyberdashCanvas.height);
   }
   try { audio.pause(); } catch {}
   audio.onloadedmetadata = null;
@@ -2070,6 +2219,24 @@ function canUseBrowserPcmAudio() {
   return Boolean(window.AudioContext || window.webkitAudioContext);
 }
 
+function ensureBrowserPcmContext() {
+  if (!canUseBrowserPcmAudio()) return null;
+  if (browserPcmSharedContext && browserPcmSharedContext.state !== "closed") return browserPcmSharedContext;
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  try {
+    browserPcmSharedContext = new AudioCtx({ sampleRate: 48000, latencyHint: "interactive" });
+  } catch {
+    browserPcmSharedContext = new AudioCtx({ latencyHint: "interactive" });
+  }
+  return browserPcmSharedContext;
+}
+
+function primeBrowserAudioFromGesture() {
+  const ctx = ensureBrowserPcmContext();
+  const resumed = ctx?.resume?.();
+  if (resumed?.catch) resumed.catch(() => {});
+}
+
 function isBrowserPcmUrl(url) {
   return /\/stream\/browser-pcm(?:[?#]|$)/i.test(String(url || ""));
 }
@@ -2224,13 +2391,8 @@ async function startBrowserPcmAudio(audioUrl, notify = false, { holdOutput = fal
     return resumed || null;
   }
   destroyBrowserPcmAudio();
-  const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  let ctx;
-  try {
-    ctx = new AudioCtx({ sampleRate: 48000 });
-  } catch {
-    ctx = new AudioCtx();
-  }
+  const ctx = ensureBrowserPcmContext();
+  if (!ctx) throw new Error("Core Tap audio requires Web Audio support.");
   const processor = ctx.createScriptProcessor(1024, 0, 2);
   let readyResolve = null;
   const readyPromise = new Promise((resolve) => { readyResolve = resolve; });
@@ -2260,6 +2422,7 @@ async function startBrowserPcmAudio(audioUrl, notify = false, { holdOutput = fal
     starved: true,
     discontinuity: false,
     carry: null,
+    error: null,
     closed: false,
   };
   browserPcmAudio = session;
@@ -2293,11 +2456,19 @@ async function startBrowserPcmAudio(audioUrl, notify = false, { holdOutput = fal
     }
   }).catch((error) => {
     if (!session.closed && error.name !== "AbortError") {
+      session.error = error;
+      session.readyResolve?.(false);
+      session.readyResolve = null;
       console.warn("[browser-pcm-audio] stream failed:", error.message);
       if (notify) toast(error.message, true);
     }
   });
-  await browserPcmReady(session);
+  const ready = await browserPcmReady(session, 3000);
+  if (!ready) {
+    const error = session.error || new Error("Core Tap audio did not start within 3 seconds.");
+    destroyBrowserPcmAudio();
+    throw error;
+  }
   return resume || null;
 }
 
@@ -2791,9 +2962,110 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   }
 }
 
+async function playCyberdashStream(youtubeUrl, label, meta = {}) {
+  const screen = $("#screen");
+  const canvas = $("#cyberdashCanvas");
+  const preparedId = String(meta.preparedId || "").trim();
+  activeYoutubeSourceUrl = youtubeUrl || (preparedId ? `processed://${preparedId}` : "");
+  $("#nowPlaying").textContent = label || "YouTube";
+  $("#stopBtn").disabled = false;
+  $("#restreamBtn").disabled = false;
+
+  // cleanupMedia detaches the old player synchronously and lets its async cleanup finish in the background.
+  // Avoiding an awaited stop here preserves the current click/change user activation for iOS/Tesla audio.
+  cleanupMedia();
+  resetPauseControl(false);
+  if (meta.autoplayContext) {
+    setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
+  } else {
+    setAutoplayContext();
+  }
+  configureStreamSeek(meta, meta.startAt || 0);
+
+  const attempt = streamAttempt;
+  screen.classList.remove("video-mode", "mjpeg-mode", "mjpeg-buffered-mode");
+  screen.classList.add("playing", "loading", "cyberdash-mode");
+  setBadge("reconnecting", "↻ WebCodecs…");
+  startStreamWatchdog(attempt, "WebCodecs playback", { warnMs: 18000, failMs: 40000 });
+
+  // WebCodecs audio stays inside the DASH session. FFmpeg applies pitch-preserving
+  // atempo on the server; AudioContext plays the resulting AAC at 1x.
+
+  let player = null;
+  let fatalHandled = false;
+  try {
+    const module = cyberdashModule || await ensureCyberdashModule();
+    if (!currentAttempt(attempt)) return;
+    const settings = currentCyberdashSettings();
+    const requestedHeight = preparedId && Number(meta.preparedResolution) > 0
+      ? Number(meta.preparedResolution)
+      : settings.height;
+    const sourceBadge = preparedId ? "CDN cache" : "WebCodecs";
+    const sourceSettingsLabel = preparedId
+      ? ((requestedHeight > 0 ? requestedHeight + "p" : "cached") + " · static fMP4")
+      : cyberdashSettingsLabel(settings);
+    player = module.createCyberdashPlayer({
+      canvas,
+      onPlaying() {
+        if (!currentAttempt(attempt)) return;
+        markStreamLive(attempt);
+        setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×");
+      },
+      onEnded() {
+        if (currentAttempt(attempt)) handleAutoplayEnd();
+      },
+      onStatus(status, detail = {}) {
+        if (!currentAttempt(attempt)) return;
+        if (status === "buffering") {
+          const phase = detail.phase === "startup" ? "Buffering" : "Rebuffering";
+          setBadge("reconnecting", `↻ ${phase} · ${youtubePlaybackRate}×`);
+        } else if (status === "playing") {
+          setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×");
+        }
+      },
+      onError(error) {
+        if (!currentAttempt(attempt)) return;
+        fatalHandled = true;
+        if (error?.body?.fallback === "mjpeg" && replayFn) {
+          youtubePlaybackMethod = "mjpeg";
+          localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
+          renderYoutubePlaybackMethod();
+          toast(preparedId ? "Prepared CDN cache unavailable · using MJPEG" : "Live YouTube detected · using MJPEG");
+          const result = replayFn(meta.startAt || 0);
+          if (result?.catch) result.catch((fallbackError) => toast(fallbackError.message, true));
+          return;
+        }
+        failStreamAttempt(attempt, "WebCodecs playback failed", streamErrorDetail(error?.message || error));
+      },
+    });
+    cyberdashPlayer = player;
+    await player.play({
+      url: preparedId ? null : youtubeUrl,
+      preparedId: preparedId || null,
+      height: requestedHeight,
+      fps: settings.fps,
+      startAt: meta.startAt || 0,
+      muted: !soundOn,
+      playbackRate: youtubePlaybackRate,
+    });
+  } catch (error) {
+    // Ignore a rejected promise from a player that was intentionally replaced
+    // by Stop, seek, method switch, or playback-rate change.
+    if (!currentAttempt(attempt) || (cyberdashPlayer && cyberdashPlayer !== player)) return;
+    if (!fatalHandled) {
+      failStreamAttempt(attempt, "WebCodecs playback failed", streamErrorDetail(error?.message || error));
+    }
+  }
+}
+
 // Play one synced MPEG-TS stream (H.264+AAC) via mpegts.js / MSE.
 async function playStream(sources, label, meta = {}) {
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
+  const youtubeUrl = String(meta.youtubeUrl || "").trim();
+  activeYoutubeSourceUrl = youtubeUrl;
+  if (youtubeUrl && youtubePlaybackMethod === "webcodecs" && !meta.isLive) {
+    return playCyberdashStream(youtubeUrl, label, { ...meta, audioUrl });
+  }
   if (meta.bufferedMjpeg && mjpegUrl) return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta);
   const screen = $("#screen"), video = $("#video");
   if (legacy.playing) {
@@ -2953,6 +3225,7 @@ async function playItem(item) {
       isLive: item.type !== "youtube" && item.type !== "file",
       bufferedMjpeg: item.type === "youtube" || item.type === "file",
       duration: item.meta?.duration,
+      youtubeUrl: item.type === "youtube" ? item.url : "",
       startAt,
       startupTrace: trace,
     });
@@ -2962,6 +3235,7 @@ async function playItem(item) {
 }
 
 function stopPlayback() {
+  pendingPlaybackMethodRestore = null;
   stopDesktopHlsSession();
   stopDesktopAudioHlsSession();
   clearBrowserAudioRetry();
@@ -2972,6 +3246,7 @@ function stopPlayback() {
   stopStreamSeekTimer(true);
   resetPauseControl(true);
   replayFn = null;
+  activeYoutubeSourceUrl = "";
   setAutoplayContext();
   setDesktopStreamActive(false);
   desktopInputActive = false;
@@ -2983,7 +3258,7 @@ function stopPlayback() {
   resetBrowserZoom();
   renderDesktopInputUi();
   setBadge("hidden");
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "embed-mode", "browser-mode", "startup-preview");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "cyberdash-mode", "embed-mode", "browser-mode", "startup-preview");
   $("#screen").style.height = "";
   $("#screen").style.aspectRatio = "";
   $("#nowPlaying").textContent = "Player";
@@ -3010,7 +3285,7 @@ function restreamPlayback() {
   stopDesktopAudioHlsSession();
   clearBrowserAudioRetry();
   cleanupMedia();
-  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "embed-mode", "browser-mode");
+  $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "cyberdash-mode", "embed-mode", "browser-mode");
   setBadge("reconnecting", "↻ Restreaming...");
   toast("Reloading stream");
   clearTimeout(restreamTimer);
@@ -4166,17 +4441,27 @@ function renderLegacyLibrary() {
         <button class="btn small secondary" data-act="play-local" type="button">Play</button>
       </div>
     </div>`).join("");
-  const processedHtml = state.legacyItems.map((item) => `
+  const processedHtml = state.legacyItems.map((item) => {
+    const cacheReady = item.webcodecsCache?.status === "ready";
+    const cacheResolutions = cacheReady && Array.isArray(item.webcodecsCache?.resolutions)
+      ? item.webcodecsCache.resolutions
+      : [];
+    const cacheLabel = cacheReady
+      ? ` · CDN ${cacheResolutions.length ? cacheResolutions.join("p/") + "p " : ""}ready`
+      : "";
+    return `
     <div class="legacy-item ${item.id === state.legacyPlayingId ? "active" : ""}" data-id="${esc(item.id)}">
       <div class="meta">
         <div class="title">${esc(item.title)}</div>
-        <div class="sub">${fmtDur(item.duration)}${item.duration ? " · " : ""}${esc((item.resolutions || []).join("p, "))}p</div>
+        <div class="sub">${fmtDur(item.duration)}${item.duration ? " · " : ""}${esc((item.resolutions || []).join("p, "))}p${cacheLabel}</div>
       </div>
       <div class="actions">
         <button class="btn small secondary" data-act="play" type="button">Play</button>
+        ${cacheReady ? "" : '<button class="btn small ghost" data-act="prepare-cdn" type="button">Prepare CDN</button>'}
         <button class="btn small ghost" data-act="delete" type="button">Delete</button>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
   list.innerHTML = localHtml + processedHtml;
 }
 
@@ -4256,6 +4541,25 @@ function pollLegacyDownload(jobId) {
   });
 }
 
+async function prepareLegacyCdn(item) {
+  if (!item?.id) return;
+  legacyStatus(`Preparing CDN cache for ${item.title || "video"}…`);
+  setLegacyProgress(0, false);
+  try {
+    const { jobId } = await api.post(`/api/legacy-library/${encodeURIComponent(item.id)}/prepare-cdn`, {});
+    await pollLegacyDownload(jobId);
+    await loadLegacyLibrary();
+    const refreshed = state.legacyItems.find((entry) => entry.id === item.id);
+    if (legacy.playing?.id === item.id && refreshed) legacy.playing = refreshed;
+    renderLegacyLibrary();
+    legacyStatus("CDN/WebCodecs cache ready");
+    toast("CDN cache ready");
+  } catch (error) {
+    legacyStatus(error.message, true);
+    toast(error.message, true);
+  }
+}
+
 async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
   const url = video.url;
   if (!video.duration) {
@@ -4292,6 +4596,7 @@ async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
       isLive: Boolean(video.isLive),
       bufferedMjpeg: !video.isLive,
       duration: video.duration,
+      youtubeUrl: video.url,
       startAt,
       autoplayContext: !video.isLive ? {
         kind: "library-playlist",
@@ -4339,22 +4644,49 @@ function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = nu
   replayFn = (resumeAt = getStreamCurrentTime() || startAt || 0) =>
     playLegacyItem(item, legacy.resolution, resumeAt, autoplayQueue, { skipHistory: true });
 
-  playBufferedMjpegStream({
-    mjpegUrl: legacyStreamUrl(startAt),
-    audioUrl: `/stream/legacy-audio/${encodeURIComponent(item.id)}?_=${Date.now()}`,
-  }, item.title || "Processed video", {
-    seekable: true,
-    bufferedMjpeg: true,
-    duration: item.duration,
-    startAt,
-    keepLegacyState: true,
-    audioElementStartAt: startAt,
-    autoplayContext: {
-      kind: "library",
-      itemId: item.id,
-      queue: autoplayQueue || state.legacyItems,
-    },
-  });
+  const autoplayContext = {
+    kind: "library",
+    itemId: item.id,
+    queue: autoplayQueue || state.legacyItems,
+  };
+  const cacheReady = item.webcodecsCache?.status === "ready";
+  const cachedResolutions = Array.isArray(item.webcodecsCache?.resolutions)
+    ? item.webcodecsCache.resolutions.map(Number).filter(Number.isFinite).sort((a, b) => b - a)
+    : [];
+  const preparedResolution = cachedResolutions.find((height) => height <= Number(legacy.resolution))
+    || cachedResolutions[cachedResolutions.length - 1]
+    || legacy.resolution;
+
+  if (youtubePlaybackMethod === "webcodecs" && cacheReady) {
+    const sourceUrl = item.originalUrl || (item.originalYoutubeId
+      ? `https://www.youtube.com/watch?v=${encodeURIComponent(item.originalYoutubeId)}`
+      : `processed://${item.id}`);
+    void playCyberdashStream(sourceUrl, item.title || "Processed video", {
+      preparedId: item.id,
+      preparedResolution,
+      seekable: true,
+      duration: item.duration,
+      startAt,
+      keepLegacyState: true,
+      autoplayContext,
+    });
+  } else {
+    if (youtubePlaybackMethod === "webcodecs" && !cacheReady && !options.skipHistory) {
+      toast("CDN cache is not ready yet · using MJPEG");
+    }
+    playBufferedMjpegStream({
+      mjpegUrl: legacyStreamUrl(startAt),
+      audioUrl: `/stream/legacy-audio/${encodeURIComponent(item.id)}?_=${Date.now()}`,
+    }, item.title || "Processed video", {
+      seekable: true,
+      bufferedMjpeg: true,
+      duration: item.duration,
+      startAt,
+      keepLegacyState: true,
+      audioElementStartAt: startAt,
+      autoplayContext,
+    });
+  }
 
   if (!options.skipHistory && (item.originalUrl || item.originalYoutubeId)) {
     void recordWatchHistory(item, "library");
@@ -4661,6 +4993,7 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
       isLive: Boolean(item.isLive || item.isUpcoming),
       bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
+      youtubeUrl: item.url,
       startAt,
       startupTrace: trace,
       autoplayContext: !item.isLive && !item.isUpcoming ? {
@@ -4707,6 +5040,7 @@ async function streamYoutubeHistoryItem(item) {
       isLive: Boolean(item.isLive),
       bufferedMjpeg: !item.isLive,
       duration: item.duration,
+      youtubeUrl: item.url,
       startAt,
       startupTrace: trace,
     });
@@ -5061,6 +5395,7 @@ async function streamRecommendation(item, autoplayQueue = null) {
       isLive: Boolean(item.isLive || item.isUpcoming),
       bufferedMjpeg: !item.isLive && !item.isUpcoming,
       duration: item.duration,
+      youtubeUrl: item.url,
       startAt,
       startupTrace: trace,
       autoplayContext: !item.isLive && !item.isUpcoming ? {
@@ -5420,9 +5755,7 @@ function validBrowserAudioCapture(value) {
 }
 
 function browserAudioCaptureValue() {
-  const saved = localStorage.getItem(BROWSER_AUDIO_CAPTURE_KEY);
-  const selected = $("#browserAudioCapture")?.value || $("#browserPlayerAudioCapture")?.value;
-  return validBrowserAudioCapture(saved || selected);
+  return DEFAULT_BROWSER_AUDIO_CAPTURE;
 }
 
 function setBrowserAudioCapture(value, { persist = true } = {}) {
@@ -5455,26 +5788,15 @@ function validBrowserAudioBitrate(value) {
 }
 
 function storedBrowserAudioFormat() {
-  const storedFormat = localStorage.getItem(BROWSER_AUDIO_FORMAT_KEY);
-  const migrated = localStorage.getItem(BROWSER_AUDIO_DEFAULT_KEY) === "1";
-  if (!migrated && (!storedFormat || storedFormat === "auto")) {
-    localStorage.setItem(BROWSER_AUDIO_FORMAT_KEY, DEFAULT_BROWSER_AUDIO_FORMAT);
-    localStorage.setItem(BROWSER_AUDIO_DEFAULT_KEY, "1");
-    return DEFAULT_BROWSER_AUDIO_FORMAT;
-  }
-  return storedFormat;
+  return DEFAULT_BROWSER_AUDIO_FORMAT;
 }
 
 function browserAudioFormatValue() {
-  const active = $("#browserAudioFormat [data-browser-audio-format].active")
-    || $("#browserPlayerAudioFormat [data-browser-audio-format].active");
-  return validBrowserAudioFormat(storedBrowserAudioFormat() || active?.dataset.browserAudioFormat);
+  return DEFAULT_BROWSER_AUDIO_FORMAT;
 }
 
 function browserAudioBitrateValue() {
-  const active = $("#browserAudioQuality [data-browser-audio-bitrate].active")
-    || $("#browserPlayerAudioQuality [data-browser-audio-bitrate].active");
-  return validBrowserAudioBitrate(active?.dataset.browserAudioBitrate || localStorage.getItem(BROWSER_AUDIO_BITRATE_KEY));
+  return "128";
 }
 
 function setBrowserAudioFormat(format, { persist = true } = {}) {
@@ -5500,9 +5822,15 @@ function setBrowserAudioBitrate(bitrate, { persist = true } = {}) {
 }
 
 function syncBrowserAudioControls() {
-  setBrowserAudioCapture(browserAudioCaptureValue());
-  setBrowserAudioFormat(storedBrowserAudioFormat() || browserAudioFormatValue());
-  setBrowserAudioBitrate(localStorage.getItem(BROWSER_AUDIO_BITRATE_KEY) || browserAudioBitrateValue());
+  // Overwrite stale A/B-test choices so BlackHole/HLS/manual settings cannot
+  // silently override the single production browser-audio path.
+  localStorage.setItem(BROWSER_AUDIO_CAPTURE_KEY, DEFAULT_BROWSER_AUDIO_CAPTURE);
+  localStorage.setItem(BROWSER_AUDIO_FORMAT_KEY, DEFAULT_BROWSER_AUDIO_FORMAT);
+  localStorage.setItem(BROWSER_AUDIO_BITRATE_KEY, "128");
+  localStorage.setItem(BROWSER_AUDIO_DEFAULT_KEY, "1");
+  setBrowserAudioCapture(DEFAULT_BROWSER_AUDIO_CAPTURE);
+  setBrowserAudioFormat(DEFAULT_BROWSER_AUDIO_FORMAT);
+  setBrowserAudioBitrate("128");
 }
 
 async function canUseAudioHls() {
@@ -5549,34 +5877,28 @@ async function desktopAudioUrl(audio) {
 
 async function browserAudioUrl(audio) {
   await stopDesktopAudioHlsSession();
-  const backend = browserAudioCaptureValue();
-  if (!audio && backend === "manual") return "";
-  if (backend === "core-tap" && !browserSessionId) throw new Error("Core Tap requires an active Real Chrome session");
-  const format = browserAudioFormatValue();
-  const bitrate = browserAudioBitrateValue();
-  const capture = new URLSearchParams({
-    backend,
-    session: browserSessionId || "",
+
+  if (realChromeActive) {
+    if (!browserSessionId) throw new Error("Core Tap requires an active Real Chrome session");
+    if (!canUseBrowserPcmAudio()) throw new Error("This browser cannot play Core Tap PCM audio.");
+    const query = new URLSearchParams({
+      backend: "core-tap",
+      session: browserSessionId,
+      _: Date.now(),
+    });
+    return `/stream/browser-pcm?${query.toString()}`;
+  }
+
+  // Legacy private-browser support remains internal. User-facing Browser mode
+  // uses Real Chrome + Core Tap only.
+  if (!audio) return "";
+  const query = new URLSearchParams({
+    backend: "manual",
+    audio,
+    bitrate: "128",
+    _: Date.now(),
   });
-  if (audio) capture.set("audio", audio);
-  capture.set("bitrate", bitrate);
-  const query = capture.toString();
-  if (backend === "core-tap" && format === "hls") {
-    throw new Error("Core Tap currently supports MP3 and Auto/PCM; choose one of those for A/B testing.");
-  }
-  if (format === "hls" && await canUseAudioHls()) {
-    const hls = await api.get(`/api/browser/audio-hls/start?${query}&_=${Date.now()}`);
-    if (hls?.id && hls?.url) {
-      desktopAudioHlsSessionId = hls.id;
-      desktopAudioHlsStopBase = "/api/browser/audio-hls";
-      return `${hls.url}?_=${Date.now()}`;
-    }
-  }
-  if (format === "hls") throw new Error("HLS audio is not supported in this browser.");
-  if (format === "auto" && canUseBrowserPcmAudio()) {
-    return `/stream/browser-pcm?${query}&_=${Date.now()}`;
-  }
-  return `/stream/browser-audio?${query}&_=${Date.now()}`;
+  return `/stream/browser-audio?${query.toString()}`;
 }
 
 function renderDesktopStatus(sources = state.desktopSources) {
@@ -6580,18 +6902,54 @@ async function stopBrowserSession({ stopRealChromeOrphans = false } = {}) {
   refreshSessionManager({ notify: false }).catch(() => {});
 }
 
-async function postBrowserInput(payload) {
-  if (!browserSessionId) return null;
-  try {
-    const base = realChromeActive ? "real-chrome" : "browser";
-    return await api.post(`/api/${base}/${encodeURIComponent(browserSessionId)}/input`, payload);
-  } catch (err) {
-    if (Date.now() - browserInputLastErrorAt > 2500) {
-      browserInputLastErrorAt = Date.now();
-      toast(err.message || "Browser input failed", true);
+function postBrowserInput(payload) {
+  // Capture the destination now: a queued gesture must never reach a new session.
+  const id = browserSessionId;
+  const base = realChromeActive ? "real-chrome" : "browser";
+  if (!id) return Promise.resolve(null);
+  const motion = payload.type === "move" || payload.type === "drag";
+  const entry = { payload: { ...payload }, started: false };
+  if (motion) {
+    if (browserInputPendingMotion && !browserInputPendingMotion.started
+      && browserInputPendingMotion.payload.type === payload.type) {
+      browserInputPendingMotion.superseded = true;
     }
-    return null;
+    browserInputPendingMotion = entry;
+    browserInputPendingScroll = null;
+  } else if (payload.type === "scroll") {
+    const pending = browserInputPendingScroll;
+    if (pending && !pending.started) {
+      pending.payload.x = entry.payload.x;
+      pending.payload.y = entry.payload.y;
+      pending.payload.dx = Math.max(-2000, Math.min(2000, (Number(pending.payload.dx) || 0) + (Number(entry.payload.dx) || 0)));
+      pending.payload.dy = Math.max(-2000, Math.min(2000, (Number(pending.payload.dy) || 0) + (Number(entry.payload.dy) || 0)));
+      return pending.result;
+    }
+    browserInputPendingScroll = entry;
+    browserInputPendingMotion = null;
+  } else {
+    browserInputPendingMotion = null;
+    browserInputPendingScroll = null;
   }
+  const result = browserInputQueue.then(async () => {
+    entry.started = true;
+    if (entry.superseded) return null;
+    if (browserInputPendingMotion === entry) browserInputPendingMotion = null;
+    if (browserInputPendingScroll === entry) browserInputPendingScroll = null;
+    if (browserSessionId !== id || realChromeActive !== (base === "real-chrome")) return null;
+    try {
+      return await api.post(`/api/${base}/${encodeURIComponent(id)}/input`, entry.payload);
+    } catch (err) {
+      if (Date.now() - browserInputLastErrorAt > 2500) {
+        browserInputLastErrorAt = Date.now();
+        toast(err.message || "Browser input failed", true);
+      }
+      return null;
+    }
+  });
+  entry.result = result;
+  browserInputQueue = result.catch(() => null);
+  return result;
 }
 
 function browserKeyboardInputMode(info = {}) {
@@ -6716,6 +7074,7 @@ function queueBrowserSettingsUpdate({ immediate = false } = {}) {
 }
 
 async function playBrowserStream() {
+  primeBrowserAudioFromGesture();
   const url = $("#browserUrl").value.trim();
   if (!url) {
     $("#browserUrl").focus();
@@ -6760,6 +7119,7 @@ async function playBrowserStream() {
 }
 
 async function playRealChromeStream() {
+  primeBrowserAudioFromGesture();
   const viewport = parseBrowserViewport();
   const fps = browserFpsValue();
   const quality = browserQualityValue();
@@ -6768,7 +7128,7 @@ async function playRealChromeStream() {
     ? "https://www.google.com/"
     : rawUrl;
   setBrowserStatus("Starting Real Chrome...", "");
-  await ensureBrowserAudioSourcesReady();
+  syncBrowserAudioControls();
   await stopBrowserSession({ stopRealChromeOrphans: true });
   resetBrowserZoom();
   const session = await api.post("/api/real-chrome/start", { url: startUrl, ...viewport, fps, quality });
@@ -7315,6 +7675,7 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
     else if (tab.dataset.mode === "embed") openEmbed();
     else if (tab.dataset.mode === "library") openLegacyLibrary();
     else if (tab.dataset.mode === "apne") openApneDaily();
+    else if (tab.dataset.mode === "tesla") window.open("/tesla", "_blank", "noopener");
     else setMode(tab.dataset.mode);
   };
 });
@@ -7718,8 +8079,15 @@ $("#muteBtn").onclick = () => {
     startCompatAudio(true);
     return;
   }
+  if ($("#screen")?.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
+    soundOn = !soundOn;
+    renderMuteButton();
+    cyberdashPlayer.setMuted(!soundOn);
+    return;
+  }
   soundOn = !soundOn;
   renderMuteButton();
+  cyberdashPlayer?.setMuted?.(!soundOn);
   const v = $("#video");
   v.muted = !soundOn;
   a.muted = !soundOn;
@@ -7733,6 +8101,54 @@ $("#muteBtn").onclick = () => {
   if (soundOn && !playbackPaused && activeCompat?.audioUrl) startCompatAudio(true);
 };
 $("#pauseBtn").onclick = togglePlaybackPause;
+$("#playbackMethodToggle")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-playback-method]");
+  if (!button) return;
+  const next = button.dataset.playbackMethod === "webcodecs" ? "webcodecs" : "mjpeg";
+  if (next === youtubePlaybackMethod) return;
+  const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
+  const restorePause = playbackPaused;
+  const beforeAttempt = streamAttempt;
+  youtubePlaybackMethod = next;
+  localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
+  renderYoutubePlaybackMethod();
+  if (activeYoutubeSourceUrl && replayFn) {
+    pendingPlaybackMethodRestore = restorePause
+      ? { minAttempt: beforeAttempt + 1, replay: replayFn }
+      : null;
+    const result = replayFn(resumeAt);
+    if (result?.catch) result.catch((error) => toast(error.message, true));
+  } else {
+    toast(next === "webcodecs" ? "WebCodecs selected for YouTube" : "MJPEG selected for YouTube");
+  }
+});
+$("#playbackSpeedSelect")?.addEventListener("change", (event) => {
+  const requested = Number(event.target.value);
+  const next = YOUTUBE_PLAYBACK_RATES.includes(requested) ? requested : 1;
+  if (next === youtubePlaybackRate) return;
+  const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
+  const restorePause = playbackPaused;
+  const beforeAttempt = streamAttempt;
+  youtubePlaybackRate = next;
+  localStorage.setItem(YOUTUBE_PLAYBACK_RATE_KEY, String(youtubePlaybackRate));
+  renderYoutubePlaybackRate();
+
+  if (youtubePlaybackMethod !== "webcodecs") {
+    toast("Speed control is available with WebCodecs");
+    return;
+  }
+  if (activeYoutubeSourceUrl && replayFn) {
+    pendingPlaybackMethodRestore = restorePause
+      ? { minAttempt: beforeAttempt + 1, replay: replayFn }
+      : null;
+    const result = replayFn(resumeAt);
+    if (result?.catch) result.catch((error) => toast(error.message, true));
+  } else {
+    toast("Speed " + youtubePlaybackRate + "× selected");
+  }
+});
+renderYoutubePlaybackMethod();
+void ensureCyberdashModule().catch(() => {});
 
 bindTap($("#playlistList"), async (e) => {
   const li = e.target.closest("li"); if (!li) return;
@@ -7783,6 +8199,10 @@ bindTap($("#legacyList"), async (e) => {
   const item = state.legacyItems.find((x) => x.id === row.dataset.id);
   if (!item) return;
   const act = e.target.closest("[data-act]")?.dataset.act || "play";
+  if (act === "prepare-cdn") {
+    await prepareLegacyCdn(item);
+    return;
+  }
   if (act === "delete") {
     if (!confirm(`Delete "${item.title}" from the processed library?`)) return;
     try {
@@ -7977,9 +8397,10 @@ function browserMediaRect() {
   };
 }
 
-function browserInputPointFromClient(clientX, clientY) {
+function browserInputPointFromClient(clientX, clientY, clamp = false) {
   const { left, top, width, height } = browserMediaRect();
-  if (clientX < left || clientX > left + width || clientY < top || clientY > top + height) return null;
+  if (!width || !height) return null;
+  if (!clamp && (clientX < left || clientX > left + width || clientY < top || clientY > top + height)) return null;
   return {
     x: Math.max(0, Math.min(1, (clientX - left) / width)),
     y: Math.max(0, Math.min(1, (clientY - top) / height)),
@@ -7991,11 +8412,12 @@ function browserInputPointOrCenter(clientX, clientY) {
 }
 
 function sendBrowserPointer(type, e) {
-  const point = browserInputPointFromClient(e.clientX, e.clientY);
+  const point = browserInputPointFromClient(e.clientX, e.clientY, type === "up" || type === "drag");
   if (!point) return false;
   const result = postBrowserInput({ type, ...point, button: desktopInputButton(e), pointerType: e.pointerType || "" });
   if (type === "tap") {
     result?.then?.((response) => {
+      if (!response) return;
       if (response?.download?.submitted) {
         toast("Preparing download on Mac…");
         hideBrowserKeyboard();
@@ -8084,7 +8506,10 @@ function handleBrowserInputPointerDown(e) {
   browserInputLastY = e.clientY;
   browserInputTouchScroll = e.pointerType !== "mouse";
   browserInputTouchMoved = false;
-  if (!browserInputTouchScroll) sendBrowserPointer("down", e);
+  browserInputMouseDragging = false;
+  browserInputStartEvent = { clientX: e.clientX, clientY: e.clientY, button: e.button, pointerType: e.pointerType };
+  // Ordinary mouse clicks are sent as one complete gesture on release.
+  // Only a real drag needs separate down/move/up commands.
   try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
   e.preventDefault();
   e.stopPropagation();
@@ -8102,22 +8527,42 @@ function handleBrowserInputPointerMove(e) {
     e.stopPropagation();
     return true;
   }
-  if (browserInputPointerId !== e.pointerId) return false;
+  if (browserInputPointerId !== e.pointerId) {
+    if (browserInputPointerId === null && e.pointerType === "mouse") {
+      const now = performance.now();
+      if (now - browserInputLastMoveAt >= 80) {
+        browserInputLastMoveAt = now;
+        sendBrowserPointer("move", e);
+      }
+    }
+    return false;
+  }
   const now = performance.now();
   const totalDx = e.clientX - browserInputStartX;
   const totalDy = e.clientY - browserInputStartY;
-  if (browserInputTouchScroll && Math.hypot(totalDx, totalDy) > 8) {
-    browserInputTouchMoved = true;
-    if (now - browserInputLastMoveAt < 35) return true;
-    browserInputLastMoveAt = now;
-    const dx = browserInputLastX - e.clientX;
-    const dy = browserInputLastY - e.clientY;
-    browserInputLastX = e.clientX;
-    browserInputLastY = e.clientY;
-    sendBrowserScrollFromClient(e.clientX, e.clientY, dx * 1.8, dy * 1.8);
+  if (browserInputTouchScroll) {
+    if (Math.hypot(totalDx, totalDy) > BROWSER_TOUCH_SCROLL_THRESHOLD_PX) {
+      browserInputTouchMoved = true;
+      if (now - browserInputLastMoveAt < 35) return true;
+      browserInputLastMoveAt = now;
+      const dx = browserInputLastX - e.clientX;
+      const dy = browserInputLastY - e.clientY;
+      browserInputLastX = e.clientX;
+      browserInputLastY = e.clientY;
+      sendBrowserScrollFromClient(e.clientX, e.clientY, dx * 1.8, dy * 1.8);
+    }
+    // Do not turn sub-threshold touch jitter into remote mouse moves. A short
+    // touch stays a tap until it clearly crosses the scroll threshold.
     e.preventDefault();
     e.stopPropagation();
     return true;
+  }
+  // Touch jitter is neither a mouse drag nor a click until the gesture ends.
+  if (browserInputTouchScroll) return true;
+  if (!browserInputMouseDragging) {
+    if (Math.hypot(totalDx, totalDy) < 4) return true;
+    browserInputMouseDragging = true;
+    sendBrowserPointer("down", browserInputStartEvent);
   }
   if (now - browserInputLastMoveAt < 45) return true;
   browserInputLastMoveAt = now;
@@ -8143,16 +8588,56 @@ function handleBrowserInputPointerUp(e) {
   }
   if (browserInputPointerId !== e.pointerId) return false;
   if (browserInputTouchScroll) {
-    if (!browserInputTouchMoved) sendBrowserPointer("tap", e);
-  } else {
-    sendBrowserPointer("up", e);
+    if (!browserInputTouchMoved && e.type !== "pointercancel" && e.type !== "lostpointercapture") {
+      // Click where the finger went down, not wherever touch-end jitter happened
+      // to land. This keeps small links/buttons stable on the Tesla touchscreen.
+      sendBrowserPointer("tap", {
+        clientX: browserInputStartX,
+        clientY: browserInputStartY,
+        pointerType: e.pointerType || "touch",
+        button: e.button,
+      });
+    }
+  } else if (browserInputMouseDragging) {
+    sendBrowserPointer("up", { ...browserInputStartEvent, clientX: e.clientX, clientY: e.clientY });
+  } else if (e.type !== "pointercancel" && e.type !== "lostpointercapture") {
+    sendBrowserPointer("tap", e);
   }
+  browserInputMouseDragging = false;
+  browserInputStartEvent = null;
   browserInputPointerId = null;
   browserInputTouchScroll = false;
   browserInputTouchMoved = false;
   browserFullscreenTapAt = 0;
   browserFullscreenTapX = e.clientX;
   browserFullscreenTapY = e.clientY;
+  try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
+function handleBrowserInputPointerCancel(e) {
+  const tracked = browserInputPointerId === e.pointerId || browserZoom.pointers.has(e.pointerId);
+  if (!tracked) return false;
+
+  const releaseRemoteMouse = browserInputPointerId === e.pointerId
+    && e.pointerType === "mouse"
+    && !browserInputTouchScroll
+    && browserInputMouseDragging;
+
+  if (browserZoom.pointers.has(e.pointerId)) browserZoom.pointers.delete(e.pointerId);
+  if (browserZoom.pointers.size < 2) browserZoom.pinching = false;
+  if (browserInputPointerId === e.pointerId) browserInputPointerId = null;
+  browserInputTouchScroll = false;
+  browserInputTouchMoved = true;
+  browserInputMouseDragging = false;
+  browserInputStartEvent = null;
+
+  // A cancelled touch must never be promoted to a tap. Mouse input is different:
+  // if we already sent mousePressed, release it so Chrome cannot get stuck dragging.
+  if (releaseRemoteMouse) sendBrowserPointer("up", e);
+
   try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
   e.preventDefault();
   e.stopPropagation();
@@ -8294,8 +8779,9 @@ function handleDesktopPanPointerUp(e) {
     screen.addEventListener("pointercancel", (e) => {
       fullscreenTapRevealOnly = false;
       handleDesktopInputPointerUp(e);
-      handleBrowserInputPointerUp(e);
+      handleBrowserInputPointerCancel(e);
     });
+    screen.addEventListener("lostpointercapture", handleBrowserInputPointerCancel);
     screen.addEventListener("pointercancel", handleDesktopPanPointerUp);
     screen.addEventListener("pointerup", (e) => {
       if (handleDesktopInputPointerUp(e)) return;
@@ -8357,6 +8843,58 @@ $("#quickPlayBtn").onclick = async () => {
   // YouTube -> play directly.
   if (/youtube\.com|youtu\.be/.test(url)) {
     const ytBtn = $("#quickPlayBtn");
+
+    if (youtubePlaybackMethod === "webcodecs") {
+      state.playingItemId = null;
+      state.legacyPlayingId = null;
+      state.recommendedPlayingId = null;
+      state.youtubeSearchPlayingId = null;
+      state.youtubeHistoryPlayingId = null;
+      renderItems();
+      renderLegacyLibrary();
+      renderRecommendations();
+      renderYoutubeSearch();
+      renderYoutubeHistory();
+
+      let info = null;
+      replayFn = (startAt = 0) => {
+        const q = streamQuery(startAt);
+        const u = encodeURIComponent(url);
+        return playStream({
+          tsUrl: `/stream/ts/youtube?url=${u}&${q}`,
+          mjpegUrl: `/stream/youtube?url=${u}&${q}`,
+          audioUrl: `/stream/audio/youtube?url=${u}&${audioQuery(startAt)}`,
+        }, info?.title || "YouTube", {
+          seekable: true,
+          isLive: false,
+          bufferedMjpeg: true,
+          duration: info?.duration,
+          youtubeUrl: url,
+          startAt,
+        });
+      };
+      const started = replayFn(0);
+      if (started?.catch) started.catch((error) => toast(error.message, true));
+
+      void api.get(`/api/youtube/info?url=${encodeURIComponent(url)}`).then((metadata) => {
+        info = metadata;
+        if (activeYoutubeSourceUrl === url) {
+          $("#nowPlaying").textContent = info?.title || "YouTube";
+          applyLateVodDuration(info?.duration);
+        }
+        void recordWatchHistory({
+          id: info?.id,
+          url: info?.webpage_url || url,
+          title: info?.title || "YouTube",
+          thumbnail: info?.thumbnail,
+          channelTitle: info?.uploader,
+          duration: info?.duration,
+          isLive: info?.isLive,
+        }, "pasted-url");
+      }).catch((error) => console.warn("youtube info failed during WebCodecs playback:", error.message));
+      return;
+    }
+
     let info = null;
     ytBtn.disabled = true; ytBtn.textContent = "...";
     try {
@@ -8388,6 +8926,7 @@ $("#quickPlayBtn").onclick = async () => {
         isLive: Boolean(info?.isLive),
         bufferedMjpeg: !info?.isLive,
         duration: info?.duration,
+        youtubeUrl: url,
         startAt,
       });
     };
@@ -8484,6 +9023,8 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
   window.addEventListener("pagehide", () => {
     stopDesktopAudioHlsSessionOnUnload();
     stopDesktopHlsSessionOnUnload();
+    try { browserPcmSharedContext?.close?.(); } catch {}
+    browserPcmSharedContext = null;
   });
   document.addEventListener("pointerdown", retryBrowserAudioFromGesture, true);
   document.addEventListener("keydown", retryBrowserAudioFromGesture, true);

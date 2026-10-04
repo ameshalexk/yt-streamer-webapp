@@ -1,3 +1,4 @@
+import { enqueueBrowserInput } from "./browser-input-queue.js";
 import dns from "node:dns/promises";
 import net from "node:net";
 import { config } from "../config.js";
@@ -703,6 +704,10 @@ async function replaceFocusedEditableText(session, text) {
 export async function input(id, payload = {}) {
   const session = get(id);
   if (!session) throw httpError(404, "Browser session not found.");
+  return enqueueBrowserInput(session, () => dispatchInput(session, payload));
+}
+
+async function dispatchInput(session, payload) {
   session.lastUsedAt = Date.now();
   if (payload.type === "focus-info") {
     const focused = await focusedEditableInfo(session);

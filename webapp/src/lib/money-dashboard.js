@@ -308,13 +308,13 @@ export function setAccessCookie(req, res, token) {
   res.setHeader("Set-Cookie", parts.join("; "));
 }
 
-export function sendUnauthorizedPage(res) {
+export function sendUnauthorizedPage(res, dashboardName = "Money dashboard") {
   res.status(401).type("html").send(`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Money dashboard locked</title>
+  <title>${dashboardName} locked</title>
   <style>
     body{margin:0;min-height:100vh;display:grid;place-items:center;background:#08111f;color:#e7eefc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
     main{max-width:520px;padding:28px}
@@ -329,7 +329,7 @@ export function sendUnauthorizedPage(res) {
 </head>
 <body>
   <main>
-    <h1>Money dashboard locked</h1>
+    <h1>${dashboardName} locked</h1>
     <p>Enter the private access code generated on this Mac. This browser will be remembered after login.</p>
     <form method="get" autocomplete="off">
       <label for="code">Access code</label>
