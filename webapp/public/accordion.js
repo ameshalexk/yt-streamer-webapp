@@ -4,6 +4,7 @@ let watchAccordion = null;
 function setWatchSection(key) {
   if (!watchAccordion) return;
   const { rows } = watchAccordion;
+  if (key) setPlayerDropdownOpen(true);
   for (const [name, row] of rows) {
     const open = name === key;
     if (!open && row.panel.contains(document.activeElement)) row.button.focus();
@@ -28,8 +29,11 @@ function setWatchSection(key) {
 
 function syncWatchMode(mode, previousMode) {
   if (!watchAccordion) return;
-  // Keep the screen visible even on narrow Browse / Library layouts.
-  setPlayerDropdownOpen(true);
+  // Watch/Browse keep video above the disclosures; auxiliary views retain
+  // their existing player disclosure behavior until a section is opened.
+  const accordionMode = mode === 'watch' || mode === 'browse';
+  if (accordionMode) setPlayerDropdownOpen(true);
+  $('#playerDropdownBtn').hidden = accordionMode;
   if (mode !== previousMode) {
     setWatchSection(mode === 'browse' ? 'browse' : null);
   }

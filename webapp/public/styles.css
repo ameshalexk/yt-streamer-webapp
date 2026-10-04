@@ -2196,7 +2196,7 @@ body.fullscreen-controls-idle .screen.browser-input-active .video-controls-panel
 .watch-section-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
 .watch-section-summary { color: var(--muted); font-size: 14px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .watch-section-panel { padding: 12px; border-top: 1px solid var(--line); }
-.accordion-layout .watch-section .side-panel { position: static; width: 100%; max-width: none; transform: none; opacity: 1; pointer-events: auto; visibility: visible; box-shadow: none; border: 0; background: transparent; backdrop-filter: none; transition: none; overflow: visible; }
+.accordion-layout .watch-section .side-panel { display: flex; position: static; width: 100%; max-width: none; transform: none; opacity: 1; pointer-events: auto; visibility: visible; box-shadow: none; border: 0; background: transparent; backdrop-filter: none; transition: none; overflow: visible; }
 .accordion-layout .watch-section .player-toolbar,
 .accordion-layout .watch-section .quick { display: flex !important; margin: 0; padding: 8px 0; background: transparent; border: 0; }
 .accordion-layout .watch-section .controls { display: flex; padding: 12px 0; }
