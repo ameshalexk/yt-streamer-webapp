@@ -19,7 +19,7 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(docs.count("/local_apps/yt_streamer"), 3)
         self.assertNotIn("/addons/yt_streamer", docs)
         self.assertIn("SOURCE_REF=ccbd9cf8ee5fb824bbeb6b49959f99156a75d4b7", docs)
-        self.assertIn("ha apps reload", docs)
+        self.assertIn("ha store reload", docs)
         self.assertIn('cp -R "$STAGING"/yt-streamer-webapp-*/ha-addon/.', docs)
 
     def test_build_targets_both_supported_architectures_with_same_source_pin(self):
