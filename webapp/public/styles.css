@@ -467,16 +467,16 @@ body.screen-fullscreen.browser-streaming .screen .browser-keyboard-input:not([hi
 .layout:not(.mode-watch) .home-tiles {
   display: none;
 }
-.layout.mode-watch .player:not(:has(.screen.playing)) > .col-head,
-.layout.mode-watch .player:not(:has(.screen.playing)) .player-toolbar,
-.layout.mode-watch .player:not(:has(.screen.playing)) .browser-player-settings,
-.layout.mode-watch .player:not(:has(.screen.playing)) .screen,
-.layout.mode-watch .player:not(:has(.screen.playing)) #streamSeek,
-.layout.mode-watch .player:not(:has(.screen.playing)) .quick,
-.layout.mode-watch .player:not(:has(.screen.playing)) .stream-settings {
+.layout.mode-watch:not(.accordion-layout) .player:not(:has(.screen.playing)) > .col-head,
+.layout.mode-watch:not(.accordion-layout) .player:not(:has(.screen.playing)) .player-toolbar,
+.layout.mode-watch:not(.accordion-layout) .player:not(:has(.screen.playing)) .browser-player-settings,
+.layout.mode-watch:not(.accordion-layout) .player:not(:has(.screen.playing)) .screen,
+.layout.mode-watch:not(.accordion-layout) .player:not(:has(.screen.playing)) #streamSeek,
+.layout.mode-watch:not(.accordion-layout) .player:not(:has(.screen.playing)) .quick,
+.layout.mode-watch:not(.accordion-layout) .player:not(:has(.screen.playing)) .stream-settings {
   display: none !important;
 }
-.layout.mode-watch .player:not(:has(.screen.playing)) .player-body {
+.layout.mode-watch:not(.accordion-layout) .player:not(:has(.screen.playing)) .player-body {
   display: flex;
 }
 .home-tiles {
@@ -1804,12 +1804,12 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
   .col-head h2 { white-space: normal; }
   .player-actions { width: 100%; justify-content: flex-start; }
   .player-toolbar { padding: 10px 14px; }
-  .layout.mode-watch .player:not(:has(.screen.playing)) {
+  .layout.mode-watch:not(.accordion-layout) .player:not(:has(.screen.playing)) {
     min-height: calc(100vh - 67px);
     min-height: calc(100dvh - 67px);
     overflow: hidden;
   }
-  .layout.mode-watch .player:not(:has(.screen.playing)) .player-body {
+  .layout.mode-watch:not(.accordion-layout) .player:not(:has(.screen.playing)) .player-body {
     min-height: inherit;
   }
   .home-tiles {
@@ -2176,3 +2176,59 @@ body.fullscreen-controls-idle .screen.browser-input-active .video-controls-panel
   color: var(--muted);
   line-height: 1.35;
 }
+
+/* Calm, exclusive watch disclosures. Existing media/fullscreen nodes stay intact. */
+:root { --bg: #151719; --panel: #1c1f22; --panel-2: #25292d; --line: #34393f; --accent: #3f73aa; --accent-2: #3f73aa; }
+:root[data-theme="day"] { --bg: #f4f6f8; --panel: #fff; --panel-2: #e8edf2; --line: #cbd3dc; --accent: #326ba6; --accent-2: #326ba6; }
+.accordion-layout.layout:is(.mode-watch, .mode-browse) { display: flex; flex-direction: column; overflow-y: auto; gap: 0; background: var(--bg); }
+.accordion-layout .player { overflow: visible; flex: 0 0 auto; }
+.accordion-layout .player-body { flex: 0 0 auto; }
+.accordion-layout .player > .col-head { display: flex !important; }
+.accordion-layout .player .screen { display: flex !important; flex: 0 0 auto; min-height: 200px; height: clamp(220px, 43vh, 520px); }
+.accordion-layout .player .screen.playing { min-height: 0; }
+.accordion-layout:is(.mode-watch, .mode-browse) > .side-panel { flex: 0 0 auto; min-height: 300px; overflow: visible; }
+.watch-accordion { padding: 12px 18px 24px; width: 100%; max-width: 1400px; margin: 0 auto; }
+.watch-section { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); margin-bottom: 8px; overflow: hidden; }
+.watch-section h2 { margin: 0; font-size: inherit; }
+.watch-section-toggle { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 58px; padding: 14px 18px; background: transparent; border: 0; color: var(--text); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.watch-section-toggle::after { content: '⌄'; margin-left: auto; color: var(--muted); }
+.watch-section-toggle[aria-expanded="true"]::after { content: '⌃'; }
+.watch-section-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+.watch-section-summary { color: var(--muted); font-size: 14px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.watch-section-panel { padding: 12px; border-top: 1px solid var(--line); }
+.accordion-layout .watch-section .side-panel { display: flex; position: static; width: 100%; max-width: none; transform: none; opacity: 1; pointer-events: auto; visibility: visible; box-shadow: none; border: 0; background: transparent; backdrop-filter: none; transition: none; overflow: visible; }
+.accordion-layout .watch-section .player-toolbar,
+.accordion-layout .watch-section .quick { display: flex !important; margin: 0; padding: 8px 0; background: transparent; border: 0; }
+.accordion-layout .watch-section .controls { display: flex; padding: 12px 0; }
+.accordion-layout .watch-section .saved-columns { min-height: 240px; }
+.accordion-layout .watch-section .panel-head { background: transparent; padding: 8px 0 14px; }
+.accordion-layout .watch-section .quality-quick { justify-content: flex-start; flex-wrap: wrap; }
+.accordion-layout .btn:not(.danger), .accordion-layout .home-tile { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+.accordion-layout .btn.small { min-height: 48px; }
+.accordion-layout .setting-options button.active,
+.accordion-layout .quality-quick button.active { border-color: var(--accent); }
+body.screen-fullscreen .watch-accordion { display: none; }
+@media (max-width: 700px) {
+  .watch-accordion { padding: 10px 10px 20px; }
+  .watch-section-toggle { padding: 14px 12px; gap: 8px; font-size: 16px; }
+  .watch-section-summary { font-size: 12px; max-width: 45%; }
+  .watch-section-panel { padding: 10px; }
+  .accordion-layout .player .screen { height: auto; aspect-ratio: 16 / 9; min-height: 180px; }
+  .accordion-layout .player > .col-head { flex-wrap: wrap; }
+}
+
+.accordion-layout .watch-section-toggle > span:first-child { flex-shrink: 0; }
+.accordion-layout .watch-section-toggle::after { flex-shrink: 0; }
+.accordion-layout .watch-section .quick { flex-wrap: wrap; }
+.accordion-layout .watch-section .quick input { flex: 1 1 220px; min-width: 0; }
+.accordion-layout .watch-section .side-panel .list { max-height: 50vh; overflow-y: auto; }
+
+body.screen-fullscreen .accordion-layout .player .screen { height: 100vh; min-height: 0; aspect-ratio: auto; }
+.accordion-layout .watch-section :is(.quality-quick, .setting-options) button { min-height: 48px; min-width: 48px; background: var(--panel-2); }
+.accordion-layout .watch-section :is(.quality-quick, .setting-options) button.active { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
+.accordion-layout .watch-section-toggle[hidden], .accordion-layout #playerDropdownBtn[hidden] { display: none !important; }
+
+.accordion-layout .watch-section .fps-preset { min-height: 48px; min-width: 48px; }
+.watch-section-summary:not(:empty)::before { content: "· "; }
+/* Idle video stays quiet; quality and URL entry live in the disclosures. */
+.accordion-layout .screen:not(.playing) .video-controls-overlay { display: none; }
