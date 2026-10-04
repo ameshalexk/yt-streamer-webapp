@@ -15,9 +15,10 @@ Terminal & SSH add-on, run:
 
 ```sh
 set -eu
-SOURCE_REF=feature/home-assistant-hosting
+# Verified packaging revision; choose a reviewed immutable SHA for future updates.
+SOURCE_REF=26b9f804041439111df658a841fcc789f5deac73
 STAGING="$(mktemp -d)"
-curl -fL "https://codeload.github.com/ameshalexk/yt-streamer-webapp/tar.gz/refs/heads/${SOURCE_REF}" -o "$STAGING/source.tar.gz"
+curl -fL "https://codeload.github.com/ameshalexk/yt-streamer-webapp/tar.gz/${SOURCE_REF}" -o "$STAGING/source.tar.gz"
 tar -xzf "$STAGING/source.tar.gz" -C "$STAGING"
 ha backups new --name yt-streamer-pre-install
 mkdir -p /local_apps/yt_streamer
@@ -93,8 +94,9 @@ Dockerfile default. Bump `config.yaml` → `version` when changing the applicati
 or packaging. Deploy the same application SHA to the Mac to keep both on the
 same version. Neither host automatically changes branches or pulls code.
 
-For a local add-on, copy the updated packaging files into `/addons/yt_streamer`,
-run `ha addons reload`, then rebuild/update using the add-on page. Take a backup
+From the Terminal & SSH app, copy the updated packaging files into
+`/local_apps/yt_streamer`, run `ha apps reload`, then rebuild/update using the
+add-on page. Take a backup
 before upgrading. To roll back, restore the previous packaging and SHA, rebuild,
 and restart; preserve `/data`. To disable this deployment, stop the add-on and
 remove only the `streamha` tunnel hostname.
