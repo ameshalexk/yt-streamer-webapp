@@ -24,3 +24,7 @@ webapp/.venv-ytdlp/
 # Local editor/tooling
 .vscode/
 .idea/
+
+# Generated release artifacts and native helper build output
+dist/
+webapp/native/build/
