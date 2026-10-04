@@ -21,6 +21,7 @@ import * as moneyDashboard from "./lib/money-dashboard.js";
 import * as apneDaily from "./lib/apne-daily.js";
 import * as cyberdashDash from "./lib/cyberdash-dash.js";
 import * as processedDashCache from "./lib/processed-dash-cache.js";
+import { readReleaseRevision } from "./lib/release-info.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -34,6 +35,10 @@ app.get("/robots.txt", (_req, res) => {
 app.use(express.json({ limit: "256kb" }));
 
 const SERVER_STARTED_AT = Date.now();
+const RELEASE_REVISION = await readReleaseRevision().catch((error) => {
+  console.error("[release-info]", error.message);
+  return null;
+});
 const SERVER_INSTANCE_ID = `${SERVER_STARTED_AT.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const LAUNCHD_SERVICE_NAME = "com.ytstreamer.webapp";
 const YOUTUBE_STREAM_HEADERS = {
@@ -388,6 +393,7 @@ function requireDesktopEnabled(req, res, next) {
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
+    release: { revision: RELEASE_REVISION, platform: process.platform },
     instanceId: SERVER_INSTANCE_ID,
     startedAt: SERVER_STARTED_AT,
     restartAvailable: process.env.XPC_SERVICE_NAME === LAUNCHD_SERVICE_NAME,

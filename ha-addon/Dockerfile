@@ -33,6 +33,7 @@ RUN set -eu; \
     npm cache clean --force; \
     npm run check
 
+COPY release.json /app/release.json
 COPY run.py /run-streamer.py
 COPY yt-dlp /usr/local/bin/yt-dlp
 RUN chmod +x /usr/local/bin/yt-dlp

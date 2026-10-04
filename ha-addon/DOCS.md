@@ -90,6 +90,13 @@ socket, or privileged host access is required.
 
 ## Updates and rollback
 
+Prefer the tested HA bundle from the [shared release pipeline](../docs/SHARED_RELEASE.md),
+paired with the Mac bundle from the same release. The packager sets both source
+pins, embeds `release.json`, and generates a unique add-on version. Keep all
+packaging files together when installing a bundle. The manual source pins below
+remain the fallback for standalone builds.
+
+
 Use an immutable commit SHA in `build.yaml` → `args.APP_REF` and in the
 Dockerfile default. Bump `config.yaml` → `version` when changing the application
 or packaging. Deploy the same application SHA to the Mac to keep both on the

@@ -1,0 +1,135 @@
+name: Shared release
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish tested Mac and HA bundles as a GitHub release (main only)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: shared-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+jobs:
+  regression:
+    name: Regression (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select installed Google Chrome
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+          else
+            echo "CHROME_PATH=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install FFmpeg
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          else
+            brew install ffmpeg
+          fi
+      - run: npm ci
+        working-directory: webapp
+      - run: npm run check
+        working-directory: webapp
+      - run: npm test
+        working-directory: webapp
+      - name: Packaging and release regression tests
+        run: |
+          python3 -m unittest discover -s ha-addon/tests -v
+          python3 -m unittest discover -s tests -v
+      - name: Compile Mac audio helper
+        if: runner.os == 'macOS'
+        run: webapp/scripts/build-audio-tap.sh
+  bundles:
+    needs: regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 scripts/package-release.py --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-release
+          path: dist/*
+          if-no-files-found: error
+  container:
+    name: HA container (${{ matrix.arch }})
+    needs: bundles
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: shared-release
+          path: dist
+      - name: Verify and build the exact HA release
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+          tar -xzf yt-streamer-ha-*.tar.gz
+          docker build -t yt-streamer-ci ha-addon
+      - name: Exercise container health, source revision, and persistence
+        run: python3 scripts/check-container.py --image yt-streamer-ci --manifest dist/manifest.json
+  release-gate:
+    name: Both platforms passed
+    if: always()
+    needs: [regression, bundles, container]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every platform and artifact
+        env:
+          REGRESSION: ${{ needs.regression.result }}
+          BUNDLES: ${{ needs.bundles.result }}
+          CONTAINER: ${{ needs.container.result }}
+        run: test "$REGRESSION" = success && test "$BUNDLES" = success && test "$CONTAINER" = success
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    needs: release-gate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: shared-release
+          path: dist
+      - name: Publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          revision=$(python3 -c 'import json; print(json.load(open("dist/manifest.json"))["revision"])')
+          gh release create "shared-$revision" dist/* --target "$revision" --title "YT Streamer $revision" --notes "Mac and HA artifacts built from the same commit. macOS/Linux regression tests and native amd64/aarch64 container checks passed. Deployment is a separate operation; preserve host data and verify both health revisions after rollout."

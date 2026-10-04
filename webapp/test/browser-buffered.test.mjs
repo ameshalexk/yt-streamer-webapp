@@ -5,7 +5,9 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
 
-const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const chrome = process.env.CHROME_PATH || (process.platform === "darwin"
+    ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    : "/usr/bin/google-chrome");
 
 function jpegFixture() {
   return new Promise((resolve, reject) => {
