@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -6,6 +7,18 @@ import { config } from "../config.js";
 
 const sessions = new Map();
 const IDLE_TTL_MS = 10 * 60 * 1000;
+const execFileAsync = promisify(execFile);
+let initialBurstSupport;
+
+// The HA image ships FFmpeg 5.1; newer Mac FFmpeg builds expose this option.
+// Probe the actual binary once rather than assuming support from the platform.
+async function supportsInitialBurst() {
+  initialBurstSupport ??= execFileAsync(config.ffmpegPath, ["-hide_banner", "-h", "full"], {
+    timeout: 5000,
+    maxBuffer: 8 * 1024 * 1024,
+  }).then(({ stdout }) => /^-readrate_initial_burst\s/m.test(stdout)).catch(() => false);
+  return initialBurstSupport;
+}
 
 function rootDir() {
   return path.join(config.dataDir, "cyberdash-dash");
@@ -43,6 +56,7 @@ export function buildCyberdashDashArgs({
   startAt = 0,
   playbackRate = 1,
   encoder = config.video.dashEncoder,
+  initialBurstSupported = true,
   manifestPath,
 }) {
   if (!videoInput) throw new Error("video input required");
@@ -65,7 +79,9 @@ export function buildCyberdashDashArgs({
   const args = ["-hide_banner", "-loglevel", "warning", "-y"];
   const addInput = (input) => {
     if (seek) args.push("-ss", String(seek));
-    args.push("-readrate", String(inputReadRate), "-readrate_initial_burst", String(initialBurst), "-i", String(input));
+    args.push("-readrate", String(inputReadRate));
+    if (initialBurstSupported) args.push("-readrate_initial_burst", String(initialBurst));
+    args.push("-i", String(input));
   };
 
   addInput(videoInput);
@@ -229,6 +245,7 @@ export async function startYouTubeDashSession({
     startAt,
     playbackRate,
     manifestPath,
+    initialBurstSupported: await supportsInitialBurst(),
   });
 
   const now = Date.now();

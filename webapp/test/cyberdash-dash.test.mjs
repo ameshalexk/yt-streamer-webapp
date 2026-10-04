@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import fs from "node:fs";
+import vm from "node:vm";
 import { config } from "../src/config.js";
 import { buildCyberdashDashArgs, parseDashManifest } from "../src/lib/cyberdash-dash.js";
 
@@ -167,6 +168,38 @@ test("CyberDash DASH producer clamps playback speed to 1x-4x", () => {
   assert.equal(Number(slow[slow.indexOf("-readrate") + 1]), 1.15);
   assert.ok(Number(fast[fast.indexOf("-readrate") + 1]) >= 4.5);
   assert.ok(Number(fast[fast.indexOf("-readrate") + 1]) <= 5);
+});
+
+test("FFmpeg without initial burst support retains readrate and separate input seek", () => {
+  const args = buildCyberdashDashArgs({
+    videoInput: "https://example.test/video",
+    audioInput: "https://example.test/audio",
+    startAt: 12.5,
+    playbackRate: 1.5,
+    encoder: "libx264",
+    initialBurstSupported: false,
+    manifestPath: "/tmp/manifest.mpd",
+  });
+  assert.equal(args.includes("-readrate_initial_burst"), false);
+  const inputs = args.flatMap((value, index) => value === "-i" ? [index] : []);
+  assert.equal(inputs.length, 2);
+  for (const index of inputs) {
+    assert.deepEqual(args.slice(index - 4, index - 1), ["-ss", "12.5", "-readrate"]);
+    assert.ok(Math.abs(Number(args[index - 1]) - 2.4) < 0.0001);
+  }
+  assert.equal(args[args.indexOf("-c:v") + 1], "libx264");
+  assert.equal(args[args.indexOf("-af") + 1], "atempo=1.5");
+});
+
+test("server FFmpeg option errors are not reported as missing stream URLs", () => {
+  const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  const source = app.match(/function streamErrorDetail\(reason\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(source);
+  const detail = vm.runInNewContext(`(${source})`);
+  const result = detail("Unrecognized option 'readrate_initial_burst'. | Error splitting the argument list: Option not found");
+  assert.match(result, /server could not encode/);
+  assert.doesNotMatch(result, /stream URL was not found/);
+  assert.match(detail("HTTP 404: not found"), /stream URL was not found/);
 });
 
 
