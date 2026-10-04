@@ -55,6 +55,13 @@ function canonicalYoutubeId(entry = {}) {
   return String(entry.youtubeId || entry.id || youtubeIdFromUrl(entry.url) || "").trim();
 }
 
+function watchHistoryDuration(value, previous) {
+  // Missing metadata must not overwrite a known duration with a coerced zero.
+  const supplied = typeof value === "number" || (typeof value === "string" && value.trim() !== "");
+  const duration = supplied ? Number(value) : NaN;
+  return Number.isFinite(duration) && duration >= 0 ? duration : previous ?? null;
+}
+
 function canonicalCategory(meta = {}) {
   return String(meta.category || meta.group || "").trim().toLowerCase();
 }
@@ -291,7 +298,7 @@ export async function recordWatchHistory(entry) {
     url: url || previous?.url || (youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : ""),
     thumbnail: String(entry?.thumbnail || previous?.thumbnail || "").slice(0, 4096),
     channelTitle: String(entry?.channelTitle || entry?.uploader || previous?.channelTitle || "").slice(0, 300),
-    duration: Number.isFinite(Number(entry?.duration)) ? Number(entry.duration) : previous?.duration || null,
+    duration: watchHistoryDuration(entry?.duration, previous?.duration),
     isLive: Boolean(entry?.isLive),
     source: String(entry?.source || previous?.source || "webapp").slice(0, 80),
     firstPlayedAt: previous?.firstPlayedAt || now,
