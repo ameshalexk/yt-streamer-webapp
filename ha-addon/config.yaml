@@ -1,0 +1,27 @@
+name: YT Streamer
+version: "2.1.0-ha.3"
+slug: yt_streamer
+description: Standalone YT Streamer webapp from the shared Mac and Home Assistant source
+url: https://github.com/ameshalexk/yt-streamer-webapp
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: true
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: Web player and streaming API
+webui: http://[HOST]:[PORT:8099]
+watchdog: http://[HOST]:[PORT:8099]/api/health
+options:
+  max_streams: 1
+  mjpeg_fps: 12
+  mjpeg_height: "480"
+  download_max_height: "480"
+schema:
+  max_streams: int(1,3)
+  mjpeg_fps: int(3,30)
+  mjpeg_height: list(240|360|480|720)
+  download_max_height: list(240|360|480|720)
