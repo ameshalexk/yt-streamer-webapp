@@ -1,6 +1,6 @@
 # Continue Watching
 
-History shows **Resume** and the saved timestamp for partially watched on-demand videos. **Start over** resets saved progress immediately when the new viewing session is recorded. Videos marked Watched start at the beginning when played again. Live streams do not record a resume point.
+Partially watched on-demand YouTube videos now resume automatically when opened again from Search, Recommended, Saved items, playlist streaming, or a pasted YouTube URL—even after the browser is closed and reopened. History also shows **Resume** and the saved timestamp. **Start over** resets saved progress immediately when the new viewing session is recorded. Videos marked Watched start at the beginning when played again. Live streams do not record a resume point.
 
 Progress saves every five seconds and on pause, stop, switching videos, completion, backgrounding, and page exit. Exit/background saves use fetch keepalive; abrupt browser/device termination can lose the most recent unsaved seconds. Saving progress does not increment the play count or move the History entry to the top.
 
