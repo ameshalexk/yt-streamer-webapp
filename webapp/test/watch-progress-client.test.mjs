@@ -146,3 +146,86 @@ test("runtime WebCodecs resumes through the shared timestamp and exposes its abs
   assert.equal(calls[0].meta.watchHistoryKey, "video");
   assert.equal(context.getStreamCurrentTime(), 123);
 });
+
+
+test("resume lookup restores persisted progress outside History without wiping it", async () => {
+  const { resumePosition } = loadModule();
+  const history = [{
+    id: "video",
+    youtubeId: "video",
+    url: "https://www.youtube.com/watch?v=video",
+    positionSeconds: 42,
+    duration: 100,
+    completed: false,
+  }];
+  const context = vm.createContext({
+    window: { WatchProgress: { resumePosition } },
+    state: { youtubeHistoryLoaded: false, youtubeHistory: [] },
+    api: { get: async () => history },
+    URL,
+    Date,
+    console,
+  });
+  const start = app.indexOf("function youtubeIdFromUrl(");
+  const end = app.indexOf("\nconst watchProgress", start);
+  vm.runInContext(app.slice(start, end), context);
+
+  const partial = await context.watchResumePlan({
+    id: "video",
+    url: "https://youtu.be/video",
+  });
+  assert.equal(partial.position, 42);
+  assert.equal(partial.restartProgress, false);
+
+  history[0] = { ...history[0], positionSeconds: 99, completed: true };
+  const completed = await context.watchResumePlan({
+    id: "video",
+    url: "https://www.youtube.com/watch?v=video",
+  });
+  assert.equal(completed.position, 0);
+  assert.equal(completed.restartProgress, true);
+
+  context.api.get = async () => { throw new Error("offline"); };
+  const failed = await context.watchResumePlan({
+    id: "other",
+    url: "https://www.youtube.com/watch?v=other",
+  });
+  assert.equal(failed.position, 0);
+  assert.equal(failed.restartProgress, false);
+});
+
+test("reopening a YouTube search result starts at its saved timestamp", async () => {
+  const calls = [];
+  const records = [];
+  const context = vm.createContext({
+    state: {
+      youtubeSearchPlayingId: null,
+      youtubeHistoryPlayingId: null,
+      playingItemId: null,
+      legacyPlayingId: null,
+      recommendedPlayingId: null,
+      youtubeSearchResults: [],
+    },
+    watchProgress: { stop() {} },
+    watchResumePlan: async () => ({ position: 42, restartProgress: false }),
+    beginPlaybackStartupTrace: () => ({}),
+    refreshYoutubeMetadataInBackground() {},
+    renderItems() {}, renderLegacyLibrary() {}, renderRecommendations() {},
+    renderYoutubeSearch() {}, renderYoutubeHistory() {}, showAttemptedUrl() {},
+    isMobileMode: () => false,
+    watchHistoryKey: item => item.id,
+    recordWatchHistory: (...args) => records.push(args),
+    playStream: (_sources, _label, meta) => calls.push(meta),
+    streamQuery: time => `timestamp=${time}`,
+    audioQuery: time => `timestamp=${time}`,
+    encodeURIComponent,
+  });
+  const start = app.indexOf("async function streamYoutubeSearchResult(");
+  const end = app.indexOf("\nasync function streamYoutubeHistoryItem", start);
+  vm.runInContext(app.slice(start, end), context);
+
+  const item = { id: "video", url: "https://www.youtube.com/watch?v=video", duration: 100 };
+  await context.streamYoutubeSearchResult(item);
+  assert.equal(calls[0].startAt, 42);
+  assert.equal(records[0][2].restartProgress, false);
+});

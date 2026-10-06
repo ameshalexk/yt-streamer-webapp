@@ -3212,6 +3212,9 @@ function refreshYoutubeMetadataInBackground(item, trace, { savedItem = false, ac
 
 async function playItem(item) {
   void watchProgress.stop();
+  const resumePlan = item.type === "youtube"
+    ? await watchResumePlan(item)
+    : { position: 0, restartProgress: false };
   const startupTrace = beginPlaybackStartupTrace(item.type === "youtube" ? "saved-youtube" : "saved-item", item);
   if (item.type === "youtube") {
     refreshYoutubeMetadataInBackground(item, startupTrace, {
@@ -3249,8 +3252,10 @@ async function playItem(item) {
       startupTrace: trace,
     });
   };
-  replayFn(0);
-  if (item.type === "youtube") void recordWatchHistory(item, "saved");
+  replayFn(resumePlan.position);
+  if (item.type === "youtube") {
+    void recordWatchHistory(item, "saved", { restartProgress: resumePlan.restartProgress });
+  }
 }
 
 function stopPlayback() {
@@ -4626,8 +4631,9 @@ async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
       } : null,
     });
   };
-  replayFn(0).catch((e) => toast(e.message, true));
-  void recordWatchHistory(video, "library-playlist");
+  const resumePlan = await watchResumePlan(video);
+  replayFn(resumePlan.position).catch((e) => toast(e.message, true));
+  void recordWatchHistory(video, "library-playlist", { restartProgress: resumePlan.restartProgress });
 }
 
 function legacyStreamUrl(startAt = 0) {
@@ -4828,6 +4834,31 @@ function watchHistoryKey(item) {
   return payload.youtubeId || payload.url;
 }
 
+async function watchResumePlan(item) {
+  if (!item || item.isLive || item.isUpcoming) return { position: 0, restartProgress: false };
+  const key = watchHistoryKey(item);
+  if (!key) return { position: 0, restartProgress: false };
+
+  let history = state.youtubeHistoryLoaded ? state.youtubeHistory : null;
+  if (!history) {
+    try {
+      history = await api.get(`/api/watch-history?_=${Date.now()}`);
+    } catch (error) {
+      console.warn("watch history resume lookup failed:", error.message);
+      return { position: 0, restartProgress: false };
+    }
+  }
+
+  const saved = (history || []).find((entry) => watchHistoryKey(entry) === key);
+  if (!saved) return { position: 0, restartProgress: false };
+
+  const position = window.WatchProgress.resumePosition(saved);
+  return {
+    position,
+    restartProgress: position === 0 && (Boolean(saved.completed) || Number(saved.positionSeconds) > 0),
+  };
+}
+
 const watchProgress = new window.WatchProgress.Tracker({
   record: (payload) => api.post("/api/watch-history", payload),
   update: async (id, payload, keepalive) => api.parse(await fetchProgress(id, payload, keepalive)),
@@ -5023,6 +5054,7 @@ async function performYoutubeSearch() {
 async function streamYoutubeSearchResult(item, autoplayQueue = null) {
   if (!item) return;
   void watchProgress.stop();
+  const resumePlan = await watchResumePlan(item);
   const startupTrace = beginPlaybackStartupTrace("youtube-search", item);
   refreshYoutubeMetadataInBackground(item, startupTrace, {
     active: () => state.youtubeSearchPlayingId === item.id,
@@ -5065,8 +5097,8 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
       } : null,
     });
   };
-  replayFn(0);
-  void recordWatchHistory(item, "search");
+  replayFn(resumePlan.position);
+  void recordWatchHistory(item, "search", { restartProgress: resumePlan.restartProgress });
 }
 
 async function streamYoutubeHistoryItem(item, { restart = false } = {}) {
@@ -5419,6 +5451,7 @@ async function disconnectYoutube() {
 async function streamRecommendation(item, autoplayQueue = null) {
   if (!item) return;
   void watchProgress.stop();
+  const resumePlan = await watchResumePlan(item);
   const startupTrace = beginPlaybackStartupTrace("recommendation", item);
   state.playingItemId = null;
   state.legacyPlayingId = null;
@@ -5473,8 +5506,8 @@ async function streamRecommendation(item, autoplayQueue = null) {
       } : null,
     });
   };
-  replayFn(0);
-  void recordWatchHistory(item, "recommended");
+  replayFn(resumePlan.position);
+  void recordWatchHistory(item, "recommended", { restartProgress: resumePlan.restartProgress });
   if (!item.isLive && !item.isUpcoming) void prepareRecommendationInBackground(item);
 }
 
@@ -8910,6 +8943,11 @@ $("#quickPlayBtn").onclick = async () => {
   // YouTube -> play directly.
   if (/youtube\.com|youtu\.be/.test(url)) {
     const ytBtn = $("#quickPlayBtn");
+    const resumePlan = await watchResumePlan({
+      id: youtubeIdFromUrl(url),
+      youtubeId: youtubeIdFromUrl(url),
+      url,
+    });
 
     if (youtubePlaybackMethod === "webcodecs") {
       state.playingItemId = null;
@@ -8940,7 +8978,7 @@ $("#quickPlayBtn").onclick = async () => {
           startAt,
         });
       };
-      const started = replayFn(0);
+      const started = replayFn(resumePlan.position);
       if (started?.catch) started.catch((error) => toast(error.message, true));
 
       void api.get(`/api/youtube/info?url=${encodeURIComponent(url)}`).then((metadata) => {
@@ -8957,7 +8995,7 @@ $("#quickPlayBtn").onclick = async () => {
           channelTitle: info?.uploader,
           duration: info?.duration,
           isLive: info?.isLive,
-        }, "pasted-url");
+        }, "pasted-url", { restartProgress: resumePlan.restartProgress });
       }).catch((error) => console.warn("youtube info failed during WebCodecs playback:", error.message));
       return;
     }
@@ -8999,7 +9037,7 @@ $("#quickPlayBtn").onclick = async () => {
         startAt,
       });
     };
-    replayFn(0);
+    replayFn(resumePlan.position);
     void recordWatchHistory({
       id: info?.id,
       url: info?.webpage_url || url,
@@ -9008,7 +9046,7 @@ $("#quickPlayBtn").onclick = async () => {
       channelTitle: info?.uploader,
       duration: info?.duration,
       isLive: info?.isLive,
-    }, "pasted-url");
+    }, "pasted-url", { restartProgress: resumePlan.restartProgress });
     return;
   }
 
