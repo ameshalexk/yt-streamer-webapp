@@ -1070,6 +1070,7 @@ function resetStreamSettings({ persist = true } = {}) {
 }
 
 function beginNewPlaybackQuality() {
+  if (typeof playbackRecovery !== "undefined") playbackRecovery?.reset();
   resetStreamSettings({ persist: true });
   renderFpsPresets();
   renderQuickQuality();
@@ -1445,7 +1446,7 @@ function updateStreamSeekUi(current = getStreamCurrentTime()) {
   $("#streamSeekTime").textContent = `${clock(current)} / ${clock(duration)}`;
   $("#streamBackBtn").disabled = current <= 0;
   $("#streamForwardBtn").disabled = duration ? current >= duration - 1 : false;
-  if (duration && current >= duration - 0.75) handleAutoplayEnd();
+  if (duration && current >= duration - 0.75 && !activeCompat?.bufferedPlayer && !cyberdashPlayer) void handleAutoplayEnd();
 }
 
 function canAutoHideScreenOverlays() {
@@ -1517,7 +1518,8 @@ function setAutoplayContext(kind = null, itemId = null, queue = []) {
   autoplayAdvancing = false;
 }
 
-async function handleAutoplayEnd() {
+async function handleAutoplayEnd({ naturalEnd = false } = {}) {
+  if (naturalEnd) markProcessedDownloadWatched();
   void watchProgress.save(streamSeek.duration ? { positionSeconds: streamSeek.duration } : {});
   if (!autoplayEnabled || autoplayAdvancing || !autoplayContext) return;
   const context = autoplayContext;
@@ -1574,6 +1576,7 @@ function configureStreamSeek(meta = {}, startAt = 0) {
 }
 
 function seekStreamTo(time) {
+  playbackRecovery?.reset();
   if (!streamSeek.seekable || !replayFn) return;
   const target = streamSeekTarget(time);
   streamSeek.startAt = target;
@@ -1585,6 +1588,8 @@ function seekStreamTo(time) {
 
 function failStreamAttempt(attempt, title, detail) {
   if (!currentAttempt(attempt)) return;
+  const recovery = playbackRecoverySample();
+  const retrying = playbackRecovery?.request("failure", recovery);
   pendingPlaybackMethodRestore = null;
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
   streamAttempt++;
@@ -1614,7 +1619,13 @@ function failStreamAttempt(attempt, title, detail) {
   activeCompat = null;
   updateBufferedMjpegDebug(null);
   resetPauseControl(true);
-  toast(title, true);
+  if (retrying) {
+    setBadge("reconnecting", "Reconnecting playback…");
+    showStreamNotice("warning", "Reconnecting", "Your playback position and sound setting are kept.");
+  } else {
+    if (playbackRecovery?.exhausted) showStreamNotice("error", "Recovery stopped after 3 attempts", "Try Retry, lower quality, or a saved download.");
+    toast(title, true);
+  }
 }
 
 function setPauseButtonState(text, pressed) {
@@ -1663,6 +1674,7 @@ function freezeMjpegFrame() {
 }
 
 function pausePlayback() {
+  playbackRecovery?.hold();
   if (playbackPaused || $("#pauseBtn")?.disabled) return;
   void watchProgress.save();
   const screen = $("#screen");
@@ -2525,6 +2537,10 @@ function markBufferedStreamPlaying(attempt, stats = null, { revealControls = tru
 
 function finishBufferedStream(attempt) {
   if (!currentAttempt(attempt)) return;
+  const recovery = playbackRecoverySample();
+  if (streamSeek.duration && getStreamCurrentTime() < streamSeek.duration - 5
+      && playbackRecovery?.request("early-end", { ...recovery, ended: false })) return;
+  markProcessedDownloadWatched();
   void watchProgress.save(streamSeek.duration ? { positionSeconds: streamSeek.duration } : {});
   clearStreamTimers();
   stopStreamSeekTimer(false);
@@ -2798,6 +2814,23 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   });
 
   activeCompat.bufferedPlayer = player;
+  activeCompat.repairAudio = async () => {
+    if (!currentAttempt(attempt) || playbackPaused || document.hidden || !soundOn) return;
+    const localTime = Math.max(0, player.currentTime());
+    const absoluteTime = streamSeek.startAt + localTime;
+    const url = new URL(audioUrl, location.origin);
+    const fullFile = url.pathname.startsWith('/stream/legacy-audio/');
+    url.searchParams.set('_', String(Date.now()));
+    if (!fullFile) url.searchParams.set('timestamp', String(absoluteTime));
+    if (!player.beginAudioRecovery(fullFile ? streamSeek.startAt : -localTime)) return;
+    audioFailed = false;
+    activeCompat.audioReady = false;
+    audio.onloadedmetadata = () => {
+      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      if (fullFile) { try { audio.currentTime = absoluteTime; } catch {} }
+    };
+    await setCompatAudioSource(audio, url.pathname + url.search);
+  };
   updateBufferedMjpegDebug(player.getStats());
   audio.muted = !soundOn;
 
@@ -2871,7 +2904,7 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     browserAudio: Boolean(meta.browserAudio),
     browserPcm: Boolean(meta.browserPcm),
   };
-  audio.onended = handleAutoplayEnd;
+  audio.onended = () => { void handleAutoplayEnd({ naturalEnd: true }); };
 
   const releaseCompatPlayback = () => {
     if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl || activeCompat.playbackStarted) return;
@@ -3054,7 +3087,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
         setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×", { revealControls: !quietTransition });
       },
       onEnded() {
-        if (currentAttempt(attempt)) handleAutoplayEnd();
+        if (currentAttempt(attempt)) void handleAutoplayEnd({ naturalEnd: true });
       },
       onStatus(status, detail = {}) {
         if (!currentAttempt(attempt)) return;
@@ -3178,7 +3211,7 @@ async function playStream(sources, label, meta = {}) {
   video.onwaiting = () => {
     if (currentAttempt(attempt)) setBadge("reconnecting", "Buffering...");
   };
-  video.onended = handleAutoplayEnd;
+  video.onended = () => { void handleAutoplayEnd({ naturalEnd: true }); };
   video.muted = !soundOn;
   mpegtsPlayer.load();
   video.play().catch((error) => handleVideoPlayRejection(attempt, error));
@@ -3214,7 +3247,7 @@ function playNativeVideoStream({ nativeUrl, fallback }, label, meta = {}) {
   video.onwaiting = () => {
     if (currentAttempt(attempt)) setBadge("reconnecting", "Buffering...");
   };
-  video.onended = handleAutoplayEnd;
+  video.onended = () => { void handleAutoplayEnd({ naturalEnd: true }); };
   video.src = nativeUrl;
   try { video.load(); } catch {}
   video.play().catch((error) => handleVideoPlayRejection(attempt, error));
@@ -3297,6 +3330,7 @@ async function playItem(item) {
 }
 
 function stopPlayback() {
+  playbackRecovery?.reset();
   pendingPlaybackMethodRestore = null;
   stopDesktopHlsSession();
   stopDesktopAudioHlsSession();
@@ -3341,6 +3375,7 @@ function stopPlayback() {
 }
 
 function restreamPlayback() {
+  playbackRecovery?.reset();
   if (!replayFn) return;
   const replay = replayFn;
   const resumeAt = streamSeek.seekable ? streamReplayTime() : undefined;
@@ -8041,11 +8076,13 @@ $("#autoplayBtn").onclick = () => setAutoplayEnabled(!autoplayEnabled);
 $("#restreamBtn").onclick = restreamPlayback;
 $("#fullscreenBtn").onclick = toggleScreenFullscreen;
 $("#streamRetryBtn").onclick = () => {
+  playbackRecovery?.reset();
   if (!replayFn) return;
   toast("Retrying stream");
   replayFn(streamSeek.seekable ? streamReplayTime() : undefined);
 };
 $("#streamLowerBtn").onclick = () => {
+  playbackRecovery?.reset();
   if (!replayFn) return;
   lowerPlaybackSettings();
   toast("Retrying at " + currentSettingsLabel());
@@ -9155,10 +9192,98 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
   reapplyControls();
 });
 
+// Playback recovery keeps media transport and watch-progress identity intact.
+function playbackRecoverySample() {
+  if (!replayFn || !$('#screen')?.classList.contains('playing')) return null;
+  const stats = activeCompat?.bufferedPlayer?.getStats?.();
+  const audio = $('#audio');
+  const source = activeCompat?.mjpegUrl || activeYoutubeSourceUrl || '';
+  let key = source;
+  try {
+    const parsed = new URL(source, location.origin);
+    for (const name of ['timestamp', '_', 'height', 'fps', 'quality', 'buffered', 'eautoSession', 'videoDelay']) parsed.searchParams.delete(name);
+    key = parsed.pathname + '?' + parsed.searchParams.toString();
+  } catch {}
+  if (!source) return null;
+  return {
+    key, attempt: streamAttempt, replay: replayFn, position: getStreamCurrentTime(),
+    paused: playbackPaused, hidden: document.hidden, offline: navigator.onLine === false,
+    ended: stats?.state === 'ended' || isStreamAtEnd(), blocked: stats?.state === 'autoplay-blocked',
+    started: Boolean(activeCompat?.playbackStarted || cyberdashPlayer),
+    canMeasureVideo: Boolean(stats || cyberdashPlayer),
+    videoProgress: stats ? Number(stats.renderedFrames || 0) : Number(cyberdashPlayer?.currentTime?.() || 0),
+    videoAvailable: Boolean(stats ? stats.queueSeconds > 0.5 || stats.receiveFps > 0 : activeCompat?.videoReady),
+    audioEnabled: Boolean(soundOn && activeCompat?.audioUrl && !activeCompat?.browserPcm),
+    audioTime: Number(audio?.currentTime || 0), audioError: Boolean(audio?.error),
+    driftMs: Number(stats?.lastAvDriftMs || 0), canRepairAudio: Boolean(activeCompat?.repairAudio),
+    repairAudio: activeCompat?.repairAudio,
+  };
+}
+
+async function recoverPlayback(sample) {
+  if (!replayFn || replayFn !== sample.replay || playbackPaused || document.hidden || navigator.onLine === false) return;
+  if (sample.audioOnly && activeCompat?.repairAudio === sample.repairAudio) {
+    await sample.repairAudio();
+    return;
+  }
+  const resumeAt = streamSeek.seekable ? clampStreamSeekTime(sample.position) : undefined;
+  void watchProgress.save();
+  // Stop both active paths, including Mac desktop audio, before rebuilding.
+  await stopDesktopAudioHlsSession();
+  if (replayFn !== sample.replay || playbackPaused || document.hidden || navigator.onLine === false) return;
+  clearBrowserAudioRetry();
+  cleanupMedia(true);
+  await sample.replay(resumeAt);
+}
+
+const playbackRecovery = window.PlaybackRecovery ? new window.PlaybackRecovery.Monitor({
+  recover: recoverPlayback,
+  notify: (event) => {
+    if (event.state === 'recovering') {
+      setBadge('reconnecting', `Recovering ${event.audioOnly ? 'audio' : 'playback'} · ${event.attempt}/3`);
+      showStreamNotice('warning', 'Reconnecting', 'Your playback position and sound setting are kept.');
+    } else if (event.state === 'exhausted') {
+      showStreamNotice('error', 'Recovery stopped after 3 attempts', 'Try Retry, lower quality, or a saved download.');
+    }
+    reportPlaybackEvent('recovery_' + event.state, { reason: event.reason, message: String(event.attempt) });
+  },
+}) : null;
+
+let storagePanel = null;
+function markProcessedDownloadWatched() {
+  const id = state.legacyPlayingId;
+  if (!id || !streamSeek.duration || getStreamCurrentTime() < streamSeek.duration - 3) return;
+  void api.post(`/api/storage/downloads/${encodeURIComponent(id)}/watched`, { completed: true })
+    .then(() => storagePanel?.refresh()).catch(() => {});
+}
+
+function initEverydayControls() {
+  if (!window.EverydayControls) return;
+  const shortcuts = window.EverydayControls.init({ container: '#playerBody', actions: {
+    resume: async () => {
+      if (playbackPaused && replayFn) { await resumePlayback(); return; }
+      setMode('browse'); setWatchSection('browse', { reveal: true });
+      setBrowseYoutubePanel('history');
+      await loadYoutubeHistory();
+      const item = state.youtubeHistory.find(entry => window.WatchProgress.resumePosition(entry) > 0);
+      if (item) await streamYoutubeHistoryItem(item);
+      else toast('No unfinished videos yet');
+    },
+    saved: () => { setMode('watch'); setWatchSection('saved', { reveal: true }); renderPlaylists(); renderItems(); },
+    browse: () => { setMode('browse'); setWatchSection('browse', { reveal: true }); setBrowseYoutubePanel('search'); $('#ytSearchInput')?.focus(); },
+    downloads: () => { setMode('watch'); setWatchSection('downloads', { reveal: true }); void loadLegacyLibrary(); void storagePanel?.refresh(); },
+  }});
+  if (shortcuts) $('#screen').after(shortcuts.element);
+  storagePanel = window.EverydayControls.createStoragePanel({ container: '#downloadsDrawer', onCleanup: loadLegacyLibrary });
+}
+
 // ---- Init ----
 (async function init() {
   initTheme();
   initWatchAccordion();
+  initEverydayControls();
+  window.ExtractorControls?.init({ container: "#watch-settings-panel" });
+  setInterval(() => playbackRecovery?.observe(playbackRecoverySample()), 1000);
   renderAutoplayButton();
   renderMuteButton();
   $("#themeToggleBtn").onclick = () => {
@@ -9177,6 +9302,7 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
   setInterval(() => refreshSessionManager({ notify: true }), SESSION_POLL_MS);
   window.addEventListener("resize", () => setMode(state.mode));
   window.addEventListener("pagehide", () => {
+    playbackRecovery?.reset();
     void watchProgress.save({ keepalive: true });
     stopDesktopAudioHlsSessionOnUnload();
     stopDesktopHlsSessionOnUnload();
@@ -9185,7 +9311,9 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
   });
   document.addEventListener("pointerdown", retryBrowserAudioFromGesture, true);
   document.addEventListener("keydown", retryBrowserAudioFromGesture, true);
+  window.addEventListener("offline", () => playbackRecovery?.hold());
   document.addEventListener("visibilitychange", () => {
+    if (document.hidden) playbackRecovery?.hold();
     if (document.hidden) void watchProgress.save({ keepalive: true });
     activeCompat?.bufferedPlayer?.setVisible?.(!document.hidden);
   });

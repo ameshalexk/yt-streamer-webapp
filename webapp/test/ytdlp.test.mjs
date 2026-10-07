@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { selectedStreamInfo } from "../src/lib/ytdlp.js";
+import { commonArgs, selectedStreamInfo } from "../src/lib/ytdlp.js";
+
+test("shared yt-dlp arguments select the explicit Node challenge runtime", () => {
+  assert.deepEqual(commonArgs(["-J"]), ["--ignore-config", "--js-runtimes", process.env.YTDLP_JS_RUNTIME || "node", "-J"]);
+});
 
 test("yt-dlp stream selection preserves per-format request headers", () => {
   const selected = selectedStreamInfo({

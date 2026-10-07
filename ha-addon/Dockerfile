@@ -4,6 +4,8 @@ FROM ${BUILD_FROM}
 
 ARG APP_REF=54c513413958c8ef723e92dc7ca02689589cb074
 ARG YTDLP_VERSION=2026.8.19
+# Keep this separate from future primary extractor upgrades.
+ARG YTDLP_FALLBACK_VERSION=2026.8.19
 LABEL org.opencontainers.image.source="https://github.com/ameshalexk/yt-streamer-webapp" \
       org.opencontainers.image.revision="${APP_REF}"
 
@@ -19,7 +21,9 @@ RUN set -eu; \
         ca-certificates curl ffmpeg nodejs npm python3 py3-pip py3-virtualenv; \
     fi; \
     python3 -m venv /opt/yt-dlp; \
-    /opt/yt-dlp/bin/pip install --no-cache-dir "yt-dlp[default]==${YTDLP_VERSION}"
+    /opt/yt-dlp/bin/pip install --no-cache-dir "yt-dlp[default]==${YTDLP_VERSION}"; \
+    python3 -m venv /opt/yt-dlp-backup; \
+    /opt/yt-dlp-backup/bin/pip install --no-cache-dir "yt-dlp[default]==${YTDLP_FALLBACK_VERSION}"
 
 WORKDIR /app
 RUN set -eu; \
@@ -40,7 +44,7 @@ RUN chmod +x /usr/local/bin/yt-dlp
 ENV HOST=0.0.0.0 PORT=8099 DATA_DIR=/data \
     LIBRARY_DIR=/data/library APNE_ICLOUD_DIR=/data/apne-exports \
     YOUTUBE_OAUTH_TOKEN_FILE=/data/youtube-oauth.json \
-    YTDLP_PATH=/usr/local/bin/yt-dlp VIDEO_ENCODER=libx264 \
+    YTDLP_PATH=/usr/local/bin/yt-dlp YTDLP_FALLBACK_PATH=/opt/yt-dlp-backup/bin/yt-dlp VIDEO_ENCODER=libx264 \
     DESKTOP_STREAM_ENABLED=0 DESKTOP_INPUT_ENABLED=0 MAX_FPS=30
 EXPOSE 8099
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \

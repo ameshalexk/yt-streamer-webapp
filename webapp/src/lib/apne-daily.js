@@ -42,6 +42,10 @@ const DEFAULT_SHOWS = [{
 
 const jobs = new Map();
 
+export function activeJobCount() {
+  return [...jobs.values()].filter(job => ['Checking', 'Downloading', 'Saving to iCloud'].includes(job.status)).length;
+}
+
 function jobKey(showId, dateKey) {
   return `${showId}:${dateKey}`;
 }

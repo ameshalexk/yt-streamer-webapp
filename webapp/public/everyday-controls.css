@@ -1,0 +1,61 @@
+.everyday-controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  margin: 0 0 12px;
+}
+.everyday-control {
+  display: flex;
+  min-width: 0;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line, #343a43);
+  border-radius: 10px;
+  background: var(--panel-2, #171b21);
+  color: var(--text, #f3f5f7);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.everyday-control:hover { border-color: var(--accent, #e10600); }
+.everyday-control:focus-visible,
+.everyday-storage :focus-visible { outline: 3px solid var(--accent, #e10600); outline-offset: 2px; }
+.everyday-control-icon { font-size: 1.1em; line-height: 1; }
+.everyday-storage {
+  margin: 16px 0 4px;
+  padding: 14px;
+  border: 1px solid var(--line, #343a43);
+  border-radius: 12px;
+  background: var(--panel-2, #171b21);
+}
+.everyday-storage h3 { margin: 0 0 8px; }
+.everyday-storage-status { min-height: 1.4em; }
+.everyday-storage-usage { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 12px; }
+.everyday-storage-usage dt { color: var(--muted, #a5abb4); }
+.everyday-storage-usage dd { margin: 0; font-variant-numeric: tabular-nums; }
+.everyday-storage-policy { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.everyday-storage-policy-note { margin: 8px 0; color: var(--muted, #a5abb4); }
+.everyday-storage-downloads { display: grid; gap: 8px; padding-left: 0; list-style: none; }
+.everyday-storage-download { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line, #343a43); }
+.everyday-storage-download-title { overflow-wrap: anywhere; }
+.everyday-storage-download-size { color: var(--muted, #a5abb4); font-size: .9em; }
+.everyday-storage-policy label { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; }
+.everyday-storage-policy input[type="number"] { width: 6em; min-height: 44px; padding: 6px; }
+.everyday-storage button { min-height: 44px; padding: 8px 12px; font: inherit; cursor: pointer; }
+.everyday-storage-preview { flex-basis: 100%; margin: 0; }
+@media (max-width: 560px) {
+  .everyday-controls { gap: 6px; }
+  .everyday-control { flex-direction: column; gap: 3px; min-height: 54px; padding: 6px 3px; font-size: .85rem; }
+  .everyday-storage-usage { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .everyday-storage-download { grid-template-columns: minmax(0, 1fr) auto; }
+  .everyday-storage-download-size { grid-column: 1; }
+  .everyday-storage-download button { grid-row: span 2; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .everyday-control { transition: border-color .15s ease, background-color .15s ease; }
+}

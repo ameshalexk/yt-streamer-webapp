@@ -35,6 +35,9 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("ffmpeg", dockerfile)
         self.assertIn("YTDLP_PATH=/usr/local/bin/yt-dlp", dockerfile)
         self.assertIn("COPY yt-dlp /usr/local/bin/yt-dlp", dockerfile)
+        self.assertIn("ARG YTDLP_FALLBACK_VERSION=2026.8.19", dockerfile)
+        self.assertIn('yt-dlp[default]==${YTDLP_FALLBACK_VERSION}', dockerfile)
+        self.assertIn("YTDLP_FALLBACK_PATH=/opt/yt-dlp-backup/bin/yt-dlp", dockerfile)
 
     def test_supervisor_option_defaults_and_string_selectors(self):
         addon_run.apply_options({"mjpeg_height": "720", "download_max_height": "360"})

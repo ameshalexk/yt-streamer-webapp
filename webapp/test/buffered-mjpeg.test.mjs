@@ -356,3 +356,15 @@ test("read-ahead failure during queue backpressure remains handled on abort", as
   await rejected;
   await new Promise(resolve=>setImmediate(resolve));
 });
+
+test('audio repair freezes rendering and rebases the clock without dropping video frames', () => {
+  const player = new globalThis.BufferedMjpeg.BufferedMjpegPlayer({url:'/fixture',canvas:{getContext:()=>({drawImage(){},clearRect(){}})}, audio:{pause(){}}, audioEnabled:()=>true});
+  player.playing = true; player.audioReady = true;
+  const queue = player.queue;
+  assert.equal(player.beginAudioRecovery(-42), true);
+  assert.equal(player.playing, false); assert.equal(player.audioReady, false);
+  assert.equal(player.audioClockOffset, -42); assert.equal(player.queue, queue);
+  assert.equal(player.getStats().state, 'buffering');
+  player.userPaused = true; assert.equal(player.beginAudioRecovery(-50), false);
+  assert.equal(player.audioClockOffset, -42); player.destroy();
+});
