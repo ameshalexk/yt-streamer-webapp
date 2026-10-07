@@ -44,6 +44,26 @@ function reportPlaybackEvent(event, detail = {}) {
   } catch {}
 }
 
+// Retain a bounded snapshot while playback is still active, so intermittent
+// buffer starvation can be diagnosed without requiring the viewer to press Stop.
+let lastPlaybackBufferSample = { attempt: null, at: 0 };
+
+function reportPeriodicPlaybackSample({ attempt, method, label, streamUrl, stats }) {
+  if (!currentAttempt(attempt) || playbackPaused || document.hidden) return;
+  if (!stats || !["playing", "buffering"].includes(stats.state)) return;
+  if (!Number.isFinite(stats.renderedFrames) || stats.renderedFrames < 1) return;
+  const now = Date.now();
+  if (lastPlaybackBufferSample.attempt === attempt && now - lastPlaybackBufferSample.at < 15000) return;
+  lastPlaybackBufferSample = { attempt, at: now };
+  reportPlaybackEvent("playback_buffer_sample", {
+    label,
+    streamUrl,
+    message: method,
+    reason: streamQualitySelection || "auto",
+    stats,
+  });
+}
+
 const state = {
   playlists: [],
   selectedPlaylistId: null,
@@ -2756,6 +2776,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     onStats: (stats) => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
       updateBufferedMjpegDebug(stats);
+      reportPeriodicPlaybackSample({ attempt, method: "mjpeg", label, streamUrl: bufferedUrl, stats });
       if (maybeAdaptAutoQuality(stats)) return;
       if (stats.state === "buffering") {
         const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || bufferPolicy.rebufferSeconds) : bufferPolicy.startupSeconds;
@@ -3108,6 +3129,9 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       },
       onStats(stats) {
         if (!currentAttempt(attempt) || playbackPaused) return;
+        reportPeriodicPlaybackSample({
+          attempt, method: "webcodecs", label: sourceBadge, streamUrl: youtubeUrl || "", stats,
+        });
         maybeAdaptAutoQuality(stats);
       },
       onError(error) {
