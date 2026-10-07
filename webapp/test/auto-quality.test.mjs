@@ -104,3 +104,16 @@ test("manual Low Medium High profiles remain unchanged", () => {
   assert.match(app, /medium:\s*Object\.freeze\(\{ id: "medium", label: "Medium", height: "480", fps: "15", quality: "7" \}\)/);
   assert.match(app, /high:\s*Object\.freeze\(\{ id: "high", label: "High", height: "480", fps: "24", quality: "4" \}\)/);
 });
+
+test("each new video resets to Auto while manual tiers stay current-video only", () => {
+  assert.match(app, /function resetStreamSettings\(\{ persist = true \} = \{\}\)[\s\S]*setStreamQualitySelection\(AUTO_STREAM_QUALITY_ID/);
+  assert.match(app, /function beginNewPlaybackQuality\(\)[\s\S]*resetStreamSettings\(\{ persist: true \}\)/);
+  assert.match(app, /async function streamYoutubeSearchResult[\s\S]*?beginNewPlaybackQuality\(\)/);
+  assert.match(app, /async function streamRecommendation[\s\S]*?beginNewPlaybackQuality\(\)/);
+});
+
+test("Auto quality changes stay silent and WebCodecs feeds Auto telemetry", () => {
+  assert.match(app, /silent: Boolean\(transition\.silentToast\)/);
+  assert.match(app, /if \(!transition\.silentToast\) \{[\s\S]*Changing quality/);
+  assert.match(app, /onStats\(stats\) \{[\s\S]*maybeAdaptAutoQuality\(stats\)/);
+});
