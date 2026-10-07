@@ -94,7 +94,16 @@ async function waitForInitialStatus(state) {
 async function waitForVideoQueue(state, maxSize = 40) {
   let lastSize = Number(state.videoDecoder?.decodeQueueSize || 0);
   let lastProgressAt = performance.now();
-  while (!state.stopRequested && state.videoDecoder?.state !== "closed" && state.videoDecoder.decodeQueueSize > maxSize) {
+  while (!state.stopRequested && state.videoDecoder?.state !== "closed") {
+    // Pause is user intent, not decoder failure. Stop feeding compressed frames
+    // while paused and never count paused wall time toward the decoder-stall watchdog.
+    if (state.paused) {
+      lastSize = Number(state.videoDecoder?.decodeQueueSize || 0);
+      lastProgressAt = performance.now();
+      await sleep(40);
+      continue;
+    }
+    if (state.videoDecoder.decodeQueueSize <= maxSize) return;
     if (state.decoderError) throw new Error(state.decoderError);
     const size = Number(state.videoDecoder.decodeQueueSize || 0);
     state.maxVideoQueue = Math.max(state.maxVideoQueue, size);
@@ -1024,6 +1033,10 @@ export function createCyberdashPlayer({
       // Stop/seek/method/rate changes intentionally abort the old session. Treat
       // that as normal cancellation so a stale promise cannot show a fatal toast
       // while the replacement stream is already playing.
+      if (next.stopRequested) return;
+      // A paused frame must stay a paused frame. If a background fetch/decoder
+      // failure races with Pause, defer surfacing it until the user resumes.
+      while (!next.stopRequested && next.paused) await sleep(50);
       if (next.stopRequested) return;
       await sendSummary(next, "error", String(error?.message || error));
       onError?.(error);
