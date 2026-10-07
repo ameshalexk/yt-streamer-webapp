@@ -7858,6 +7858,7 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
     else if (tab.dataset.mode === "library") openLegacyLibrary();
     else if (tab.dataset.mode === "apne") openApneDaily();
     else if (tab.dataset.mode === "tesla") window.open("/tesla", "_blank", "noopener");
+    else if (tab.dataset.mode === "money") window.open("/money", "_blank", "noopener");
     else setMode(tab.dataset.mode);
   };
 });

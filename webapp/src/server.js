@@ -20,6 +20,7 @@ import * as processedLibrary from "./lib/processed-library.js";
 import * as preparedCache from "./lib/prepared-cache.js";
 import * as youtubeOAuth from "./lib/youtube-oauth.js";
 import * as moneyDashboard from "./lib/money-dashboard.js";
+import { requireMoneyAccess } from "./lib/cloudflare-money-access.js";
 import * as apneDaily from "./lib/apne-daily.js";
 import * as cyberdashDash from "./lib/cyberdash-dash.js";
 import * as processedDashCache from "./lib/processed-dash-cache.js";
@@ -43,6 +44,8 @@ app.get("/robots.txt", (_req, res) => {
   res.type("text/plain").send("User-agent: *\nDisallow: /\n");
 });
 app.use(express.json({ limit: "256kb" }));
+// The retired Money hostname may never access other application routes.
+app.use((req, res, next) => req.hostname === "money.ameshalex.com" ? res.status(404).end() : next());
 
 const SERVER_STARTED_AT = Date.now();
 const RELEASE_REVISION = await readReleaseRevision().catch((error) => {
@@ -565,23 +568,10 @@ app.post("/api/app/restart", asyncH(async (req, res) => {
 // ---------------------------------------------------------------------------
 // Private money dashboard
 // ---------------------------------------------------------------------------
-const moneyPage = asyncH(async (req, res) => {
-  if (!(await moneyDashboard.authorize(req))) return moneyDashboard.sendUnauthorizedPage(res);
-  const { token } = await moneyDashboard.accessToken();
-  moneyDashboard.setAccessCookie(req, res, token);
+app.get("/money", requireMoneyAccess, (_req, res) => {
   res.sendFile(path.join(config.publicDir, "money.html"));
 });
-
-app.get("/money", moneyPage);
-app.get("/", (req, res, next) => {
-  if (req.hostname !== "money.ameshalex.com") return next();
-  return moneyPage(req, res);
-});
-
-app.get("/api/money-dashboard", asyncH(async (req, res) => {
-  if (!(await moneyDashboard.authorize(req))) return res.status(401).json({ error: "money dashboard token required" });
-  const { token } = await moneyDashboard.accessToken();
-  moneyDashboard.setAccessCookie(req, res, token);
+app.get("/api/money-dashboard", requireMoneyAccess, asyncH(async (_req, res) => {
   res.json(await moneyDashboard.dashboardData());
 }));
 
@@ -732,10 +722,8 @@ app.post("/tesla/live/api/pull-over", asyncH(async (req, res) => {
   }
 }));
 
-app.post("/api/money-dashboard", asyncH(async (req, res) => {
-  if (!(await moneyDashboard.authorize(req))) return res.status(401).json({ error: "money dashboard token required" });
-  const { token } = await moneyDashboard.accessToken();
-  moneyDashboard.setAccessCookie(req, res, token);
+app.post("/api/money-dashboard", requireMoneyAccess, asyncH(async (req, res) => {
+  if (!isSameOriginRequest(req)) return res.status(403).json({ error: "Same-origin request required." });
   await moneyDashboard.updateTrackedData(req.body || {});
   res.json(await moneyDashboard.dashboardData());
 }));
