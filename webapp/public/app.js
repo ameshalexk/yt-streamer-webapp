@@ -3024,6 +3024,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
 
   const attempt = streamAttempt;
   const quietTransition = Boolean(pendingQualityRestore?.silent);
+  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) autoQualityController?.beginAttempt();
   screen.classList.remove("video-mode", "mjpeg-mode", "mjpeg-buffered-mode");
   screen.classList.add("playing", "loading", "cyberdash-mode");
   if (!quietTransition) setBadge("reconnecting", "↻ WebCodecs…");
@@ -3071,6 +3072,10 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
         } else if (status === "playing") {
           setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×", { revealControls: false });
         }
+      },
+      onStats(stats) {
+        if (!currentAttempt(attempt) || playbackPaused) return;
+        maybeAdaptAutoQuality(stats);
       },
       onError(error) {
         if (!currentAttempt(attempt)) return;
