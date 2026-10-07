@@ -488,6 +488,45 @@ function startRenderLoop(state) {
       fps: state.requestedFps,
     });
 
+    let lastStatsAt = performance.now();
+    let lastStatsRenderedFrames = state.renderedFrames;
+    let lastStatsReceivedFrames = state.renderedFrames + state.droppedFrames + state.decodedVideo.length;
+    let lastStatsQueueSeconds = 0;
+
+    const emitStats = (now = performance.now()) => {
+      if (!state.onStats || now - lastStatsAt < 1000) return;
+      const elapsed = playbackElapsed(state);
+      const queueSeconds = decodedVideoAheadSec(state, elapsed);
+      const receivedFrames = state.renderedFrames
+        + state.droppedFrames
+        + state.decodedVideo.length
+        + Number(state.videoDecoder?.decodeQueueSize || 0);
+      const deltaSec = Math.max(0.001, (now - lastStatsAt) / 1000);
+      const renderedFps = Math.max(0, (state.renderedFrames - lastStatsRenderedFrames) / deltaSec);
+      const receiveFps = Math.max(0, (receivedFrames - lastStatsReceivedFrames) / deltaSec);
+      const queueDelta = queueSeconds - lastStatsQueueSeconds;
+      const queueTrend = queueDelta > 0.12 ? "growing" : (queueDelta < -0.12 ? "shrinking" : "stable");
+      const lastDriftMs = state.drifts.length ? state.drifts[state.drifts.length - 1] : 0;
+      state.onStats({
+        fps: state.requestedFps,
+        renderedFps,
+        receiveFps,
+        producerSpeed: receiveFps / Math.max(1, state.requestedFps),
+        renderedFrames: state.renderedFrames,
+        receivedFrames,
+        droppedFrames: state.droppedFrames,
+        queueSeconds,
+        queueTrend,
+        rebufferCount: state.rebufferCount,
+        lastAvDriftMs: lastDriftMs,
+        state: state.paused ? "paused" : (state.rebuffering ? "buffering" : "playing"),
+      });
+      lastStatsAt = now;
+      lastStatsRenderedFrames = state.renderedFrames;
+      lastStatsReceivedFrames = receivedFrames;
+      lastStatsQueueSeconds = queueSeconds;
+    };
+
     const beginRebuffer = () => {
       if (
         state.rebuffering ||
@@ -552,11 +591,13 @@ function startRenderLoop(state) {
       try {
         if (state.stopRequested) return resolve();
         if (state.paused) {
+          emitStats();
           schedule();
           return;
         }
         if (state.decoderError) throw new Error(state.decoderError);
         if (state.rebuffering) {
+          emitStats();
           maybeResumeFromRebuffer();
           schedule();
           return;
@@ -639,6 +680,7 @@ function startRenderLoop(state) {
           state.decodedVideo.length === 0
         ) return resolve();
 
+        emitStats();
         schedule();
       } catch (error) {
         reject(error);
@@ -856,6 +898,7 @@ export function createCyberdashPlayer({
   onEnded,
   onError,
   onStatus,
+  onStats,
 } = {}) {
   if (!canvas) throw new Error("CyberDash canvas is required");
   let state = null;
@@ -978,6 +1021,7 @@ export function createCyberdashPlayer({
       onEnded,
       onError,
       onStatus,
+      onStats,
     };
     if (next.audioCtx) {
       next.gainNode = next.audioCtx.createGain();
