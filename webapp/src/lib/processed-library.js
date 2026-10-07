@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { config } from "../config.js";
+import * as ytdlp from "./ytdlp.js";
 
 const ROOT = path.join(config.dataDir, "processed-library");
 const TMP = path.join(config.dataDir, "processed-tmp");
@@ -13,29 +14,6 @@ const DEFAULT_PLAYLIST_ID = "default-plnl8vnmvfc8";
 
 function safeId(id) {
   return String(id || crypto.randomBytes(6).toString("hex")).replace(/[^-\w.]/g, "").slice(0, 100);
-}
-
-function runCapture(bin, args, { timeoutMs = 90000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`${path.basename(bin)} timed out`));
-    }, timeoutMs);
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(out.trim());
-      else reject(new Error(err.trim() || `${path.basename(bin)} exited ${code}`));
-    });
-  });
 }
 
 function runProgress(bin, args, { onLine } = {}) {
@@ -131,7 +109,7 @@ export async function deletePlaylist(id) {
 }
 
 async function getRawInfo(url) {
-  const json = await runCapture(config.ytdlpPath, ["-J", "--no-warnings", "--no-playlist", url]);
+  const json = await ytdlp.capture( ["-J", "--no-warnings", "--no-playlist", url]);
   return JSON.parse(json);
 }
 
@@ -169,13 +147,13 @@ export async function formats(url) {
 }
 
 export async function playlistTitle(url) {
-  const json = await runCapture(config.ytdlpPath, ["-J", "--flat-playlist", "--no-warnings", url], { timeoutMs: 90000 });
+  const json = await ytdlp.capture( ["-J", "--flat-playlist", "--no-warnings", url], { timeoutMs: 90000 });
   const info = JSON.parse(json);
   return info.title || "Untitled Playlist";
 }
 
 export async function playlistEntries(url) {
-  const json = await runCapture(config.ytdlpPath, ["-J", "--flat-playlist", "--no-warnings", url], { timeoutMs: 120000 });
+  const json = await ytdlp.capture( ["-J", "--flat-playlist", "--no-warnings", url], { timeoutMs: 120000 });
   const info = JSON.parse(json);
   const entries = Array.isArray(info.entries) ? info.entries : [];
   return entries
@@ -276,7 +254,7 @@ export async function processDownload(url, { resolutions, onProgress } = {}) {
       const phaseSize = Math.max(8, Math.round(58 / selected.length));
       const fmt = `bestvideo[height<=${res}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${res}]+bestaudio/best[height<=${res}]`;
       onProgress?.(phaseBase, `Downloading ${res}p`);
-      await runProgress(config.ytdlpPath, [
+      await runProgress(config.ytdlpPath, ytdlp.commonArgs([
         "-f", fmt,
         "--merge-output-format", "mp4",
         "--no-playlist",
@@ -284,7 +262,7 @@ export async function processDownload(url, { resolutions, onProgress } = {}) {
         "--newline",
         "-o", `${outBase}.%(ext)s`,
         url,
-      ], {
+      ]), {
         onLine: (line) => {
           const m = line.match(/\[download\]\s+([\d.]+)%/);
           if (m) onProgress?.(phaseBase + (parseFloat(m[1]) / 100) * phaseSize, `Downloading ${res}p`);

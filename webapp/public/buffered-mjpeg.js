@@ -648,6 +648,18 @@
       this._maybeStartOrResume();
     }
 
+    beginAudioRecovery(clockOffset = this.audioClockOffset) {
+      if (!this._active() || this.userPaused || this.hidden) return false;
+      this.playing = false;
+      this.buffering = true;
+      this.audioReady = false;
+      this.audioClockOffset = clockOffset;
+      this._cancelRaf();
+      try { this.audio?.pause(); } catch {}
+      this._setState('buffering', { reason: 'audio' });
+      return true;
+    }
+
     async start() {
       if (!supportsBufferedMjpeg(this.canvas)) throw new Error("Buffered MJPEG is not supported by this browser");
       this._setState("buffering", { reason: "startup" });

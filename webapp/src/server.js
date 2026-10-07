@@ -7,6 +7,8 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
 import * as store from "./lib/store.js";
+import * as storageManager from "./lib/storage-manager.js";
+import { findSavedPlayback } from "./lib/saved-playback.js";
 import * as ytdlp from "./lib/ytdlp.js";
 import * as stream from "./lib/stream.js";
 import * as desktopInput from "./lib/desktop-input.js";
@@ -23,7 +25,15 @@ import * as cyberdashDash from "./lib/cyberdash-dash.js";
 import * as processedDashCache from "./lib/processed-dash-cache.js";
 import { readReleaseRevision } from "./lib/release-info.js";
 
+let storageCleanupInProgress = false;
 const app = express();
+app.use((req, res, next) => {
+  if (storageCleanupInProgress && !req.path.startsWith("/api/storage")
+      && (req.path.startsWith("/stream/") || req.method !== "GET")) {
+    return res.status(409).json({ error: "Storage cleanup is running; try again shortly" });
+  }
+  next();
+});
 app.disable("x-powered-by");
 app.use((req, res, next) => {
   res.set("X-Robots-Tag", "noindex, nofollow, nosnippet");
@@ -197,7 +207,12 @@ async function resolveYouTubeStreamsCached(sourceUrl, maxHeight = config.downloa
   }
 
   const startedAt = Date.now();
-  const promise = ytdlp.getStreamUrls(sourceUrl, maxHeight);
+  const promise = ytdlp.getStreamUrls(sourceUrl, maxHeight).catch(async error => {
+    const saved = await findSavedPlayback(sourceUrl);
+    if (!saved) throw error;
+    return { videoUrl: saved.videoPath, audioUrl: saved.audioPath,
+      duration: saved.duration, title: saved.title, isLive: false, savedFallback: true };
+  });
   youtubeResolveCache.set(key, { promise, value: null, expiresAt: now + YOUTUBE_RESOLVE_CACHE_TTL_MS });
   try {
     const resolved = await promise;
@@ -353,7 +368,7 @@ function recordRestartAuthFailure(req) {
 function activeBackgroundJobCount() {
   const downloads = [...jobs.values()].filter((job) => job.status === "running").length;
   const preparations = [...preparedJobs.values()].filter((job) => job.status === "preparing").length;
-  return downloads + preparations;
+  return downloads + preparations + apneDaily.activeJobCount();
 }
 
 async function shutdownForRestart() {
@@ -387,6 +402,53 @@ function requireDesktopEnabled(req, res, next) {
   return res.status(404).type("text/plain").end("Desktop streaming is disabled.");
 }
 
+// Storage is scoped to processed downloads; originals and iCloud copies are
+// never candidates. Applying a reviewed list locks out new media/jobs briefly.
+app.get('/api/storage', asyncH(async (_req, res) => {
+  const result = await storageManager.summary();
+  const { libraryBytes, cacheBytes, freeBytes, totalBytes, ...rest } = result;
+  res.json({ ...rest, usage: { libraryBytes, cacheBytes, freeBytes, totalBytes } });
+}));
+app.patch('/api/storage/policy', asyncH(async (req, res) => {
+  res.json({ policy: await storageManager.setPolicy(req.body) });
+}));
+app.patch('/api/storage/downloads/:id', asyncH(async (req, res) => {
+  if (Object.keys(req.body || {}).some(key => key !== 'pinned')) return res.status(400).json({ error: 'Only pinned may be changed' });
+  res.json(await storageManager.setPinned(req.params.id, req.body?.pinned));
+}));
+app.post('/api/storage/downloads/:id/watched', asyncH(async (req, res) => {
+  if (req.body?.completed !== true) return res.status(400).json({ error: 'completed:true is required' });
+  res.json(await storageManager.markWatched(req.params.id));
+}));
+app.post('/api/storage/cleanup', asyncH(async (req, res) => {
+  const apply = req.body?.apply === true;
+  if (apply && storageCleanupInProgress) return res.status(409).json({ error: 'Cleanup is already running' });
+  if (apply) storageCleanupInProgress = true;
+  try {
+    const busy = Boolean(activeBackgroundJobCount() || stream.activeStreamCount() || stream.activeAudioCount()
+      || browserRenderer.activeSessionCount() || realChromeRenderer.activeSessionCount());
+    const result = await storageManager.cleanup(req.body, { busy });
+    const candidates = result.eligible || [];
+    const removed = result.removed || [];
+    res.json({ applied: result.applied, candidates, removed,
+      reclaimableBytes: candidates.reduce((sum, item) => sum + item.bytes + (item.cacheBytes || 0), 0),
+      reclaimedBytes: removed.reduce((sum, item) => sum + item.bytes + (item.cacheBytes || 0), 0),
+      reclaimedCacheBytes: result.reclaimedCacheBytes || 0 });
+  } finally { if (apply) storageCleanupInProgress = false; }
+}));
+
+app.get('/api/youtube/extractor/status', asyncH(async (_req, res) => {
+  res.json(await ytdlp.getExtractorDiagnostics());
+}));
+let extractorTestRunning = false;
+app.post('/api/youtube/extractor/test', asyncH(async (req, res) => {
+  if (extractorTestRunning) return res.status(409).json({ error: 'Extractor test is already running' });
+  extractorTestRunning = true;
+  try {
+    res.json({ candidates: await ytdlp.testExtractorPlayback(req.body?.url || 'https://www.youtube.com/watch?v=jNQXAC9IVRw') });
+  } finally { extractorTestRunning = false; }
+}));
+
 // ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
@@ -397,6 +459,7 @@ app.get("/api/health", (req, res) => {
     instanceId: SERVER_INSTANCE_ID,
     startedAt: SERVER_STARTED_AT,
     restartAvailable: process.env.XPC_SERVICE_NAME === LAUNCHD_SERVICE_NAME,
+    activeJobs: activeBackgroundJobCount(),
     activeStreams: stream.activeStreamCount(),
     activeAudioStreams: stream.activeAudioCount(),
     activeBrowserSessions: browserRenderer.activeSessionCount(),
@@ -906,7 +969,13 @@ app.get("/api/youtube/playlist", asyncH(async (req, res) => {
 app.get("/api/youtube/info", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
-  res.json(await ytdlp.getInfo(url));
+  try { res.json(await ytdlp.getInfo(url)); }
+  catch (error) {
+    const saved = await findSavedPlayback(url);
+    if (!saved) throw error;
+    res.json({ id: saved.id, title: saved.title, duration: saved.duration,
+      isLive: false, webpage_url: url, savedFallback: true });
+  }
 }));
 
 // Bulk-import a YouTube playlist's entries as items in a given playlist (as 'youtube' refs, no download).
