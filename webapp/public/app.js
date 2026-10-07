@@ -630,7 +630,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20260928-speed-v9")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261006-pause-v10")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -1061,16 +1061,20 @@ function applyStreamSettings(settings) {
   $("#ctlQuality").value = String(settings.quality);
 }
 
-function resetStreamSettings() {
-  const stored = storedStreamQualityProfile();
-  if (stored?.auto) {
-    setStreamQualitySelection(AUTO_STREAM_QUALITY_ID, { persist: false });
-    autoQualityController?.selectTier(AUTO_STREAM_INITIAL_TIER);
-    applyStreamSettings(STREAM_QUALITY_PROFILES[AUTO_STREAM_INITIAL_TIER]);
-    return;
-  }
-  setStreamQualitySelection(stored?.id || null, { persist: false });
-  applyStreamSettings(stored || DEFAULT_STREAM_SETTINGS);
+function resetStreamSettings({ persist = true } = {}) {
+  // Every newly opened video starts in Auto. A manual Low/Medium/High choice is
+  // scoped to the current video and is replaced by Auto when the next video starts.
+  setStreamQualitySelection(AUTO_STREAM_QUALITY_ID, { persist });
+  autoQualityController?.selectTier(AUTO_STREAM_INITIAL_TIER);
+  applyStreamSettings(STREAM_QUALITY_PROFILES[AUTO_STREAM_INITIAL_TIER]);
+}
+
+function beginNewPlaybackQuality() {
+  resetStreamSettings({ persist: true });
+  renderFpsPresets();
+  renderQuickQuality();
+  renderSettingOptions();
+  updateBwHint();
 }
 
 function qualityProfilesAvailableForCurrentMode() {
@@ -1763,16 +1767,18 @@ function togglePlaybackPause() {
   else pausePlayback();
 }
 
-function startStreamWatchdog(attempt, mode, { warnMs = STREAM_WARN_MS, failMs = STREAM_FAIL_MS } = {}) {
+function startStreamWatchdog(attempt, mode, { warnMs = STREAM_WARN_MS, failMs = STREAM_FAIL_MS, silent = false } = {}) {
   clearStreamTimers();
   streamWarnTimer = setTimeout(() => {
     if (!currentAttempt(attempt)) return;
-    setBadge("reconnecting", "Still connecting...");
-    showStreamNotice(
-      "warning",
-      "Still connecting",
-      `${mode} has not delivered a video frame yet. Waiting a bit longer before marking it failed.`
-    );
+    if (!silent) {
+      setBadge("reconnecting", "Still connecting...");
+      showStreamNotice(
+        "warning",
+        "Still connecting",
+        `${mode} has not delivered a video frame yet. Waiting a bit longer before marking it failed.`
+      );
+    }
   }, warnMs);
   streamFailTimer = setTimeout(() => {
     failStreamAttempt(
@@ -2569,6 +2575,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   configureStreamSeek(meta, meta.startAt || 0);
 
   const attempt = streamAttempt;
+  const quietTransition = Boolean(pendingQualityRestore?.silent);
   const startupTrace = meta.startupTrace || null;
   if (startupTrace && !Number.isFinite(startupTrace.playerStartedAt)) startupTrace.playerStartedAt = performance.now();
   const bufferedUrl = withUrlParam(mjpegUrl, "buffered", "1");
@@ -2592,10 +2599,13 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   $("#restreamBtn").disabled = false;
   screen.classList.remove("video-mode", "mjpeg-mode", "startup-preview");
   screen.classList.add("playing", "loading", "mjpeg-buffered-mode");
-  setBadge("reconnecting", "Buffering 0.0 / " + bufferPolicy.startupSeconds.toFixed(1) + "s");
+  if (!quietTransition) {
+    setBadge("reconnecting", "Buffering 0.0 / " + bufferPolicy.startupSeconds.toFixed(1) + "s");
+  }
   startStreamWatchdog(attempt, "Buffered MJPEG playback", {
     warnMs: COMPAT_STREAM_WARN_MS,
     failMs: COMPAT_STREAM_FAIL_MS,
+    silent: quietTransition,
   });
 
   activeCompat = {
@@ -2635,7 +2645,9 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       const stats = detail.stats || player.getStats();
       updateBufferedMjpegDebug(stats);
       if (stateName === "buffering") {
-        screen.classList.add("loading");
+        const initialBuffer = !activeCompat.playbackStarted && !stats.renderedFrames;
+        if (initialBuffer) screen.classList.add("loading");
+        else screen.classList.remove("loading");
         if (detail.reason === "audio" || detail.reason === "resume") cancelSlowBufferSuggestionSchedule();
         else scheduleSlowBufferSuggestion(attempt, { reason: detail.reason || "rebuffer", label, streamUrl: bufferedUrl, stats });
         if (stats.rebufferCount > loggedRebufferCount) {
@@ -2656,10 +2668,14 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         }
         const buffered = Number(detail.bufferedSeconds ?? stats.queueSeconds ?? 0);
         const target = Number(detail.targetSeconds || (stats.renderedFrames ? stats.recoveryTargetSeconds || bufferPolicy.rebufferSeconds : bufferPolicy.startupSeconds));
-        if (detail.reason === "audio") {
-          setBadge("reconnecting", "Buffering audio · " + buffered.toFixed(1) + "s video ready");
-        } else {
-          setBadge("reconnecting", "Buffering " + buffered.toFixed(1) + " / " + target.toFixed(1) + "s");
+        if (playbackPaused) {
+          setBadge("paused", "Ⅱ PAUSED", { revealControls: false });
+        } else if (initialBuffer && !quietTransition) {
+          if (detail.reason === "audio") {
+            setBadge("reconnecting", "Buffering audio · " + buffered.toFixed(1) + "s video ready");
+          } else {
+            setBadge("reconnecting", "Buffering " + buffered.toFixed(1) + " / " + target.toFixed(1) + "s");
+          }
         }
         return;
       }
@@ -2677,7 +2693,9 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (stateName === "syncing") {
         screen.classList.remove("loading");
         scheduleSlowBufferSuggestion(attempt, { reason: "syncing", label, streamUrl: bufferedUrl, stats });
-        setBadge("reconnecting", "Catching up video…");
+        if (!activeCompat.playbackStarted && !quietTransition) {
+          setBadge("reconnecting", "Catching up video…");
+        }
         return;
       }
       if (stateName === "playing") {
@@ -2695,7 +2713,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
             diagnosis: bufferedSlowdownDiagnosis(stats, "playing").kind,
           });
         }
-        markBufferedStreamPlaying(attempt, stats);
+        markBufferedStreamPlaying(attempt, stats, { revealControls: !quietTransition });
         return;
       }
       if (stateName === "background") {
@@ -2707,7 +2725,9 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       const stats = detail.stats || player.getStats();
       if (name === "first-picture") {
         screen.classList.add("startup-preview");
-        setBadge("reconnecting", "Preview ready · buffering for smooth playback", { revealControls: false });
+        if (!quietTransition) {
+          setBadge("reconnecting", "Preview ready · buffering for smooth playback", { revealControls: false });
+        }
       }
       reportPlaybackEvent("buffered_" + String(name).replace(/-/g, "_"), {
         label,
@@ -2723,8 +2743,11 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (maybeAdaptAutoQuality(stats)) return;
       if (stats.state === "buffering") {
         const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || bufferPolicy.rebufferSeconds) : bufferPolicy.startupSeconds;
-        const prefix = playbackPaused ? "Paused · buffering " : "Buffering ";
-        setBadge("reconnecting", prefix + stats.queueSeconds.toFixed(1) + " / " + target.toFixed(1) + "s", { revealControls: false });
+        if (playbackPaused) {
+          setBadge("paused", "Ⅱ PAUSED", { revealControls: false });
+        } else if (!activeCompat.playbackStarted && !quietTransition) {
+          setBadge("reconnecting", "Buffering " + stats.queueSeconds.toFixed(1) + " / " + target.toFixed(1) + "s", { revealControls: false });
+        }
       } else if (stats.state === "paused") {
         setBadge("paused", "Ⅱ PAUSED · " + stats.queueSeconds.toFixed(1) + "s buf", { revealControls: false });
       } else if (stats.state === "playing") {
@@ -3000,10 +3023,12 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   configureStreamSeek(meta, meta.startAt || 0);
 
   const attempt = streamAttempt;
+  const quietTransition = Boolean(pendingQualityRestore?.silent);
+  if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) autoQualityController?.beginAttempt();
   screen.classList.remove("video-mode", "mjpeg-mode", "mjpeg-buffered-mode");
   screen.classList.add("playing", "loading", "cyberdash-mode");
-  setBadge("reconnecting", "↻ WebCodecs…");
-  startStreamWatchdog(attempt, "WebCodecs playback", { warnMs: 18000, failMs: 40000 });
+  if (!quietTransition) setBadge("reconnecting", "↻ WebCodecs…");
+  startStreamWatchdog(attempt, "WebCodecs playback", { warnMs: 18000, failMs: 40000, silent: quietTransition });
 
   // WebCodecs audio stays inside the DASH session. FFmpeg applies pitch-preserving
   // atempo on the server; AudioContext plays the resulting AAC at 1x.
@@ -3026,19 +3051,31 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       onPlaying() {
         if (!currentAttempt(attempt)) return;
         markStreamLive(attempt);
-        setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×");
+        setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×", { revealControls: !quietTransition });
       },
       onEnded() {
         if (currentAttempt(attempt)) handleAutoplayEnd();
       },
       onStatus(status, detail = {}) {
         if (!currentAttempt(attempt)) return;
-        if (status === "buffering") {
-          const phase = detail.phase === "startup" ? "Buffering" : "Rebuffering";
-          setBadge("reconnecting", `↻ ${phase} · ${youtubePlaybackRate}×`);
-        } else if (status === "playing") {
-          setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×");
+        if (playbackPaused) {
+          setBadge("paused", "Ⅱ PAUSED · WebCodecs", { revealControls: false });
+          return;
         }
+        if (status === "buffering") {
+          // Startup may show progress. Once a picture has played, transient
+          // rebuffering stays behind the current frame instead of waking the UI.
+          if (screen.classList.contains("loading") && !quietTransition) {
+            const phase = detail.phase === "startup" ? "Buffering" : "Rebuffering";
+            setBadge("reconnecting", `↻ ${phase} · ${youtubePlaybackRate}×`);
+          }
+        } else if (status === "playing") {
+          setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×", { revealControls: false });
+        }
+      },
+      onStats(stats) {
+        if (!currentAttempt(attempt) || playbackPaused) return;
+        maybeAdaptAutoQuality(stats);
       },
       onError(error) {
         if (!currentAttempt(attempt)) return;
@@ -3211,6 +3248,7 @@ function refreshYoutubeMetadataInBackground(item, trace, { savedItem = false, ac
 }
 
 async function playItem(item) {
+  beginNewPlaybackQuality();
   void watchProgress.stop();
   const resumePlan = item.type === "youtube"
     ? await watchResumePlan(item)
@@ -3640,6 +3678,7 @@ function performQualityProfileSwitch(transition) {
     pause: transition.pause,
     resumeAt: transition.resumeAt,
     minAttempt: beforeAttempt + 1,
+    silent: Boolean(transition.silentToast),
   };
   const fallback = transition.fallback
     ? " · " + transition.fallback.requested + "p unavailable, using " + transition.fallback.height + "p"
@@ -3648,8 +3687,10 @@ function performQualityProfileSwitch(transition) {
   const status = transition.isLive
     ? "Changing quality to " + transitionLabel + fallback + " · returning to live"
     : "Changing quality to " + transitionLabel + fallback + "…";
-  setBadge("reconnecting", transition.isLive ? "Changing quality… Returning to live" : "Changing quality…");
-  if (!transition.silentToast) toast(status);
+  if (!transition.silentToast) {
+    setBadge("reconnecting", transition.isLive ? "Changing quality… Returning to live" : "Changing quality…");
+    toast(status);
+  }
   try {
     const result = transition.replay(transition.seekable ? transition.resumeAt : undefined);
     if (result?.catch) {
@@ -4585,6 +4626,7 @@ async function prepareLegacyCdn(item) {
 }
 
 async function streamLegacyPlaylistVideo(video, autoplayQueue = null) {
+  beginNewPlaybackQuality();
   void watchProgress.stop();
   const url = video.url;
   if (!video.duration) {
@@ -4650,6 +4692,7 @@ function legacyStreamUrl(startAt = 0) {
 }
 
 function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = null, options = {}) {
+  if (!options.skipHistory) beginNewPlaybackQuality();
   if (!options.skipHistory) void watchProgress.stop();
   cleanupMedia(Boolean(options.skipHistory && watchProgress.session?.key === watchHistoryKey(item)));
   stopStreamSeekTimer(true);
@@ -5053,6 +5096,7 @@ async function performYoutubeSearch() {
 
 async function streamYoutubeSearchResult(item, autoplayQueue = null) {
   if (!item) return;
+  beginNewPlaybackQuality();
   void watchProgress.stop();
   const resumePlan = await watchResumePlan(item);
   const startupTrace = beginPlaybackStartupTrace("youtube-search", item);
@@ -5103,6 +5147,7 @@ async function streamYoutubeSearchResult(item, autoplayQueue = null) {
 
 async function streamYoutubeHistoryItem(item, { restart = false } = {}) {
   if (!item) return;
+  beginNewPlaybackQuality();
   void watchProgress.stop();
   const startupTrace = beginPlaybackStartupTrace("youtube-history", item);
   refreshYoutubeMetadataInBackground(item, startupTrace, {
@@ -5450,6 +5495,7 @@ async function disconnectYoutube() {
 
 async function streamRecommendation(item, autoplayQueue = null) {
   if (!item) return;
+  beginNewPlaybackQuality();
   void watchProgress.stop();
   const resumePlan = await watchResumePlan(item);
   const startupTrace = beginPlaybackStartupTrace("recommendation", item);
@@ -7728,6 +7774,7 @@ $("#chList").addEventListener("click", async (e) => {
     return;
   }
   // default / play
+  beginNewPlaybackQuality();
   state.playingItemId = null;
   state.youtubeSearchPlayingId = null;
   renderItems();
@@ -8938,6 +8985,7 @@ function handleDesktopPanPointerUp(e) {
 $("#quickPlayBtn").onclick = async () => {
   const url = $("#quickUrl").value.trim();
   if (!url) return toast("Paste a URL first", true);
+  beginNewPlaybackQuality();
   showAttemptedUrl(url);
 
   // YouTube -> play directly.

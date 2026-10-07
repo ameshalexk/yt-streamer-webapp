@@ -97,6 +97,7 @@ test("reopening History sends the same persisted timestamp to video and separate
   const context = vm.createContext({
     window: { WatchProgress: loadModule() }, state: {}, replayFn: null,
     watchProgress: { stop() {} },
+    beginNewPlaybackQuality() {},
     beginPlaybackStartupTrace: () => ({}), refreshYoutubeMetadataInBackground() {},
     renderItems() {}, renderLegacyLibrary() {}, renderRecommendations() {},
     renderYoutubeSearch() {}, renderYoutubeHistory() {}, showAttemptedUrl() {},
@@ -207,6 +208,7 @@ test("reopening a YouTube search result starts at its saved timestamp", async ()
       youtubeSearchResults: [],
     },
     watchProgress: { stop() {} },
+    beginNewPlaybackQuality() {},
     watchResumePlan: async () => ({ position: 42, restartProgress: false }),
     beginPlaybackStartupTrace: () => ({}),
     refreshYoutubeMetadataInBackground() {},
