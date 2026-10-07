@@ -180,7 +180,7 @@ test("WebCodecs restart preserves user activation by avoiding awaited old-player
   assert.doesNotMatch(playerBlock, /await stopCyberdashPlayback/);
   assert.match(playerBlock, /cleanupMedia\(Boolean\(meta\.watchHistoryKey[\s\S]*?\)\)/);
   assert.match(playerBlock, /const module = cyberdashModule \|\| await ensureCyberdashModule\(\)/);
-  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20260928-speed-v9"\)/);
+  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20261006-pause-v10"\)/);
 });
 
 test("WebCodecs playback rate is forwarded to the server and expands source-time buffer headroom", () => {
