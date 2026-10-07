@@ -118,3 +118,11 @@ test("pause is a hard visual boundary while a JPEG decode is in flight", async (
   assert.equal(draws.length, 0);
   player.destroy();
 });
+
+test("WebCodecs pause stops decoder feeding and defers background failures", () => {
+  const cyberdash = fs.readFileSync(new URL("../public/cyberdash-embedded.mjs", import.meta.url), "utf8");
+  const queueGuard = cyberdash.match(/async function waitForVideoQueue[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(queueGuard, /if \(state\.paused\)[\s\S]*await sleep\(40\)/);
+  assert.match(queueGuard, /if \(state\.videoDecoder\.decodeQueueSize <= maxSize\) return/);
+  assert.match(cyberdash, /while \(!next\.stopRequested && next\.paused\) await sleep\(50\)/);
+});
