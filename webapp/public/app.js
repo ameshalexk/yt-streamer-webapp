@@ -630,7 +630,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261006-pause-v10")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261007-prefetch-v11")
       .then((module) => {
         cyberdashModule = module;
         return module;

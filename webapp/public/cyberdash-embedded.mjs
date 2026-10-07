@@ -1,3 +1,5 @@
+import { orderedPrefetch } from "./ordered-prefetch.mjs";
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function withTimeout(promise, ms, label = "operation") {
@@ -409,19 +411,21 @@ async function feedTrack(state, MP4Box, kind, initName) {
       const indexes = [];
       for (let index = nextIndex; index <= batchEnd; index++) indexes.push(index);
 
-      const fetched = await Promise.all(indexes.map(async (index) => {
-        const name = segmentName(index);
-        const base = state.staticTracks?.baseUrl || "";
-        const version = encodeURIComponent(String(state.staticTracks?.cacheVersion || ""));
-        const ab = await fetchBytes(`${base}/${name}?v=${version}`, 15000, "force-cache");
-        return { index, name, ab };
-      }));
-      const batchBytes = fetched.reduce((sum, entry) => sum + entry.ab.byteLength, 0);
-      state.compressedPrefetchBytesMax = Math.max(state.compressedPrefetchBytesMax || 0, batchBytes);
-      state.compressedPrefetchSourceSec = Math.max(state.compressedPrefetchSourceSec || 0, fetched.length * segmentSourceSeconds);
-
-      for (const entry of fetched) {
+      let batchBytes = 0;
+      let fetchedCount = 0;
+      const base = state.staticTracks?.baseUrl || "";
+      const version = encodeURIComponent(String(state.staticTracks?.cacheVersion || ""));
+      // Let the first segment reach the decoder while later segments fetch.
+      // Keep a bounded four-request window instead of waiting for all 18s.
+      for await (const { index, value: ab } of orderedPrefetch(indexes, (index) => {
+        return fetchBytes(`${base}/${segmentName(index)}?v=${version}`, 15000, "force-cache");
+      }, { concurrency: 4, shouldStop: () => state.stopRequested })) {
         if (state.stopRequested) break;
+        const name = segmentName(index);
+        batchBytes += ab.byteLength;
+        fetchedCount += 1;
+        state.compressedPrefetchBytesMax = Math.max(state.compressedPrefetchBytesMax || 0, batchBytes);
+        state.compressedPrefetchSourceSec = Math.max(state.compressedPrefetchSourceSec || 0, fetchedCount * segmentSourceSeconds);
 
         // Keep the long reserve compressed. Before playback begins decode only
         // enough for the startup target; after that, normal lead limiting keeps
@@ -439,8 +443,8 @@ async function feedTrack(state, MP4Box, kind, initName) {
         }
 
         await holdIfTooFarAhead(state, lastPtsSec, kind);
-        appendBuffer(entry.ab);
-        fed.add(entry.name);
+        appendBuffer(ab);
+        fed.add(name);
         await processPending();
       }
       nextIndex = batchEnd + 1;

@@ -180,7 +180,7 @@ test("WebCodecs restart preserves user activation by avoiding awaited old-player
   assert.doesNotMatch(playerBlock, /await stopCyberdashPlayback/);
   assert.match(playerBlock, /cleanupMedia\(Boolean\(meta\.watchHistoryKey[\s\S]*?\)\)/);
   assert.match(playerBlock, /const module = cyberdashModule \|\| await ensureCyberdashModule\(\)/);
-  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20261006-pause-v10"\)/);
+  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20261007-prefetch-v11"\)/);
 });
 
 test("WebCodecs playback rate is forwarded to the server and expands source-time buffer headroom", () => {
@@ -325,7 +325,7 @@ test("embedded WebCodecs player prefetches static compressed segments without pe
   assert.match(embedded, /preparedId = null/);
   assert.match(embedded, /\/api\/experimental\/cyberdash\/prepared\/start/);
   assert.match(embedded, /const prefetchSourceSeconds = 18/);
-  assert.match(embedded, /Promise\.all\(indexes\.map/);
+  assert.match(embedded, /for await \(const \{ index, value: ab \} of orderedPrefetch/);
   assert.match(embedded, /fetchBytes\([^\n]*"force-cache"\)/);
   assert.match(embedded, /compressedPrefetchSourceSec/);
   assert.match(embedded, /if \(!state\?\.sessionId \|\| state\.preparedStatic\) return/);
