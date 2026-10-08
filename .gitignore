@@ -11,6 +11,8 @@ frontend/node_modules/
 
 # Local runtime data
 webapp/data/
+.local-ui-v3/
+webapp/.local-ui-v3/
 *.log
 
 # Local environment and credentials

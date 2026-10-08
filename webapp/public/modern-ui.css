@@ -1,0 +1,317 @@
+/* New dashboard skin. Every rule is isolated from the permanent Classic UI. */
+html[data-ui='new'] {
+  color-scheme: dark;
+  --bg: #0b111a;
+  --panel: #111b28;
+  --panel-2: #172537;
+  --line: #26384c;
+  --text: #edf5fc;
+  --muted: #a0b1c3;
+  --accent: #55d8ed;
+  --accent-2: #a694ff;
+  --ok: #56d39a;
+  --scrim: rgba(3, 9, 16, .72);
+  --overlay-panel: rgba(9, 17, 27, .98);
+  --overlay-panel-soft: rgba(15, 27, 41, .97);
+  --overlay-surface: rgba(8, 16, 26, .96);
+  --overlay-border: rgba(165, 202, 231, .24);
+  --shadow: rgba(0, 0, 0, .32);
+  --radius: 16px;
+  --tap: 56px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+html[data-ui='new'][data-theme='day'] {
+  color-scheme: light;
+  --bg: #eef3f7;
+  --panel: #f9fbfd;
+  --panel-2: #e6eef5;
+  --line: #ccd9e4;
+  --text: #152536;
+  --muted: #526a80;
+  --accent: #087f9b;
+  --accent-2: #6550b7;
+  --ok: #14734c;
+  --scrim: rgba(17, 37, 54, .36);
+  --overlay-panel: rgba(248, 251, 253, .98);
+  --overlay-panel-soft: rgba(238, 244, 248, .98);
+  --overlay-surface: rgba(248, 251, 253, .97);
+  --overlay-border: rgba(32, 66, 94, .2);
+  --shadow: rgba(25, 49, 68, .16);
+}
+
+html[data-ui='new'] body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: .005em;
+}
+
+html[data-ui='new'] #app { min-height: 100%; height: auto; }
+html[data-ui='new'] .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  flex-wrap: wrap;
+  padding: 12px clamp(16px, 3vw, 36px);
+  background: var(--panel);
+  border-color: var(--line);
+}
+html[data-ui='new'] .brand { font-weight: 750; letter-spacing: -.025em; }
+html[data-ui='new'] .brand .dot { background: var(--accent); box-shadow: none; }
+html[data-ui='new'] .mode-tabs { gap: 3px; padding: 5px; background: var(--bg); border-color: var(--line); }
+html[data-ui='new'] .mode-tab { min-height: 44px; padding-inline: clamp(12px, 1.25vw, 18px); border-radius: 10px; color: var(--muted); }
+html[data-ui='new'] .mode-tab.active { color: var(--text); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); }
+html[data-ui='new'] .status { color: var(--muted); }
+html[data-ui='new'] .side-panel { backdrop-filter: none; }
+@media (min-width: 901px) and (max-width: 1450px) {
+  html[data-ui='new'] .topbar-left { flex: 0 0 auto; }
+  html[data-ui='new'] .mode-tabs { order: 3; flex: 1 0 100%; flex-wrap: wrap; justify-content: flex-start; }
+  html[data-ui='new'] .topbar-right { order: 2; margin-left: auto; }
+}
+
+html[data-ui='new'] .layout {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: calc(100vh - 72px);
+  height: auto;
+  padding: clamp(16px, 3vw, 36px);
+  padding-bottom: max(clamp(24px, 4vw, 48px), env(safe-area-inset-bottom));
+  overflow: visible;
+  background: var(--bg);
+}
+html[data-ui='new'] .col { background: transparent; }
+html[data-ui='new'] .player {
+  order: 2;
+  width: 100%;
+  max-width: 1600px;
+  align-self: center;
+  overflow: visible;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  box-shadow: 0 14px 36px var(--shadow);
+}
+html[data-ui='new'] .player > .col-head { padding: 16px 20px; border-color: var(--line); }
+html[data-ui='new'] .player > .col-head h2 { color: var(--text); text-transform: none; letter-spacing: -.015em; font-size: 18px; }
+html[data-ui='new'] .player-toolbar,
+html[data-ui='new'] .browser-player-settings { background: var(--panel); border-color: var(--line); }
+html[data-ui='new'] .screen { border-radius: 0; }
+html[data-ui='new'] .quick,
+html[data-ui='new'] .stream-settings { border-color: var(--line); }
+html[data-ui='new'] .player:not(:has(.screen.playing)) .modern-now-playing { display: none; }
+
+/* Idle previews yield space to the actions; playing media keeps its full layout. */
+html[data-ui='new'] .accordion-layout .player:not(:has(.screen.playing)) .screen {
+  height: clamp(190px, 30vh, 520px);
+  min-height: 190px;
+}
+
+/* Editorial intro and current playback context share the normal document flow. */
+html[data-ui='new'] .modern-intro {
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 8px 3vw 0;
+}
+html[data-ui='new'] .modern-intro :is(.eyebrow, .modern-eyebrow) {
+  display: block;
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+html[data-ui='new'] .modern-intro h1 { margin: 0; font-size: clamp(28px, 4vw, 48px); line-height: 1.08; letter-spacing: -.045em; }
+html[data-ui='new'] .modern-intro p { max-width: 66ch; margin: 10px 0 0; color: var(--muted); line-height: 1.55; }
+html[data-ui='new'] .modern-now-playing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+html[data-ui='new'] .modern-now-playing strong { color: var(--text); font-weight: 750; }
+html[data-ui='new'] .modern-now-playing span { overflow-wrap: anywhere; }
+
+/* The dock stays in flow; sticky positioning cannot cover the media surface. */
+html[data-ui='new'] .everyday-controls {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(56px, 1fr));
+  gap: 10px;
+  width: min(100%, 1120px);
+  margin: 14px 0 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px var(--shadow);
+}
+html[data-ui='new'] .everyday-controls .everyday-control,
+html[data-ui='new'] .modern-quick-dock > .modern-only {
+  min-width: 56px;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  border-color: var(--line);
+  border-radius: 13px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+}
+html[data-ui='new'] .everyday-controls .everyday-control-icon { color: var(--accent); }
+html[data-ui='new'] .modern-reach-settings {
+  display: block;
+  width: min(100%, 1120px);
+  margin: 0;
+  padding: 0 4px;
+  color: var(--muted);
+}
+html[data-ui='new'] .modern-reach-settings summary {
+  width: fit-content;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+html[data-ui='new'] .modern-reach-settings-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+html[data-ui='new'] .modern-reach-settings:not([open]) > .modern-reach-settings-body { display: none; }
+html[data-ui='new'] .modern-reach-settings-body label { display: flex; align-items: center; gap: 8px; }
+html[data-ui='new'] .modern-reach-settings select {
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+html[data-ui='new'] #modernDeviceLayout { min-width: 150px; }
+html[data-ui='new'][data-quick-side='passenger'] .modern-quick-dock { align-self: flex-end; margin-left: auto; }
+
+html[data-ui='new'] .side-panel,
+html[data-ui='new'] .watch-accordion {
+  width: 100%;
+  max-width: 1600px;
+  align-self: center;
+  border-color: var(--line);
+  background: var(--panel);
+}
+html[data-ui='new'] .watch-accordion { padding: 14px clamp(12px, 2vw, 24px) 24px; }
+html[data-ui='new'] .watch-section-toggle { min-height: 56px; color: var(--text); }
+html[data-ui='new'] .watch-section { border-color: var(--line); }
+html[data-ui='new'] .watch-section .side-panel,
+html[data-ui='new'] .watch-section .player-toolbar,
+html[data-ui='new'] .watch-section .quick { background: transparent; }
+html[data-ui='new'] .btn:not(.danger),
+html[data-ui='new'] .home-tile,
+html[data-ui='new'] .everyday-storage,
+html[data-ui='new'] .ch-menu-btn {
+  border-color: var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+}
+html[data-ui='new'] :is(.btn, .home-tile, .watch-section-toggle, .quality-quick button, .setting-options button) { min-height: 48px; }
+html[data-ui='new'] .setting-options button.active,
+html[data-ui='new'] .quality-quick button.active { border-color: var(--accent); }
+html[data-ui='new'] .ch-menu-panel { z-index: 130; background: var(--overlay-panel); border-color: var(--overlay-border); box-shadow: 0 12px 30px var(--shadow); }
+html[data-ui='new'] .modal,
+html[data-ui='new'] .side-panel { box-shadow: 0 14px 36px var(--shadow); }
+
+html[data-ui='new'][data-device-layout='tesla'] .everyday-controls {
+  width: min(100%, 640px);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+html[data-ui='new'][data-device-layout='tesla'] :is(.everyday-controls .everyday-control, .modern-quick-dock > .modern-only) { min-width: 64px; min-height: 64px; font-size: 15px; }
+html[data-ui='new'][data-device-layout='tesla'] .modern-reach-settings select { min-height: 56px; }
+html[data-ui='new'][data-device-layout='tesla'] .modern-intro { display: none; }
+html[data-ui='new'][data-device-layout='tesla'] .layout { gap: 8px; padding: 10px 24px 16px; }
+html[data-ui='new'][data-device-layout='tesla'] .player > .col-head { padding: 8px 14px; }
+html[data-ui='new'][data-device-layout='tesla'] .player:not(:has(.screen.playing)) .screen {
+  height: clamp(132px, 23vh, 168px);
+  min-height: 132px;
+  margin-block: 7px;
+}
+html[data-ui='new'][data-device-layout='tesla'] .everyday-controls { margin-top: 6px; }
+html[data-ui='new'][data-device-layout='tesla'] .screen.playing { max-height: min(34vh, 300px); }
+html[data-ui='new'][data-device-layout='tv'] :is(.mode-tab, .menu-toggle, .theme-toggle) { min-height: 56px; }
+html[data-ui='new'][data-device-layout='tv'] .mode-tab { padding-inline: 20px; }
+html[data-ui='new'][data-device-layout='tv'] :is(.everyday-controls .everyday-control, .modern-quick-dock > .modern-only) { min-height: 64px; }
+
+html[data-ui='new'] :is(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+html[data-ui='new'] :is(button, .mode-tab, .btn, .home-tile) { transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
+
+/* Quiet, static card tint on desktop pointers; touch-first hardware stays flat. */
+@media (min-width: 901px) and (hover: hover) and (pointer: fine) {
+  html[data-ui='new']:not([data-device-layout='tesla']):not([data-device-layout='tv']) .player,
+  html[data-ui='new']:not([data-device-layout='tesla']):not([data-device-layout='tv']) .everyday-controls,
+  html[data-ui='new']:not([data-device-layout='tesla']):not([data-device-layout='tv']) .modern-now-playing,
+  html[data-ui='new']:not([data-device-layout='tesla']):not([data-device-layout='tv']) .watch-accordion {
+    background: linear-gradient(135deg, color-mix(in srgb, var(--panel) 94%, var(--accent) 6%), color-mix(in srgb, var(--panel) 97%, var(--accent-2) 3%));
+    border-color: color-mix(in srgb, var(--line) 76%, var(--accent) 24%);
+  }
+}
+
+/* Fullscreen and synthetic-screen states must keep the existing screen boundary. */
+html[data-ui='new'] body.screen-fullscreen :is(.modern-intro, .modern-quick-dock, .everyday-controls, .modern-reach-settings) { display: none !important; }
+html[data-ui='new'] body:has(.screen.synthetic-fullscreen) :is(.modern-intro, .modern-quick-dock, .everyday-controls, .modern-reach-settings) { display: none !important; }
+
+@media (max-width: 900px) {
+  html[data-ui='new'] .topbar { flex-wrap: wrap; gap: 10px; }
+  html[data-ui='new'] .topbar-left { flex: 1 1 auto; }
+  html[data-ui='new'] .topbar-right { flex: 0 1 auto; }
+  html[data-ui='new'] .mode-tabs { order: 3; width: 100%; overflow-x: auto; scrollbar-width: thin; }
+  html[data-ui='new'] .mode-tabs.open { max-height: calc(100dvh - 84px); overflow-y: auto; overscroll-behavior: contain; backdrop-filter: none; }
+  html[data-ui='new'] .mode-tab { flex: 0 0 auto; }
+  html[data-ui='new'] .layout { padding: 18px; }
+  html[data-ui='new'] .everyday-controls { grid-template-columns: repeat(4, minmax(56px, 1fr)); }
+}
+@media (max-width: 560px) {
+  html[data-ui='new'] .topbar { padding: 10px 12px; }
+  html[data-ui='new'] .topbar-right { gap: 6px; }
+  html[data-ui='new'] .brand { font-size: 18px; }
+  html[data-ui='new'] .layout { gap: 12px; padding: 14px 12px max(18px, env(safe-area-inset-bottom)); }
+  html[data-ui='new'] .modern-intro p { font-size: 15px; }
+  html[data-ui='new'] .player { border-radius: 15px; }
+  html[data-ui='new'] .player > .col-head { padding: 12px; }
+  html[data-ui='new'] .everyday-controls {
+    grid-template-columns: repeat(4, minmax(56px, 1fr));
+    gap: 7px;
+    padding: 8px;
+  }
+  html[data-ui='new'] :is(.everyday-controls .everyday-control, .modern-quick-dock > .modern-only) { flex-direction: column; gap: 4px; min-height: 58px; padding: 5px 3px; font-size: 12px; }
+  html[data-ui='new'] .modern-reach-settings-body { gap: 8px; }
+  html[data-ui='new'] .modern-reach-settings select { min-height: 52px; }
+}
+@media (min-width: 1500px) {
+  html[data-ui='new'] .layout { padding: 40px clamp(40px, 6vw, 112px); }
+  html[data-ui='new'] .modern-intro h1 { font-size: 52px; }
+}
+@media (min-width: 1500px) and (max-height: 800px) {
+  html[data-ui='new'] .layout { gap: 12px; padding-block: 18px; }
+  html[data-ui='new'] .modern-intro h1 { font-size: 34px; }
+  html[data-ui='new'] .modern-intro p { margin-top: 5px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-ui='new'] *, html[data-ui='new'] *::before, html[data-ui='new'] *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}

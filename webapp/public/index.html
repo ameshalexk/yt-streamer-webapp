@@ -23,6 +23,8 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css?v=20261004-accordion-latest" />
   <link rel="stylesheet" href="/everyday-controls.css?v=20261007" />
+  <link rel="stylesheet" href="/ui-switch.css?v=20261008-v3" />
+  <script src="/ui-switch.js?v=20261008-v3"></script>
 </head>
 <body>
   <div id="app">
@@ -44,6 +46,10 @@
         <button class="mode-tab" type="button" data-mode="money" title="Open the private Money dashboard in a new tab">Money</button>
       </nav>
       <div class="topbar-right">
+        <nav id="uiSwitch" class="ui-switch" aria-label="Interface style">
+          <a href="?ui=classic" role="button" data-ui-mode="classic" aria-pressed="true">Classic UI</a>
+          <a href="?ui=new" role="button" data-ui-mode="new" aria-pressed="false">New UI</a>
+        </nav>
         <button class="theme-toggle" id="themeToggleBtn" type="button" aria-label="Switch to day mode" title="Switch to day mode">
           <span class="theme-toggle-icon" aria-hidden="true">☀</span>
           <span class="theme-toggle-label">Day</span>
@@ -805,5 +811,6 @@
   <script src="/everyday-controls.js?v=20261007"></script>
   <script src="/extractor-controls.js?v=20261007"></script>
   <script src="/app.js?v=20261007-recovery-storage"></script>
+  <script src="/modern-ui.js?v=20261008-v3"></script>
 </body>
 </html>
