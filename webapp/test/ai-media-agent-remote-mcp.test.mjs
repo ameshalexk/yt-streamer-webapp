@@ -144,3 +144,70 @@ test("disconnect invalidates browser grants, stale IDs and unsafe arguments deni
     assert.equal((await call(gateway,token,"request_browser_approval",{device_id,actions:["play_media"]})).data.status,"offline");
   }finally{socket?.terminate();await gateway.close();await relay.close();}
 });
+
+test("standard session replay protection without custom nonce headers",async()=>{
+  const x=await setup();
+  try{
+    const token=jwt("owner-1");
+    const raw=async(body,{session,identity=token,nonce}={})=>{
+      const headers={"content-type":"application/json",accept:"application/json, text/event-stream",
+        "cf-access-jwt-assertion":identity};
+      if(session)headers["mcp-session-id"]=session;
+      if(nonce)headers["x-ai-request-id"]=nonce;
+      const res=await fetch(x.gateway.origin+"/remote/mcp",{method:"POST",headers,body:JSON.stringify(body)});
+      return {code:res.status,headers:res.headers,body:await res.json()};
+    };
+    const init=await raw({jsonrpc:"2.0",id:1,method:"initialize",
+      params:{protocolVersion:"2025-11-25"}});
+    assert.equal(init.code,200);
+    const session=init.headers.get("mcp-session-id");
+    assert.ok(session?.length>=32,"session is unpredictable and non-empty");
+    const command={jsonrpc:"2.0",id:12,method:"tools/call",
+      params:{name:"list_devices",arguments:{}}};
+    assert.equal((await raw(command,{session})).code,200);
+    assert.equal((await raw(command,{session})).code,409,"same RPC id cannot execute twice");
+    assert.equal((await raw({...command,id:13},{session})).code,200);
+    assert.equal((await raw({...command,id:14},{session,identity:jwt("visitor")})).code,401);
+    assert.equal((await raw({...command,id:15},{session,identity:jwt("owner-2")})).code,401);
+    assert.equal((await raw({...command,id:16},{session:"not-valid"})).code,404);
+    assert.equal((await raw({...command,id:17})).code,400,"stateless calls still need unique UUID nonce");
+    const legacyId=randomUUID();
+    assert.equal((await raw({...command,id:18},{nonce:legacyId})).code,200);
+    assert.equal((await raw({...command,id:19},{nonce:legacyId})).code,409);
+    const resumed=await raw({jsonrpc:"2.0",id:2,method:"initialize",
+      params:{protocolVersion:"2025-11-25"}});
+    assert.notEqual(resumed.headers.get("mcp-session-id"),session,
+      "new handshake creates a new isolated replay domain");
+  }finally{await x.close();}
+});
+
+test("unknown signing-key rollover refreshes pinned JWKS once; invalid tokens fail closed",async()=>{
+  const rotated=generateKeyPairSync("rsa",{modulusLength:2048});
+  const {n:n2,e:e2}=rotated.publicKey.export({format:"jwk"});
+  const key2={kid:"access-key-2",kty:"RSA",use:"sig",alg:"RS256",n:n2,e:e2};
+  let current=jwks,refreshCount=0;
+  const relay=await startLocalAgentRelay({ownerToken:auth(),pairingToken:auth()});
+  const gateway=await startLocalRemoteMcpGateway({relay,audience,allowedSubjects:["owner-1"],
+    jwksProvider:{issuer,get:async()=>current,refresh:async()=>{
+      refreshCount++;current={keys:[...jwks.keys,key2]};return current;
+    }}});
+  function signedRotated(overrides={},kid="access-key-2"){
+    const time=Math.floor(Date.now()/1000);
+    const header=Buffer.from(JSON.stringify({alg:"RS256",kid})).toString("base64url");
+    const body=Buffer.from(JSON.stringify({iss:issuer,aud:audience,sub:"owner-1",
+      iat:time-2,exp:time+100,...overrides})).toString("base64url");
+    return header+"."+body+"."+sign("RSA-SHA256",Buffer.from(header+"."+body),rotated.privateKey).toString("base64url");
+  }
+  try{
+    const first=await call(gateway,signedRotated(),"list_devices");
+    assert.equal(first.code,200);
+    assert.equal(refreshCount,1,"missing key triggers one trusted refresh");
+    assert.equal((await call(gateway,signedRotated(),"list_devices")).code,200);
+    assert.equal(refreshCount,1,"known key is cached");
+    assert.equal((await call(gateway,signedRotated({exp:1}),"list_devices")).code,401);
+    assert.equal((await call(gateway,signedRotated({aud:"another-app"}),"list_devices")).code,401);
+    assert.equal((await call(gateway,signedRotated({sub:"intruder"}),"list_devices")).code,401);
+    assert.equal((await call(gateway,signedRotated({},"unknown-key"),"list_devices")).code,401);
+    assert.equal(refreshCount,1,"unrecognized kid cannot flood pinned JWKS");
+  }finally{await gateway.close();await relay.close();}
+});

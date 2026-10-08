@@ -1,7 +1,7 @@
 // ISOLATED remote MCP candidate for #30. Bind loopback only; NEVER forward /dev/*.
 // Cloudflare Access TLS ingress and Access application configuration are external approval gates.
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { devMcpTools } from "./ai-agent-dev-mcp.mjs";
 import { verifyAccessJwt } from "../src/lib/ai-media-agent-remote-authorization.js";
 
@@ -48,9 +48,9 @@ function validate(name,args){
   }
   return true;
 }
-function json(res,code,value){
+function json(res,code,value,headers={}){
   res.writeHead(code,{"content-type":"application/json; charset=utf-8","cache-control":"no-store",
-    "x-content-type-options":"nosniff","referrer-policy":"no-referrer"});
+    "x-content-type-options":"nosniff","referrer-policy":"no-referrer",...headers});
   res.end(JSON.stringify(value));
 }
 async function readJson(req){
@@ -104,6 +104,21 @@ export async function startLocalRemoteMcpGateway({relay,teamDomain,audience,allo
     ||(teamDomain && keySource.issuer!=="https://"+teamDomain)
     ||typeof keySource.get!=="function")throw Error("untrusted_jwks_configuration");
   const allowed=new Set(allowedSubjects), used=new Map(), calls=new Map();
+  // A standard Streamable HTTP MCP client automatically echoes this server-issued
+  // session header. Bind the random session to the verified Access principal and
+  // reject duplicate JSON-RPC IDs for its entire bounded lifetime. Legacy stateless
+  // clients may instead supply a per-call X-AI-Request-Id UUID as before.
+  const sessions=new Map(), SESSION_TTL_MS=15*60000, MAX_SESSIONS=128;
+  let lastUnknownKidRefresh=-Infinity;
+  function pruneSessions(){
+    for(const [id,s] of sessions)if(now()>=s.expires)sessions.delete(id);
+  }
+  function sessionFor(header,identity){
+    if(typeof header!=="string" || header.length>128)return null;
+    const s=sessions.get(header);
+    if(!s || now()>=s.expires || s.subject!==identity.subject || s.issuer!==identity.issuer)return null;
+    return s;
+  }
   function throttle(subject){
     const at=now(),hits=(calls.get(subject)||[]).filter(t=>at-t<60000);
     if(hits.length>=60)return false;
@@ -124,14 +139,37 @@ export async function startLocalRemoteMcpGateway({relay,teamDomain,audience,allo
     let identity;
     try{
       const token=req.headers["cf-access-jwt-assertion"];
-      const jwks=await keySource.get();
-      identity=verifyAccessJwt(token,{jwks,issuer:keySource.issuer,audience,
-        nowSeconds:Math.floor(now()/1000)});
+      let jwks=await keySource.get();
+      try{
+        identity=verifyAccessJwt(token,{jwks,issuer:keySource.issuer,audience,
+          nowSeconds:Math.floor(now()/1000)});
+      }catch(error){
+        // Only refresh on a missing key ID; malformed, expired or bad-signature
+        // tokens must never cause network refresh. Cooldown blocks kid-flood DoS.
+        let kid=null;
+        try{
+          const head=typeof token==="string"?token.split(".")[0]:"";
+          if(head.length>0&&head.length<2048)
+            kid=JSON.parse(Buffer.from(head,"base64url").toString("utf8"))?.kid;
+        }catch{}
+        if(typeof kid!=="string"||kid.length>180||jwks.keys?.some(k=>k.kid===kid)
+           ||typeof keySource.refresh!=="function"
+           ||now()-lastUnknownKidRefresh<30000)throw error;
+        lastUnknownKidRefresh=now();
+        jwks=await keySource.refresh();
+        identity=verifyAccessJwt(token,{jwks,issuer:keySource.issuer,audience,
+          nowSeconds:Math.floor(now()/1000)});
+      }
       if(!allowed.has(identity.subject))throw Error("subject_not_allowed");
     }catch{return json(res,401,{error:"unauthorized"});}
     if(!throttle(identity.subject))return json(res,429,{error:"rate_limited"});
     let call;
     try{call=await readJson(req);}catch{return json(res,400,fail(-32700,"invalid_json"));}
+    pruneSessions();
+    const sessionHeader=req.headers["mcp-session-id"];
+    const session=sessionHeader?sessionFor(sessionHeader,identity):null;
+    if(sessionHeader && !session && call?.method!=="initialize")
+      return json(res,404,{error:"invalid_mcp_session"});
     if(call?.jsonrpc==="2.0" && call.method==="notifications/initialized"
        && call.id===undefined){
       res.writeHead(202,{"cache-control":"no-store"});res.end();return;
@@ -142,23 +180,38 @@ export async function startLocalRemoteMcpGateway({relay,teamDomain,audience,allo
     if(call.method==="initialize"){
       if(!["2025-11-25","2025-03-26"].includes(call.params?.protocolVersion))
         return json(res,400,fail(-32602,"unsupported_client_version",call.id));
+      if(sessions.size>=MAX_SESSIONS)return json(res,429,{error:"session_capacity_exceeded"});
+      const sessionId=randomBytes(32).toString("base64url");
+      sessions.set(sessionId,{issuer:identity.issuer,subject:identity.subject,
+        expires:now()+SESSION_TTL_MS,seen:new Set()});
       return json(res,200,result(call.id,{protocolVersion:VERSION,
-        capabilities:{tools:{}},serverInfo:{name:"yt-streamer-remote-candidate",version:"0.1.0"}}));
+        capabilities:{tools:{}},serverInfo:{name:"yt-streamer-remote-candidate",version:"0.1.0"}}),
+        {"mcp-session-id":sessionId});
     }
     if(call.method==="ping")return json(res,200,result(call.id,{}));
     if(call.method==="tools/list")return json(res,200,result(call.id,{tools:mcpTools}));
     if(call.method!=="tools/call")return json(res,200,fail(-32601,"method_not_found",call.id));
     const action=call.params?.name,args=call.params?.arguments||{};
     if(!validate(action,args))return json(res,200,result(call.id,errorOutput("invalid_tool_arguments")));
-    // Nonce required for all tools/call, including read/approval. Reject retries, never replay uncertain writes.
-    const nonce=req.headers["x-ai-request-id"];
-    if(!uuid(nonce))return json(res,400,fail(-32600,"unique_request_id_required",call.id));
-    const at=now();
-    for(const [k,t] of used)if(at-t>=300000)used.delete(k);
-    const replayKey=identity.issuer+"|"+identity.subject+"|"+nonce;
-    if(used.has(replayKey))return json(res,409,fail(-32600,"replayed_request",call.id));
-    if(used.size>=5000)return json(res,429,{error:"replay_capacity_exceeded"});
-    used.set(replayKey,at);
+    // Session mode: the standard MCP client's JSON-RPC request ID is unique
+    // within a server-issued, unguessable principal-bound session. Record it
+    // BEFORE dispatch; retries of uncertain writes are always denied.
+    // Header mode: preserve legacy stateless UUID nonce replay protection.
+    if(session){
+      const requestKey=typeof call.id+":"+String(call.id);
+      if(session.seen.has(requestKey))return json(res,409,fail(-32600,"replayed_request",call.id));
+      if(session.seen.size>=2048)return json(res,429,{error:"session_request_limit"});
+      session.seen.add(requestKey);
+    }else{
+      const nonce=req.headers["x-ai-request-id"];
+      if(!uuid(nonce))return json(res,400,fail(-32600,"unique_request_id_required",call.id));
+      const at=now();
+      for(const [k,t] of used)if(at-t>=300000)used.delete(k);
+      const replayKey=identity.issuer+"|"+identity.subject+"|"+nonce;
+      if(used.has(replayKey))return json(res,409,fail(-32600,"replayed_request",call.id));
+      if(used.size>=5000)return json(res,429,{error:"replay_capacity_exceeded"});
+      used.set(replayKey,at);
+    }
     let value;
     try{
       if(action==="list_devices")value={devices:relay.registry.list("owner")};

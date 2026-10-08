@@ -78,3 +78,13 @@ GitHub serves as the accessible durable checkpoint while Mac Control tunnel is d
 
 ### Pending approval gates
 No changes to Cloudflare Access app, tunnel, public ingress, production browser, launchd, user Voice account or OpenClaw config were made. Next: design and isolated-test cryptographic browser session registration, solve generic MCP per-call nonce interoperability, repair/verify Jarvis Telegram channel separately with authorization, and obtain explicit approval before any live Access/Tesla test or production deployment.
+
+## Checkpoint #8 — current 2026-10-08 implementation and tests
+- Development resumed from clean pushed `f9a75c595def52de816125a390bb9b516b62f283` in independent `ai-media-agent-sprint1` worktree.
+- Resolved generic MCP header-interop limitation with cryptographic session IDs issued on legacy `initialize`. Server validates the principal binding and deduplicates all tools/call JSON-RPC IDs for the session. Old `X-AI-Request-Id` stateless path is preserved.
+- Added unknown-kid JWKS refresh (pinned issuer only, 30-second abuse throttle) and negative rotation/expiry/audience/subject tests. This proves synthetic key behavior, NOT Cloudflare-origin live JWT exchange.
+- Added internal authenticated browser registration registry with one-time nonce, exact verified principal/device/connection/origin/action matching, expiry, reconnection invalidation and revoke tests. This class is *not an integrated browser-authentication endpoint*. Existing dev relay pairing remains test-only.
+- Removed synthetic nonce-header fetch override from official MCP SDK probe. Verified ordinary v2 client automatically echoes the session token, falls back to 2025-11-25 and performs approved browser state-readback. 2026-07-28 native-only remains unsupported.
+- Final local verification: syntax check PASS; full regressions **315/315 PASS**; official SDK **1/1 PASS**; targeted registration/JWKS/nonce/approval **9/9 PASS**. Latest baseline CI run 37860385484 tested prior code; a new CI run must be checked after push.
+- Live read-only observations: `DEPLOYED_COMMIT` and `release.json` show **06507e539becb7ed3f261d3db86f479b34bd9952**, production LaunchAgent running. Public Access JWKS still serves two keys. Installed OpenClaw 2026.9.8 Telegram currently running and connected with no status issue, but **zero** configured MCP servers. No OpenClaw, Cloudflare, launchd, /money, production or UI #24/PR #25 modifications.
+- Next: stage browser authentication at an approved dedicated Access origin and bind registry to trusted WS upgrade; integrate development-only OpenClaw voice-to-MCP under isolated config (live OpenClaw gateway not touched); verify real OAuth and Tesla/iPhone only with approval. Keep #30 open.

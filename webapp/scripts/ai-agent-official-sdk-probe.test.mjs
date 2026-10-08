@@ -2,7 +2,7 @@
 // ISOLATED TEST ONLY: ephemeral loopback ports, synthetic Access JWT, no production services.
 import test from "node:test";
 import assert from "node:assert/strict";
-import {generateKeyPairSync,sign,randomUUID,randomBytes} from "node:crypto";
+import {generateKeyPairSync,sign,randomBytes} from "node:crypto";
 import WebSocket from "ws";
 import {Client, StreamableHTTPClientTransport} from "@modelcontextprotocol/client";
 import {startLocalAgentRelay} from "./ai-agent-local-relay.mjs";
@@ -21,16 +21,11 @@ function signedJwt(subject="owner-1"){
   return head+"."+claims+"."+sign("RSA-SHA256",Buffer.from(head+"."+claims),privateKey).toString("base64url");
 }
 function makeClient(url,token,versionNegotiation={mode:"auto"}){
-  // Header injection is intentional: the existing candidate requires a new nonce
-  // on each tools/call, which standard clients do not generate by default.
-  const sdkFetch=(input,init={})=>{
-    const headers=new Headers(init.headers);
-    headers.set("x-ai-request-id",randomUUID());
-    return fetch(input,{...init,headers});
-  };
+  // Unmodified official MCP transport: NO custom per-request nonce/fetch adapter.
+  // Server-issued Mcp-Session-Id binds identity and deduplicates JSON-RPC IDs.
   const client=new Client({name:"yt-streamer-official-sdk-probe",version:"0.1.0"},{versionNegotiation});
   const transport=new StreamableHTTPClientTransport(new URL(url+"/remote/mcp"),{
-    requestInit:{headers:{"cf-access-jwt-assertion":token}},fetch:sdkFetch
+    requestInit:{headers:{"cf-access-jwt-assertion":token}}
   });
   return {client,transport};
 }
@@ -58,6 +53,7 @@ test("official SDK v2: auto fallback, tools, identity-bound approval, readback, 
     clients.push(sdk.client);
     await sdk.client.connect(sdk.transport);
     assert.equal(sdk.client.getProtocolEra(),"legacy"); // 2025-11-25 fallback
+    assert.ok(sdk.transport.sessionId?.length>=32,"official SDK must echo issued session ID");
     const list=await sdk.client.listTools();
     assert.ok(list.tools.some(t=>t.name==="request_browser_approval"));
     assert.ok(list.tools.some(t=>t.name==="get_player_state"));
