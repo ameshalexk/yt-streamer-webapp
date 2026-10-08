@@ -40,10 +40,40 @@ export function verifyAccessJwt(token,{jwks,issuer,audience,nowSeconds=Math.floo
  * There is deliberately no HTTP route or client-supplied `approved` switch here.
  */
 export class BrowserApprovalRegistry {
-  #approvals=new Map(); #now; #maxTtl;
+  #approvals=new Map(); #pending=new Map(); #now; #maxTtl;
   constructor({now=Date.now,maxTtlMs=300000}={}) {
     if(typeof now!=="function" || !Number.isInteger(maxTtlMs) || maxTtlMs<1000 || maxTtlMs>300000) reject();
     this.#now=now;this.#maxTtl=maxTtlMs;
+  }
+  /** A remote identity can REQUEST a grant, but only its paired browser connection can approve it. */
+  request({identity,deviceId,connectionId,actions,ttlMs=120000}) {
+    if(!identity || !nonempty(identity.subject) || !nonempty(identity.issuer)
+      || !nonempty(deviceId) || !nonempty(connectionId) || !Array.isArray(actions)
+      || actions.length<1 || actions.length>OPS.size || new Set(actions).size!==actions.length
+      || actions.some(a=>!OPS.has(a)) || !Number.isInteger(ttlMs)
+      || ttlMs<1000 || ttlMs>this.#maxTtl) reject();
+    for(const [key,item] of this.#pending) if(this.#now()>=item.deadline) this.#pending.delete(key);
+    if(this.#pending.size>=32) reject();
+    const requestId=randomUUID();
+    this.#pending.set(requestId,{identity:{subject:identity.subject,issuer:identity.issuer},
+      deviceId,connectionId,actions,ttlMs,deadline:this.#now()+60000,status:"pending"});
+    return {request_id:requestId,status:"pending_browser_approval",expires_at:this.#now()+60000};
+  }
+  approvePendingFromBrowser({requestId,deviceId,connectionId}) {
+    const p=this.#pending.get(requestId);
+    if(!p || p.status!=="pending" || this.#now()>=p.deadline
+       || p.deviceId!==deviceId || p.connectionId!==connectionId) return false;
+    const grant=this.approve({identity:p.identity,deviceId,connectionId,actions:p.actions,ttlMs:p.ttlMs});
+    p.status="approved";p.approvalId=grant.approval_id;
+    return true;
+  }
+  claim({identity,requestId}) {
+    const p=this.#pending.get(requestId);
+    if(!p || this.#now()>=p.deadline || !identity
+       || !match(identity.subject,p.identity.subject) || !match(identity.issuer,p.identity.issuer)) return null;
+    if(p.status!=="approved") return {status:"pending_browser_approval"};
+    this.#pending.delete(requestId);
+    return {status:"approved",approval_id:p.approvalId,device_id:p.deviceId};
   }
   approve({identity,deviceId,connectionId,actions,ttlMs=120000}) {
     if(!identity || !nonempty(identity.subject) || !nonempty(identity.issuer)
@@ -63,7 +93,16 @@ export class BrowserApprovalRegistry {
       && deviceId===a.deviceId && connectionId===a.connectionId && a.actions.has(action));
   }
   revoke(approvalId){return this.#approvals.delete(approvalId);}
+  revokeOwned(identity,approvalId) {
+    const a=this.#approvals.get(approvalId);
+    if(!a || !identity || !match(a.subject,identity.subject)||!match(a.issuer,identity.issuer))return false;
+    return this.#approvals.delete(approvalId);
+  }
+  revokePendingConnection(deviceId,connectionId) {
+    for(const [key,p] of this.#pending)if(p.deviceId===deviceId && p.connectionId===connectionId)this.#pending.delete(key);
+  }
   revokeConnection(deviceId,connectionId){
+    for(const [key,p] of this.#pending) if(p.deviceId===deviceId && p.connectionId===connectionId) this.#pending.delete(key);
     for(const [key,a] of this.#approvals){if(a.deviceId===deviceId&&a.connectionId===connectionId)this.#approvals.delete(key);}
   }
 }

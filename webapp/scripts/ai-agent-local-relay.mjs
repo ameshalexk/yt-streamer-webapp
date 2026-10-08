@@ -4,6 +4,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import { AgentSessionRegistry } from "../src/lib/ai-media-agent-session-registry.js";
+import { BrowserApprovalRegistry } from "../src/lib/ai-media-agent-remote-authorization.js";
 import { handleDevMcp } from "./ai-agent-dev-mcp.mjs";
 
 function equalSecret(a, b) {
@@ -35,6 +36,7 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
     throw new Error("browser_origin_must_be_explicit_loopback");
   }
   const clients = new Set();
+  const approvals = new BrowserApprovalRegistry();
   const registry = new AgentSessionRegistry({
     timeoutMs, ttlMs, authorizePairing: ({ principal, pairingProof }) =>
       principal === "owner" && equalSecret(pairingProof, pairingToken),
@@ -100,6 +102,14 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
       if (message?.kind === "heartbeat") registry.heartbeat({
         principal: "owner", deviceId, connectionId, state: message.state,
       });
+      else if (message?.kind === "approve_remote_request") {
+        // Only the already paired, live socket for this exact device may grant consent.
+        // The browser UI sends this only following an explicit local trusted click.
+        if (typeof message.request_id !== "string" ||
+          !approvals.approvePendingFromBrowser({requestId:message.request_id,deviceId,connectionId}))
+          ws.send(JSON.stringify({kind:"remote_approval_rejected"}));
+        else ws.send(JSON.stringify({kind:"remote_approval_recorded"}));
+      }
       else if (message?.kind === "ack") registry.acknowledge({
         principal: "owner", deviceId, connectionId, commandId: message.command_id,
         status: message.status, state: message.state, result: message.result, error: message.error,
@@ -109,7 +119,10 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
     ws.on("close", () => {
       clearTimeout(authTimeout);
       clients.delete(ws);
-      if (deviceId) registry.disconnect({ deviceId, connectionId });
+      if (deviceId) {
+        approvals.revokeConnection(deviceId, connectionId);
+        registry.disconnect({ deviceId, connectionId });
+      }
     });
   });
   await new Promise((resolve, reject) => {
@@ -120,7 +133,14 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
   const sweepTimer = setInterval(() => registry.sweep(), Math.min(1000, ttlMs));
   sweepTimer.unref?.();
   return {
-    origin, registry,
+    origin, registry, approvals,
+    remoteHooks: {
+      requestBrowserApproval({deviceId,connectionId,requestId,subject,actions}) {
+        return registry.connectionFor("owner",deviceId)===connectionId
+          && registry.notifyDevice("owner",deviceId,{kind:"remote_approval_request",
+            request_id:requestId,subject,actions,device_id:deviceId});
+      }
+    },
     // Local test hook, not an HTTP route and never exposed to a browser.
     disconnectPlayersForTest() { for (const client of clients) client.terminate(); },
     async close() {

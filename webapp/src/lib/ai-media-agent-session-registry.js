@@ -95,6 +95,15 @@ export class AgentSessionRegistry {
     return true;
   }
 
+  connectionFor(principal, deviceId) {
+    const session = this.#active(deviceId, principal);
+    return session ? session.connectionId : null;
+  }
+  notifyDevice(principal, deviceId, frame) {
+    const session = this.#active(deviceId, principal);
+    if (!session) return false;
+    try { return session.send(frame) !== false; } catch { return false; }
+  }
   list(principal) {
     if (!text(principal, 160)) fail("invalid_principal");
     return [...this.#sessions.values()].filter((session) => this.#active(session.id, principal))

@@ -77,6 +77,31 @@
         }, 1800);
         socket.send(JSON.stringify({kind:"heartbeat",state:state()}));
       }
+      if (message.kind === "remote_approval_request" && message.device_id === device && online) {
+        // A local, visible user click is mandatory; no silent or programmatic autoapproval.
+        const prompt = document.createElement("div");
+        prompt.id = "aiAgentRemoteApproval";
+        const question = document.createElement("p");
+        question.textContent = "Remote Access identity " + String(message.subject).slice(0,120)
+          + " requests " + (Array.isArray(message.actions) ? message.actions.join(", ") : "")
+          + " on this tab. Approve for up to 2 minutes?";
+        const approve = document.createElement("button");
+        approve.id = "aiAgentApproveRemote";
+        approve.textContent = "Approve remote agent";
+        const decline = document.createElement("button");
+        decline.textContent = "Decline";
+        prompt.append(question,approve,decline);
+        ui.append(prompt);
+        const remove = () => {clearTimeout(expiry);prompt.remove();};
+        const expiry = setTimeout(remove,60000);
+        decline.onclick = remove;
+        approve.onclick = (event) => {
+          if (!event.isTrusted || !online || socket !== ws || socket.readyState !== WebSocket.OPEN) return;
+          socket.send(JSON.stringify({kind:"approve_remote_request",request_id:message.request_id}));
+          remove();
+        };
+        return;
+      }
       if (message.kind !== "command" || message.device_id !== device || !online) return;
       const id = message.command_id;
       if (typeof id !== "string" || id.length > 100) return;

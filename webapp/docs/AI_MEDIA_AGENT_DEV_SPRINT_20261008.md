@@ -51,3 +51,12 @@
 **#32 created physical acceptance plan:** `docs/AI_MEDIA_AGENT_PARKED_TESLA_ACCEPTANCE.md`. All real Tesla/iPhone/speaker latency, security acceptance and rollback drills remain **pending**. User approval remains required for any production/Cloudflare/launchd change.
 
 **Repeatable manual probes:** `scripts/ai-media-real-playback-probe.mjs`, `scripts/ai-media-real-controls-probe.mjs` and `scripts/ai-media-native-webmcp-probe.mjs`. They require an authorized isolated dev localhost app; none contacts production. Use Chrome test flag only for native WebMCP; it does not change the installed user's main browser configuration.
+
+
+## #30 Continued secure remote MCP work unit (post-244e3d9, 2026-10-08)
+
+- Separate loopback remote MCP ingress with verified Access-style JWT, pinned JWKS caching, exact subject allowlist, browser/connection/action-grant with local click and short lifetime, replay protection, revoke/disconnect; existing bearer-token dev service remains unexposed.
+- Real Chrome paired tab received remote approval, actual test click approved it, and authenticated MCP client read back state. Synthetic signed test JWT was used: no live Access/TLS deployment and no actual Tesla or iPhone.
+- Added four remote gateway scenarios, expanded real Chrome acceptance; npm run check PASS; npm test 310/310 PASS.
+- Security design and remaining gates: docs/AI_MEDIA_AGENT_REMOTE_MCP_SECURITY_20261008.md. Independent official MCP SDK, 2026-07-28 protocol, real Cloudflare Access, authenticated production browser pairing, Plus voice write capability, and Tesla physical testing remain pending.
+- No production deployment/restart, Cloudflare/launchd changes, or edits to the original dirty checkout or separate UI v3 PR #25.

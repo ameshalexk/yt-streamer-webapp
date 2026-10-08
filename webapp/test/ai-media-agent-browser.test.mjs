@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { startLocalAgentRelay } from "../scripts/ai-agent-local-relay.mjs";
+import { startLocalRemoteMcpGateway } from "../scripts/ai-agent-remote-mcp.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
 const key = () => crypto.randomBytes(32).toString("hex");
@@ -44,7 +45,7 @@ test("two REAL Chrome tabs: explicit pairing, selected-tab state/commands, negat
   const site = await fixture();
   const owner=key(), pairing=key();
   const relay=await startLocalAgentRelay({ownerToken:owner,pairingToken:pairing,browserOrigin:site.origin,ttlMs:7000});
-  let browser;
+  let browser, remoteGateway;
   try {
     browser=await chromium.launch({channel:"chrome",headless:true,args:["--no-first-run","--no-default-browser-check"]});
     const context=await browser.newContext();
@@ -97,6 +98,43 @@ test("two REAL Chrome tabs: explicit pairing, selected-tab state/commands, negat
     await control.locator("#aiAgentArg").fill("30");
     await control.locator("#aiAgentSend").click();
     await control.waitForFunction(()=>document.querySelector("#aiAgentResult").textContent.includes('"status": "unsupported"'));
+
+    // Remote MCP claim requires an actual trusted Playwright click on the real browser UI.
+    const pairKeys=crypto.generateKeyPairSync("rsa",{modulusLength:2048});
+    const publicJwk=pairKeys.publicKey.export({format:"jwk"});
+    const remoteIssuer="https://example.cloudflareaccess.com", remoteAudience="chrome-test-app";
+    const epoch=Math.floor(Date.now()/1000);
+    const h=Buffer.from(JSON.stringify({alg:"RS256",kid:"chrome-test-key"})).toString("base64url");
+    const b=Buffer.from(JSON.stringify({iss:remoteIssuer,aud:remoteAudience,sub:"owner-test",iat:epoch-10,exp:epoch+300})).toString("base64url");
+    const remoteJwt=h+"."+b+"."+crypto.sign("RSA-SHA256",Buffer.from(h+"."+b),pairKeys.privateKey).toString("base64url");
+    remoteGateway=await startLocalRemoteMcpGateway({relay,audience:remoteAudience,allowedSubjects:["owner-test"],
+      jwksProvider:{issuer:remoteIssuer,get:async()=>({keys:[{kid:"chrome-test-key",kty:"RSA",use:"sig",n:publicJwk.n,e:publicJwk.e}]})}});
+    async function remoteTool(name,args){
+      const response=await fetch(remoteGateway.origin+"/remote/mcp",{method:"POST",
+        headers:{"content-type":"application/json",accept:"application/json, text/event-stream",
+          "cf-access-jwt-assertion":remoteJwt,"x-ai-request-id":crypto.randomUUID()},
+        body:JSON.stringify({jsonrpc:"2.0",id:crypto.randomUUID(),method:"tools/call",params:{name,arguments:args}})});
+      assert.equal(response.status,200);
+      return (await response.json()).result.structuredContent;
+    }
+    const challenge=await remoteTool("request_browser_approval",{device_id:oldId,actions:["get_player_state","pause"]});
+    assert.equal(challenge.status,"pending_browser_approval");
+    await target.locator("#aiAgentApproveRemote").waitFor();
+    const beforeConsent=await remoteTool("claim_browser_approval",{request_id:challenge.request_id});
+    assert.equal(beforeConsent.status,"pending_browser_approval");
+    await target.locator("#aiAgentApproveRemote").click(); // trusted user-activation event
+    let grant;
+    for(let retry=0;retry<12;retry++){
+      grant=await remoteTool("claim_browser_approval",{request_id:challenge.request_id});
+      if(grant.status==="approved")break;
+      await delay(40);
+    }
+    assert.equal(grant.status,"approved");
+    const remoteState=await remoteTool("get_player_state",{device_id:oldId,approval_id:grant.approval_id});
+    assert.equal(remoteState.status,"completed");
+    assert.equal(remoteState.state.paused,true);
+    const outOfScope=await remoteTool("next",{device_id:oldId,approval_id:grant.approval_id});
+    assert.equal(outOfScope.status,"unauthorized");
 
     // Browser fetch with wrong credentials must fail (no anonymous command).
     const forbidden=await control.evaluate(async ({port,id}) => {
@@ -166,5 +204,5 @@ test("two REAL Chrome tabs: explicit pairing, selected-tab state/commands, negat
     assert.notEqual(newId,oldId);
     assert.deepEqual(errors,[]);
     t.diagnostic("two real development tabs, explicit selection, state ACK, search, pause, unsupported volume, denied auth, stale identity and new pairing passed");
-  } finally { await browser?.close(); await relay.close(); await site.close(); }
+  } finally { await remoteGateway?.close(); await browser?.close(); await relay.close(); await site.close(); }
 });
