@@ -9,10 +9,39 @@ const aiMediaSnapshot = () => {
     : screen?.classList.contains("mjpeg-buffered-mode") ? "buffered_mjpeg"
     : screen?.classList.contains("mjpeg-mode") ? "mjpeg"
     : screen?.classList.contains("video-mode") ? "native_video" : "inactive";
+  const stats = activeCompat?.bufferedPlayer?.getStats?.();
+  const badge = $("#streamBadge");
+  const audio = $("#audio");
+  const video = $("#video");
+  let playback_phase = "idle";
+  if (active) {
+    if (playbackPaused) playback_phase = "paused";
+    else if (badge?.classList.contains("error")) playback_phase = "failed";
+    else if (screen.classList.contains("loading") || stats?.state === "buffering"
+        || stats?.state === "autoplay-blocked" || badge?.classList.contains("reconnecting")) playback_phase = "buffering";
+    else if (mode === "buffered_mjpeg") {
+      playback_phase = stats?.state === "playing" && stats.renderedFrames > 0 ? "playing" : "buffering";
+    } else if (mode === "webcodecs") {
+      playback_phase = badge?.classList.contains("live") && cyberdashPlayer?.isActive?.() ? "playing" : "buffering";
+    } else if (mode === "mjpeg") {
+      playback_phase = badge?.classList.contains("live") && $("#mjpeg")?.naturalWidth > 0 ? "playing" : "buffering";
+    } else if (mode === "native_video") {
+      playback_phase = !video?.paused && video?.readyState >= 2 ? "playing" : "buffering";
+    } else playback_phase = "buffering";
+  }
+  // Browser state cannot establish whether external speakers emitted audible sound.
+  const audio_observation = !active ? "not_applicable" : !soundOn ? "muted"
+    : mode === "webcodecs" ? "web_audio_output_unverified"
+    : audio?.error ? "element_error"
+    : !audio?.getAttribute("src") ? "not_observed"
+    : audio.paused ? "element_paused_or_blocked"
+    : audio.readyState >= 2 ? "element_playing_output_unverified" : "element_buffering";
   return {
     title: active ? ($("#nowPlaying")?.textContent || "").slice(0,180) : "",
-    media_id: state.youtubeSearchPlayingId || state.playingItemId || state.recommendedPlayingId || "",
-    mode,
+    media_id: active ? (state.youtubeSearchPlayingId || state.playingItemId || state.recommendedPlayingId || "") : "",
+    mode, playback_phase, audio_observation,
+    rendered_frames: Number.isFinite(stats?.renderedFrames) ? stats.renderedFrames : null,
+    av_drift_ms: Number.isFinite(stats?.lastAvDriftMs) ? stats.lastAvDriftMs : null,
     paused: active ? Boolean(playbackPaused) : true,
     position_seconds: active ? Math.max(0, getStreamCurrentTime() || 0) : 0,
     duration_seconds: active ? Math.max(0, streamSeek.duration || 0) : 0,

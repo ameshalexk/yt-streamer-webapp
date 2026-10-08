@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 // the owner and browser at ingress. Pairing validation deliberately defaults DENY.
 const MUTATIONS = new Set(["play_media", "pause", "resume", "next", "seek", "set_volume", "request_fullscreen"]);
 const READS = new Set(["get_player_state", "search_media"]);
-const VALID_STATUSES = new Set(["completed", "failed", "unsupported", "needs_user_gesture", "accepted"]);
+const VALID_STATUSES = new Set(["completed", "failed", "unsupported", "needs_user_gesture", "accepted", "playing", "buffering"]);
 
 function text(value, max = 80) {
   return typeof value === "string" && value.trim().length > 0 && value.length <= max;
@@ -23,12 +23,13 @@ function boundedResult(value) {
 function boundedState(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const state = {};
-  for (const name of ["title", "media_id", "mode", "fullscreen_kind"]) {
+  for (const name of ["title", "media_id", "mode", "fullscreen_kind", "playback_phase", "audio_observation"]) {
     if (typeof value[name] === "string") state[name] = value[name].slice(0, 180);
   }
-  for (const name of ["position_seconds", "duration_seconds", "volume_percent"]) {
+  for (const name of ["position_seconds", "duration_seconds", "volume_percent", "rendered_frames"]) {
     if (Number.isFinite(value[name]) && value[name] >= 0) state[name] = Math.min(value[name], 864000);
   }
+  if (Number.isFinite(value.av_drift_ms) && Math.abs(value.av_drift_ms) <= 600000) state.av_drift_ms = value.av_drift_ms;
   if (typeof value.paused === "boolean") state.paused = value.paused;
   return state;
 }

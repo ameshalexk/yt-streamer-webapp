@@ -139,3 +139,30 @@ test("browser permission failure is explicitly surfaced", async () => {
   assert.equal(result.status, "needs_user_gesture");
   assert.match(result.error, /tap/);
 });
+
+test("ACK readback retains observed playback phase and bounded AV evidence", async () => {
+  const x = make();
+  const device = x.register("Chrome playback", "tab-c").device_id;
+  const waiting = x.registry.dispatch({ principal: "owner", deviceId: device, action: "play_media",
+    args: {media_id:"aqz-KE-bpKQ"} });
+  const ack = x.registry.acknowledge({
+    principal: "owner", deviceId: device, connectionId: "tab-c",
+    commandId: x.sent[0].command_id, status: "buffering",
+    state: {mode:"buffered_mjpeg", playback_phase:"buffering", audio_observation:"element_buffering",
+      rendered_frames:0, paused:false, av_drift_ms:93, secret:"DROP", position_seconds:0},
+  });
+  assert.equal(ack,true);
+  const result=await waiting;
+  assert.equal(result.status,"buffering");
+  assert.equal(result.state.playback_phase,"buffering");
+  assert.equal(result.state.audio_observation,"element_buffering");
+  assert.equal(result.state.av_drift_ms,93);
+  assert.equal(result.state.secret,undefined);
+  const w=x.registry.dispatch({principal:"owner",deviceId:device,action:"get_player_state"});
+  x.registry.acknowledge({principal:"owner",deviceId:device,connectionId:"tab-c",
+    commandId:x.sent[1].command_id,status:"completed",
+    state:{mode:"buffered_mjpeg",playback_phase:"playing",rendered_frames:17,
+      audio_observation:"element_playing_output_unverified",av_drift_ms:-65}});
+  assert.equal((await w).state.playback_phase,"playing");
+  assert.equal(x.registry.list("owner")[0].state.rendered_frames,17);
+});

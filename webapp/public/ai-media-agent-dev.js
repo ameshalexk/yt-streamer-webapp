@@ -89,6 +89,12 @@
         ack.status = outcome?.status || "failed";
         ack.error = outcome?.error;
         ack.state = state();
+        // The ACK confirms handling; the observed media phase is a separate assertion.
+        if (ack.status === "accepted" && ["play_media","next","seek","resume"].includes(message.action)) {
+          if (ack.state.playback_phase === "playing") ack.status = "playing";
+          else if (ack.state.playback_phase === "buffering") ack.status = "buffering";
+          else if (ack.state.playback_phase === "failed") ack.status = "failed";
+        }
         if (outcome?.result) ack.result = outcome.result;
       } catch(e) { ack.error = String(e?.message || "command_failed").slice(0,120); }
       received.set(id, ack);
