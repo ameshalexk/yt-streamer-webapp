@@ -1,0 +1,58 @@
+/* The UI selector is intentionally the only surface styled in this file. */
+#uiSwitch.ui-switch {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  min-height: 44px;
+  padding: 4px;
+  border: 1px solid var(--line, #343a43);
+  border-radius: 12px;
+  background: var(--bg, #0b0d10);
+}
+
+#uiSwitch.ui-switch a[data-ui-mode] {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--muted, #a5abb4);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.1;
+  text-decoration: none;
+  white-space: nowrap;
+  touch-action: manipulation;
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease;
+}
+
+#uiSwitch.ui-switch a[data-ui-mode]:hover { color: var(--text, #f3f5f7); }
+#uiSwitch.ui-switch a[data-ui-mode][aria-pressed='true'] {
+  border-color: var(--line, #343a43);
+  background: var(--panel-2, #171b21);
+  color: var(--text, #f3f5f7);
+}
+#uiSwitch.ui-switch a[data-ui-mode]:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 3px solid var(--accent-2, #2d8cff);
+  outline-offset: 2px;
+}
+
+html[data-ui='new'][data-device-layout='tesla'] #uiSwitch.ui-switch { min-height: 64px; }
+html[data-ui='new'][data-device-layout='tesla'] #uiSwitch.ui-switch a[data-ui-mode] { min-height: 56px; padding-inline: 14px; }
+
+@media (max-width: 560px) {
+  #uiSwitch.ui-switch { min-height: 52px; }
+  #uiSwitch.ui-switch a[data-ui-mode] { min-height: 44px; padding-inline: 6px; font-size: 11px; }
+  html[data-ui='new'][data-device-layout='tesla'] #uiSwitch.ui-switch { min-height: 64px; }
+  html[data-ui='new'][data-device-layout='tesla'] #uiSwitch.ui-switch a[data-ui-mode] { min-height: 56px; padding-inline: 10px; font-size: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #uiSwitch.ui-switch a[data-ui-mode] { transition: none; }
+}
