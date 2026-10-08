@@ -1,0 +1,38 @@
+name: AI media agent isolated SDK verification
+on:
+  push:
+    branches: [ai-media-agent-sprint1]
+    paths:
+      - 'webapp/**'
+      - '.github/workflows/ai-media-agent-sdk-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  official-sdk-and-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - name: Test dependencies
+        run: |
+          echo "CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          npm ci
+          npm install --no-save --package-lock=false '@modelcontextprotocol/client@^2'
+        working-directory: webapp
+      - name: Syntax checks
+        run: npm run check
+        working-directory: webapp
+      - name: Complete Node regression suite
+        run: npm test
+        working-directory: webapp
+      - name: Independent official SDK v2 compatibility and security probe
+        run: node --test scripts/ai-agent-official-sdk-probe.test.mjs
+        working-directory: webapp
