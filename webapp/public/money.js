@@ -86,7 +86,7 @@ function enrichData(data) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(`${path}${options.query || location.search}`, {
+  const response = await fetch(`${path}${options.query || ""}`, {
     credentials: "same-origin",
     method: options.method || "GET",
     headers: options.body ? { "Content-Type": "application/json" } : undefined,
