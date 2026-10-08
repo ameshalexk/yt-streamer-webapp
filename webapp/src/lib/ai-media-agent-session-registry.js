@@ -129,7 +129,7 @@ export class AgentSessionRegistry {
         if (!this.#pending.delete(commandId)) return;
         resolve({ status: "timeout_uncertain", device_id: deviceId, command_id: commandId });
       }, this.#timeoutMs);
-      timer.unref?.();
+      // Keep a pending command timeout referenced until it resolves; otherwise an\n      // isolated MCP call/test can be abandoned when no other event-loop handles exist.
       this.#pending.set(commandId, { session, action, resolve, timer });
       try {
         const sent = session.send({
