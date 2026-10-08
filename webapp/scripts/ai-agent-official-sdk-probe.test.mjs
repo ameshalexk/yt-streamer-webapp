@@ -52,7 +52,7 @@ test("official SDK v2: auto fallback, tools, identity-bound approval, readback, 
     const registered=new Promise(resolve=>browser.once("message",msg=>resolve(JSON.parse(String(msg)))));
     browser.send(JSON.stringify({kind:"pair",proof,label:"Official SDK test tab"}));
     const paired=await registered;
-    assert.equal(paired.kind,"paired");
+    assert.equal(paired.kind,"registered");
     const device_id=paired.device_id;
     const sdk=makeClient(gateway.origin,signedJwt());
     clients.push(sdk.client);
