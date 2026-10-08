@@ -57,3 +57,12 @@ Cloudflare sources:
 
 ## Tracking caveat
 GitHub serves as the accessible durable checkpoint while Mac Control tunnel is disconnected. The canonical Obsidian note and Mac Control project_session checkpoint are **pending**; do not mark them updated until the Mac endpoint confirms a write.
+
+## Checkpoint #6 — authoritative CI results (2026-10-08)
+- **Official SDK test:** PASS on GitHub Actions run [37860385484](https://github.com/ameshalexk/yt-streamer-webapp/actions/runs/37860385484) at `ab8665e71ff5a45f8ffbdc428d61d56530790a12`. SDK v2 auto negotiation fell back to legacy and exercised registered loopback browser, tools/list, scoped approval+claim, get_player_state ACK/readback; modern-only protocol and wrong subject correctly rejected. Test uses ephemeral ports and synthetic Access JWT; no live Cloudflare/Tesla.
+- **Complete Node suite:** 310/310 PASS, 0 failed/cancelled/skipped, same Actions run.
+- **Syntax:** `npm run check` PASS, same Actions run.
+- Earlier Linux CI regression was 6 cancelled Node tests due to unreferenced pending timeouts, fixed in `68302d6`. Initial SDK fixture compared `paired` vs actual browser `registered`, fixed in `ab8665e`.
+- **Next Mac Control checkpoint sync** (still pending Mac tunnel): resume durable session `yt-streamer-ai-media-agent-20261008`; document official SDK result, Cloudflare/OpenClaw research, new commits, GitHub #26/#30 updates; use status=paused/active and list remaining approval gates. First inspect actual session ID because previous endpoint attempts failed before authentication. Preserve production baseline `06507e5`.
+- **Canonical Obsidian sync** (still pending Mac tunnel): update `Projects/YT Streamer - AI Media Agent and WebMCP.md` from this document, link #26/#30 and Actions, do not overwrite unrelated content. Current Obsidian connector is read-only/unavailable.
+- **Remaining important blockers:** real Cloudflare Access ingress and JWT/JWKS rotation; browser server-side identity/session binding; generic MCP nonce interoperability; OpenClaw/Jarvis actual installed voice and permissions; actual ChatGPT iPhone Voice write support; parked Tesla test in Park; approval before any production/public launchd/cloud changes.
