@@ -171,16 +171,29 @@ html[data-ui='new'] .modern-quick-dock > .modern-only {
 }
 html[data-ui='new'] .everyday-controls .everyday-control-icon { color: var(--accent); }
 html[data-ui='new'] .modern-reach-settings {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
+  display: block;
   width: min(100%, 1120px);
   margin: 0;
   padding: 0 4px;
   color: var(--muted);
 }
-html[data-ui='new'] .modern-reach-settings :is(select, button) {
+html[data-ui='new'] .modern-reach-settings summary {
+  width: fit-content;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+html[data-ui='new'] .modern-reach-settings-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+html[data-ui='new'] .modern-reach-settings:not([open]) > .modern-reach-settings-body { display: none; }
+html[data-ui='new'] .modern-reach-settings-body label { display: flex; align-items: center; gap: 8px; }
+html[data-ui='new'] .modern-reach-settings select {
   min-height: 48px;
   padding: 0 14px;
   border: 1px solid var(--line);
@@ -190,9 +203,7 @@ html[data-ui='new'] .modern-reach-settings :is(select, button) {
   font: inherit;
 }
 html[data-ui='new'] #modernDeviceLayout { min-width: 150px; }
-html[data-ui='new'] [data-quick-side][aria-pressed='true'] { border-color: var(--accent); color: var(--accent); }
-html[data-ui='new'][data-quick-side='passenger'] :is(.modern-quick-dock, .everyday-controls),
-html[data-ui='new'][data-quick-side='passenger'] .modern-reach-settings { align-self: flex-end; margin-left: auto; }
+html[data-ui='new'][data-quick-side='passenger'] .modern-quick-dock { align-self: flex-end; margin-left: auto; }
 
 html[data-ui='new'] .side-panel,
 html[data-ui='new'] .watch-accordion {
@@ -223,9 +234,13 @@ html[data-ui='new'] .ch-menu-panel { z-index: 130; background: var(--overlay-pan
 html[data-ui='new'] .modal,
 html[data-ui='new'] .side-panel { box-shadow: 0 14px 36px var(--shadow); }
 
-html[data-ui='new'][data-device-layout='tesla'] .everyday-controls { gap: 12px; }
+html[data-ui='new'][data-device-layout='tesla'] .everyday-controls {
+  width: min(100%, 640px);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
 html[data-ui='new'][data-device-layout='tesla'] :is(.everyday-controls .everyday-control, .modern-quick-dock > .modern-only) { min-width: 64px; min-height: 64px; font-size: 15px; }
-html[data-ui='new'][data-device-layout='tesla'] .modern-reach-settings :is(select, button) { min-height: 56px; }
+html[data-ui='new'][data-device-layout='tesla'] .modern-reach-settings select { min-height: 56px; }
 html[data-ui='new'][data-device-layout='tesla'] .modern-intro { display: none; }
 html[data-ui='new'][data-device-layout='tesla'] .layout { gap: 8px; padding: 10px 24px 16px; }
 html[data-ui='new'][data-device-layout='tesla'] .player > .col-head { padding: 8px 14px; }
@@ -235,6 +250,7 @@ html[data-ui='new'][data-device-layout='tesla'] .player:not(:has(.screen.playing
   margin-block: 7px;
 }
 html[data-ui='new'][data-device-layout='tesla'] .everyday-controls { margin-top: 6px; }
+html[data-ui='new'][data-device-layout='tesla'] .screen.playing { max-height: min(34vh, 300px); }
 html[data-ui='new'][data-device-layout='tv'] :is(.mode-tab, .menu-toggle, .theme-toggle) { min-height: 56px; }
 html[data-ui='new'][data-device-layout='tv'] .mode-tab { padding-inline: 20px; }
 html[data-ui='new'][data-device-layout='tv'] :is(.everyday-controls .everyday-control, .modern-quick-dock > .modern-only) { min-height: 64px; }
@@ -284,8 +300,8 @@ html[data-ui='new'] body:has(.screen.synthetic-fullscreen) :is(.modern-intro, .m
     padding: 8px;
   }
   html[data-ui='new'] :is(.everyday-controls .everyday-control, .modern-quick-dock > .modern-only) { flex-direction: column; gap: 4px; min-height: 58px; padding: 5px 3px; font-size: 12px; }
-  html[data-ui='new'] .modern-reach-settings { gap: 8px; }
-  html[data-ui='new'] .modern-reach-settings :is(select, button) { flex: 1 1 130px; min-height: 52px; }
+  html[data-ui='new'] .modern-reach-settings-body { gap: 8px; }
+  html[data-ui='new'] .modern-reach-settings select { min-height: 52px; }
 }
 @media (min-width: 1500px) {
   html[data-ui='new'] .layout { padding: 40px clamp(40px, 6vw, 112px); }

@@ -129,9 +129,11 @@
       quick("APNE Daily", "modern-apne", '.mode-tabs [data-mode="apne"]');
       quick("Fullscreen", "modern-fullscreen", "#fullscreenBtn");
       quick("Quality Auto", "modern-quality-auto", '#qualityQuick [data-stream-profile="auto"]');
-      const settings = make("section", "modern-reach-settings modern-only");
+      const settings = make("details", "modern-reach-settings modern-only");
       keepHidden(settings);
       settings.setAttribute("aria-label", "Device layout and quick action placement");
+      settings.append(make("summary", "", "Layout settings"));
+      const settingsBody = make("div", "modern-reach-settings-body");
       const label = make("label", "", "Device layout ");
       const select = make("select", "");
       select.id = "modernDeviceLayout";
@@ -143,20 +145,22 @@
       if (savedLayout !== select.value) safeSet(PREF_KEY, select.value);
       select.addEventListener("change", () => { safeSet(PREF_KEY, select.value); applyLayout(select.value); });
       label.append(select);
-      settings.append(label);
+      settingsBody.append(label);
       const side = safeGet(SIDE_KEY) === "passenger" ? "passenger" : "driver";
-      ["driver", "passenger"].forEach((which) => {
-        const button = make("button", "modern-side-choice", which === "driver" ? "Driver side" : "Passenger side");
-        button.type = "button";
-        button.dataset.quickSide = which;
-        button.setAttribute("aria-pressed", String(which === side));
-        button.addEventListener("click", () => {
-          safeSet(SIDE_KEY, which);
-          doc.documentElement.dataset.quickSide = which;
-          settings.querySelectorAll("[data-quick-side]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
-        });
-        settings.append(button);
+      const sideLabel = make("label", "", "Quick controls ");
+      const sideSelect = make("select", "");
+      sideSelect.id = "modernQuickSide";
+      [["driver", "Left"], ["passenger", "Right"]].forEach(([value, title]) => {
+        const option = make("option", "", title); option.value = value; sideSelect.append(option);
       });
+      sideSelect.value = side;
+      sideSelect.addEventListener("change", () => {
+        safeSet(SIDE_KEY, sideSelect.value);
+        doc.documentElement.dataset.quickSide = sideSelect.value;
+      });
+      sideLabel.append(sideSelect);
+      settingsBody.append(sideLabel);
+      settings.append(settingsBody);
       add(everyday.parentElement, settings, everyday.nextSibling);
 
       const uiSwitch = doc.querySelector("#uiSwitch");
