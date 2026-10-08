@@ -4,6 +4,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import { AgentSessionRegistry } from "../src/lib/ai-media-agent-session-registry.js";
+import { handleDevMcp } from "./ai-agent-dev-mcp.mjs";
 
 function equalSecret(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
@@ -25,10 +26,13 @@ async function readJson(req) {
 }
 
 export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0, host = "127.0.0.1",
-  timeoutMs = 1500, ttlMs = 7000 } = {}) {
+  timeoutMs = 1500, ttlMs = 7000, browserOrigin = null } = {}) {
   if (host !== "127.0.0.1" || typeof ownerToken !== "string" || ownerToken.length < 32
       || typeof pairingToken !== "string" || pairingToken.length < 32 || equalSecret(ownerToken, pairingToken)) {
     throw new Error("loopback_and_distinct_long_tokens_required");
+  }
+  if (browserOrigin !== null && !/^http:\/\/127\.0\.0\.1:\d{2,5}$/.test(browserOrigin)) {
+    throw new Error("browser_origin_must_be_explicit_loopback");
   }
   const clients = new Set();
   const registry = new AgentSessionRegistry({
@@ -38,8 +42,18 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
   let origin;
   const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 8192 });
   const server = http.createServer(async (req, res) => {
-    if (req.headers.origin && req.headers.origin !== origin) return json(res, 403, { error: "wrong_origin" });
+    const allowedOrigin = browserOrigin || origin;
+    if (req.headers.origin === allowedOrigin) {
+      res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+      res.setHeader("Vary", "Origin");
+    }
+    if (req.method === "OPTIONS" && req.headers.origin === allowedOrigin) {
+      res.writeHead(204, { "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Max-Age": "300" });
+      res.end(); return;
+    }
+    if (req.headers.origin && req.headers.origin !== allowedOrigin) return json(res, 403, { error: "wrong_origin" });
     if (!equalSecret(req.headers.authorization, `Bearer ${ownerToken}`)) return json(res, 401, { error: "unauthorized" });
+    if (req.url === "/dev/mcp") return handleDevMcp(req, res, registry, readJson);
     if (req.method === "GET" && req.url === "/dev/devices") return json(res, 200, { devices: registry.list("owner") });
     if (req.method !== "POST" || req.url !== "/dev/command") return json(res, 404, { error: "not_found" });
     try {
@@ -52,7 +66,7 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
     } catch (error) { json(res, 400, { error: error.code || error.message || "bad_request" }); }
   });
   server.on("upgrade", (req, socket, head) => {
-    if (req.url !== "/dev/player" || req.headers.origin !== origin) {
+    if (req.url !== "/dev/player" || req.headers.origin !== (browserOrigin || origin)) {
       socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
@@ -88,7 +102,7 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
       });
       else if (message?.kind === "ack") registry.acknowledge({
         principal: "owner", deviceId, connectionId, commandId: message.command_id,
-        status: message.status, state: message.state, error: message.error,
+        status: message.status, state: message.state, result: message.result, error: message.error,
       });
       else ws.close(1008, "invalid_message");
     });
@@ -107,6 +121,8 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
   sweepTimer.unref?.();
   return {
     origin, registry,
+    // Local test hook, not an HTTP route and never exposed to a browser.
+    disconnectPlayersForTest() { for (const client of clients) client.terminate(); },
     async close() {
       clearInterval(sweepTimer);
       for (const ws of clients) ws.terminate();

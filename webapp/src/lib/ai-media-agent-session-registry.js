@@ -3,13 +3,23 @@ import { randomUUID } from "node:crypto";
 // Transport-neutral core: callers of this module must independently authenticate
 // the owner and browser at ingress. Pairing validation deliberately defaults DENY.
 const MUTATIONS = new Set(["play_media", "pause", "resume", "next", "seek", "set_volume", "request_fullscreen"]);
-const READS = new Set(["get_player_state"]);
+const READS = new Set(["get_player_state", "search_media"]);
 const VALID_STATUSES = new Set(["completed", "failed", "unsupported", "needs_user_gesture", "accepted"]);
 
 function text(value, max = 80) {
   return typeof value === "string" && value.trim().length > 0 && value.length <= max;
 }
 function fail(reason) { throw Object.assign(new Error(reason), { code: reason }); }
+function boundedResult(value) {
+  if (!value || !Array.isArray(value.results)) return null;
+  return { results: value.results.slice(0, 10).filter(item => item && typeof item === "object")
+    .map(item => ({
+      media_id: String(item.media_id || "").slice(0, 40),
+      title: String(item.title || "").slice(0, 160),
+      creator: String(item.creator || "").slice(0, 100),
+      duration_seconds: Number.isFinite(item.duration_seconds) ? Math.max(0, Math.min(86400, item.duration_seconds)) : null,
+    })).filter(item => /^[a-zA-Z0-9_-]{11}$/.test(item.media_id)) };
+}
 function boundedState(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const state = {};
@@ -25,7 +35,10 @@ function boundedState(value) {
 export function validateMediaCommand(action, args = {}) {
   if (!MUTATIONS.has(action) && !READS.has(action)) fail("invalid_action");
   if (!args || typeof args !== "object" || Array.isArray(args)) fail("invalid_args");
-  if (Object.keys(args).some((name) => !["media_id", "position_seconds", "value_percent"].includes(name))) fail("unknown_argument");
+  if (Object.keys(args).some((name) => !["media_id", "position_seconds", "value_percent", "query", "limit"].includes(name))) fail("unknown_argument");
+  if (action === "search_media" && (!text(args.query, 120) || args.query.trim().length < 2)) fail("invalid_query");
+  if (action === "search_media" && args.limit !== undefined && (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 10)) fail("invalid_limit");
+  if (action !== "search_media" && (args.query !== undefined || args.limit !== undefined)) fail("extraneous_argument");
   if (action === "play_media" && !text(args.media_id, 160)) fail("invalid_media_id");
   if (action === "seek" && (!Number.isFinite(args.position_seconds) || args.position_seconds < 0 || args.position_seconds > 86400)) fail("invalid_position");
   if (action === "set_volume" && (!Number.isFinite(args.value_percent) || args.value_percent < 0 || args.value_percent > 100)) fail("invalid_volume");
@@ -107,7 +120,7 @@ export class AgentSessionRegistry {
         resolve({ status: "timeout_uncertain", device_id: deviceId, command_id: commandId });
       }, this.#timeoutMs);
       timer.unref?.();
-      this.#pending.set(commandId, { session, resolve, timer });
+      this.#pending.set(commandId, { session, action, resolve, timer });
       try {
         const sent = session.send({
           kind: "command", command_id: commandId, action, args: validated, device_id: deviceId,
@@ -128,7 +141,7 @@ export class AgentSessionRegistry {
     return true;
   }
 
-  acknowledge({ principal, deviceId, connectionId, commandId, status, state, error }) {
+  acknowledge({ principal, deviceId, connectionId, commandId, status, state, result, error }) {
     const pending = this.#pending.get(commandId);
     const session = this.#active(deviceId, principal);
     if (!pending || !session || pending.session !== session || session.connectionId !== connectionId) return false;
@@ -137,7 +150,7 @@ export class AgentSessionRegistry {
     if (confirmedState) session.lastState = confirmedState;
     return this.#finish(commandId, {
       status, device_id: deviceId, command_id: commandId,
-      state: confirmedState, ...(typeof error === "string" && status !== "completed" ? { error: error.slice(0, 160) } : {}),
+      state: confirmedState, ...(status === "completed" && result && pending.action === "search_media" ? { result: boundedResult(result) } : {}), ...(typeof error === "string" && status !== "completed" ? { error: error.slice(0, 160) } : {}),
     });
   }
 
