@@ -58,9 +58,6 @@ const YOUTUBE_STREAM_HEADERS = {
   userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/145 Safari/537.36",
   referer: "https://www.youtube.com/",
 };
-const RESTART_AUTH_WINDOW_MS = 10 * 60 * 1000;
-const RESTART_AUTH_MAX_FAILURES = 5;
-const restartAuthFailures = new Map();
 let restartPending = false;
 let httpServer = null;
 
@@ -343,31 +340,6 @@ function isSameOriginRequest(req) {
   }
 }
 
-function restartAuthKey(req) {
-  return firstForwardedValue(req.get("cf-connecting-ip"))
-    || firstForwardedValue(req.get("x-forwarded-for"))
-    || req.ip
-    || "unknown";
-}
-
-function restartAuthRetryAfter(req) {
-  const key = restartAuthKey(req);
-  const now = Date.now();
-  const recent = (restartAuthFailures.get(key) || []).filter((timestamp) => now - timestamp < RESTART_AUTH_WINDOW_MS);
-  if (recent.length) restartAuthFailures.set(key, recent);
-  else restartAuthFailures.delete(key);
-  if (recent.length < RESTART_AUTH_MAX_FAILURES) return 0;
-  return Math.max(1, Math.ceil((RESTART_AUTH_WINDOW_MS - (now - recent[0])) / 1000));
-}
-
-function recordRestartAuthFailure(req) {
-  const key = restartAuthKey(req);
-  const now = Date.now();
-  const recent = (restartAuthFailures.get(key) || []).filter((timestamp) => now - timestamp < RESTART_AUTH_WINDOW_MS);
-  recent.push(now);
-  restartAuthFailures.set(key, recent);
-}
-
 function activeBackgroundJobCount() {
   const downloads = [...jobs.values()].filter((job) => job.status === "running").length;
   const preparations = [...preparedJobs.values()].filter((job) => job.status === "preparing").length;
@@ -530,7 +502,7 @@ app.post("/api/sessions/cleanup", asyncH(async (req, res) => {
   });
 }));
 
-app.post("/api/app/restart", asyncH(async (req, res) => {
+app.post("/api/app/restart", requireMoneyAccess, asyncH(async (req, res) => {
   res.set("Cache-Control", "no-store");
   if (process.env.XPC_SERVICE_NAME !== LAUNCHD_SERVICE_NAME) {
     return res.status(503).json({ error: "App restart is available only when YT Streamer is supervised by launchd." });
@@ -539,18 +511,6 @@ app.post("/api/app/restart", asyncH(async (req, res) => {
   if (!req.is("application/json") || req.body?.confirm !== "restart-app") {
     return res.status(400).json({ error: "Restart confirmation is required." });
   }
-  const retryAfter = restartAuthRetryAfter(req);
-  if (retryAfter) {
-    res.set("Retry-After", String(retryAfter));
-    return res.status(429).json({ error: "Too many owner-code attempts. Try again later." });
-  }
-  if (!(await moneyDashboard.authorizeOwnerControl(req))) {
-    recordRestartAuthFailure(req);
-    return res.status(401).json({ error: "Owner access code required." });
-  }
-  restartAuthFailures.delete(restartAuthKey(req));
-  const { token } = await moneyDashboard.accessToken();
-  moneyDashboard.setAccessCookie(req, res, token);
   const activeJobs = activeBackgroundJobCount();
   if (activeJobs) {
     return res.status(409).json({ error: `Wait for ${activeJobs} active download or preparation job${activeJobs === 1 ? "" : "s"} to finish before restarting.` });

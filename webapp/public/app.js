@@ -3433,7 +3433,7 @@ const RESTART_ACTIONS = {
   app: {
     title: "Restart YT Streamer app?",
     confirmLabel: "Restart app",
-    description: "YT Streamer on the Mac will restart. Streams and browser sessions will disconnect briefly, then this screen will reconnect.",
+    description: "YT Streamer and its Money dashboard will restart together. Streams and browser sessions disconnect briefly, then this screen reconnects. Your Cloudflare Access login protects this action.",
   },
 };
 
@@ -3470,17 +3470,9 @@ function openRestartChooser() {
 function openRestartConfirmation(actionName) {
   const action = RESTART_ACTIONS[actionName];
   if (!action) return openRestartChooser();
-  const ownerCode = actionName === "app" ? `
-    <div class="restart-owner-code">
-      <label for="restartOwnerCode">Owner access code</label>
-      <input id="restartOwnerCode" form="restartConfirmForm" type="password" inputmode="text" autocomplete="current-password" autocapitalize="none" spellcheck="false" placeholder="Leave blank if this browser is trusted" />
-      <div class="note">Use the same private code as the Money dashboard. It is required only once on each browser.</div>
-    </div>
-  ` : "";
   openModal(`
     <h3>${esc(action.title)}</h3>
     <p class="restart-dialog-copy">${esc(action.description)}</p>
-    ${ownerCode}
     <p class="restart-error" id="restartActionError" role="alert" hidden></p>
     <form id="restartConfirmForm">
       <div class="modal-actions">
@@ -3503,12 +3495,10 @@ function restartActionError(message) {
   error.hidden = !message;
 }
 
-async function requestAppRestart(ownerCode) {
-  const headers = { "Content-Type": "application/json" };
-  if (ownerCode) headers["X-YT-Streamer-Owner-Code"] = ownerCode;
+async function requestAppRestart() {
   const response = await fetch("/api/app/restart", {
     method: "POST",
-    headers,
+    headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
     cache: "no-store",
     body: JSON.stringify({ confirm: "restart-app" }),
@@ -3587,13 +3577,10 @@ async function runRestartAction(actionName) {
 
   modalDismissLocked = true;
   const backButton = $("#restartConfirmBack");
-  const codeInput = $("#restartOwnerCode");
   if (backButton) backButton.disabled = true;
-  if (codeInput) codeInput.disabled = true;
   button.textContent = "Restarting…";
-  const ownerCode = codeInput?.value.trim() || "";
   try {
-    const result = await requestAppRestart(ownerCode);
+    const result = await requestAppRestart();
     renderRestartWaiting();
     try {
       await waitForAppRestart(result.instanceId);
@@ -3606,12 +3593,7 @@ async function runRestartAction(actionName) {
     button.disabled = false;
     button.textContent = RESTART_ACTIONS.app.confirmLabel;
     if (backButton) backButton.disabled = false;
-    if (codeInput) codeInput.disabled = false;
     restartActionError(error.message);
-    if (codeInput && /code|required|unauthorized/i.test(error.message)) {
-      codeInput.focus();
-      codeInput.select();
-    }
   }
 }
 
