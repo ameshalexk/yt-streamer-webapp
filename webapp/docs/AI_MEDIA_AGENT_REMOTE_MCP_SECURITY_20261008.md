@@ -32,3 +32,51 @@ Status: ISOLATED DEVELOPMENT ONLY. NOT deployed or publicly routed. Production 0
 - Tests on local worktree: `npm run check` PASS; `npm test` **315/315 PASS**; independent `node --test scripts/ai-agent-official-sdk-probe.test.mjs` **1/1 PASS**. This is local Mac proof; fresh GitHub CI result is pending push.
 - Existing OpenClaw 2026.9.8 Telegram currently reports running/connected and no error after earlier failure, without configuration changes. `openclaw mcp list --json` remains `{}`, no YT Streamer voice path tested. No ChatGPT Voice tool invocation or parked Tesla acceptance tested.
 - Release blockers: authenticate browser session at trusted ingress, enforce connection-scoped registration in real WebSocket handler (never trust browser-provided principal), verify signed live Cloudflare Access token with dedicated OAuth app and audience, validate CSP/XSS/CSRF and end-to-end device approval, register restricted tool with OpenClaw in a separate permitted staging configuration, then physical iPhone/Tesla test in Park. No changes to production `06507e5`, live launchd, DNS, /money, routes or UI PR #25.
+
+## Checkpoint #10 — trusted browser Access upgrade seam (2026-10-08)
+
+**Isolated development only; no network ingress or production wiring.** Added
+`src/lib/ai-media-agent-trusted-browser-flow.js`, a server-side
+`TrustedBrowserRegistrationFlow` which accepts a real HTTP WebSocket upgrade
+request (rather than an untrusted JavaScript-supplied user/device claim).
+
+- Requires an exact allowed Origin, proper WebSocket upgrade headers and a
+  cryptographically verified RS256 Access application JWT with pinned
+  Cloudflare team issuer, intended application audience and subject allowlist.
+  Prefers `Cf-Access-Jwt-Assertion` at the origin; supports the signed
+  `CF_Authorization` browser cookie when present. If both valid token carriers
+  are present but disagree, rejects the connection. Never treats identity
+  display headers or browser messages as identity proof.
+- Mints device ID, connection ID and opaque server-only handle after identity
+  verification; registration issue/redeem/authorize derives identity and origin
+  from that handle, never from JS-submitted fields. Enforces JWT expiry even
+  when registration/approval TTL would otherwise outlast the JWT.
+  Revokes registration on socket disconnect and refuses forged handles.
+- Four added tests include real loopback WebSocket handshake, signed JWT,
+  wrong audience/issuer/subject, tampering/expiry, origin mismatch,
+  replay, scope and disconnect/reconnect. It is **not yet wired** to the
+  existing dev relay's `/dev/player` or remote gateway's control path:
+  these remain separate and must not be publicly routed.
+- Read-only live checks: anonymous HEAD of `https://stream.ameshalex.com/`
+  was redirected to Cloudflare Access login; existing issuer
+  `https://ameshalex.cloudflareaccess.com` published **two RS256 signing
+  keys**. This verifies existing Access challenge and public JWKS availability
+  only. It does NOT test a real authenticated JWT, protected remote MCP
+  endpoint, TLS ingress, or a *dedicated* remote application audience.
+  Do not reuse the currently deployed stream app audience by assumption.
+- Cloudflare docs confirm Access forwards `Cf-Access-Jwt-Assertion` and may
+  forward an HttpOnly `CF_Authorization` browser cookie; signature, issuer,
+  audience and expiry must be independently verified at origin. Cookie
+  binding and session policy belong at the Cloudflare edge. This code is only
+  an additional origin guard and does not establish TLS/Access configuration.
+- Development verification: syntax check PASS; targeted trusted-browser tests
+  **4/4 PASS**; complete regression **319/319 PASS**; independent official
+  MCP SDK probe **1/1 PASS**. No deployment, merge, DNS/Tunnel/Access config,
+  production restart or live browser session/cookie extraction.
+
+**Next gating integration:** connect trusted flow to a separately approved,
+Access-protected browser WS endpoint and same-audience MCP caller.
+Validate actual signed per-application JWT, real browser WS connection,
+concurrent identity isolation, pending command revocation and reconnect.
+Keep loopback/dev bearer-token relay inaccessible externally and obtain
+explicit approval before any Cloudflare or production change.
