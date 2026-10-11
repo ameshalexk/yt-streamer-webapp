@@ -1934,7 +1934,7 @@ async function requireCastControl(req,res,next) {
     if (req.method !== "GET" && req.get("origin") !== origin.origin)
       return res.status(403).json({error:"Same-origin action required"});
     const owner=await castAuth(req);
-    if (!owner) return res.status(401).json({error:"Signed Cloudflare Access login required"});
+    if (!owner) return res.status(401).json({error:"Cloudflare session could not be verified. Refresh Streamer and sign in there if prompted; no VLC code is needed."});
     req.castOwner=owner;
     return next();
   } catch {return res.status(401).json({error:"Cast authorization unavailable"});}

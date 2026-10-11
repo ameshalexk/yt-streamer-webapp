@@ -37,6 +37,20 @@ test("Access controls verify signature, audience, expiry and subject",async()=>{
     return h+"."+c+"."+signature;
   };
   assert.equal(await auth({get:()=>sign()}),"user-1");
+  const req=(header,cookie="")=>({get:(name)=>name==="cf-access-jwt-assertion"?header:name==="cookie"?cookie:null});
+  assert.equal(await auth(req(null,"other=1; CF_Authorization="+sign()+"; last=2")),"user-1",
+    "cookie from existing Access login works without assertion header");
+  assert.equal(await auth(req(null,"CF_Authorization="+sign({exp:Math.floor(Date.now()/1000)+7*86400}))),"user-1",
+    "signed Access sessions longer than one day are valid");
+  assert.equal(await auth(req(null,"CF_Authorization="+sign({aud:"wrong-aud"}))),null);
+  assert.equal(await auth(req(null,"CF_Authorization="+sign({exp:100}))),null);
+  assert.equal(await auth(req(null,"CF_Authorization="+sign().slice(0,-4)+"0000")),null);
+  assert.equal(await auth(req(null,"XCF_Authorization="+sign())),null,"no prefix cookie matches");
+  assert.equal(await auth(req("bogus-header","CF_Authorization="+sign())),null,
+    "an invalid assertion cannot be downgraded to a cookie");
+  assert.equal(await auth({get:()=>sign({exp:Math.floor(Date.now()/1000)+7*86400})}),"user-1");
+  assert.equal(await auth(req(null,"CF_Authorization="+("a".repeat(16001)))),null,
+    "oversized cookies rejected");
   assert.equal(await auth({get:()=>sign({aud:"wrong-aud"})}),null);
   assert.equal(await auth({get:()=>sign({exp:100})}),null);
   assert.equal(await auth({get:()=>sign().slice(0,-2)+"zz"}),null);

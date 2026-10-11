@@ -16,10 +16,25 @@ export function createCastAccess({issuer="", audience="", fetchImpl=fetch, now=D
     if (!Array.isArray(data.keys)||data.keys.length<1||data.keys.length>20)throw Error("Invalid signing keys");
     cached=data.keys;refreshAt=now()+30*60_000;return cached;
   }
+  function accessToken(req) {
+    // The HttpOnly Access application cookie can be forwarded when the signed
+    // assertion header is absent. Never accept an unsigned user header.
+    const header=req.get("cf-access-jwt-assertion");
+    if (header != null && header !== "") return header;
+    const raw=req.get("cookie");
+    if (!raw || raw.length > 32768) return null;
+    for (const pair of raw.split(";")) {
+      const split=pair.indexOf("=");
+      if (split === -1 || pair.slice(0,split).trim() !== "CF_Authorization") continue;
+      const token=pair.slice(split+1).trim();
+      return token.startsWith('"') && token.endsWith('"') ? token.slice(1,-1) : token;
+    }
+    return null;
+  }
   return async function authenticatedSubject(req) {
     if (!origin || !/^[A-Za-z0-9_-]{20,}$/.test(audience)) return null;
-    const jwt=req.get("cf-access-jwt-assertion");
-    if (!jwt || jwt.length>16000) return null;
+    const jwt=accessToken(req);
+    if (typeof jwt !== "string" || !jwt || jwt.length>16000) return null;
     const parts=jwt.split(".");
     if (parts.length!==3) return null;
     let hdr, claims;
@@ -30,7 +45,7 @@ export function createCastAccess({issuer="", audience="", fetchImpl=fetch, now=D
     const stamp=now()/1000;
     if (hdr?.alg!=="RS256"||typeof hdr.kid!=="string"||claims?.iss!==origin||
       ![claims.aud].flat().includes(audience)||!Number.isFinite(claims.exp)||
-      claims.exp<=stamp||claims.exp>stamp+86400||(claims.nbf!=null&&claims.nbf>stamp)||
+      claims.exp<=stamp||(claims.nbf!=null&&claims.nbf>stamp)||
       typeof claims.sub!=="string"||!claims.sub||claims.sub.length>300) return null;
     for (const force of [false,true]) {
       let keys;

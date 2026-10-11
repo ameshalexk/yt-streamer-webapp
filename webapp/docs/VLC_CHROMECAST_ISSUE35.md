@@ -53,3 +53,9 @@ Feature remains disabled if opt-in configuration is absent. Preview/test must us
 - Seek and playback after 90 minutes (currently link will expire; issue a new session); HLS is rolling with no rewind.
 - Chrome UI full suite quick-dock fullscreen baseline fix in separate UI v3 owner branch.
 - No merge, production restart, Cloudflare policy edit, deploy, or service changes without explicit separate approval.
+
+## iOS authorization compatibility (2026-10-11 hotfix)
+
+For the signed session-control API, first verify the Cloudflare Access Cf-Access-Jwt-Assertion header. If the header is absent, extract only the existing CF_Authorization cookie from the request; validate its RS256 signature, issuer, AUD, subject and expiry with the same Cloudflare public JWKS. Reject forged, expired and wrong-audience cookies. An invalid assertion header is never downgraded to a cookie. Do not constrain otherwise valid Access policy session lifetimes to an arbitrary 24 hours. Browser fetch already uses same-origin credentials; no separate passcode or new authentication system exists.
+
+Public Chromecast media remains restricted to cast.ameshalex.com and uses scoped 90-minute tickets, not browser cookies. This hotfix does not change the existing Cloudflare Access policy protecting stream.ameshalex.com. A signed identity is still required for session creation and revocation.

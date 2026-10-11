@@ -9,6 +9,13 @@
   if (!button || !panel || !detail || !link) return;
   let playback = null;
   let cast = null;
+  const updateActions = () => {
+    for (const id of ["castVlcCopy", "castVlcShare", "castVlcStop"]) {
+      const control=get(id);
+      if (control) control.disabled=!cast;
+    }
+  };
+  updateActions();
   function findSource(sources, meta = {}) {
     const yt = String(meta.youtubeUrl || "");
     if (/^https:\/\/(www\.)?youtube\.com\/watch/.test(yt) || /^https:\/\/youtu\.be\//.test(yt))
@@ -49,10 +56,15 @@
     try {
       if (cast) await call("DELETE", "/api/cast/sessions/" + encodeURIComponent(cast.id));
       cast = await call("POST", "/api/cast/sessions", playback);
+      updateActions();
       link.href = "vlc-x-callback://x-callback-url/stream?url=" + encodeURIComponent(cast.url);
       link.hidden = false;
       show("Ready. Tap Open VLC, then select the Chromecast inside VLC. If opening fails, copy the temporary link and paste it in VLC > Network > Open Network Stream. Expires: " + new Date(cast.expiresAt).toLocaleTimeString());
-    } catch(e) { show(e.message + ". YT Streamer's current playback is unchanged."); }
+    } catch(e) {
+      cast = null;
+      updateActions();
+      show(e.message + " The Cast link was not created; no code should be entered in VLC. YT Streamer's current playback is unchanged.");
+    }
     finally { button.disabled = !playback; }
   });
   get("castVlcCopy").addEventListener("click", async () => {
@@ -73,6 +85,7 @@
     try {
       await call("DELETE", "/api/cast/sessions/" + encodeURIComponent(cast.id));
       cast = null;
+      updateActions();
       panel.hidden = true;
       link.hidden = true;
     } catch(e) { show("Could not revoke session: " + e.message); }
