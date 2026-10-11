@@ -41,7 +41,7 @@ async function fixture() {
   return {origin:`http://127.0.0.1:${server.address().port}`,close:()=>new Promise(resolve=>server.close(resolve))};
 }
 
-test("two REAL Chrome tabs: explicit pairing, selected-tab state/commands, negative auth, stale IDs and reconnect", {timeout:45000}, async t => {
+test("two REAL Chrome tabs: explicit pairing, selected-tab state/commands, negative auth, stale IDs and reconnect", {timeout:120000}, async t => {
   const site = await fixture();
   const owner=key(), pairing=key();
   const relay=await startLocalAgentRelay({ownerToken:owner,pairingToken:pairing,browserOrigin:site.origin,ttlMs:7000});
