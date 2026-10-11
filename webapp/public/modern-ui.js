@@ -132,6 +132,8 @@
       quick("Cast / VLC", "modern-cast-vlc", "#castVlcBtn");
       const castSourceButton = doc.querySelector("#castVlcBtn");
       const castQuickButton = doc.querySelector(".modern-cast-vlc");
+      // Keep the cast shortcut visible in the first row on narrow iPhone screens.
+      if (castQuickButton) quickBar.insertBefore(castQuickButton, quickBar.firstChild);
       const syncCastAvailability = () => {
         if (castQuickButton) castQuickButton.disabled = !castSourceButton || castSourceButton.disabled;
       };

@@ -59,6 +59,7 @@ test("New UI adds reachable VLC cast quick action linked to shared player button
   const src=await fs.readFile(path.resolve("public/modern-ui.js"),"utf8");
   assert.match(src,/quick\("Cast \/ VLC", "modern-cast-vlc", "#castVlcBtn"\)/);
   assert.match(src,/castQuickButton\.disabled/);
+  assert.match(src,/quickBar\.insertBefore\(castQuickButton, quickBar\.firstChild\)/);
   const css=await fs.readFile(path.resolve("public/styles.css"),"utf8");
   assert.match(css,/html\[data-ui='new'\] #castVlcPanel:not\(\[hidden\]\)/);
 });
