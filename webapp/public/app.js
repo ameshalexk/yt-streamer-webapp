@@ -2581,6 +2581,7 @@ function retryBufferedAudioFromGesture() {
 }
 
 function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
+  globalThis.ytStreamerVlcCast?.setSource({mjpegUrl,audioUrl},meta);
   if (!bufferedMjpegSupported()) {
     playCompatStream({ mjpegUrl, audioUrl }, label, meta);
     showStreamNotice(
@@ -3057,6 +3058,7 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
 }
 
 async function playCyberdashStream(youtubeUrl, label, meta = {}) {
+  globalThis.ytStreamerVlcCast?.setSource(null,{youtubeUrl});
   const screen = $("#screen");
   const canvas = $("#cyberdashCanvas");
   const preparedId = String(meta.preparedId || "").trim();
@@ -3171,6 +3173,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
 
 // Play one synced MPEG-TS stream (H.264+AAC) via mpegts.js / MSE.
 async function playStream(sources, label, meta = {}) {
+  globalThis.ytStreamerVlcCast?.setSource(sources, meta);
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
   const youtubeUrl = String(meta.youtubeUrl || "").trim();
   activeYoutubeSourceUrl = youtubeUrl;
@@ -3354,6 +3357,7 @@ async function playItem(item) {
 }
 
 function stopPlayback() {
+  globalThis.ytStreamerVlcCast?.setSource(null);
   playbackRecovery?.reset();
   pendingPlaybackMethodRestore = null;
   stopDesktopHlsSession();
