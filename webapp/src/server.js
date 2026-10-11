@@ -25,6 +25,8 @@ import * as apneDaily from "./lib/apne-daily.js";
 import * as cyberdashDash from "./lib/cyberdash-dash.js";
 import * as processedDashCache from "./lib/processed-dash-cache.js";
 import { readReleaseRevision } from "./lib/release-info.js";
+import { createCastService } from "./lib/vlc-cast.js";
+import { createCastAccess } from "./lib/vlc-cast-access.js";
 
 let storageCleanupInProgress = false;
 const app = express();
@@ -1856,6 +1858,84 @@ app.get("/stream/experimental/cyberdash/:id/:file", asyncH(async (req, res) => {
   });
   res.sendFile(filePath);
 }));
+
+// Optional VLC/Chromecast HLS: controls require a signed CF Access identity;
+// receiver downloads only use a separate, scoped temporary ticket.
+const castAuth = createCastAccess({
+  issuer: process.env.CAST_ACCESS_ISSUER || "",
+  audience: process.env.CAST_ACCESS_AUDIENCE || "",
+});
+const castPublicOrigin = process.env.CAST_PUBLIC_ORIGIN || "";
+const castService = createCastService({
+  root: path.join(config.dataDir, "vlc-cast"),
+  publicOrigin: castPublicOrigin,
+  ffmpegPath: config.ffmpegPath,
+  enabled: process.env.CAST_ENABLED === "1",
+  resolveSource: async ({kind, id, url}) => {
+    if (kind === "legacy") {
+      const processed=await processedLibrary.get(id);
+      if (!processed?.resolutions?.length) throw Object.assign(Error("Processed video unavailable"),{status:404});
+      const allowed=processed.resolutions.map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
+      const resolution=allowed.find(h=>h>=480) || allowed.at(-1);
+      const video=processedLibrary.videoPath(processed.id,resolution);
+      const audio=processedLibrary.audioPath(processed.id);
+      await fs.access(video);
+      await fs.access(audio);
+      return {video,audio,live:false};
+    }
+    let item;
+    if (kind === "item") {
+      const found = await store.findItem(id);
+      if (!found) throw Object.assign(Error("Saved item not found"), {status:404});
+      item=found.item;
+    }
+    if (item?.type === "file") {
+      const input=await fs.realpath(item.url);
+      const libraryRoot=await fs.realpath(config.libraryDir);
+      const relative=path.relative(libraryRoot, input);
+      if (!relative || relative.startsWith("..") || path.isAbsolute(relative))
+        throw Object.assign(Error("File outside saved library"), {status:403});
+      await fs.access(input);
+      return {video:input,live:false};
+    }
+    const ytUrl = kind === "youtube" ? url : item?.type === "youtube" ? item.url : "";
+    if (ytUrl) {
+      const {castYoutubeUrl} = await import("./lib/vlc-cast.js");
+      if (!castYoutubeUrl(ytUrl)) throw Object.assign(Error("Only HTTPS YouTube cast URLs allowed"),{status:400});
+      const resolved=await resolveProxiedYouTubeStreams(ytUrl, 480);
+      return {video:resolved.videoUrl,audio:resolved.audioUrl,live:false};
+    }
+    throw Object.assign(Error("Cast currently supports saved files and YouTube; live streams are not supported"),{status:422});
+  },
+});
+async function requireCastControl(req,res,next) {
+  castService.headers(res);
+  if (!castService.available) return res.status(503).json({error:"VLC casting is disabled or missing configuration"});
+  try {
+    const origin = new URL(castPublicOrigin);
+    if (req.hostname !== origin.hostname) return res.status(403).end();
+    if (req.method !== "GET" && req.get("origin") !== origin.origin)
+      return res.status(403).json({error:"Same-origin action required"});
+    const owner=await castAuth(req);
+    if (!owner) return res.status(401).json({error:"Signed Cloudflare Access login required"});
+    req.castOwner=owner;
+    return next();
+  } catch {return res.status(401).json({error:"Cast authorization unavailable"});}
+}
+app.post("/api/cast/sessions", requireCastControl, asyncH(async(req,res)=>{
+  res.status(201).json(await castService.create(req.body,req.castOwner));
+}));
+app.get("/api/cast/sessions/:id",requireCastControl,(req,res)=>{
+  const state=castService.status(req.params.id,req.castOwner);
+  if (!state) return res.status(404).end();
+  res.json(state);
+});
+app.delete("/api/cast/sessions/:id",requireCastControl,asyncH(async(req,res)=>{
+  if (!castService.owned(req.params.id,req.castOwner))return res.status(404).end();
+  await castService.stop(req.params.id);
+  res.status(204).end();
+}));
+app.get("/cast/media/:id/:token/:file",asyncH((req,res)=>castService.media(req,res)));
 
 // ---------------------------------------------------------------------------
 // Static SPA (served last so API routes win).

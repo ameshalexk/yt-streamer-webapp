@@ -114,8 +114,18 @@
               <button class="btn small ghost" type="button" data-playback-method="mjpeg" aria-pressed="true">MJPEG</button>
               <button class="btn small ghost" type="button" data-playback-method="webcodecs" aria-pressed="false">WebCodecs</button>
             </div>
+            <button class="btn small ghost" id="castVlcBtn" type="button" disabled>Cast / Open in VLC</button>
             <button class="btn small ghost" id="restreamBtn" disabled title="Reload stream">↻ Restream</button>
             <button class="btn small ghost" id="stopBtn" disabled>■ Stop</button>
+          </div>
+          <div id="castVlcPanel" class="vlc-cast-panel" aria-live="polite" hidden>
+            <div id="castVlcStatus"></div>
+            <div class="vlc-cast-actions">
+              <a id="castVlcOpen" class="btn small" href="#" hidden>Open VLC</a>
+              <button id="castVlcCopy" class="btn small ghost" type="button">Copy temporary link</button>
+              <button id="castVlcShare" class="btn small ghost" type="button">Share link</button>
+              <button id="castVlcStop" class="btn small ghost" type="button">Stop casting session</button>
+            </div>
           </div>
 
         <section class="home-tiles" id="homeTiles" aria-label="Home shortcuts">
@@ -812,5 +822,6 @@
   <script src="/extractor-controls.js?v=20261007"></script>
   <script src="/app.js?v=20261007-recovery-storage"></script>
   <script src="/modern-ui.js?v=20261008-v3"></script>
+  <script src="/vlc-cast.js?v=20261011-issue35"></script>
 </body>
 </html>

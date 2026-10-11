@@ -2232,3 +2232,11 @@ body.screen-fullscreen .accordion-layout .player .screen { height: 100vh; min-he
 .watch-section-summary:not(:empty)::before { content: "· "; }
 /* Idle video stays quiet; quality and URL entry live in the disclosures. */
 .accordion-layout .screen:not(.playing) .video-controls-overlay { display: none; }
+
+/* VLC handoff is optional and shared by Classic/New UI's existing toolbar. */
+.vlc-cast-panel { margin: 8px 12px; padding: 12px; background: var(--surface, #21252b);
+  border: 1px solid var(--line, #48505a); border-radius: 12px; color: var(--text, #fff);
+  font-size: 13px; line-height: 1.5; }
+.vlc-cast-panel[hidden], .vlc-cast-panel a[hidden] { display:none !important; }
+.vlc-cast-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+#castVlcBtn:disabled { opacity:.55; cursor:not-allowed; }
