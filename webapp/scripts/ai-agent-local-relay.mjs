@@ -99,9 +99,13 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
         } catch { ws.close(1008, "invalid_pairing"); }
         return;
       }
-      if (message?.kind === "heartbeat") registry.heartbeat({
-        principal: "owner", deviceId, connectionId, state: message.state,
-      });
+      if (message?.kind === "heartbeat") {
+        // A throttled/background tab may outlive its registry TTL while its
+        // WebSocket stays open. Close the stale socket so the client obtains
+        // a fresh device identity instead of appearing paired but unreachable.
+        if (!registry.heartbeat({ principal: "owner", deviceId, connectionId, state: message.state }))
+          ws.close(1012, "session_expired");
+      }
       else if (message?.kind === "approve_remote_request") {
         // Only the already paired, live socket for this exact device may grant consent.
         // The browser UI sends this only following an explicit local trusted click.

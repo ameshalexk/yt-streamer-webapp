@@ -206,3 +206,43 @@ test("two REAL Chrome tabs: explicit pairing, selected-tab state/commands, negat
     t.diagnostic("two real development tabs, explicit selection, state ACK, search, pause, unsupported volume, denied auth, stale identity and new pairing passed");
   } finally { await remoteGateway?.close(); await browser?.close(); await relay.close(); await site.close(); }
 });
+
+test("bad pairing terminates without retry storms; explicit re-pair works", {timeout:20000}, async () => {
+  const site = await fixture();
+  const owner=key(), pairing=key();
+  const relay=await startLocalAgentRelay({ownerToken:owner,pairingToken:pairing,browserOrigin:site.origin});
+  let browser;
+  try {
+    browser=await chromium.launch({channel:"chrome",headless:true,args:["--no-first-run","--no-default-browser-check"]});
+    const page=await browser.newPage();
+    await page.addInitScript(() => {
+      const Original=window.WebSocket;
+      window.__agentSocketAttempts=0;
+      window.WebSocket=class extends Original {
+        constructor(...args) {super(...args);window.__agentSocketAttempts++;}
+      };
+    });
+    await page.goto(site.origin+"/?ai_agent_dev=1");
+    await page.waitForFunction(()=>Boolean(window.YTStreamerMediaAgent));
+    await page.locator("#aiAgentRelay").fill(String(new URL(relay.origin).port));
+    await page.locator("#aiAgentPairing").fill(key());
+    await page.locator("#aiAgentConnect").click();
+    await page.waitForFunction(()=>document.querySelector("#aiAgentStatus").textContent.includes("Pairing rejected"));
+    await delay(1100);
+    assert.equal(await page.evaluate(()=>window.__agentSocketAttempts),1,
+      "a denied credential must not trigger repeated automatic socket attempts");
+    assert.equal((await fetch(relay.origin+"/dev/devices",{headers:{authorization:"Bearer "+owner}}).then(r=>r.json())).devices.length,0);
+    await page.locator("#aiAgentPairing").fill(pairing);
+    await page.locator("#aiAgentConnect").click();
+    await page.waitForFunction(()=>document.querySelector("#aiAgentStatus").textContent.includes("Paired"));
+    assert.equal(await page.evaluate(()=>window.__agentSocketAttempts),2);
+    await page.evaluate(()=>window.dispatchEvent(new Event("pagehide")));
+    assert.match(await page.locator("#aiAgentStatus").textContent(), /pair this tab again/);
+    assert.equal(await page.locator("#aiAgentPairing").inputValue(),"");
+    await delay(250);
+    assert.equal(await page.evaluate(()=>window.__agentSocketAttempts),2,
+      "a backgrounded/dismissed document must not silently re-pair after pagehide");
+    assert.equal(await page.locator("#aiAgentDevice").textContent(),"");
+    assert.equal(await page.evaluate(()=>window.__agentSocketAttempts),2);
+  } finally {await browser?.close();await relay.close();await site.close();}
+});

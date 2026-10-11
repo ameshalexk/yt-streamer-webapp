@@ -59,13 +59,15 @@
     const socket = new WebSocket(`ws://127.0.0.1:${relayPort}/dev/player`);
     ws = socket;
     socket.onopen = () => {
-      failures = 0;
       socket.send(JSON.stringify({kind:"pair",proof:pairing,label}));
     };
     socket.onmessage = async (event) => {
       let message;
       try { message = JSON.parse(event.data); } catch { return; }
       if (message.kind === "registered") {
+        // Reset backoff only after server-verified registration, not merely
+        // opening a socket (which may immediately reject bad pairing proof).
+        failures = 0;
         device = message.device_id; online = true;
         idField.textContent = device;
         status.textContent = "Paired: " + label;
@@ -125,9 +127,16 @@
       received.set(id, ack);
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(ack));
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (socket !== ws) return;
-      resetConnection(); status.textContent = active ? "Disconnected; reconnecting" : "Disconnected";
+      resetConnection();
+      if (active && event.code === 1008) {
+        // Policy/auth failures are terminal. Never retry a known bad proof.
+        active = false; pairing = "";
+        status.textContent = "Pairing rejected; check proof and pair this tab again";
+        return;
+      }
+      status.textContent = active ? "Disconnected; reconnecting" : "Disconnected";
       if (active) retry = setTimeout(dial, Math.min(6000, 350 * Math.pow(2, Math.min(4, failures++))));
     };
     socket.onerror = () => { status.textContent = "WebSocket unavailable"; socket.close(); };
@@ -175,5 +184,15 @@
     try { result.textContent = JSON.stringify(await controller("/dev/command", {device_id:picker.value,action,args}),null,2); }
     catch(e) { result.textContent = String(e.message); }
   };
-  window.addEventListener("pagehide", () => { active = false; resetConnection(); ws?.close(); pairing = ""; });
+  window.addEventListener("pagehide", () => {
+    active = false; resetConnection(); const departingSocket = ws; ws = null; departingSocket?.close(); pairing = "";
+    proofInput.value = "";
+    status.textContent = "Disconnected; pair this tab again";
+  });
+  window.addEventListener("visibilitychange", () => {
+    // Background-tab timers can be throttled. Refresh liveness immediately
+    // when visible, but leave actual expiry detection to the server.
+    if (!document.hidden && active && online && ws?.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({kind:"heartbeat",state:state()}));
+  });
 })();
