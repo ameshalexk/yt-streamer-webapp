@@ -27,7 +27,7 @@ import * as processedDashCache from "./lib/processed-dash-cache.js";
 import { readReleaseRevision } from "./lib/release-info.js";
 import { createCastService } from "./lib/vlc-cast.js";
 import { createCastAccess } from "./lib/vlc-cast-access.js";
-import { canUseCastReceiver } from "./lib/vlc-cast-routing.js";
+import { canUseCastReceiver, redactCastMediaPath } from "./lib/vlc-cast-routing.js";
 
 let storageCleanupInProgress = false;
 const app = express();
@@ -334,7 +334,7 @@ const preparedCleanupTimer = setInterval(() => {
 preparedCleanupTimer.unref?.();
 
 const asyncH = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) => {
-  console.error("[api]", req.method, req.path, "-", err.message);
+  console.error("[api]", req.method, redactCastMediaPath(req.path), "-", redactCastMediaPath(err.message));
   if (!res.headersSent) res.status(err.status || 500).json({ error: err.message });
 });
 
@@ -1924,6 +1924,10 @@ const castService = createCastService({
     throw Object.assign(Error("Cast currently supports saved files and YouTube; live streams are not supported"),{status:422});
   },
 });
+// Reclaim only stale scratch directories from crashed/previous sessions.
+void castService.cleanupStaleScratch().catch(error=>{
+  console.error("[cast-scratch-cleanup]",redactCastMediaPath(error.message));
+});
 async function requireCastControl(req,res,next) {
   castService.headers(res);
   if (!castService.available) return res.status(503).json({error:"VLC casting is disabled or missing configuration"});
@@ -1942,11 +1946,12 @@ async function requireCastControl(req,res,next) {
 app.post("/api/cast/sessions", requireCastControl, asyncH(async(req,res)=>{
   res.status(201).json(await castService.create(req.body,req.castOwner));
 }));
-app.get("/api/cast/sessions/:id",requireCastControl,(req,res)=>{
+app.get("/api/cast/sessions/:id",requireCastControl,asyncH(async(req,res)=>{
+  await castService.sweep(); // Do not report an expired/idle session as active.
   const state=castService.status(req.params.id,req.castOwner);
   if (!state) return res.status(404).end();
   res.json(state);
-});
+}));
 app.delete("/api/cast/sessions/:id",requireCastControl,asyncH(async(req,res)=>{
   if (!castService.owned(req.params.id,req.castOwner))return res.status(404).end();
   await castService.stop(req.params.id);

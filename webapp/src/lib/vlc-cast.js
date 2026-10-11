@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import {probeVodDuration, vodPlaylist, makeVodSegment, VOD_MAX_SECONDS} from "./vlc-cast-vod.js";
 
 // Standalone opt-in HLS service. Never changes the browser's existing transports.
 export const castYoutubeUrl = (raw) => {
@@ -39,9 +40,12 @@ export function buildCastArgs({video,audio,live=false,startAt=0,dir}) {
 }
 export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="ffmpeg",
   enabled=false, now=Date.now, spawnImpl=spawn, ttlMs=90*60_000,
-  idleMs=15*60_000, readyTimeoutMs=15000}) {
+  idleMs=45*60_000, maxMs=6*60*60_000, readyTimeoutMs=15000,
+  probeDuration=probeVodDuration}) {
   const sessions = new Map();
   const rates = new Map();
+  let creating=0;
+  let closed=false;
   let origin="";
   try {
     const u = new URL(publicOrigin);
@@ -49,13 +53,16 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
   } catch {}
   const available = !!(enabled && origin && root && resolveSource);
   function headers(res) {
-    res.set({"Cache-Control":"private, no-store, max-age=0","Referrer-Policy":"no-referrer",
-      "X-Content-Type-Options":"nosniff","X-Robots-Tag":"noindex, nofollow, nosnippet"});
+    res.set({"Cache-Control":"private, no-store, max-age=0",
+      "CDN-Cache-Control":"no-store","Cloudflare-CDN-Cache-Control":"no-store",
+      "Referrer-Policy":"no-referrer","X-Content-Type-Options":"nosniff",
+      "X-Robots-Tag":"noindex, nofollow, nosnippet"});
   }
   async function stop(id) {
     const s=sessions.get(id);
     if (!s) return false;
     sessions.delete(id);
+    s.stopping=true;
     // Wait briefly for FFmpeg to release files before removing the scratch directory.
     if (s.ff && s.ff.exitCode == null) {
       await new Promise((done) => {
@@ -71,15 +78,19 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
   }
   async function sweep() {
     for(const s of sessions.values()) {
-      if(now()>=s.exp || now()-s.last>idleMs) await stop(s.id);
+      if(now()>=s.exp || now()>=s.maxAt || now()-s.last>idleMs || s.state==="error") await stop(s.id);
     }
   }
   const timer=setInterval(()=>{void sweep().catch(()=>{});},30000);
   timer.unref?.();
   async function create(body, owner) {
-    if(!available) throw Object.assign(Error("Cast unavailable until access is configured"),{status:503});
+    if(!available || closed) throw Object.assign(Error("Cast unavailable until access is configured"),{status:503});
     await sweep();
-    if(sessions.size>=2) throw Object.assign(Error("Two cast sessions already active"),{status:429});
+    // Reserve a slot before asynchronous source resolution/probing. Concurrent
+    // creation requests must not bypass the two-session encoder cap.
+    if(sessions.size+creating>=2) throw Object.assign(Error("Two cast sessions already active"),{status:429});
+    creating++;
+    try {
     const {kind,id,url} = body || {};
     const startAt=Number(body?.startAt || 0);
     if(!Number.isFinite(startAt) || startAt<0 || startAt>43200 ||
@@ -88,14 +99,38 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
       throw Object.assign(Error("Unsupported cast source"),{status:400});
     }
     const src=await resolveSource({kind,id,url});
+    if(closed) throw Object.assign(Error("Cast service shutting down"),{status:503});
     if(!src?.video) throw Object.assign(Error("Video unavailable"),{status:422});
+    // A fixed on-demand VOD timeline supports arbitrary seeking and long pauses.
+    // Unknown-duration sources retain the existing rolling handoff, explicitly marked nonseekable.
+    let duration=null;
+    try {duration=await probeDuration(src.video);}catch{}
+    if(duration != null && (!Number.isFinite(duration) || duration<=0 || duration>VOD_MAX_SECONDS))
+      throw Object.assign(Error("VLC VOD supports movies up to 4 hours 15 minutes"),{status:422});
+    if(closed) throw Object.assign(Error("Cast service shutting down"),{status:503});
     const sid=crypto.randomBytes(12).toString("base64url");
     const token=crypto.randomBytes(32).toString("base64url");
     const dir=path.join(root,sid);
     await fs.mkdir(dir,{recursive:true,mode:0o700});
-    const s={id:sid,owner,tokenHash:digest(token),dir,ff:null,exp:now()+ttlMs,last:now(),state:"starting"};
+    if(closed){
+      await fs.rm(dir,{recursive:true,force:true});
+      throw Object.assign(Error("Cast service shutting down"),{status:503});
+    }
+    const s={id:sid,owner,tokenHash:digest(token),dir,ff:null,exp:now()+ttlMs,
+      maxAt:now()+maxMs,last:now(),state:"starting",duration,
+      source:src,cache:new Map(),pending:new Map(),pins:new Map(),activeTransfers:0,
+      queue:Promise.resolve(),stopping:false};
     sessions.set(sid,s);
     try {
+      if(duration != null){
+        await fs.writeFile(path.join(dir,"index.m3u8"),vodPlaylist(duration),{mode:0o600});
+        // Encode only the first segment at creation; the receiver triggers others.
+        await makeVodSegment(s,0,{ffmpegPath,spawnImpl});
+        s.state="ready";
+        return {id:sid,url:origin+"/cast/media/"+sid+"/"+token+"/index.m3u8",
+          expiresAt:new Date(s.exp).toISOString(),maxExpiresAt:new Date(s.maxAt).toISOString(),
+          status:"ready",seekable:true,mode:"vod",idleMinutes:Math.floor(idleMs/60000)};
+      }
       s.ff=spawnImpl(ffmpegPath,buildCastArgs({...src,dir,startAt}),{stdio:["ignore","ignore","pipe"]});
       s.ff.stderr?.resume();
       s.ff.once("error",()=>{s.state="error";});
@@ -109,7 +144,8 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
           if(parts?.length && (await fs.stat(path.join(dir,parts.at(-1)))).size>0) {
             s.state="ready";
             return {id:sid,url:origin+"/cast/media/"+sid+"/"+token+"/index.m3u8",
-              expiresAt:new Date(s.exp).toISOString(),status:"ready"};
+              expiresAt:new Date(s.exp).toISOString(),maxExpiresAt:new Date(s.maxAt).toISOString(),
+              status:"ready",seekable:false,mode:"rolling",idleMinutes:Math.floor(idleMs/60000)};
           }
         } catch {}
         await delay(150);
@@ -119,11 +155,14 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
       await stop(sid);
       throw Object.assign(Error("HLS encoder failed to prepare the stream"),{status:502});
     }
+    } finally {creating--;}
   }
   function owned(id,owner) { const s=sessions.get(id); return s?.owner===owner ? s : null; }
   function status(id,owner) {
     const s=owned(id,owner);
-    return s ? {id:s.id,status:s.state,expiresAt:new Date(s.exp).toISOString()} : null;
+    return s ? {id:s.id,status:s.state,expiresAt:new Date(s.exp).toISOString(),
+      maxExpiresAt:new Date(s.maxAt).toISOString(),seekable:s.duration!=null,
+      mode:s.duration!=null?"vod":"rolling"} : null;
   }
   async function media(req,res) {
     headers(res);
@@ -138,16 +177,72 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
        || !/^(index\.m3u8|segment_\d{5}\.ts)$/.test(file || "")) return res.status(404).end();
     const s=sessions.get(id);
     if(!s) return res.status(410).end();
-    if(now()>=s.exp || now()-s.last>idleMs) {await stop(id);return res.status(410).end();}
+    if(now()>=s.exp || now()>=s.maxAt || now()-s.last>idleMs) {await stop(id);return res.status(410).end();}
     if(!crypto.timingSafeEqual(digest(token),s.tokenHash)) return res.status(403).end();
+    // Count valid requests as activity before slow on-demand encoding begins.
     s.last=now();
+    s.exp=Math.min(s.maxAt,now()+ttlMs);
+    let releaseTransfer=()=>{};
     try {
-      const filePath=path.join(s.dir,file),stat=await fs.stat(filePath);
+      let filePath=path.join(s.dir,file);
+      if(s.duration!=null && file!=="index.m3u8"){
+        if(s.activeTransfers>=8)return res.status(429).end();
+        const index=Number(file.slice(8,-3));
+        if(index>=Math.ceil(s.duration/6)) return res.status(404).end();
+        // Pin a segment *before* waiting for its encoder job. Otherwise another
+        // request may evict the file between encoding, stat and HTTP sendFile.
+        s.activeTransfers++;
+        s.pins.set(index,(s.pins.get(index)||0)+1);
+        let released=false;
+        releaseTransfer=()=>{
+          if(released)return;
+          released=true;s.activeTransfers=Math.max(0,s.activeTransfers-1);
+          const remaining=(s.pins.get(index)||1)-1;
+          if(remaining)s.pins.set(index,remaining);else s.pins.delete(index);
+        };
+        res.once("finish",releaseTransfer);
+        res.once("close",releaseTransfer);
+        filePath=await makeVodSegment(s,index,{ffmpegPath,spawnImpl});
+      }
+      // Revocation/sweeper may run while the async encoder is active.
+      if(s.stopping || sessions.get(id)!==s || now()>=s.maxAt)
+        return res.status(410).end();
+      const stat=await fs.stat(filePath);
       if(!stat.isFile() || !stat.size) return res.status(404).end();
+      // Receiver-initiated sliding lease: no Access cookie or API call on the TV.
+      // Even uninterrupted playback ends at the immutable hard ceiling.
       res.type(file.endsWith(".m3u8")?"application/vnd.apple.mpegurl":"video/mp2t");
       return res.sendFile(filePath);
-    } catch {return res.status(s.state==="error"?502:404).end();}
+    } catch(error) {
+      releaseTransfer();
+      if(res.headersSent || res.writableEnded) return;
+      return res.status(error?.status===429?429:error?.status===410?410:s.state==="error"?502:503).end();
+    }
   }
-  async function close(){clearInterval(timer);for(const id of [...sessions.keys()])await stop(id);}
-  return {available,create,media,stop,owned,status,sweep,close,headers};
+  async function cleanupStaleScratch({minAgeMs=maxMs+2*60*60_000}={}){
+    // Reclaim old session-shaped directories under the dedicated scratch root.
+    if(!available || !Number.isFinite(minAgeMs) || minAgeMs<0)return 0;
+    let entries=[];
+    try{entries=await fs.readdir(root,{withFileTypes:true});}
+    catch(error){if(error.code==="ENOENT")return 0;throw error;}
+    let removed=0;
+    for(const entry of entries){
+      if(!entry.isDirectory() || !/^[A-Za-z0-9_-]{16}$/.test(entry.name)
+          || sessions.has(entry.name))continue;
+      const dir=path.join(root,entry.name);
+      try{
+        const stat=await fs.lstat(dir);
+        if(!stat.isDirectory() || now()-stat.mtimeMs<minAgeMs)continue;
+        await fs.rm(dir,{recursive:true,force:true});
+        removed++;
+      }catch(error){if(error.code!=="ENOENT")throw error;}
+    }
+    return removed;
+  }
+  async function close(){
+    closed=true;
+    clearInterval(timer);
+    for(const id of [...sessions.keys()])await stop(id);
+  }
+  return {available,create,media,stop,owned,status,sweep,close,headers,cleanupStaleScratch};
 }
