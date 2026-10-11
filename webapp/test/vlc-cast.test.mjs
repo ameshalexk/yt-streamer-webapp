@@ -9,7 +9,7 @@ import path from "node:path";
 import express from "express";
 import {createCastService, buildCastArgs, castYoutubeUrl} from "../src/lib/vlc-cast.js";
 import {createCastAccess} from "../src/lib/vlc-cast-access.js";
-import {canUseCastReceiver} from "../src/lib/vlc-cast-routing.js";
+import {canUseCastReceiver,redactCastMediaPath} from "../src/lib/vlc-cast-routing.js";
 
 test("cast source allowlist and ffmpeg H.264/AAC segmentation",()=>{
   assert.equal(castYoutubeUrl("https://www.youtube.com/watch?v=abc"),true);
@@ -142,4 +142,13 @@ test("public receiver hostname rejects app, API and other routes",()=>{
   }
   assert.equal(canUseCastReceiver({method:"POST",path,hostname:h,receiverHost:h}),false);
   assert.equal(canUseCastReceiver({method:"GET",path,hostname:"stream.ameshalex.com",receiverHost:h}),false);
+});
+
+test("media ticket is redacted from application error log paths",()=>{
+  const id="a".repeat(16),token="b".repeat(43);
+  const path="/cast/media/"+id+"/"+token+"/segment_00001.ts";
+  const output=redactCastMediaPath("HTTP failed "+path+" internal");
+  assert.ok(!output.includes(id) && !output.includes(token));
+  assert.match(output,/\/cast\/media\/\[redacted\]\/segment_00001\.ts/);
+  assert.equal(redactCastMediaPath("/api/health"),"/api/health");
 });

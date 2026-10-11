@@ -65,3 +65,44 @@ test("New UI adds reachable VLC cast quick action linked to shared player button
   const css=await fs.readFile(path.resolve("public/styles.css"),"utf8");
   assert.match(css,/html\[data-ui='new'\] #castVlcPanel:not\(\[hidden\]\)/);
 });
+
+test("temporary reconnect failure preserves existing VLC link; confirmed expiry clears it",async()=>{
+  const src=await fs.readFile(path.resolve("public/vlc-cast.js"),"utf8");
+  const names=["castVlcBtn","castVlcPanel","castVlcStatus","castVlcOpen","castVlcCopy",
+    "castVlcShare","castVlcStop","castVlcRefresh","castVlcClose"];
+  const nodes=Object.fromEntries(names.map(id=>[id,new Node()]));
+  let checkFailure="offline";
+  const context={
+    document:{getElementById:id=>nodes[id],addEventListener(){}},
+    window:{},URL,location:{origin:"https://stream.example"},
+    navigator:{clipboard:{writeText:async()=>{}},share:async()=>{}},
+    fetch:async(_url,options)=>{
+      if(options.method==="POST")return {ok:true,status:201,json:async()=>({
+        id:"abcdefghijklmnop",url:"https://cast.example/cast/media/abcdefghijklmnop/".concat("a".repeat(43),"/index.m3u8"),
+        expiresAt:"2026-10-12T04:00:00Z",seekable:true,mode:"vod",idleMinutes:45
+      })};
+      if(options.method==="GET"){
+        if(checkFailure==="offline") throw Error("network unavailable");
+        if(checkFailure==="expired")return {ok:false,status:404,json:async()=>({error:"session no longer exists"})};
+        return {ok:true,status:200,json:async()=>({status:"ready",seekable:true,mode:"vod"})};
+      }
+      return {ok:true,status:204};
+    }
+  };
+  vm.runInNewContext(src,context);
+  context.window.ytStreamerVlcCast.setSource({mjpegUrl:"/stream/item/saved-video"});
+  await nodes.castVlcBtn.tap();
+  const previousHref=nodes.castVlcOpen.href;
+  await nodes.castVlcRefresh.tap();
+  assert.equal(nodes.castVlcOpen.hidden,false,"network loss must preserve VLC deep link");
+  assert.equal(nodes.castVlcOpen.href,previousHref);
+  assert.equal(nodes.castVlcStop.disabled,false);
+  assert.match(nodes.castVlcStatus.textContent,/preserved/);
+  checkFailure="working";
+  await nodes.castVlcRefresh.tap();
+  assert.match(nodes.castVlcStatus.textContent,/Session active/);
+  checkFailure="expired";
+  await nodes.castVlcRefresh.tap();
+  assert.equal(nodes.castVlcOpen.hidden,true,"confirmed 404 must clear expired URL");
+  assert.equal(nodes.castVlcStop.disabled,true);
+});

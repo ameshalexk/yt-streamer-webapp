@@ -54,7 +54,11 @@
       body: body ? JSON.stringify(body) : undefined, cache:"no-store"});
     if (r.status === 204) return null;
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw Error(data.error || "Cast request failed (" + r.status + ")");
+    if (!r.ok) {
+      const error=Error(data.error || "Cast request failed (" + r.status + ")");
+      error.status=r.status;
+      throw error;
+    }
     return data;
   }
   button.addEventListener("click", async () => {
@@ -80,13 +84,22 @@
     if (!cast) return;
     try {
       const state = await call("GET", "/api/cast/sessions/" + encodeURIComponent(cast.id));
-      if (!state || state.status === "error" || state.status === "ended")
-        throw Error("Cast session is no longer running");
+      if (!state || state.status === "error" || state.status === "ended") {
+        const error=Error("Cast session is no longer running");
+        error.status=410;
+        throw error;
+      }
       cast = {...cast,...state};
       show("Session active. "+describe(cast));
     } catch(e) {
-      cast=null; link.hidden=true; updateActions();
-      show("The cast session expired, stopped, or cannot be verified. Start a new Cast / Open in VLC session. "+e.message);
+      if(e.status === 404 || e.status === 410){
+        cast=null; link.hidden=true; updateActions();
+        show("The cast session expired or was revoked. Start a new Cast / Open in VLC session. "+e.message);
+      } else {
+        // A lost iPhone connection or temporary Access failure does not revoke
+        // the Chromecast bearer URL: preserve controls for renderer recovery.
+        show("Could not check the cast right now. The existing VLC link is preserved; retry Check / Reconnect when connectivity returns. "+e.message);
+      }
     }
   };
   get("castVlcRefresh")?.addEventListener("click",refresh);

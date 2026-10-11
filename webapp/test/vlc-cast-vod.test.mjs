@@ -146,3 +146,57 @@ test("actual ffmpeg generated VOD segment preserves video and separate audio tim
   const length=Number(JSON.parse(stdout).format.duration);
   assert.ok(length>14 && length<16,"the HLS VOD demuxer traverses all HTTP segments");
 });
+
+test("concurrent cast starts reserve their two slots before asynchronous source lookup",async(t)=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),"cast-vod-admission-"));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const waiting=[];
+  const cast=createCastService({root,publicOrigin:"https://cast.fake.test",enabled:true,
+    resolveSource:()=>new Promise(resolve=>waiting.push(resolve)),
+    probeDuration:async()=>12,spawnImpl:mockFfmpeg});
+  t.after(()=>cast.close());
+  const one=cast.create({kind:"item",id:"one"},"signed-owner");
+  const two=cast.create({kind:"item",id:"two"},"signed-owner");
+  // Both requests await sweep() once, then acquire their own slot synchronously.
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(waiting.length,2);
+  await assert.rejects(cast.create({kind:"item",id:"three"},"signed-owner"),{status:429});
+  waiting.splice(0).forEach(resolve=>resolve({video:"synthetic.mp4"}));
+  assert.equal((await one).status,"ready");
+  assert.equal((await two).status,"ready");
+  await assert.rejects(cast.create({kind:"item",id:"four"},"signed-owner"),{status:429});
+});
+
+test("service close during pending source lookup rejects late session creation",async(t)=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),"cast-vod-close-"));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  let finishLookup;
+  const cast=createCastService({root,publicOrigin:"https://cast.fake.test",enabled:true,
+    resolveSource:()=>new Promise(resolve=>{finishLookup=resolve}),
+    probeDuration:async()=>12,spawnImpl:mockFfmpeg});
+  const inflight=cast.create({kind:"item",id:"sample"},"owner");
+  await new Promise(resolve=>setImmediate(resolve));
+  await cast.close();
+  finishLookup({video:"synthetic.mp4"});
+  await assert.rejects(inflight,{status:503});
+  await assert.rejects(cast.create({kind:"item",id:"new"},"owner"),{status:503});
+  assert.equal((await fs.readdir(root)).length,0);
+});
+
+test("stale VOD scratch cleanup removes only old orphan session directories",async(t)=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),"cast-vod-orphans-"));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const old="abcdefghijklmnop",young="qrstuvwxyzABCDEF",unrelated="your-important-data";
+  for(const name of [old,young,unrelated])await fs.mkdir(path.join(root,name));
+  const longAgo=new Date(Date.now()-9*3600000);
+  await fs.utimes(path.join(root,old),longAgo,longAgo);
+  await fs.utimes(path.join(root,unrelated),longAgo,longAgo);
+  await fs.writeFile(path.join(root,"persistent.txt"),"don't delete");
+  const cast=createCastService({root,publicOrigin:"https://cast.fake.test",enabled:true,
+    resolveSource:async()=>({video:"synthetic.mp4"}),probeDuration:async()=>12,
+    spawnImpl:mockFfmpeg});
+  t.after(()=>cast.close());
+  assert.equal(await cast.cleanupStaleScratch(),1);
+  assert.deepEqual((await fs.readdir(root)).sort(),
+    [young,unrelated,"persistent.txt"].sort());
+});

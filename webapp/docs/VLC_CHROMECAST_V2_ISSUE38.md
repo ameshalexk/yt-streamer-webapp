@@ -88,3 +88,26 @@ at the upstream YouTube provider, client-specific TS discontinuities/gap handlin
 and Chromecast buffering behavior. Tests on actual receiver hardware remain
 necessary. Production, launchd, Tunnel, Access, HAOS, existing UI and browser
 transport paths have not been modified.
+
+## Follow-up lifecycle hardening (isolated, #38)
+
+- Concurrent POST requests now reserve their cast slots before any asynchronous
+  media lookup, preventing more than two sessions from starting in a race.
+  Shutdown rejects late source lookups and avoids creating new cast sessions.
+- The authenticated session GET sweeps expired state before reporting active.
+  If a disconnected iPhone cannot check status, the UI **preserves** the existing
+  VLC URL and offers retry; only a confirmed 404/410 or ended/error session
+  clears the link. This is a recovery UI improvement, not proof that a specific
+  Chromecast reconnects successfully in real hardware.
+- Requested VOD segments are pinned before asynchronous encoding starts, and
+  remain pinned until HTTP response completion/close, preventing eviction races.
+- An app startup cleanup scans only the dedicated cast scratch root and removes
+  valid-looking session directories older than 8 hours (6h max session lifetime
+  plus 2h grace). It skips other files/dirs and any currently active sessions.
+- Cast bearer URLs are redacted from application exception logs. Local Tunnel
+  YAML has no explicit log-file or cache setting and no cloudflared log file was
+  found; **Cloudflare edge request-log/path retention and cache rules could not
+  be verified from local files** and must be checked before rollout.
+- Automated tests now exercise concurrent admission, shutdown-before-lookup,
+  stale scratch cleanup, temporary browser outage preservation, known revocation
+  and token redaction. Phone-lock / Chromecast hardware acceptance remains open.

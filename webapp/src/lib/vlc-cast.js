@@ -44,6 +44,8 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
   probeDuration=probeVodDuration}) {
   const sessions = new Map();
   const rates = new Map();
+  let creating=0;
+  let closed=false;
   let origin="";
   try {
     const u = new URL(publicOrigin);
@@ -80,9 +82,13 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
   const timer=setInterval(()=>{void sweep().catch(()=>{});},30000);
   timer.unref?.();
   async function create(body, owner) {
-    if(!available) throw Object.assign(Error("Cast unavailable until access is configured"),{status:503});
+    if(!available || closed) throw Object.assign(Error("Cast unavailable until access is configured"),{status:503});
     await sweep();
-    if(sessions.size>=2) throw Object.assign(Error("Two cast sessions already active"),{status:429});
+    // Reserve a slot before asynchronous source resolution/probing. Concurrent
+    // creation requests must not bypass the two-session encoder cap.
+    if(sessions.size+creating>=2) throw Object.assign(Error("Two cast sessions already active"),{status:429});
+    creating++;
+    try {
     const {kind,id,url} = body || {};
     const startAt=Number(body?.startAt || 0);
     if(!Number.isFinite(startAt) || startAt<0 || startAt>43200 ||
@@ -91,6 +97,7 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
       throw Object.assign(Error("Unsupported cast source"),{status:400});
     }
     const src=await resolveSource({kind,id,url});
+    if(closed) throw Object.assign(Error("Cast service shutting down"),{status:503});
     if(!src?.video) throw Object.assign(Error("Video unavailable"),{status:422});
     // A fixed on-demand VOD timeline supports arbitrary seeking and long pauses.
     // Unknown-duration sources retain the existing rolling handoff, explicitly marked nonseekable.
@@ -98,10 +105,15 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
     try {duration=await probeDuration(src.video);}catch{}
     if(duration != null && (!Number.isFinite(duration) || duration<=0 || duration>VOD_MAX_SECONDS))
       throw Object.assign(Error("VLC VOD supports movies up to 4 hours 15 minutes"),{status:422});
+    if(closed) throw Object.assign(Error("Cast service shutting down"),{status:503});
     const sid=crypto.randomBytes(12).toString("base64url");
     const token=crypto.randomBytes(32).toString("base64url");
     const dir=path.join(root,sid);
     await fs.mkdir(dir,{recursive:true,mode:0o700});
+    if(closed){
+      await fs.rm(dir,{recursive:true,force:true});
+      throw Object.assign(Error("Cast service shutting down"),{status:503});
+    }
     const s={id:sid,owner,tokenHash:digest(token),dir,ff:null,exp:now()+ttlMs,
       maxAt:now()+maxMs,last:now(),state:"starting",duration,
       source:src,cache:new Map(),pending:new Map(),pins:new Map(),activeTransfers:0,
@@ -141,6 +153,7 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
       await stop(sid);
       throw Object.assign(Error("HLS encoder failed to prepare the stream"),{status:502});
     }
+    } finally {creating--;}
   }
   function owned(id,owner) { const s=sessions.get(id); return s?.owner===owner ? s : null; }
   function status(id,owner) {
@@ -167,14 +180,26 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
     // Count valid requests as activity before slow on-demand encoding begins.
     s.last=now();
     s.exp=Math.min(s.maxAt,now()+ttlMs);
+    let releaseTransfer=()=>{};
     try {
       let filePath=path.join(s.dir,file);
-      let segmentIndex=null;
       if(s.duration!=null && file!=="index.m3u8"){
         if(s.activeTransfers>=8)return res.status(429).end();
         const index=Number(file.slice(8,-3));
         if(index>=Math.ceil(s.duration/6)) return res.status(404).end();
-        segmentIndex=index;
+        // Pin a segment *before* waiting for its encoder job. Otherwise another
+        // request may evict the file between encoding, stat and HTTP sendFile.
+        s.activeTransfers++;
+        s.pins.set(index,(s.pins.get(index)||0)+1);
+        let released=false;
+        releaseTransfer=()=>{
+          if(released)return;
+          released=true;s.activeTransfers=Math.max(0,s.activeTransfers-1);
+          const remaining=(s.pins.get(index)||1)-1;
+          if(remaining)s.pins.set(index,remaining);else s.pins.delete(index);
+        };
+        res.once("finish",releaseTransfer);
+        res.once("close",releaseTransfer);
         filePath=await makeVodSegment(s,index,{ffmpegPath,spawnImpl});
       }
       // Revocation/sweeper may run while the async encoder is active.
@@ -185,24 +210,37 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
       // Receiver-initiated sliding lease: no Access cookie or API call on the TV.
       // Even uninterrupted playback ends at the immutable hard ceiling.
       res.type(file.endsWith(".m3u8")?"application/vnd.apple.mpegurl":"video/mp2t");
-      if(segmentIndex!==null){
-        s.activeTransfers++;
-        s.pins.set(segmentIndex,(s.pins.get(segmentIndex)||0)+1);
-        let released=false;
-        const release=()=>{
-          if(released)return;
-          released=true;s.activeTransfers=Math.max(0,s.activeTransfers-1);
-          const count=(s.pins.get(segmentIndex)||1)-1;
-          if(count)s.pins.set(segmentIndex,count);else s.pins.delete(segmentIndex);
-        };
-        res.once("finish",release);
-        res.once("close",release);
-      }
       return res.sendFile(filePath);
     } catch(error) {
+      releaseTransfer();
+      if(res.headersSent || res.writableEnded) return;
       return res.status(error?.status===429?429:error?.status===410?410:s.state==="error"?502:503).end();
     }
   }
-  async function close(){clearInterval(timer);for(const id of [...sessions.keys()])await stop(id);}
-  return {available,create,media,stop,owned,status,sweep,close,headers};
+  async function cleanupStaleScratch({minAgeMs=maxMs+2*60*60_000}={}){
+    // Reclaim old session-shaped directories under the dedicated scratch root.
+    if(!available || !Number.isFinite(minAgeMs) || minAgeMs<0)return 0;
+    let entries=[];
+    try{entries=await fs.readdir(root,{withFileTypes:true});}
+    catch(error){if(error.code==="ENOENT")return 0;throw error;}
+    let removed=0;
+    for(const entry of entries){
+      if(!entry.isDirectory() || !/^[A-Za-z0-9_-]{16}$/.test(entry.name)
+          || sessions.has(entry.name))continue;
+      const dir=path.join(root,entry.name);
+      try{
+        const stat=await fs.lstat(dir);
+        if(!stat.isDirectory() || now()-stat.mtimeMs<minAgeMs)continue;
+        await fs.rm(dir,{recursive:true,force:true});
+        removed++;
+      }catch(error){if(error.code!=="ENOENT")throw error;}
+    }
+    return removed;
+  }
+  async function close(){
+    closed=true;
+    clearInterval(timer);
+    for(const id of [...sessions.keys()])await stop(id);
+  }
+  return {available,create,media,stop,owned,status,sweep,close,headers,cleanupStaleScratch};
 }
