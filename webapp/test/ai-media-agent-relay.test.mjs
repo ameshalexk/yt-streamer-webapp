@@ -105,3 +105,26 @@ test("offline device is not retried and fullscreen failure needs user gesture", 
     assert.equal(gone.body.status, "offline");
   } finally { await relay.close(); }
 });
+
+test("expired registry heartbeat closes an otherwise open browser socket", async () => {
+  const owner = token(), pair = token();
+  const relay = await startLocalAgentRelay({ ownerToken: owner, pairingToken: pair, ttlMs: 120 });
+  let ws;
+  try {
+    const device = await pairedPlayer(relay, pair, "Background browser test");
+    ws = device.ws;
+    const close = new Promise(resolve => ws.once("close", (code, reason) => resolve({code, reason: String(reason)})));
+    // No heartbeat while the simulated tab is suspended. Registry TTL expires,
+    // but the original WebSocket remains open until the tab resumes.
+    await new Promise(resolve => setTimeout(resolve, 240));
+    assert.equal(ws.readyState, WebSocket.OPEN);
+    ws.send(JSON.stringify({kind:"heartbeat",state:{paused:true}}));
+    const outcome = await close;
+    assert.equal(outcome.code, 1012);
+    assert.equal(outcome.reason, "session_expired");
+    assert.equal((await http(relay, owner, "/dev/devices")).body.devices.length, 0);
+  } finally {
+    ws?.terminate();
+    await relay.close();
+  }
+});
