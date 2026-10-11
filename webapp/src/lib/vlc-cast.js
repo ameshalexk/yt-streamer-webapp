@@ -53,8 +53,10 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
   } catch {}
   const available = !!(enabled && origin && root && resolveSource);
   function headers(res) {
-    res.set({"Cache-Control":"private, no-store, max-age=0","Referrer-Policy":"no-referrer",
-      "X-Content-Type-Options":"nosniff","X-Robots-Tag":"noindex, nofollow, nosnippet"});
+    res.set({"Cache-Control":"private, no-store, max-age=0",
+      "CDN-Cache-Control":"no-store","Cloudflare-CDN-Cache-Control":"no-store",
+      "Referrer-Policy":"no-referrer","X-Content-Type-Options":"nosniff",
+      "X-Robots-Tag":"noindex, nofollow, nosnippet"});
   }
   async function stop(id) {
     const s=sessions.get(id);

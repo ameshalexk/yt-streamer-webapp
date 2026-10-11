@@ -111,3 +111,43 @@ transport paths have not been modified.
 - Automated tests now exercise concurrent admission, shutdown-before-lookup,
   stale scratch cleanup, temporary browser outage preservation, known revocation
   and token redaction. Phone-lock / Chromecast hardware acceptance remains open.
+
+
+## Native VLC and public-edge pre-release verification — 2026-10-11
+
+Mac mini VLC is installed at `/Applications/VLC.app/Contents/MacOS/VLC`.
+`npm run test:vlc-native` creates an **isolated localhost HTTP cast service**
+and two fabricated FFmpeg sources. It launches **headless native macOS VLC**
+with `--ignore-config`, reads the temporary HLS URL and streams out MPEG-TS.
+VLC yielded **2,125,340 bytes**, with **H.264 and AAC** confirmed by FFprobe;
+actual VLC playback/demux **PASS**. All synthetic scratch assets are removed.
+
+Read-only external Cloudflare probe using a **fabricated, never-issued ticket**:
+`cast.ameshalex.com` responded HTTP **410**, `Cache-Control: private,
+no-store, max-age=0`, `Referrer-Policy: no-referrer`,
+`X-Robots-Tag: noindex, nofollow, nosnippet`, and
+`CF-Cache-Status: DYNAMIC`. This supports denial/no-cache behavior at that
+moment only; it does **not** establish path-log retention or valid-ticket
+response behavior. v2 also explicitly emits `CDN-Cache-Control: no-store`
+and `Cloudflare-CDN-Cache-Control: no-store` for defense in depth.
+
+### Remaining real-device acceptance (must not be marked passed synthetically)
+
+On the iPhone and Chromecast/Google TV sharing a friend's remote Wi-Fi:
+1. Authenticate to `stream.ameshalex.com` in Safari/Chrome, start an
+   authorized saved movie, then tap Cast / Open VLC → Open VLC.
+2. Select the TV in VLC. If the iOS URL handler fails, copy the temporary
+   link into VLC > Network > Open Network Stream.
+3. Verify picture/audio immediately, cross multiple six-second boundaries,
+   pause for at least 6 minutes then resume at the same position.
+4. Seek near 10 min, 2h, 2h50, near the end, and backward. Confirm lip sync.
+5. Lock phone >30 min, change apps, reopen Safari/VLC and use Check / Reconnect.
+6. Disconnect/reconnect TV or Wi-Fi; confirm recoverable status and no lingering
+   transcoders. Play a **real** complete 3h movie.
+7. Stop Cast from authenticated Streamer, verify old bearer URL fails with
+   410, check scratch cleanup. Review Cloudflare edge request URL/path logging
+   retention and cache rules in account dashboard, not only local YAML.
+
+If failure occurs, capture only status/error and timestamps. **Never paste a
+live bearer ticket URL**, Access token, or secrets into bug reports.
+Do not merge/deploy/restart or alter Cloudflare policy without separate approval.

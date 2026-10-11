@@ -57,7 +57,10 @@ test("mock 4-hour VOD: long pause, arbitrary seek, bounded LRU, sliding lease, h
   const base=item.url.replace("https://cast.fake.test","http://127.0.0.1:"+http.address().port);
   const get=(file)=>fetch(base.replace("index.m3u8",file));
   let r=await get("index.m3u8");
-  assert.equal(r.status,200);assert.match(await r.text(),/segment_02399.ts/);
+  assert.equal(r.status,200);
+  for(const header of ["cache-control","cdn-cache-control","cloudflare-cdn-cache-control"])
+    assert.match(r.headers.get(header),/no-store/i,header+" must disable shared caching");
+  assert.match(await r.text(),/segment_02399.ts/);
   const segment=async(idx)=>{
     const r=await get("segment_"+String(idx).padStart(5,"0")+".ts");
     const body=await r.arrayBuffer();assert.equal(r.status,200,"segment "+idx);

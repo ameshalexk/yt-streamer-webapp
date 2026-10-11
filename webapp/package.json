@@ -14,7 +14,8 @@
     "setup": "node scripts/check-deps.js",
     "test": "node --test test/*.test.mjs",
     "preview:ui": "node scripts/start-ui-v3-preview.mjs",
-    "test:ui": "node scripts/ui-v3-browser-check.mjs"
+    "test:ui": "node scripts/ui-v3-browser-check.mjs",
+    "test:vlc-native": "node scripts/vlc-cast-native-vlc-smoke.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",
