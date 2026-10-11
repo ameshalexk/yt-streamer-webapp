@@ -275,6 +275,11 @@ html[data-ui='new'] :is(button, .mode-tab, .btn, .home-tile) { transition: backg
 /* Fullscreen and synthetic-screen states must keep the existing screen boundary. */
 html[data-ui='new'] body.screen-fullscreen :is(.modern-intro, .modern-quick-dock, .everyday-controls, .modern-reach-settings) { display: none !important; }
 html[data-ui='new'] body:has(.screen.synthetic-fullscreen) :is(.modern-intro, .modern-quick-dock, .everyday-controls, .modern-reach-settings) { display: none !important; }
+/* Native fullscreen is committed before the app's fullscreenchange body flag.
+   Gate the dock directly on the fullscreen element to avoid one-frame overlays
+   and stale visible controls in Chrome/Tesla fullscreen. */
+html[data-ui='new']:has(#screen:fullscreen) :is(.modern-intro, .modern-quick-dock, .everyday-controls, .modern-reach-settings),
+html[data-ui='new']:has(#screen:-webkit-full-screen) :is(.modern-intro, .modern-quick-dock, .everyday-controls, .modern-reach-settings) { display: none !important; }
 
 @media (max-width: 900px) {
   html[data-ui='new'] .topbar { flex-wrap: wrap; gap: 10px; }
