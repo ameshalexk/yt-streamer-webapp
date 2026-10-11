@@ -9,6 +9,7 @@ import path from "node:path";
 import express from "express";
 import {createCastService, buildCastArgs, castYoutubeUrl} from "../src/lib/vlc-cast.js";
 import {createCastAccess} from "../src/lib/vlc-cast-access.js";
+import {canUseCastReceiver} from "../src/lib/vlc-cast-routing.js";
 
 test("cast source allowlist and ffmpeg H.264/AAC segmentation",()=>{
   assert.equal(castYoutubeUrl("https://www.youtube.com/watch?v=abc"),true);
@@ -112,4 +113,19 @@ test("real ffmpeg produces playable A/V HLS from fabricated media (when installe
   const video=streams.find(s=>s.codec_name==="h264"), audio=streams.find(s=>s.codec_name==="aac");
   assert.ok(Math.abs(Number(video.start_time)-Number(audio.start_time))<0.25,
     "fabricated HLS A/V starts within 250 ms");
+});
+
+test("public receiver hostname rejects app, API and other routes",()=>{
+  const h="cast.ameshalex.com", id="a".repeat(16),token="t".repeat(43);
+  const path="/cast/media/"+id+"/"+token+"/index.m3u8";
+  assert.equal(canUseCastReceiver({method:"GET",path,hostname:h,receiverHost:h}),true);
+  assert.equal(canUseCastReceiver({method:"HEAD",path,hostname:h,receiverHost:h}),true);
+  for (const bad of ["/","/api/health","/api/cast/sessions", "/stream/youtube",
+      "/cast/media/"+id+"/"+token+"/index.m3u8/anything",
+      "/cast/media/"+id+"/"+token+"/../../src/server.js",
+      "/cast/media/"+id+"/"+token+"/playlist.m3u8"]) {
+    assert.equal(canUseCastReceiver({method:"GET",path:bad,hostname:h,receiverHost:h}),false,bad);
+  }
+  assert.equal(canUseCastReceiver({method:"POST",path,hostname:h,receiverHost:h}),false);
+  assert.equal(canUseCastReceiver({method:"GET",path,hostname:"stream.ameshalex.com",receiverHost:h}),false);
 });

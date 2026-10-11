@@ -16,7 +16,7 @@ test("Classic and New share one player control; VLC remains optional and keeps p
   assert.match(html,/data-ui-mode="classic"/);
   assert.match(html,/data-ui-mode="new"/);
   assert.match(html,/src="\/vlc-cast\.js/);
-  const names=["castVlcBtn","castVlcPanel","castVlcStatus","castVlcOpen","castVlcCopy","castVlcShare","castVlcStop"];
+  const names=["castVlcBtn","castVlcPanel","castVlcStatus","castVlcOpen","castVlcCopy","castVlcShare","castVlcStop","castVlcClose"];
   const nodes=Object.fromEntries(names.map(id=>[id,new Node()]));
   const calls=[];
   let copied="";
@@ -47,8 +47,18 @@ test("Classic and New share one player control; VLC remains optional and keeps p
   await nodes.castVlcStop.tap();
   assert.equal(calls[1].options.method,"DELETE");
   assert.equal(nodes.castVlcPanel.hidden,true);
+  await nodes.castVlcClose.tap();
+  assert.equal(nodes.castVlcPanel.hidden,true);
   context.window.ytStreamerVlcCast.setSource({mjpegUrl:"/stream/url?url=https%3A%2F%2Fexample.com"}, {});
   assert.equal(nodes.castVlcBtn.disabled,true);
   context.window.ytStreamerVlcCast.setSource(null);
   assert.equal(nodes.castVlcBtn.disabled,true);
+});
+
+test("New UI adds reachable VLC cast quick action linked to shared player button",async()=>{
+  const src=await fs.readFile(path.resolve("public/modern-ui.js"),"utf8");
+  assert.match(src,/quick\("Cast \/ VLC", "modern-cast-vlc", "#castVlcBtn"\)/);
+  assert.match(src,/castQuickButton\.disabled/);
+  const css=await fs.readFile(path.resolve("public/styles.css"),"utf8");
+  assert.match(css,/html\[data-ui='new'\] #castVlcPanel:not\(\[hidden\]\)/);
 });

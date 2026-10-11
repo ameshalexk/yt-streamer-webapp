@@ -67,6 +67,7 @@
     try { await navigator.share({url:cast.url,title:"Temporary YT Streamer video"}); }
     catch(e) { if(e.name !== "AbortError") show("Sharing unavailable. Use Open VLC."); }
   });
+  get("castVlcClose").addEventListener("click", () => { panel.hidden = true; });
   get("castVlcStop").addEventListener("click", async () => {
     if (!cast) return;
     try {

@@ -2240,3 +2240,12 @@ body.screen-fullscreen .accordion-layout .player .screen { height: 100vh; min-he
 .vlc-cast-panel[hidden], .vlc-cast-panel a[hidden] { display:none !important; }
 .vlc-cast-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 #castVlcBtn:disabled { opacity:.55; cursor:not-allowed; }
+
+.vlc-cast-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
+html[data-ui='new'] #castVlcPanel:not([hidden]) {
+  position: fixed; bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+  left: 14px; right: 14px; width: auto; max-width: 560px;
+  max-height: min(60vh, 440px); overflow-y: auto;
+  margin: 0 auto; z-index: 450;
+  box-shadow: 0 12px 42px #0009;
+}

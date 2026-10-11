@@ -18,11 +18,12 @@ Branch: \`feature/vlc-chromecast-issue35-20261011\`, stacked on UI v3 PR #25.
 
 Set private runtime environment from reviewed Access app configuration:
 - \`CAST_ENABLED=1\`
-- \`CAST_PUBLIC_ORIGIN=https://stream.ameshalex.com\`
+- \`CAST_PUBLIC_ORIGIN=https://cast.ameshalex.com\` (dedicated ticket-only receiver host)
+- \`CAST_CONTROL_ORIGIN=https://stream.ameshalex.com\` (signed Access control host)
 - \`CAST_ACCESS_ISSUER=https://<your-CF-team>.cloudflareaccess.com\`
 - \`CAST_ACCESS_AUDIENCE=<the Access application audience tag>\`
 
-Protect \`/api/cast/*\` with the matching **Cloudflare Access application** so authenticated browser requests receive the signed Access assertion. Do not expose session-control APIs without Access. The app also verifies the assertion. The Chromecast cannot use the user's browser Access cookie/JWT; \`/cast/media/*\` must be publicly **reachable** through the Tunnel but is separately authorized for every request by the one-session random ticket. If Cloudflare Access gates the entire hostname including this receiver route, cast playback cannot work: a narrow media-path exception or separate hostname/ingress policy with the equivalent ticket gate must be explicitly reviewed and approved. This is not a general Access bypass; do not turn off Access for any other app or route. Check Tunnel/edge logging and caching to ensure ticket-bearing paths are not retained or indexed. Do not put Cloudflare tokens or service credentials in URLs.
+Protect \`/api/cast/*\` on **stream.ameshalex.com** with the existing signed **Cloudflare Access application**, so authenticated browser requests receive its assertion. Route **cast.ameshalex.com** to the same Tunnel origin only after the server host-only guard is installed and verified; the receiver hostname denies all routes other than the exact ticketed media URLs (404). Do not expose session-control APIs without Access. The app also verifies the assertion. The Chromecast cannot use the user's browser Access cookie/JWT; \`/cast/media/*\` must be publicly **reachable** through the Tunnel but is separately authorized for every request by the one-session random ticket. Cloudflare Access on stream.ameshalex.com remains intact. Chromecast connects only to cast.ameshalex.com, a separate hostname with a server-enforced ticket-only surface; do not put unrelated APIs or static pages on it. Confirm no wildcard Access rule captures cast.ameshalex.com. This is not a general Access bypass; do not turn off Access for any other app or route. Check Tunnel/edge logging and caching to ensure ticket-bearing paths are not retained or indexed. Do not put Cloudflare tokens or service credentials in URLs.
 
 Feature remains disabled if opt-in configuration is absent. Preview/test must use a separate isolated data directory and port, not the deployed \`com.ytstreamer.webapp\` service.
 

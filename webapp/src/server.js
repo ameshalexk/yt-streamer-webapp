@@ -27,6 +27,7 @@ import * as processedDashCache from "./lib/processed-dash-cache.js";
 import { readReleaseRevision } from "./lib/release-info.js";
 import { createCastService } from "./lib/vlc-cast.js";
 import { createCastAccess } from "./lib/vlc-cast-access.js";
+import { canUseCastReceiver } from "./lib/vlc-cast-routing.js";
 
 let storageCleanupInProgress = false;
 const app = express();
@@ -48,6 +49,20 @@ app.get("/robots.txt", (_req, res) => {
 app.use(express.json({ limit: "256kb" }));
 // The retired Money hostname may never access other application routes.
 app.use((req, res, next) => req.hostname === "money.ameshalex.com" ? res.status(404).end() : next());
+// Receiver hostname is deliberately media-only: never expose the authenticated
+// Streamer UI or APIs through an unauthenticated cast-only Cloudflare route.
+const CAST_RECEIVER_HOST = (() => {
+  try {
+    const u = new URL(process.env.CAST_PUBLIC_ORIGIN || "");
+    return u.protocol === "https:" && u.pathname === "/" ? u.hostname : "";
+  } catch { return ""; }
+})();
+app.use((req, res, next) => {
+  if (!CAST_RECEIVER_HOST || req.hostname !== CAST_RECEIVER_HOST) return next();
+  if (canUseCastReceiver({method:req.method, path:req.path,
+    hostname:req.hostname, receiverHost:CAST_RECEIVER_HOST})) return next();
+  return res.status(404).end();
+});
 
 const SERVER_STARTED_AT = Date.now();
 const RELEASE_REVISION = await readReleaseRevision().catch((error) => {
@@ -1866,6 +1881,7 @@ const castAuth = createCastAccess({
   audience: process.env.CAST_ACCESS_AUDIENCE || "",
 });
 const castPublicOrigin = process.env.CAST_PUBLIC_ORIGIN || "";
+const castControlOrigin = process.env.CAST_CONTROL_ORIGIN || "";
 const castService = createCastService({
   root: path.join(config.dataDir, "vlc-cast"),
   publicOrigin: castPublicOrigin,
@@ -1912,8 +1928,9 @@ async function requireCastControl(req,res,next) {
   castService.headers(res);
   if (!castService.available) return res.status(503).json({error:"VLC casting is disabled or missing configuration"});
   try {
-    const origin = new URL(castPublicOrigin);
-    if (req.hostname !== origin.hostname) return res.status(403).end();
+    const origin = new URL(castControlOrigin);
+    if (origin.protocol !== "https:" || origin.pathname !== "/" || req.hostname !== origin.hostname)
+      return res.status(403).end();
     if (req.method !== "GET" && req.get("origin") !== origin.origin)
       return res.status(403).json({error:"Same-origin action required"});
     const owner=await castAuth(req);
@@ -1935,7 +1952,10 @@ app.delete("/api/cast/sessions/:id",requireCastControl,asyncH(async(req,res)=>{
   await castService.stop(req.params.id);
   res.status(204).end();
 }));
-app.get("/cast/media/:id/:token/:file",asyncH((req,res)=>castService.media(req,res)));
+app.get("/cast/media/:id/:token/:file",asyncH((req,res)=>
+  req.hostname === CAST_RECEIVER_HOST && CAST_RECEIVER_HOST
+    ? castService.media(req,res)
+    : res.status(404).end()));
 
 // ---------------------------------------------------------------------------
 // Static SPA (served last so API routes win).

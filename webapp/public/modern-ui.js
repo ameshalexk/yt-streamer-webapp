@@ -129,6 +129,19 @@
       quick("APNE Daily", "modern-apne", '.mode-tabs [data-mode="apne"]');
       quick("Fullscreen", "modern-fullscreen", "#fullscreenBtn");
       quick("Quality Auto", "modern-quality-auto", '#qualityQuick [data-stream-profile="auto"]');
+      quick("Cast / VLC", "modern-cast-vlc", "#castVlcBtn");
+      const castSourceButton = doc.querySelector("#castVlcBtn");
+      const castQuickButton = doc.querySelector(".modern-cast-vlc");
+      const syncCastAvailability = () => {
+        if (castQuickButton) castQuickButton.disabled = !castSourceButton || castSourceButton.disabled;
+      };
+      syncCastAvailability();
+      if (castSourceButton) {
+        const castObserver = new root.MutationObserver(syncCastAvailability);
+        castObserver.observe(castSourceButton, {attributes:true,attributeFilter:["disabled"]});
+        observers.push(castObserver);
+      }
+
       const settings = make("details", "modern-reach-settings modern-only");
       keepHidden(settings);
       settings.setAttribute("aria-label", "Device layout and quick action placement");
