@@ -10,7 +10,7 @@
   let playback = null;
   let cast = null;
   const updateActions = () => {
-    for (const id of ["castVlcCopy", "castVlcShare", "castVlcStop"]) {
+    for (const id of ["castVlcCopy", "castVlcShare", "castVlcStop", "castVlcRefresh"]) {
       const control=get(id);
       if (control) control.disabled=!cast;
     }
@@ -40,6 +40,15 @@
     },
   };
   const show = (message) => { panel.hidden = false; detail.textContent = message; };
+  const describe = (s) => {
+    const playable = s.seekable === true
+      ? "Seek forward/backward or pause in VLC. Video/audio share the VOD timeline."
+      : "This source could not be prepared as seekable VOD; long pauses and seeking may fail.";
+    const limit = s.maxExpiresAt ? " Session ceiling: "+new Date(s.maxExpiresAt).toLocaleTimeString()+"." : "";
+    return playable+" Receiver activity renews the temporary session within its hard limit. "
+      +"Pausing longer than "+(s.idleMinutes||45)+" minutes ends the session."
+      +limit+" Tap Open VLC again to reconnect to the TV.";
+  };
   async function call(method, url, body) {
     const r = await fetch(url, {method, credentials:"same-origin", headers:{"Content-Type":"application/json"},
       body: body ? JSON.stringify(body) : undefined, cache:"no-store"});
@@ -59,13 +68,30 @@
       updateActions();
       link.href = "vlc-x-callback://x-callback-url/stream?url=" + encodeURIComponent(cast.url);
       link.hidden = false;
-      show("Ready. Tap Open VLC, then select the Chromecast inside VLC. If opening fails, copy the temporary link and paste it in VLC > Network > Open Network Stream. Expires: " + new Date(cast.expiresAt).toLocaleTimeString());
+      show("Ready. Tap Open VLC, then select the Chromecast inside VLC. If opening fails, copy the temporary link into VLC > Network > Open Network Stream. "+describe(cast));
     } catch(e) {
       cast = null;
       updateActions();
       show(e.message + " The Cast link was not created; no code should be entered in VLC. YT Streamer's current playback is unchanged.");
     }
     finally { button.disabled = !playback; }
+  });
+  const refresh = async () => {
+    if (!cast) return;
+    try {
+      const state = await call("GET", "/api/cast/sessions/" + encodeURIComponent(cast.id));
+      if (!state || state.status === "error" || state.status === "ended")
+        throw Error("Cast session is no longer running");
+      cast = {...cast,...state};
+      show("Session active. "+describe(cast));
+    } catch(e) {
+      cast=null; link.hidden=true; updateActions();
+      show("The cast session expired, stopped, or cannot be verified. Start a new Cast / Open in VLC session. "+e.message);
+    }
+  };
+  get("castVlcRefresh")?.addEventListener("click",refresh);
+  document.addEventListener?.("visibilitychange",()=>{
+    if(document.visibilityState==="visible" && cast)void refresh();
   });
   get("castVlcCopy").addEventListener("click", async () => {
     if (!cast) return;

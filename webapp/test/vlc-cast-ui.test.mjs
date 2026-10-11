@@ -16,7 +16,7 @@ test("Classic and New share one player control; VLC remains optional and keeps p
   assert.match(html,/data-ui-mode="classic"/);
   assert.match(html,/data-ui-mode="new"/);
   assert.match(html,/src="\/vlc-cast\.js/);
-  const names=["castVlcBtn","castVlcPanel","castVlcStatus","castVlcOpen","castVlcCopy","castVlcShare","castVlcStop","castVlcClose"];
+  const names=["castVlcBtn","castVlcPanel","castVlcStatus","castVlcOpen","castVlcCopy","castVlcShare","castVlcStop","castVlcRefresh","castVlcClose"];
   const nodes=Object.fromEntries(names.map(id=>[id,new Node()]));
   const calls=[];
   let copied="";
@@ -42,6 +42,8 @@ test("Classic and New share one player control; VLC remains optional and keeps p
   assert.equal(JSON.parse(calls[0].options.body).id,"saved-video");
   assert.match(nodes.castVlcOpen.href,/^vlc-x-callback:\/\/x-callback-url\/stream\?url=/);
   assert.equal(nodes.castVlcOpen.hidden,false);
+  assert.equal(nodes.castVlcRefresh.disabled,false);
+  assert.match(nodes.castVlcStatus.textContent,/seek|pause/i);
   await nodes.castVlcCopy.tap();
   assert.match(copied,/https:\/\/stream\.example\/cast\/media/);
   await nodes.castVlcStop.tap();

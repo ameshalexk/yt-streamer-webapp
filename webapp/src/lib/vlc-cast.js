@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import {probeVodDuration, vodPlaylist, makeVodSegment, VOD_MAX_SECONDS} from "./vlc-cast-vod.js";
 
 // Standalone opt-in HLS service. Never changes the browser's existing transports.
 export const castYoutubeUrl = (raw) => {
@@ -39,7 +40,8 @@ export function buildCastArgs({video,audio,live=false,startAt=0,dir}) {
 }
 export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="ffmpeg",
   enabled=false, now=Date.now, spawnImpl=spawn, ttlMs=90*60_000,
-  idleMs=15*60_000, readyTimeoutMs=15000}) {
+  idleMs=45*60_000, maxMs=6*60*60_000, readyTimeoutMs=15000,
+  probeDuration=probeVodDuration}) {
   const sessions = new Map();
   const rates = new Map();
   let origin="";
@@ -56,6 +58,7 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
     const s=sessions.get(id);
     if (!s) return false;
     sessions.delete(id);
+    s.stopping=true;
     // Wait briefly for FFmpeg to release files before removing the scratch directory.
     if (s.ff && s.ff.exitCode == null) {
       await new Promise((done) => {
@@ -71,7 +74,7 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
   }
   async function sweep() {
     for(const s of sessions.values()) {
-      if(now()>=s.exp || now()-s.last>idleMs) await stop(s.id);
+      if(now()>=s.exp || now()>=s.maxAt || now()-s.last>idleMs || s.state==="error") await stop(s.id);
     }
   }
   const timer=setInterval(()=>{void sweep().catch(()=>{});},30000);
@@ -89,13 +92,31 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
     }
     const src=await resolveSource({kind,id,url});
     if(!src?.video) throw Object.assign(Error("Video unavailable"),{status:422});
+    // A fixed on-demand VOD timeline supports arbitrary seeking and long pauses.
+    // Unknown-duration sources retain the existing rolling handoff, explicitly marked nonseekable.
+    let duration=null;
+    try {duration=await probeDuration(src.video);}catch{}
+    if(duration != null && (!Number.isFinite(duration) || duration<=0 || duration>VOD_MAX_SECONDS))
+      throw Object.assign(Error("VLC VOD supports movies up to 4 hours 15 minutes"),{status:422});
     const sid=crypto.randomBytes(12).toString("base64url");
     const token=crypto.randomBytes(32).toString("base64url");
     const dir=path.join(root,sid);
     await fs.mkdir(dir,{recursive:true,mode:0o700});
-    const s={id:sid,owner,tokenHash:digest(token),dir,ff:null,exp:now()+ttlMs,last:now(),state:"starting"};
+    const s={id:sid,owner,tokenHash:digest(token),dir,ff:null,exp:now()+ttlMs,
+      maxAt:now()+maxMs,last:now(),state:"starting",duration,
+      source:src,cache:new Map(),pending:new Map(),pins:new Map(),activeTransfers:0,
+      queue:Promise.resolve(),stopping:false};
     sessions.set(sid,s);
     try {
+      if(duration != null){
+        await fs.writeFile(path.join(dir,"index.m3u8"),vodPlaylist(duration),{mode:0o600});
+        // Encode only the first segment at creation; the receiver triggers others.
+        await makeVodSegment(s,0,{ffmpegPath,spawnImpl});
+        s.state="ready";
+        return {id:sid,url:origin+"/cast/media/"+sid+"/"+token+"/index.m3u8",
+          expiresAt:new Date(s.exp).toISOString(),maxExpiresAt:new Date(s.maxAt).toISOString(),
+          status:"ready",seekable:true,mode:"vod",idleMinutes:Math.floor(idleMs/60000)};
+      }
       s.ff=spawnImpl(ffmpegPath,buildCastArgs({...src,dir,startAt}),{stdio:["ignore","ignore","pipe"]});
       s.ff.stderr?.resume();
       s.ff.once("error",()=>{s.state="error";});
@@ -109,7 +130,8 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
           if(parts?.length && (await fs.stat(path.join(dir,parts.at(-1)))).size>0) {
             s.state="ready";
             return {id:sid,url:origin+"/cast/media/"+sid+"/"+token+"/index.m3u8",
-              expiresAt:new Date(s.exp).toISOString(),status:"ready"};
+              expiresAt:new Date(s.exp).toISOString(),maxExpiresAt:new Date(s.maxAt).toISOString(),
+              status:"ready",seekable:false,mode:"rolling",idleMinutes:Math.floor(idleMs/60000)};
           }
         } catch {}
         await delay(150);
@@ -123,7 +145,9 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
   function owned(id,owner) { const s=sessions.get(id); return s?.owner===owner ? s : null; }
   function status(id,owner) {
     const s=owned(id,owner);
-    return s ? {id:s.id,status:s.state,expiresAt:new Date(s.exp).toISOString()} : null;
+    return s ? {id:s.id,status:s.state,expiresAt:new Date(s.exp).toISOString(),
+      maxExpiresAt:new Date(s.maxAt).toISOString(),seekable:s.duration!=null,
+      mode:s.duration!=null?"vod":"rolling"} : null;
   }
   async function media(req,res) {
     headers(res);
@@ -138,15 +162,46 @@ export function createCastService({root,publicOrigin,resolveSource,ffmpegPath="f
        || !/^(index\.m3u8|segment_\d{5}\.ts)$/.test(file || "")) return res.status(404).end();
     const s=sessions.get(id);
     if(!s) return res.status(410).end();
-    if(now()>=s.exp || now()-s.last>idleMs) {await stop(id);return res.status(410).end();}
+    if(now()>=s.exp || now()>=s.maxAt || now()-s.last>idleMs) {await stop(id);return res.status(410).end();}
     if(!crypto.timingSafeEqual(digest(token),s.tokenHash)) return res.status(403).end();
+    // Count valid requests as activity before slow on-demand encoding begins.
     s.last=now();
+    s.exp=Math.min(s.maxAt,now()+ttlMs);
     try {
-      const filePath=path.join(s.dir,file),stat=await fs.stat(filePath);
+      let filePath=path.join(s.dir,file);
+      let segmentIndex=null;
+      if(s.duration!=null && file!=="index.m3u8"){
+        if(s.activeTransfers>=8)return res.status(429).end();
+        const index=Number(file.slice(8,-3));
+        if(index>=Math.ceil(s.duration/6)) return res.status(404).end();
+        segmentIndex=index;
+        filePath=await makeVodSegment(s,index,{ffmpegPath,spawnImpl});
+      }
+      // Revocation/sweeper may run while the async encoder is active.
+      if(s.stopping || sessions.get(id)!==s || now()>=s.maxAt)
+        return res.status(410).end();
+      const stat=await fs.stat(filePath);
       if(!stat.isFile() || !stat.size) return res.status(404).end();
+      // Receiver-initiated sliding lease: no Access cookie or API call on the TV.
+      // Even uninterrupted playback ends at the immutable hard ceiling.
       res.type(file.endsWith(".m3u8")?"application/vnd.apple.mpegurl":"video/mp2t");
+      if(segmentIndex!==null){
+        s.activeTransfers++;
+        s.pins.set(segmentIndex,(s.pins.get(segmentIndex)||0)+1);
+        let released=false;
+        const release=()=>{
+          if(released)return;
+          released=true;s.activeTransfers=Math.max(0,s.activeTransfers-1);
+          const count=(s.pins.get(segmentIndex)||1)-1;
+          if(count)s.pins.set(segmentIndex,count);else s.pins.delete(segmentIndex);
+        };
+        res.once("finish",release);
+        res.once("close",release);
+      }
       return res.sendFile(filePath);
-    } catch {return res.status(s.state==="error"?502:404).end();}
+    } catch(error) {
+      return res.status(error?.status===429?429:error?.status===410?410:s.state==="error"?502:503).end();
+    }
   }
   async function close(){clearInterval(timer);for(const id of [...sessions.keys()])await stop(id);}
   return {available,create,media,stop,owned,status,sweep,close,headers};
