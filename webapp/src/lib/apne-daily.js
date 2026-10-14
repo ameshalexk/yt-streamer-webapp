@@ -453,7 +453,8 @@ export function parseFlashTargetFromEpisodeHtml(html) {
     const host = target.hostname.toLowerCase();
     const legacyTarget = (host === "newsportaling.com" || host === "www.newsportaling.com")
       && /^\/finnance-[^/]+$/i.test(target.pathname);
-    const currentTarget = (host === "newscurting.com" || host === "www.newscurting.com")
+    const currentTarget = (host === "newscurting.com" || host === "www.newscurting.com"
+      || host === "newsmagics.com" || host === "www.newsmagics.com")
       && /^\/savvings-[^/]+$/i.test(target.pathname);
     if (!/^[a-f0-9]{32}$/i.test(id)
       || target.protocol !== "https:"

@@ -126,6 +126,23 @@ test("APNE Daily resolves the browserless APNE to Newsportaling to Mediagraming 
   );
 });
 
+test("APNE Daily accepts Dr Aarambhi NewsMagics flash links without trusting lookalike hosts", () => {
+  const id = "23a17a19ab70f3861295714ddc974ed8";
+  const tag = (href) => `<div data-id="${id}" data-href="${href}" class="flash_link">Flash Link</div>`;
+  assert.deepEqual(parseFlashTargetFromEpisodeHtml(tag("https://newsmagics.com/savvings-budget-income-expense")), {
+    id,
+    href: "https://newsmagics.com/savvings-budget-income-expense",
+  });
+  for (const url of [
+    "https://newsmagics.com.evil.example/savvings-budget-income-expense",
+    "https://evilnewsmagics.com/savvings-budget-income-expense",
+    "http://newsmagics.com/savvings-budget-income-expense",
+    "https://newsmagics.com/other-budget-income-expense",
+    "https://newsmagics.com/savvings-budget-income-expense?redirect=1",
+    "https://user@newsmagics.com/savvings-budget-income-expense",
+  ]) assert.throws(() => parseFlashTargetFromEpisodeHtml(tag(url)), /Flash Link was not found/);
+});
+
 test("APNE Daily accepts the live Seher Newscurting handoff and rejects untrusted flash targets", () => {
   const id = "0123456789abcdef0123456789abcdef";
   assert.deepEqual(
