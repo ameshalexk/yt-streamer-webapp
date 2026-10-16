@@ -7,9 +7,10 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const ux = window.ApneMobileBrowser;
+  const continueUx = window.ApneContinueWatching;
   const state = {
     shows: [], selectedId: "", episodes: [], date: "", order: "newest", onlyUnwatched: false,
-    page: 1, pageSize: 10, progress: {}, progressAvailable: false, loaded: false,
+    page: 1, pageSize: 10, progress: {}, progressEpisodes: [], progressAvailable: false, loaded: false,
     filtersByShow: new Map(),
   };
   const thumbs = { observer: null, pending: [], active: 0, generation: 0, ready: new Map() };
@@ -75,11 +76,11 @@
         !/^\d{4}-\d{2}-\d{2}(?:-e[1-9]\d{0,5})?$/.test(dateKey)) return "";
     return "/apne/live/watch/"+encodeURIComponent(showId)+"/"+encodeURIComponent(dateKey);
   }
-  function thumbHTML(ep) {
+  function thumbHTML(ep, showId=state.selectedId) {
     const date=ep?.dateKey || "";
-    const validShow=/^[a-z0-9][a-z0-9-]{0,63}$/.test(state.selectedId);
+    const validShow=/^[a-z0-9][a-z0-9-]{0,63}$/.test(showId);
     const validDate=/^\d{4}-\d{2}-\d{2}$/.test(date);
-    const markup = 'data-preview-show="'+safe(state.selectedId)+'" data-preview-date="'+safe(date)+
+    const markup = 'data-preview-show="'+safe(showId)+'" data-preview-date="'+safe(date)+
       '" data-preview-status="'+safe(ep?.status || "")+'"';
     return validShow && validDate
       ? markup+' data-preview-valid="1"'
@@ -128,6 +129,56 @@
     // Existing server creates/cache-bounds these previews; unsupported sources return 404.
     if(!saved)candidates.push("/apne/live-thumb/"+path);
     return candidates;
+  }
+  function resumeClock(seconds) {
+    const value=Math.max(0,Math.floor(seconds));
+    return Math.floor(value/60)+":"+String(value%60).padStart(2,"0");
+  }
+  function renderContinueWatching() {
+    const section=$("continueWatching");
+    const rail=$("continueRail");
+    if(!section||!rail)return;
+    const items=state.progressAvailable
+      ? (continueUx?.select(state.progressEpisodes,state.shows,8)||[]) : [];
+    section.hidden=items.length===0;
+    rail.replaceChildren();
+    if(!items.length)return;
+    $("continueCount").textContent=items.length+" in progress";
+    rail.innerHTML=items.map(item=>{
+      const href=episodePlayerUrl(item.showId,item.dateKey);
+      if(!href)return "";
+      const date=displayDate(item.dateKey);
+      const number=item.episodeNumber?"Episode "+item.episodeNumber:"Episode";
+      const subtitle=number+" · "+date+(item.episodeTitle?" · "+item.episodeTitle:"");
+      const progress=item.percent!==null
+        ? '<div class="watch-track" role="progressbar" aria-label="Watched percentage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="'+item.percent+'"><i style="width:'+item.percent+'%"></i></div>' : "";
+      return '<a class="continue-card" href="'+safe(href)+'?resume=1" aria-label="Resume '+safe(item.showName)+' '+safe(subtitle)+' at '+safe(resumeClock(item.positionSeconds))+'">'+
+        '<span class="continue-art" '+thumbHTML({dateKey:item.dateKey,status:item.status},item.showId)+'><span class="preview-placeholder">Loading preview…</span></span>'+
+        '<span class="continue-copy"><strong>'+safe(item.showName)+'</strong><span class="continue-sub">'+safe(subtitle)+'</span>'+
+        '<span class="continue-resume">Resume at '+resumeClock(item.positionSeconds)+'</span>'+progress+'</span></a>';
+    }).join("");
+  }
+  let progressRefreshBusy=false;
+  async function refreshProgress(redraw=true) {
+    if(!state.loaded||progressRefreshBusy)return;
+    progressRefreshBusy=true;
+    try{
+      const response=await fetch("/api/apne/progress",{credentials:"same-origin",cache:"no-store"});
+      if(!response.ok)throw Error("Progress unavailable");
+      const data=await response.json();
+      if(!Array.isArray(data.episodes))throw Error("Invalid progress response");
+      state.progressEpisodes=data.episodes;
+      state.progress=Object.fromEntries(data.episodes.map(item=>[item.showId+":"+item.dateKey,item]));
+      state.progressAvailable=true;
+    }catch{
+      // Browsing episodes still works if the private history API is unavailable.
+      state.progressAvailable=false;
+      state.progressEpisodes=[];
+      state.progress={};
+      state.onlyUnwatched=false;
+    }finally{progressRefreshBusy=false;}
+    renderContinueWatching();
+    if(redraw&&state.selectedId)render();
   }
   function previewFallback(node,message="Preview unavailable") {
     if(!node.isConnected)return;
@@ -298,16 +349,7 @@
       const previous=state.selectedId;
       state.shows=data.shows;
       state.loaded=true;
-      try {
-        const result=await fetch("/api/apne/progress",{credentials:"same-origin",cache:"no-store"});
-        if(result.ok){
-          const progress=await result.json();
-          state.progress=Object.fromEntries((progress.episodes||[])
-            .map(item=>[item.showId+":"+item.dateKey,item]));
-          state.progressAvailable=true;
-        } else state.progressAvailable=false;
-      }catch{state.progressAvailable=false;}
-      if(!state.progressAvailable)state.onlyUnwatched=false;
+      await refreshProgress(false);
       switchShow(state.shows.some(item=>item.id===previous)?previous:
         state.shows.find(item=>item.id==="anupamaa")?.id||state.shows[0].id);
     }catch(error){
@@ -370,6 +412,13 @@
     if(!button)return;
     const panel=$(button.getAttribute("aria-controls"));if(!panel)return;
     panel.hidden=!panel.hidden;button.setAttribute("aria-expanded",String(!panel.hidden));
+  });
+  // Refresh cross-show history on return from the video player, including Safari bfcache.
+  window.addEventListener("pageshow",event=>{
+    if(event.persisted)void refreshProgress();
+  });
+  document.addEventListener("visibilitychange",()=>{
+    if(!document.hidden)void refreshProgress();
   });
   load();
 })();
