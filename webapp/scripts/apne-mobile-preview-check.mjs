@@ -43,13 +43,19 @@ try {
     let body = {};
     if (u.pathname==="/api/apne-daily") body=fixture;
     if (u.pathname==="/api/apne/progress") body={episodes:[{showId:"anupamaa",dateKey:"2026-10-14",completed:true,positionSeconds:1200,durationSeconds:1200}]};
-    if (u.pathname==="/api/playlists") body={playlists:[]};
+    if (u.pathname==="/api/playlists") body=[];
     await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});
   });
   await page.route("**/api/apne-daily/shows/**",r=>r.fulfill({status:200,contentType:"application/json",body:JSON.stringify({status:"Listed"})}));
   await page.goto("http://127.0.0.1:"+port+"/?mode=apne",{waitUntil:"domcontentloaded",timeout:20000});
   try { await page.locator(".apne-mobile-tools").waitFor({timeout:8000}); }
   catch (error) { console.log("PAGE ERRORS",errors); console.log("PAGE DOM",await page.locator("body").innerText().then(s=>s.slice(0,1000))); console.log("STATUS",await page.evaluate(()=>({url:location.href,hasHelp:!!window.ApneMobileBrowser,hasApne:!!document.querySelector("#apneDailyView"),html:document.querySelector("#apneDailyList")?.innerHTML.slice(0,600),display:getComputedStyle(document.querySelector("#apneDailyView")).display}))); throw error; }
+  if (process.env.APNE_CAPTURE_UI === "1") {
+    await page.screenshot({path:"/tmp/anupamaa-mobile-actual-20261016.png",fullPage:false});
+    await page.locator(".apne-episode-tile").last().scrollIntoViewIfNeeded();
+    await page.screenshot({path:"/tmp/anupamaa-mobile-episodes-20261016.png",fullPage:false});
+    console.log("CAPTURED: /tmp/anupamaa-mobile-actual-20261016.png and /tmp/anupamaa-mobile-episodes-20261016.png");
+  }
   const card=page.locator(".apne-mobile-featured");
   assert.equal(await card.locator(".apne-episode-tile").count(),3,"Initially lists all episodes");
   assert.equal(await card.locator(".apne-show-card").getAttribute("open"),"","Anupamaa opens on mobile");
