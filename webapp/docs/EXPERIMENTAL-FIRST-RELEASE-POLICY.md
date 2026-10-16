@@ -14,4 +14,10 @@ User explicitly requested only the date-first Anupamaa UI in the current feature
 
 Current branch: feat/anupamaa-mobile-date-browser-20261016.
 Current feature commit at policy entry: d963a10.
-No public Experimental link exists yet. Await hostname confirmation and then build a safely isolated staging path.
+Experimental site published on 2026-10-16 at https://stream.ameshalex.com/experimental/ (CONFIRMED hostname).
+- Static route: ~/Library/Application Support/YTStreamerWebapp/public/experimental/ served by existing Node server without restart or tunnel change.
+- Stable homepage modified only to add a hamburger anchor after APNE Daily and minimal inline styling. Existing production JS, CSS, Node service, and data unchanged.
+- Experimental reads GET /api/apne-daily and GET /api/apne/progress only (when Cloudflare Access authorizes). No watch-history writes, playback, or download actions; UI preview only.
+- 320/390/850px browser QA and live API smoke passed. Public original and experimental paths remain guarded by Cloudflare Access.
+- Stable homepage backup: ~/Documents/YTStreamerRollback/experimental-menu-20261016/index.html.before.
+- Future feature builds: experimental first, stable promotion only after the user explicitly says deploy to prod.

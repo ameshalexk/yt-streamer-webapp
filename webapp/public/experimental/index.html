@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex, nofollow, nosnippet">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1220">
+  <title>Experimental · APNE Stream</title>
+  <link rel="stylesheet" href="/experimental/styles.css?v=20261016-1">
+  <script defer src="/experimental/apne-mobile-browser.js?v=20261016-1"></script>
+  <script defer src="/experimental/app.js?v=20261016-1"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="back" href="/?mode=apne" aria-label="Return to stable APNE Daily">‹ <span>APNE Daily</span></a>
+    <div class="brand"><span class="brand-dot"></span> APNE Stream</div>
+    <span class="stage-label">Experimental</span>
+  </header>
+  <main class="page">
+    <div class="banner" role="note"><span class="banner-dot"></span><span><strong>Experimental preview</strong> — Browse episodes here. Playback, downloads, and watch-history changes remain on the stable site.</span></div>
+    <section class="show" aria-labelledby="showTitle">
+      <div class="show-heading">
+        <div>
+          <p class="eyebrow">My show</p>
+          <h1 id="showTitle">Anupamaa</h1>
+          <div id="showStatus" class="show-status" role="status">Loading episodes…</div>
+        </div>
+        <button class="refresh" id="refresh" type="button" aria-label="Refresh episode listings">↻ <span>Refresh</span></button>
+      </div>
+      <div id="quickStart" class="quick-start" hidden>
+        <div>
+          <p class="eyebrow">Latest listed episode</p>
+          <strong id="latestDate">—</strong>
+          <p id="latestMeta" class="muted"></p>
+        </div>
+        <button class="primary" type="button" id="latestButton">Jump to Latest</button>
+      </div>
+    </section>
+    <section class="episodes" aria-labelledby="episodeHeading">
+      <div class="section-head">
+        <div><p class="eyebrow">Episode library</p><h2 id="episodeHeading">Browse by date</h2></div>
+        <span id="resultCount" class="count"></span>
+      </div>
+      <div class="date-scroller" id="dateChips" aria-label="Recently available episode dates"></div>
+      <div class="controls">
+        <label for="episodeDate">Find a specific date
+          <input id="episodeDate" type="date">
+        </label>
+        <label for="episodeOrder">Sort episodes
+          <select id="episodeOrder">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </select>
+        </label>
+      </div>
+      <div class="filters">
+        <button type="button" class="filter" id="unwatched" aria-pressed="false">Unwatched only</button>
+        <button type="button" class="text-button" id="clearFilters">Clear filters</button>
+      </div>
+      <p id="rangeNotice" class="range"></p>
+      <div id="episodeList" class="episode-list" aria-live="polite"><p class="muted">Loading episodes…</p></div>
+      <nav class="pager" id="pager" aria-label="Episode pages" hidden>
+        <button type="button" id="newer">← Newer</button>
+        <span id="pageInfo">1 / 1</span>
+        <button type="button" id="older">Older →</button>
+      </nav>
+    </section>
+    <footer class="footer">
+      <a href="/?mode=apne">Return to stable APNE Daily</a>
+      <p>This preview does not modify your downloaded files, watched status, or stable streamer.</p>
+    </footer>
+  </main>
+</body>
+</html>
