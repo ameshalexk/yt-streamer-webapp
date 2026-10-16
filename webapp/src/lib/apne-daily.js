@@ -104,15 +104,15 @@ function dateKeyFromParts(year, month, day) {
 
 export function parseApneDateLabel(label) {
   const clean = stripTags(label).replace(/(\d+)(?:st|nd|rd|th)\b/i, "$1").replace(/\s+/g, " ").trim();
-  const match = clean.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
+  const match = clean.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+Episode\s+([1-9]\d{0,5}))?\s+(\d{4})$/i);
   if (!match) return null;
   const monthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
   const month = monthNames.indexOf(match[2].toLowerCase()) + 1;
   if (!month) return null;
   const day = Number(match[1]);
-  const year = Number(match[3]);
+  const year = Number(match[4]);
   if (!Number.isInteger(day) || day < 1 || day > 31 || year < 2000) return null;
-  return { label: stripTags(label), key: dateKeyFromParts(year, month, day), year, month, day };
+  return { label: stripTags(label), key: dateKeyFromParts(year, month, day), year, month, day, ...(match[3] ? { episodeNumber: Number(match[3]) } : {}) };
 }
 
 function todayKey(timeZone = "America/Chicago") {
@@ -233,22 +233,26 @@ export function parseRecentEpisodesFromShowHtml(html, show = {}, limit = 10) {
     matches.push({
       url,
       dateLabel: date.label,
-      dateKey: date.key,
+      // Some series publish multiple numbered episodes on the same date.
+      // Preserve the air date but give each one a separate playback identity.
+      dateKey: date.episodeNumber ? `${date.key}-e${date.episodeNumber}` : date.key,
+      airDateKey: date.key,
+      ...(date.episodeNumber ? { episodeNumber: date.episodeNumber } : {}),
       title: `${show.name || "APNE"} ${date.label}`,
     });
   }
   if (!matches.length) throw new Error("APNE did not return any dated episodes for this show.");
-  matches.sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+  matches.sort((a, b) => b.airDateKey.localeCompare(a.airDateKey) || (b.episodeNumber || 0) - (a.episodeNumber || 0));
   const count = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(APNE_HISTORY_FETCH_LIMIT, Math.trunc(Number(limit)))) : 10;
   return matches.slice(0, count);
 }
 
 export function filterApneEpisodesByMonths(episodes, months = APNE_HISTORY_MONTHS) {
   const list = Array.isArray(episodes)
-    ? episodes.filter((episode) => /^\d{4}-\d{2}-\d{2}$/.test(String(episode?.dateKey || "")))
+    ? episodes.filter((episode) => /^\d{4}-\d{2}-\d{2}(?:-e[1-9]\d{0,5})?$/.test(String(episode?.dateKey || "")))
     : [];
   if (!list.length) return [];
-  const newest = list[0].dateKey;
+  const newest = list[0].dateKey.slice(0, 10);
   const parts = newest.split("-").map(Number);
   const cutoff = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
   cutoff.setUTCMonth(cutoff.getUTCMonth() - Math.max(1, Math.trunc(Number(months) || APNE_HISTORY_MONTHS)));
@@ -257,7 +261,7 @@ export function filterApneEpisodesByMonths(episodes, months = APNE_HISTORY_MONTH
     String(cutoff.getUTCMonth() + 1).padStart(2, "0"),
     String(cutoff.getUTCDate()).padStart(2, "0"),
   ].join("-");
-  return list.filter((episode) => episode.dateKey >= cutoffKey);
+  return list.filter((episode) => episode.dateKey.slice(0, 10) >= cutoffKey);
 }
 
 export function parseLatestEpisodeFromShowHtml(html, show = {}) {
@@ -875,7 +879,7 @@ async function statusForShow(show) {
     ]);
     const historyEpisodes = filterApneEpisodesByMonths(detected, APNE_HISTORY_MONTHS).map((episode) => ({
       ...episode,
-      ...(episodeMetadata[episode.dateKey] || {}),
+      ...(episodeMetadata[episode.airDateKey || episode.dateKey] || {}),
     }));
     const downloadedItems = await downloadedApneItems();
     const recentEpisodes = await Promise.all(historyEpisodes.map((episode) => episodeStatus(show, episode, downloadedItems)));
@@ -1039,7 +1043,7 @@ async function createEpisodeDownloadJob(show, episode) {
 
 export async function startEpisodeDownload(showId, dateKey) {
   const key = String(dateKey || "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) throw httpError(400, "A valid APNE episode date is required.");
+  if (!/^\d{4}-\d{2}-\d{2}(?:-e[1-9]\d{0,5})?$/.test(key)) throw httpError(400, "A valid APNE episode date is required.");
   const shows = await loadShows();
   const show = shows.find((item) => item.id === showId);
   if (!show) throw httpError(404, "APNE Daily show not found.");
