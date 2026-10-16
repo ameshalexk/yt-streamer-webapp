@@ -1609,6 +1609,11 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
 
 
 /* APNE Daily */
+@media (min-width: 901px) {
+  .layout.mode-apne { grid-template-columns: minmax(340px, .85fr) minmax(0, 1.15fr); }
+  .layout.mode-apne > .apne-daily-view { grid-column: 1; grid-row: 1; }
+  .layout.mode-apne > .player { grid-column: 2; grid-row: 1; }
+}
 .apne-daily-view {
   min-height: 0; overflow: hidden; background: var(--bg); display: flex; flex-direction: column;
 }
@@ -1620,14 +1625,44 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
   flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px;
 }
 .apne-daily-list { display: grid; gap: 14px; max-width: 860px; margin: 0 auto; }
+.apne-show-wrap { position: relative; min-width: 0; }
 .apne-show-card {
-  border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 18px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 14px 18px;
 }
+/* Keep the rename action reachable even when native <details> is collapsed. */
+.apne-show-wrap .apne-show-toggle { padding-right: 112px; }
+.apne-show-wrap > .apne-edit-name-btn {
+  position: absolute; z-index: 1; right: 42px; top: 17px;
+  min-height: 42px; min-width: 0; width: max-content; max-width: 110px; padding: 0 9px;
+  font-size: 12px; white-space: nowrap;
+}
+.apne-show-heading h3 { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .apne-edit-name-btn { top: 13px; right: 39px; min-height: 44px; }
+  .apne-show-wrap .apne-show-toggle { padding-right: 112px; }
+}
+.apne-show-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  cursor: pointer; list-style: none; min-height: 46px;
+}
+.apne-show-toggle::-webkit-details-marker { display: none; }
+.apne-show-toggle::marker { content: ""; }
+.apne-show-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+.apne-show-heading { display: grid; gap: 6px; min-width: 0; }
+.apne-show-summary-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.apne-show-summary-detail { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.apne-show-chevron {
+  flex: 0 0 auto; width: 10px; height: 10px; border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted); transform: rotate(45deg); transition: transform .16s ease;
+  margin: 0 5px 5px 0;
+}
+.apne-show-card[open] .apne-show-chevron { transform: rotate(225deg); margin-bottom: 0; }
+.apne-show-content { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
 .apne-show-main {
   display: flex; align-items: center; justify-content: space-between; gap: 18px;
 }
 .apne-show-copy { min-width: 0; }
-.apne-show-card h3 { margin: 0 0 8px; font-size: 22px; }
+.apne-show-card h3 { margin: 0; font-size: 20px; }
 .apne-status {
   display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 800;
 }
@@ -1644,8 +1679,10 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
 }
 .apne-episode-detail { margin-top: 7px; color: var(--muted); font-size: 13px; }
 .apne-latest-name { margin-top: 4px; color: var(--text); font-size: 12px; font-weight: 700; line-height: 1.3; }
+.apne-show-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.apne-native-stream { min-height: 58px; padding: 0 18px; font-weight: 800; }
 .apne-download-today {
-  min-width: 190px; min-height: 58px; padding: 0 22px; font-size: 17px; font-weight: 900;
+  min-width: 160px; min-height: 58px; padding: 0 18px; font-size: 17px; font-weight: 900;
 }
 .apne-download-today:disabled { opacity: .52; cursor: default; }
 .apne-progress {
@@ -1656,28 +1693,149 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
   animation: apne-progress 1.2s ease-in-out infinite alternate;
 }
 .apne-recent {
-  display: grid; gap: 6px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
+  display: grid; gap: 6px; min-width: 0; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
+  container: apne-episodes / inline-size;
 }
 .apne-recent-head {
   display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 2px;
 }
 .apne-recent-title { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
 .apne-history-range { color: var(--muted); font-size: 11px; text-align: right; }
-.apne-recent-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  min-height: 48px; padding: 8px 10px; border-radius: 9px; background: var(--panel-2);
+/* Phase A: responsive episode tiles. The preview container carries stable
+   show/date identifiers so future thumbnail loading doesn't change the card DOM. */
+.apne-episode-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+  min-width: 0;
 }
-.apne-recent-copy { min-width: 0; flex: 1 1 auto; display: grid; gap: 3px; }
-.apne-recent-heading { min-width: 0; display: flex; align-items: center; gap: 7px; }
-.apne-recent-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+@container apne-episodes (min-width: 450px) {
+  .apne-episode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.apne-recent-row.apne-episode-tile {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 330px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--panel-2);
+}
+.apne-episode-preview {
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  background: radial-gradient(ellipse at 74% 20%, rgba(142, 153, 230, .20), transparent 68%),
+              linear-gradient(140deg, #1b2840, #111a28 60%, #141c30);
+  color: #e4ecf7;
+}
+.apne-episode-preview::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-bottom: 1px solid rgba(255, 255, 255, .09);
+}
+.apne-episode-preview img { width: 100%; height: 100%; object-fit: cover; }
+.apne-episode-preview.has-thumbnail img { position: absolute; inset: 0; display: block; }
+.apne-episode-preview-icon {
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(226, 237, 255, .40);
+  border-radius: 999px;
+  background: rgba(255,255,255,.08);
+  display: grid;
+  place-items: center;
+}
+.apne-episode-preview-icon::after {
+  content: "";
+  display: block;
+  margin-left: 3px;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  border-left: 13px solid rgba(231, 240, 255, .93);
+}
+.apne-episode-preview-label { font-size: 12px; font-weight: 850; letter-spacing: .14em; }
+.apne-episode-preview-caption { color: #b9c6da; font-size: 11px; font-weight: 600; }
+.apne-episode-tile-body {
+  min-width: 0;
+  width: 100%;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+.apne-recent-heading { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 7px; min-width: 0; }
+.apne-recent-heading strong { font-size: 16px; line-height: 1.3; overflow-wrap: anywhere; }
 .apne-date-badge {
-  flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px;
+  flex: 0 0 auto; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px;
   background: var(--panel); color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em;
 }
-.apne-recent-copy small { color: var(--muted); font-size: 11px; }
-.apne-recent-copy .apne-episode-name { color: var(--text); font-size: 12px; font-weight: 700; line-height: 1.25; white-space: normal; overflow-wrap: anywhere; }
-.apne-recent-copy .apne-recent-error { color: var(--accent); white-space: normal; overflow-wrap: anywhere; }
-.apne-recent-action { flex: 0 0 auto; width: auto; min-width: 104px; }
+.apne-episode-name {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.apne-episode-status-row { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; min-width: 0; }
+.apne-episode-status {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.apne-episode-status.is-saved, .apne-episode-status.is-stream-link-found, .apne-episode-status.is-available { color: var(--ok); }
+.apne-episode-status.is-source-unavailable { color: var(--accent); border-color: var(--accent); }
+.apne-episode-status.is-listed, .apne-episode-status.is-check-failed { color: var(--muted); }
+.apne-episode-tile.is-source-unavailable .apne-episode-preview { opacity: .58; }
+.apne-show-card.is-source-unavailable .apne-status-dot { background: var(--accent); }
+.apne-show-card.is-stream-link-found .apne-status-dot { background: var(--ok); }
+.apne-episode-status.is-failed { color: var(--accent); }
+.apne-episode-status.is-downloading, .apne-episode-status.is-saving-to-icloud { color: #f1b84b; }
+.apne-episode-note { font-size: 11px; color: var(--muted); line-height: 1.4; overflow-wrap: anywhere; }
+.apne-episode-note.apne-recent-error { color: var(--accent); }
+/* APNE watch position is independent from download/source availability. */
+.apne-watch-tracker { display: grid; gap: 6px; padding: 9px 0 4px; min-width: 0; }
+.apne-watch-label { font-size: 12px; font-weight: 700; color: var(--muted); overflow-wrap: anywhere; }
+.apne-watch-track { width: 100%; height: 6px; border-radius: 999px; overflow: hidden; background: var(--line); }
+.apne-watch-track i { display: block; height: 100%; border-radius: inherit; background: var(--ok); max-width: 100%; }
+.apne-watch-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.apne-watch-actions .btn { flex: 1 1 auto; min-height: 34px; padding: 6px 8px; font-size: 11px; }
+.apne-recent-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: auto; }
+.apne-episode-tile .btn.apne-recent-action {
+  width: 100%; min-width: 0; min-height: 46px; padding: 0 8px;
+  font-size: 13px; font-weight: 800;
+}
+.apne-episode-tile .apne-recent-action:only-child { grid-column: 1 / -1; }
+@media (max-width: 650px) {
+  .apne-episode-grid { gap: 12px; }
+  .apne-recent-row.apne-episode-tile { min-height: 0; }
+  .apne-episode-tile-body { padding: 15px; }
+  .apne-episode-tile .btn.apne-recent-action { min-height: 50px; font-size: 14px; }
+}
+
 .apne-pagination {
   display: grid; grid-template-columns: minmax(84px, 1fr) auto minmax(84px, 1fr);
   align-items: center; gap: 10px; margin-top: 6px; padding-top: 8px;
@@ -1699,13 +1857,15 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
 
 @media (max-width: 640px) {
   .apne-daily-body { padding: 10px; }
-  .apne-show-card { padding: 14px; }
+  .apne-show-card { padding: 12px 14px; }
+  .apne-show-card h3 { font-size: 18px; }
   .apne-show-main { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .apne-show-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .apne-show-actions > .apne-download-today:only-child { grid-column: 1 / -1; }
   .apne-download-today { width: 100%; min-width: 0; min-height: 50px; font-size: 16px; }
+  .apne-native-stream { min-height: 50px; }
   .apne-recent-head { align-items: flex-start; flex-direction: column; gap: 3px; }
   .apne-history-range { text-align: left; }
-  .apne-recent-row { gap: 8px; }
-  .apne-recent-action { width: auto; min-width: 104px; }
 }
 
 /* Toast */
@@ -1922,21 +2082,6 @@ body.screen-fullscreen .restart-menu-trigger { display: none; }
   .btn.small {
     min-height: 42px;
     padding: 0 14px;
-  }
-  .apne-recent-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 104px;
-    align-items: center;
-    gap: 10px;
-  }
-  .apne-recent-row .btn.apne-recent-action {
-    width: 104px;
-    min-width: 104px;
-    padding: 0 10px;
-  }
-  .apne-recent-copy strong {
-    white-space: normal;
-    line-height: 1.2;
   }
   .apne-pagination {
     grid-template-columns: minmax(76px, 1fr) auto minmax(76px, 1fr);

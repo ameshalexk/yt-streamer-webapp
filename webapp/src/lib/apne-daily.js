@@ -4,6 +4,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.js";
 import * as store from "./store.js";
+import { createApneSourceAvailability, validateApneSourceManifest } from "./apne-source-availability.js";
+import { parsePlayApneEmbed, parsePlayApneMp4, checkApneMp4Range } from "./apne-mp4.js";
+import { supportedYoDesiShows, resolveYoDesiEmbed } from "./apne-yodesi-embed.js";
 
 const APNE_ORIGIN = "https://apnetv.xyz";
 const SHOWS_FILE = path.join(config.dataDir, "apne-daily-shows.json");
@@ -41,6 +44,25 @@ const DEFAULT_SHOWS = [{
 }];
 
 const jobs = new Map();
+// Catalog results only. Never trust a caller-supplied upstream video URL.
+const knownEpisodes = new Map();
+const sourceAvailability = createApneSourceAvailability({
+  cacheFile: path.join(config.dataDir, "apne-source-availability.json"),
+  resolveEpisode: resolveApneEpisodeDirect,
+});
+const SOURCE_STATUS = {
+  link: "Available",
+  unavailable: "Source unavailable",
+  error: "Check failed",
+};
+
+function rememberEpisodes(show, episodes) {
+  const time = Date.now();
+  for (const e of episodes) knownEpisodes.set(jobKey(show.id, e.dateKey), { ...e, at: time });
+  for (const [key, info] of knownEpisodes) if (time - info.at > 30 * 60000) knownEpisodes.delete(key);
+  while (knownEpisodes.size > 350) knownEpisodes.delete(knownEpisodes.keys().next().value);
+}
+
 
 export function activeJobCount() {
   return [...jobs.values()].filter(job => ['Checking', 'Downloading', 'Saving to iCloud'].includes(job.status)).length;
@@ -172,7 +194,13 @@ async function loadShows() {
   try {
     const parsed = JSON.parse(await fs.readFile(SHOWS_FILE, "utf8"));
     const items = Array.isArray(parsed?.shows) ? parsed.shows : [];
-    const merged = [...DEFAULT_SHOWS];
+    const aliases = parsed?.nameOverrides && typeof parsed.nameOverrides === "object" && !Array.isArray(parsed.nameOverrides)
+      ? parsed.nameOverrides : {};
+    const merged = DEFAULT_SHOWS.map((show) => ({
+      ...show,
+      name: typeof aliases[show.id] === "string" && aliases[show.id].trim()
+        ? aliases[show.id].trim().slice(0, 120) : show.name,
+    }));
     for (const item of items) {
       if (!item?.id || !item?.url || merged.some((show) => show.id === item.id)) continue;
       merged.push({ id: String(item.id), name: String(item.name || item.id), url: String(item.url), builtIn: false });
@@ -186,9 +214,13 @@ async function loadShows() {
 
 async function saveCustomShows(shows) {
   const custom = shows.filter((show) => !show.builtIn).map(({ id, name, url }) => ({ id, name, url }));
+  const nameOverrides = Object.fromEntries(DEFAULT_SHOWS.flatMap((original) => {
+    const current = shows.find((show) => show.id === original.id);
+    return current?.name && current.name !== original.name ? [[original.id, current.name]] : [];
+  }));
   await fs.mkdir(config.dataDir, { recursive: true });
   const tmp = `${SHOWS_FILE}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify({ version: 1, shows: custom }, null, 2), "utf8");
+  await fs.writeFile(tmp, JSON.stringify({ version: 2, shows: custom, nameOverrides }, null, 2), "utf8");
   await fs.rename(tmp, SHOWS_FILE);
 }
 
@@ -381,8 +413,10 @@ async function episodeMetadataForShow(show) {
       fetchMetadataHtml(skyUrl).catch(() => ""),
       fetchMetadataHtml(guideUrl).catch(() => ""),
     ]);
-    const skyByDate = skyHtml ? parseSkyEpisodeMetadata(skyHtml, show.name) : {};
-    const guideByDate = guideHtml ? parseActorAgeCheckEpisodeMetadata(guideHtml, show.name) : {};
+    // Renaming a display label must not change canonical upstream episode metadata parsing.
+    const metadataName = DEFAULT_SHOWS.find((original) => original.id === show.id)?.name || show.name;
+    const skyByDate = skyHtml ? parseSkyEpisodeMetadata(skyHtml, metadataName) : {};
+    const guideByDate = guideHtml ? parseActorAgeCheckEpisodeMetadata(guideHtml, metadataName) : {};
     const skyByNumber = {};
     for (const item of Object.values(skyByDate)) {
       if (item?.episodeNumber && (!skyByNumber[item.episodeNumber] || item.episodeTitle)) skyByNumber[item.episodeNumber] = item;
@@ -453,7 +487,8 @@ export function parseFlashTargetFromEpisodeHtml(html) {
     const host = target.hostname.toLowerCase();
     const legacyTarget = (host === "newsportaling.com" || host === "www.newsportaling.com")
       && /^\/finnance-[^/]+$/i.test(target.pathname);
-    const currentTarget = (host === "newscurting.com" || host === "www.newscurting.com")
+    const currentTarget = (host === "newscurting.com" || host === "www.newscurting.com"
+      || host === "newsmagics.com" || host === "www.newsmagics.com")
       && /^\/savvings-[^/]+$/i.test(target.pathname);
     if (!/^[a-f0-9]{32}$/i.test(id)
       || target.protocol !== "https:"
@@ -466,6 +501,22 @@ export function parseFlashTargetFromEpisodeHtml(html) {
     return { id, href };
   }
   throw new Error("APNE Flash Link was not found for this episode.");
+}
+
+// APNE has two visible "free links" on some episodes. Both use the same
+// validated handoff shape; identify the PlayApne choice from its visible label.
+export function parsePlayApneTargetFromEpisodeHtml(html) {
+  const text = String(html || "");
+  for (const match of text.matchAll(/<div\b[^>]*>/gi)) {
+    const attrs = readAttributes(match[0]);
+    if (!String(attrs.class || "").split(/\s+/).includes("flash_link")) continue;
+    const following = text.slice(match.index + match[0].length, match.index + match[0].length + 450);
+    const body = following.split(/<\/div>/i)[0] || "";
+    if (!/PlayApne Link|playapne_new\.png/i.test(body)) continue;
+    // Reuse the original source-handoff host/path/id allowlist, not label-based URL trust.
+    try { return parseFlashTargetFromEpisodeHtml(match[0]); } catch {}
+  }
+  return null;
 }
 
 export function parseNewsportalingRedirect(html) {
@@ -576,8 +627,10 @@ export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
     ...fields,
   });
   await log("resolve_start");
+  let episodeHtml = "";
   try {
     const episode = await fetchText(episodeUrl, { referer: APNE_ORIGIN + "/" });
+    episodeHtml = episode.html;
     await log("episode_html_ok", { bytes: episode.html.length, responseHost: hostOf(episode.url) });
     const flash = parseFlashTargetFromEpisodeHtml(episode.html);
     await log("flash_target_ok", { nextHost: hostOf(flash.href) });
@@ -609,9 +662,51 @@ export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
       hlsUrl = parseMediagramingHlsFromHtml(media.html);
     }
 
+    // If a second source exists, confirm the first playlist really responds
+    // before selecting it. Otherwise transparently try the alternate below.
+    if (parsePlayApneTargetFromEpisodeHtml(episodeHtml)) {
+      await validateApneSourceManifest({ hlsUrl, referer: hlsReferer });
+    }
     await log("hls_resolved", { hlsHost: hostOf(hlsUrl) });
     return { hlsUrl, referer: hlsReferer };
   } catch (error) {
+    const alternate = parsePlayApneTargetFromEpisodeHtml(episodeHtml);
+    if (alternate) {
+      try {
+        await log("alternate_source_try");
+        const news = await fetchText(alternate.href, {
+          method: "POST",
+          body: new URLSearchParams({ id: alternate.id }).toString(),
+          referer: episodeUrl,
+        });
+        const handoff = parseNewsportalingRedirect(news.html);
+        const media = await fetchText(handoff.url, {
+          method: "POST",
+          body: new URLSearchParams({ id: handoff.id || alternate.id, channel: handoff.channel }).toString(),
+          referer: alternate.href,
+        });
+        const embedUrl = parsePlayApneEmbed(media.html);
+        if (!embedUrl) throw new Error("Alternate player not available");
+        const player = await fetchText(embedUrl, { referer: handoff.url });
+        const mp4Url = parsePlayApneMp4(player.html);
+        await checkApneMp4Range(mp4Url, embedUrl);
+        await log("alternate_source_ok", { mediaHost: hostOf(mp4Url) });
+        return {mp4Url, referer: embedUrl, format: "mp4"};
+      } catch (alternateError) {
+        await log("alternate_source_failed", {error: alternateError.message});
+      }
+    }
+    // Automatically discover an exact show/date Yodesi episode after APNE
+    // primary HLS and secondary PlayApne MP4 failed. No unrelated matches.
+    if (supportedYoDesiShows().includes(context.showId) && context.dateKey) {
+      try {
+        const result = await resolveYoDesiEmbed(context.showId,context.dateKey);
+        await log("embedded_source_ready", {parts:result.embedUrls.length});
+        return result;
+      } catch (fallbackError) {
+        await log("embedded_source_failed", {error:fallbackError.message});
+      }
+    }
     await log("resolve_failed", { error: error.message });
     throw error;
   }
@@ -856,15 +951,16 @@ function publicJob(job) {
 async function episodeStatus(show, episode, downloadedItems = null) {
   const saved = await downloadedItemFor(show, episode, downloadedItems);
   const job = jobs.get(jobKey(show.id, episode.dateKey));
-  let status = saved ? "Saved" : "Available";
+  const checked = saved ? null : await sourceAvailability.get(show.id, episode.dateKey, episode.url);
+  let status = saved ? "Saved" : (SOURCE_STATUS[checked?.state] || "Listed");
   let itemId = saved?.id || null;
-  let detail = "";
-  if (!saved && job) {
+  let detail = saved ? "Saved on Mac + iCloud Drive" : (checked?.detail || "Listed by APNE; stream not checked yet.");
+  if (!saved && job && ["Checking", "Downloading", "Saving to iCloud", "Saved"].includes(job.status)) {
     status = job.status || status;
     itemId = job.itemId || null;
     detail = job.detail || "";
   }
-  return { ...episode, status, itemId, detail, job: publicJob(job) };
+  return { ...episode, status, itemId, detail, sourceMode: checked?.mode || null, job: publicJob(job) };
 }
 
 async function statusForShow(show) {
@@ -877,6 +973,7 @@ async function statusForShow(show) {
       ...episode,
       ...(episodeMetadata[episode.dateKey] || {}),
     }));
+    rememberEpisodes(show, historyEpisodes);
     const downloadedItems = await downloadedApneItems();
     const recentEpisodes = await Promise.all(historyEpisodes.map((episode) => episodeStatus(show, episode, downloadedItems)));
     const episode = recentEpisodes[0];
@@ -936,6 +1033,65 @@ export async function listDailyStatus() {
   return { today: todayKey(), shows: results };
 }
 
+// Scheduler-only discovery: five small show-page requests, not the full
+// three-month catalog, artwork extraction, playback or downloads.
+export async function scanLatestForBackground(previous = {}) {
+  const shows = await loadShows();
+  const saved = await downloadedApneItems();
+  const summary = {shows:{},checkedShows:0,newEpisodes:0,validatedSources:0,errors:[]};
+  for (const show of shows.slice(0,12)) {
+    try {
+      const list = filterApneEpisodesByMonths(await detectRecent(show,3),APNE_HISTORY_MONTHS);
+      const episode=list[0];
+      if (!episode) throw new Error("No recent dated episodes in APNE catalog");
+      rememberEpisodes(show,list);
+      summary.checkedShows += 1;
+      const earlier=previous[show.id] || {};
+      if (earlier.dateKey && earlier.dateKey !== episode.dateKey) summary.newEpisodes += 1;
+      let source='unverified';
+      if (saved.some(item=>episodeMatchesDownloadedItem(item,show,episode))) source='saved';
+      else {
+        const result=await sourceAvailability.check(show.id,episode.dateKey,episode.url);
+        source=result.state==='link'?'available':result.state;
+        summary.validatedSources += 1;
+      }
+      summary.shows[show.id]={dateKey:episode.dateKey,source};
+    } catch (error) {
+      summary.errors.push(`${show.id}: ${String(error.message).slice(0,120)}`);
+      if (previous[show.id]) summary.shows[show.id]=previous[show.id];
+    }
+  }
+  await writeApneLog("background_catalog_check", {
+    checkedShows:summary.checkedShows,newEpisodes:summary.newEpisodes,
+    validatedSources:summary.validatedSources,errors:summary.errors,
+  });
+  return summary;
+}
+
+// On-demand verification; serial resolver queue and short-lived source-status
+// cache live in apne-source-availability.js. Saves/streaming remain independent.
+export async function checkEpisodeSource(showId, dateKey, {force = false} = {}) {
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(String(showId || "")) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(String(dateKey || ""))) throw httpError(400, "Invalid APNE episode.");
+  const shows = await loadShows();
+  const show = shows.find((item) => item.id === showId);
+  if (!show) throw httpError(404, "APNE Daily show not found.");
+  const key = jobKey(showId, dateKey);
+  let episode = knownEpisodes.get(key);
+  if (!episode || Date.now() - episode.at > 15 * 60000) {
+    const detected = await detectRecent(show, APNE_HISTORY_FETCH_LIMIT);
+    const history = filterApneEpisodesByMonths(detected, APNE_HISTORY_MONTHS);
+    rememberEpisodes(show, history);
+    episode = history.find((item) => item.dateKey === dateKey);
+  }
+  if (!episode) throw httpError(404, "That APNE episode is not in the recent history window.");
+  if (await downloadedItemFor(show, episode))
+    return { status: "Saved", detail: "Saved on Mac + iCloud Drive", checkedAt: null };
+  const result = await sourceAvailability.check(showId, dateKey, episode.url, {force:force === true});
+  await writeApneLog("source_checked", {showId,dateKey,result:result.state});
+  return {status: SOURCE_STATUS[result.state] || "Check failed", detail:result.detail, checkedAt:result.checkedAt, mode:result.mode||null};
+}
+
 export async function addShow(input = {}) {
   const candidate = normalizeApneShowInput(input.url, input.name);
   const shows = await loadShows();
@@ -946,6 +1102,27 @@ export async function addShow(input = {}) {
   await saveCustomShows(shows);
   await writeApneLog("show_added", { showId: candidate.id, showUrl: candidate.url });
   return candidate;
+}
+
+export function validateApneShowName(value) {
+  if (typeof value !== "string" || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw httpError(400, "Enter a valid show name.");
+  }
+  const name = value.trim().replace(/[ \t]+/g, " ");
+  if (!name || name.length > 120) throw httpError(400, "Show name must be 1–120 characters.");
+  return name;
+}
+
+export async function renameShow(showId, input = {}) {
+  const name = validateApneShowName(input?.name);
+  const shows = await loadShows();
+  const show = shows.find((item) => item.id === showId);
+  if (!show) throw httpError(404, "APNE Daily show not found.");
+  if (show.name === name) return show;
+  show.name = name;
+  await saveCustomShows(shows);
+  await writeApneLog("show_renamed", { showId });
+  return show;
 }
 
 export async function removeShow(showId) {
@@ -977,6 +1154,11 @@ async function createEpisodeDownloadJob(show, episode) {
     return publicJob(existing);
   }
 
+  const verified = await sourceAvailability.get(show.id, episode.dateKey, episode.url);
+  if (verified?.mode === "embed") {
+    throw httpError(409, "This episode is available to stream, but this source does not support downloading.");
+  }
+
   const job = {
     id: crypto.randomBytes(8).toString("hex"),
     showId: show.id,
@@ -996,9 +1178,10 @@ async function createEpisodeDownloadJob(show, episode) {
     try {
       job.status = "Downloading";
       const resolved = await resolveApneEpisodeDirect(episode.url, { showId: show.id, dateKey: episode.dateKey });
+      if (resolved.embedUrls) throw new Error("Streaming is available, but this episode does not offer a supported download.");
       const title = episodeTitle(show, episode);
       const result = await downloadApneHls({
-        hlsUrl: resolved.hlsUrl,
+        hlsUrl: resolved.hlsUrl || resolved.mp4Url,
         referer: resolved.referer,
         title,
         meta: {
@@ -1035,6 +1218,24 @@ async function createEpisodeDownloadJob(show, episode) {
   })();
 
   return publicJob(job);
+}
+
+// Cheap configured-show check for authenticated, on-demand Phase C thumbnails.
+export async function hasConfiguredApneShow(showId) {
+  if (typeof showId !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(showId)) return false;
+  return (await loadShows()).some((show) => show.id === showId);
+}
+
+export async function resolveApneEpisodeByDate(showId, dateKey) {
+  const key = String(dateKey || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) throw httpError(400, "A valid APNE episode date is required.");
+  const shows = await loadShows();
+  const show = shows.find((item) => item.id === showId);
+  if (!show) throw httpError(404, "APNE Daily show not found.");
+  const detected = await detectRecent(show, APNE_HISTORY_FETCH_LIMIT);
+  const episode = filterApneEpisodesByMonths(detected, APNE_HISTORY_MONTHS).find((item) => item.dateKey === key);
+  if (!episode) throw httpError(404, "That APNE episode is not in the recent history window.");
+  return resolveApneEpisodeDirect(episode.url, { showId: show.id, dateKey: key });
 }
 
 export async function startEpisodeDownload(showId, dateKey) {
