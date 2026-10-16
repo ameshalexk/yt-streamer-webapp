@@ -8193,7 +8193,7 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
     else if (tab.dataset.mode === "browser") openBrowser();
     else if (tab.dataset.mode === "embed") openEmbed();
     else if (tab.dataset.mode === "library") openLegacyLibrary();
-    else if (tab.dataset.mode === "apne") openApneDaily();
+    else if (tab.dataset.mode === "apne") window.location.assign("/apne/");
     else if (tab.dataset.mode === "retro") window.open("/retro-pc/", "_blank", "noopener");
     else if (tab.dataset.mode === "tesla") window.open("/tesla", "_blank", "noopener");
     else if (tab.dataset.mode === "money") window.open("/money", "_blank", "noopener");
@@ -9651,7 +9651,14 @@ function initEverydayControls() {
   $("#themeToggleBtn").onclick = () => {
     applyTheme(document.documentElement.dataset.theme === "day" ? "night" : "day");
   };
-  const returnToApne = new URLSearchParams(window.location.search).get("mode") === "apne";
+  const params = new URLSearchParams(window.location.search);
+  const returnToApne = params.get("mode") === "apne";
+  // Preserve old episode return bookmarks, but promote the new APNE list.
+  // Classic mode is retained for the separate Manage Shows flow.
+  if (returnToApne && params.get("classic") !== "1") {
+    window.location.replace("/apne/");
+    return;
+  }
   const savedApneReturn = returnToApne ? restoreApneReturnState() : null;
   setMode(returnToApne ? "apne" : "watch");
   resetStreamSettings();

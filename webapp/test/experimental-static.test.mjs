@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 const source=(file)=>readFileSync(new URL(file,import.meta.url),"utf8");
-test("Experimental is directly after APNE Daily on stable menu",()=>{
+test("Only the production APNE tab is shown in main navigation",()=>{
  const html=source("../public/index.html");
- assert.match(html,/<button class="mode-tab"[^>]+data-mode="apne">APNE Daily<\/button>\s*<a class="experimental-menu-link" href="\/experimental\/"/);
+ assert.match(html,/<button class="mode-tab"[^>]+data-mode="apne">APNE Daily<\/button>/);
+ assert.doesNotMatch(html, /class="experimental-menu-link" href="\/experimental\/"/);
  assert.doesNotMatch(html, /data-mode="experimental"/);
 });
 test("Experimental serves namespaced static assets and stable back link",()=>{

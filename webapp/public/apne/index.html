@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex, nofollow, nosnippet">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1220">
+  <title>APNE Stream · YT Streamer</title>
+  <link rel="stylesheet" href="/apne/styles.css?v=20261016-prod-1">
+  <script defer src="/apne/apne-mobile-browser.js?v=20261016-prod-1"></script>
+  <script defer src="/apne/app.js?v=20261016-prod-1"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="back" href="/" aria-label="Back to YT Streamer home">
+      <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18 9 12l6-6"/></svg>
+      <span>Back</span>
+    </a>
+    <div class="brand"><span class="brand-dot"></span> APNE Stream</div>
+    <span class="stage-label">APNE Daily</span>
+  </header>
+  <main class="page">
+    <section class="shows-picker" aria-labelledby="showsHeading">
+      <div class="section-head"><div><p class="eyebrow">Your APNE library</p><h2 id="showsHeading">Shows</h2></div><span class="count" id="showCount"></span></div>
+      <div class="show-grid" id="showGrid" role="group" aria-label="Choose a show"><p class="muted">Loading shows…</p></div>
+    </section>
+    <section class="show" aria-labelledby="showTitle">
+      <div class="show-heading">
+        <div>
+          <p class="eyebrow">My show</p>
+          <h1 id="showTitle">Anupamaa</h1>
+          <div id="showStatus" class="show-status" role="status">Loading episodes…</div>
+        </div>
+        <button class="refresh" id="refresh" type="button" aria-label="Refresh episode listings"><span class="refresh-icon" aria-hidden="true">↻</span> <span>Refresh</span></button>
+      </div>
+      <div id="quickStart" class="quick-start" hidden>
+        <a id="latestPreview" class="latest-preview" href="#" aria-label="Watch latest episode"><span class="preview-placeholder">Preview</span></a>
+        <div class="quick-start-copy">
+          <p class="eyebrow">Latest listed episode</p>
+          <strong id="latestDate">—</strong>
+          <p id="latestMeta" class="muted"></p>
+        </div>
+        <button class="primary" type="button" id="latestButton">Jump to Latest</button>
+      </div>
+    </section>
+    <section class="episodes" aria-labelledby="episodeHeading">
+      <div class="section-head">
+        <div><p class="eyebrow">Episode library</p><h2 id="episodeHeading">Episodes</h2></div>
+        <span id="resultCount" class="count"></span>
+      </div>
+      <details class="calendar-panel" id="calendarPanel">
+        <summary><span aria-hidden="true">▦</span> Calendar <span class="calendar-hint" id="calendarHint">Filter by date</span></summary>
+        <label for="episodeDate">Find a date
+          <input id="episodeDate" type="date" aria-describedby="rangeNotice">
+        </label>
+      </details>
+      <div class="calendar-active" id="calendarActive" role="status" hidden>
+        <span id="calendarActiveDate">Showing selected date</span>
+        <button type="button" id="exitCalendar">Show all episodes</button>
+      </div>
+      <div class="filters">
+        <button type="button" class="filter" id="unwatched" aria-pressed="false">Unwatched only</button>
+        <button type="button" class="text-button" id="clearFilters">Clear filters</button>
+      </div>
+      <p id="rangeNotice" class="range"></p>
+      <nav class="pager pager-top" id="pagerTop" aria-label="Browse episode pages" hidden>
+        <button type="button" data-page-move="newer">← Newer 10</button>
+        <span class="page-range">1–10 of 10</span>
+        <button type="button" data-page-move="older">Older 10 →</button>
+      </nav>
+      <div id="episodeList" class="episode-list" aria-live="polite"><p class="muted">Loading episodes…</p></div>
+      <nav class="pager" id="pager" aria-label="Episode pages" hidden>
+        <button type="button" data-page-move="newer">← Newer 10</button>
+        <span id="pageInfo" class="page-range">1–10 of 10</span>
+        <button type="button" data-page-move="older">Older 10 →</button>
+      </nav>
+      <p id="archiveNotice" class="archive-notice" hidden>End of currently indexed episodes. Older episodes may not be available from APNE’s source catalog.</p>
+    </section>
+    <footer class="footer">
+      <a href="/">YT Streamer home</a> · <a href="/?mode=apne&amp;classic=1">Manage shows (classic)</a>
+      <p>Select an episode image to open its video player, choose a source, or download to your Mac.</p>
+    </footer>
+  </main>
+</body>
+</html>
