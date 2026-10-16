@@ -5,6 +5,7 @@ import {
   episodeMatchesDownloadedItem,
   filterApneEpisodesByMonths,
   normalizeApneShowInput,
+  validateApneShowName,
   parseActorAgeCheckEpisodeMetadata,
   parseFlashTargetFromEpisodeHtml,
   parseLatestEpisodeFromShowHtml,
@@ -24,6 +25,16 @@ const show = {
   name: "Anupamaa",
   url: "https://apnetv.xyz/Hindi-Serial/Anupamaa",
 };
+
+test("APNE background scans are lightweight and use cached source status without downloads", () => {
+  assert.match(apneDailySource, /export async function scanLatestForBackground/);
+  assert.match(apneDailySource, /detectRecent\(show,3\)/);
+  assert.match(apneDailySource, /sourceAvailability\.check\(show\.id,episode\.dateKey,episode\.url\)/);
+  assert.match(apneDailySource, /if \(earlier\.dateKey && earlier\.dateKey !== episode\.dateKey\)/);
+  assert.match(server, /createApneBackgroundCheck/);
+  assert.match(server, /apneBackgroundCheck\.start\(\)/);
+  assert.match(server, /apneBackgroundCheck: apneBackgroundCheck\.status\(\)/);
+});
 
 test("APNE Daily detects the newest dated episode from a show page", () => {
   const fixture = [
@@ -124,6 +135,23 @@ test("APNE Daily resolves the browserless APNE to Newsportaling to Mediagraming 
     parseMediagramingHlsFromHtml(mediaHtml),
     "https://s2.videoapne.to/hls/,abc,.urlset/master.m3u8",
   );
+});
+
+test("APNE Daily accepts Dr Aarambhi NewsMagics flash links without trusting lookalike hosts", () => {
+  const id = "23a17a19ab70f3861295714ddc974ed8";
+  const tag = (href) => `<div data-id="${id}" data-href="${href}" class="flash_link">Flash Link</div>`;
+  assert.deepEqual(parseFlashTargetFromEpisodeHtml(tag("https://newsmagics.com/savvings-budget-income-expense")), {
+    id,
+    href: "https://newsmagics.com/savvings-budget-income-expense",
+  });
+  for (const url of [
+    "https://newsmagics.com.evil.example/savvings-budget-income-expense",
+    "https://evilnewsmagics.com/savvings-budget-income-expense",
+    "http://newsmagics.com/savvings-budget-income-expense",
+    "https://newsmagics.com/other-budget-income-expense",
+    "https://newsmagics.com/savvings-budget-income-expense?redirect=1",
+    "https://user@newsmagics.com/savvings-budget-income-expense",
+  ]) assert.throws(() => parseFlashTargetFromEpisodeHtml(tag(url)), /Flash Link was not found/);
 });
 
 test("APNE Daily accepts the live Seher Newscurting handoff and rejects untrusted flash targets", () => {
@@ -230,6 +258,40 @@ test("APNE Daily show management normalizes APNE show and episode URLs", () => {
   );
 });
 
+test("APNE Daily display-name edit validates labels and retains existing saved episode identity", () => {
+  assert.equal(validateApneShowName("  Dr.  Aarambhi  "), "Dr. Aarambhi");
+  assert.equal(validateApneShowName("അനുപമ"), "അനുപമ");
+  for (const invalid of ["", "   ", "x".repeat(121), "Bad\nName", null, 25]) {
+    assert.throws(() => validateApneShowName(invalid), /show name/i);
+  }
+  const priorEpisode = {
+    url: "https://apnetv.xyz/Hindi-Serial/show/286378/Anupamaa",
+    dateLabel: "15th September 2026",
+    dateKey: "2026-09-15",
+  };
+  const savedItem = {type: "file", title: "Anupamaa 15th September", meta: {
+    source: "apnetv", apneShowId: "anupamaa", apneEpisodeDate: "2026-09-15",
+  }};
+  assert.equal(episodeMatchesDownloadedItem(savedItem, {...show, name:"New Display Name"}, priorEpisode), true);
+  assert.match(apneDailySource, /nameOverrides/);
+  assert.match(apneDailySource, /export async function renameShow\(showId, input = \{\}\)/);
+  assert.match(apneDailySource, /const metadataName = DEFAULT_SHOWS/);
+  assert.match(server, /app\.patch\("\/api\/apne-daily\/shows\/:id"/);
+  assert.match(server, /isSameOriginRequest\(req\)/);
+});
+
+test("APNE Daily exposes a separate edit control while the show is collapsed", () => {
+  const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(app, /apne-show-wrap/);
+  assert.match(app, /apne-edit-name-btn/);
+  assert.match(app, /data-act="edit-apne-name"/);
+  assert.match(app, /function openApneRenameShow\(showId\)/);
+  assert.match(app, /id="apneRenameInput"/);
+  assert.match(app, /\/api\/apne-daily\/shows\//);
+  assert.match(css, /\.apne-show-wrap \{ position: relative/);
+  assert.match(css, /\.apne-edit-name-btn/);
+});
+
 test("APNE Daily UI renders latest controls, three-month history, and pagination", () => {
   assert.match(html, /data-mode="apne"[^>]*>APNE Daily<\/button>/);
   assert.match(html, /id="apneDailyView"/);
@@ -246,7 +308,7 @@ test("APNE Daily UI renders latest controls, three-month history, and pagination
   assert.match(app, /apne-episode-name/);
   assert.match(apneDailySource, /SKY_EPISODE_METADATA_URLS/);
   assert.match(apneDailySource, /episode_metadata_ok/);
-  assert.match(app, /recentAction = recentSaved \? "play-episode" : "download-episode"/);
+  assert.match(app, /recentAction = recentSaved \? "play-episode" : \(streamOnly \? "stream-apne"/);
   assert.match(app, /button\.dataset\.act === "play-episode"/);
   assert.match(app, /startApneEpisodeDownload/);
   assert.match(apneDailySource, /recentEpisodes/);
@@ -262,6 +324,119 @@ test("APNE Daily UI renders latest controls, three-month history, and pagination
   assert.match(server, /\/api\/apne-daily\/shows\/:id\/episodes\/:dateKey\/download/);
 });
 
+
+test("APNE Daily separates source availability from catalog listings and preserved saves", () => {
+  assert.match(apneDailySource, /SOURCE_STATUS/);
+  assert.match(apneDailySource, /SOURCE_STATUS\[checked\?\.state\] \|\| "Listed"/);
+  assert.match(apneDailySource, /sourceAvailability\.check/);
+  assert.match(server, /app\.post\("\/api\/apne-daily\/shows\/:id\/episodes\/:dateKey\/check-source"/);
+  assert.match(app, /function applyApneSourceStatus/);
+  assert.match(app, /function checkApneSourceForTile/);
+  assert.match(app, /"check-apne-source"/);
+  assert.match(app, /Source unavailable/);
+  assert.match(apneDailySource, /link: "Available"/);
+  assert.match(app, /\.dataset\.thumbSaved === "check"/);
+});
+
+test("APNE source fallback supports two-part embedded streaming without pretending download works", () => {
+  const player=fs.readFileSync(new URL("../public/apne-live-player.js", import.meta.url), "utf8");
+  assert.match(apneDailySource, /resolveYoDesiEmbed/);
+  assert.match(apneDailySource, /if \(resolved\.embedUrls\) throw new Error\("Streaming is available/);
+  assert.match(apneDailySource, /verified\?\.mode === "embed"/);
+  assert.match(server, /resolved\.embedUrls\) return res\.json\(\{format:"embed",parts:/);
+  assert.match(server, /frame-src https:\/\/www\.blogger\.com/);
+  assert.match(server, /id="apneEmbedStage"/);
+  assert.match(player, /source\.format === 'embed'/);
+  assert.match(player, /sandbox',\s*'allow-scripts allow-same-origin allow-presentation'/);
+  assert.match(player, /Part ' \+ \(i \+ 1\)/);
+  assert.match(app, /streamOnly \? "stream-apne"/);
+  assert.match(app, /recent\.dateKey && !streamOnly/);
+  assert.match(app, /apnePreviewKind\(showId,dateKey,false,result.status,result.mode\)/);
+});
+
+test("APNE Daily Phase A renders responsive episode tiles and preview placeholders without starting downloads", () => {
+  const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(app, /class="apne-episode-grid"/);
+  assert.match(app, /class="apne-recent-row apne-episode-tile /);
+  assert.match(app, /class="apne-episode-preview" data-show-id=/);
+  assert.match(app, /data-date-key="' \+ esc\(recent\.dateKey \|\| ""\)/);
+  assert.match(app, /Preview coming soon/);
+  assert.match(app, /class="apne-episode-status /);
+  assert.match(app, /class="apne-episode-tile-body"/);
+  assert.match(app, /class="apne-recent-actions"/);
+  assert.match(app, /data-act="stream-apne"/);
+  assert.match(app, /data-act="' \+ recentAction/);
+  assert.match(app, /'<\/div>' \+\s*\(pageCount > 1/);
+  assert.match(css, /container: apne-episodes \/ inline-size/);
+  assert.match(css, /@container apne-episodes \(min-width: 450px\)/);
+  assert.match(css, /aspect-ratio: 16 \/ 9/);
+  assert.match(css, /\.apne-episode-tile \.btn\.apne-recent-action/);
+  assert.match(css, /min-height: 46px/);
+});
+
+test("APNE Daily show cards collapse by default, retain expansion across polls, and keep buttons inside", () => {
+  const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(app, /expandedByShow: \{\}/);
+  assert.match(app, /querySelectorAll\("details\.apne-show-card\[data-show-id\]"\)/);
+  assert.match(app, /expandedByShow\[card\.dataset\.showId\] = card\.open/);
+  assert.match(app, /focusedShowId/);
+  assert.match(app, /preventScroll: true/);
+  assert.match(css, /\.layout\.mode-apne > \.apne-daily-view/);
+  assert.match(css, /\.layout\.mode-apne > \.player/);
+  assert.match(app, /const expanded = state\.apneDaily\.expandedByShow\[show\.id\] === true/);
+  assert.match(app, /'<details class="apne-show-card /);
+  assert.match(app, /<summary class="apne-show-toggle">/);
+  assert.match(app, /<div class="apne-show-content">/);
+  assert.match(app, /'<\/details>'/);
+  assert.match(css, /\.apne-show-card\[open\] \.apne-show-chevron/);
+  assert.match(css, /\.apne-show-toggle:focus-visible/);
+  assert.match(app, /data-act="' \+ action/);
+  assert.match(app, /historyHtml/);
+});
+
+test("APNE Daily uses one Available label and routes live playback or downloads through a source-agnostic backend", () => {
+  const player=fs.readFileSync(new URL("../public/apne-live-player.js", import.meta.url),"utf8");
+  assert.match(apneDailySource, /parsePlayApneTargetFromEpisodeHtml/);
+  assert.match(apneDailySource, /parsePlayApneMp4/);
+  assert.match(apneDailySource, /await checkApneMp4Range/);
+  assert.match(apneDailySource, /hlsUrl: resolved.hlsUrl \|\| resolved.mp4Url/);
+  assert.match(apneDailySource, /link: "Available"/);
+  assert.match(app, /recentStatus === "Available"/);
+  assert.match(server, /app\.get\("\/apne\/live\/source\/:showId\/:dateKey"/);
+  assert.match(server, /app\.get\("\/apne\/live\/mp4\/:token"/);
+  assert.match(server, /requireApneNativeAccess/);
+  assert.match(player, /source.format === 'mp4'/);
+  assert.match(player, /hls.loadSource\(source.src\)/);
+  assert.match(server, /data-source="\$\{unifiedSource\}"/);
+});
+
+test("APNE Daily offers native Stream actions and routes unsaved episodes to live HLS", () => {
+  assert.match(app, /data-act=\"stream-apne\"/);
+  assert.match(app, /function streamApneLiveEpisode\(showId, dateKey(?:, resume = false)?\)/);
+  assert.match(app, /streamApneLiveEpisode\(card\.dataset\.showId, button\.dataset\.dateKey(?:, resume)?\)/);
+  assert.match(app, /https:\/\/stream\.ameshalex\.com\/apne\/live\/watch\//);
+  assert.match(app, /recent\.dateKey && !streamOnly \? '<button class=/);
+  assert.match(app, /episode\.dateKey \? '<button class=/);
+  assert.match(server, /app\.get\("\/apne\/live\/watch\/:showId\/:dateKey"/);
+  assert.match(server, /app\.get\("\/apne\/live\/playlist\/:showId\/:dateKey\.m3u8"/);
+  assert.match(server, /app\.get\("\/apne\/live\/media\/:session\/:asset"/);
+  assert.match(server, /resolveApneEpisodeByDate/);
+  assert.match(server, /requireApneNativeAccess/);
+  assert.match(app, /function streamApneNativeItem\(itemId(?:, resume = false)?\)/);
+  assert.match(app, /https:\/\/stream\.ameshalex\.com\/apne\/watch\//);
+  assert.match(app, /recent\.dateKey && !streamOnly \? '<button class=/);
+  assert.match(app, /episode\.dateKey \? '<button class=/);
+  assert.match(server, /app\.get\("\/apne\/watch\/:itemId"/);
+  assert.match(server, /app\.get\("\/apne\/native-media\/:itemId\.mp4"/);
+  assert.match(server, /createCastAccess/);
+  assert.match(server, /requireApneNativeAccess/);
+  assert.match(server, /APNE_NATIVE_LOOPBACK_PREVIEW === "1"/);
+  assert.match(server, /found\.item\.meta\?\.source !== "apnetv"/);
+  assert.match(server, /await fs\.realpath\(config\.libraryDir\)/);
+  assert.match(server, /acceptRanges: true/);
+  assert.match(server, /controls playsinline preload="metadata"/);
+  assert.match(server, /Content-Disposition": "inline"/);
+});
 
 test("APNE Daily keeps structured rotating diagnostics for source-chain changes", () => {
   assert.match(apneDailySource, /apne-daily\.log/);

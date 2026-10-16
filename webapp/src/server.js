@@ -22,9 +22,21 @@ import * as youtubeOAuth from "./lib/youtube-oauth.js";
 import * as moneyDashboard from "./lib/money-dashboard.js";
 import { requireMoneyAccess } from "./lib/cloudflare-money-access.js";
 import * as apneDaily from "./lib/apne-daily.js";
+import { createApneProgressStore, validEpisode as validApneProgressEpisode } from "./lib/apne-watch-progress.js";
+import { createApneBackgroundCheck } from "./lib/apne-background-check.js";
+import { createApneLiveRelay } from "./lib/apne-live-relay.js";
+import { createApneMp4Relay } from "./lib/apne-mp4.js";
+import { createApneThumbnailService } from "./lib/apne-thumbnails.js";
+import { createApneLiveThumbnailService } from "./lib/apne-hls-thumbnails.js";
+import { createApneOfficialArtwork } from "./lib/apne-official-artwork.js";
 import * as cyberdashDash from "./lib/cyberdash-dash.js";
 import * as processedDashCache from "./lib/processed-dash-cache.js";
 import { readReleaseRevision } from "./lib/release-info.js";
+import { createCastService } from "./lib/vlc-cast.js";
+import { createCastAccess } from "./lib/vlc-cast-access.js";
+import { createXPMediaHandler, createBlankDiskHandler } from "./lib/retro-xp-media.mjs";
+import { createRetroRemoteHTTP } from "./lib/retro-remote-relay.mjs";
+import { canUseCastReceiver, redactCastMediaPath } from "./lib/vlc-cast-routing.js";
 
 let storageCleanupInProgress = false;
 const app = express();
@@ -46,6 +58,20 @@ app.get("/robots.txt", (_req, res) => {
 app.use(express.json({ limit: "256kb" }));
 // The retired Money hostname may never access other application routes.
 app.use((req, res, next) => req.hostname === "money.ameshalex.com" ? res.status(404).end() : next());
+// Receiver hostname is deliberately media-only: never expose the authenticated
+// Streamer UI or APIs through an unauthenticated cast-only Cloudflare route.
+const CAST_RECEIVER_HOST = (() => {
+  try {
+    const u = new URL(process.env.CAST_PUBLIC_ORIGIN || "");
+    return u.protocol === "https:" && u.pathname === "/" ? u.hostname : "";
+  } catch { return ""; }
+})();
+app.use((req, res, next) => {
+  if (!CAST_RECEIVER_HOST || req.hostname !== CAST_RECEIVER_HOST) return next();
+  if (canUseCastReceiver({method:req.method, path:req.path,
+    hostname:req.hostname, receiverHost:CAST_RECEIVER_HOST})) return next();
+  return res.status(404).end();
+});
 
 const SERVER_STARTED_AT = Date.now();
 const RELEASE_REVISION = await readReleaseRevision().catch((error) => {
@@ -60,6 +86,10 @@ const YOUTUBE_STREAM_HEADERS = {
 };
 let restartPending = false;
 let httpServer = null;
+const apneBackgroundCheck = createApneBackgroundCheck({
+  dataDir: config.dataDir,
+  scan: apneDaily.scanLatestForBackground,
+});
 
 const PLAYBACK_LOG_FILE = path.join(config.dataDir, "playback-events.jsonl");
 const PLAYBACK_LOG_MAX_BYTES = 5 * 1024 * 1024;
@@ -317,7 +347,7 @@ const preparedCleanupTimer = setInterval(() => {
 preparedCleanupTimer.unref?.();
 
 const asyncH = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) => {
-  console.error("[api]", req.method, req.path, "-", err.message);
+  console.error("[api]", req.method, redactCastMediaPath(req.path), "-", redactCastMediaPath(err.message));
   if (!res.headersSent) res.status(err.status || 500).json({ error: err.message });
 });
 
@@ -439,6 +469,7 @@ app.get("/api/health", (req, res) => {
     activeAudioStreams: stream.activeAudioCount(),
     activeBrowserSessions: browserRenderer.activeSessionCount(),
     activeRealChromeSessions: realChromeRenderer.activeSessionCount(),
+    apneBackgroundCheck: apneBackgroundCheck.status(),
     time: Date.now(),
   });
 });
@@ -699,10 +730,22 @@ app.post("/api/apne-daily/shows", asyncH(async (req, res) => {
   res.status(201).json(await apneDaily.addShow(req.body || {}));
 }));
 
+app.patch("/api/apne-daily/shows/:id", asyncH(async (req, res) => {
+  if (!isSameOriginRequest(req)) return res.status(403).json({ error: "Same-origin request required." });
+  res.json(await apneDaily.renameShow(req.params.id, req.body || {}));
+}));
+
 app.delete("/api/apne-daily/shows/:id", asyncH(async (req, res) => {
   const removed = await apneDaily.removeShow(req.params.id);
   if (!removed) return res.status(404).json({ error: "APNE Daily show not found." });
   res.json({ ok: true });
+}));
+
+app.post("/api/apne-daily/shows/:id/episodes/:dateKey/check-source", asyncH(async (req, res) => {
+  if (!isSameOriginRequest(req)) return res.status(403).json({ error: "Same-origin request required." });
+  res.json(await apneDaily.checkEpisodeSource(req.params.id, req.params.dateKey, {
+    force: req.body?.force === true,
+  }));
 }));
 
 app.post("/api/apne-daily/shows/:id/episodes/:dateKey/download", asyncH(async (req, res) => {
@@ -1857,6 +1900,345 @@ app.get("/stream/experimental/cyberdash/:id/:file", asyncH(async (req, res) => {
   res.sendFile(filePath);
 }));
 
+// Optional VLC/Chromecast HLS: controls require a signed CF Access identity;
+// receiver downloads only use a separate, scoped temporary ticket.
+const castAuth = createCastAccess({
+  issuer: process.env.CAST_ACCESS_ISSUER || "",
+  audience: process.env.CAST_ACCESS_AUDIENCE || "",
+});
+const castPublicOrigin = process.env.CAST_PUBLIC_ORIGIN || "";
+const castControlOrigin = process.env.CAST_CONTROL_ORIGIN || "";
+const castService = createCastService({
+  root: path.join(config.dataDir, "vlc-cast"),
+  publicOrigin: castPublicOrigin,
+  ffmpegPath: config.ffmpegPath,
+  enabled: process.env.CAST_ENABLED === "1",
+  resolveSource: async ({kind, id, url}) => {
+    if (kind === "legacy") {
+      const processed=await processedLibrary.get(id);
+      if (!processed?.resolutions?.length) throw Object.assign(Error("Processed video unavailable"),{status:404});
+      const allowed=processed.resolutions.map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
+      const resolution=allowed.find(h=>h>=480) || allowed.at(-1);
+      const video=processedLibrary.videoPath(processed.id,resolution);
+      const audio=processedLibrary.audioPath(processed.id);
+      await fs.access(video);
+      await fs.access(audio);
+      return {video,audio,live:false};
+    }
+    let item;
+    if (kind === "item") {
+      const found = await store.findItem(id);
+      if (!found) throw Object.assign(Error("Saved item not found"), {status:404});
+      item=found.item;
+    }
+    if (item?.type === "file") {
+      const input=await fs.realpath(item.url);
+      const libraryRoot=await fs.realpath(config.libraryDir);
+      const relative=path.relative(libraryRoot, input);
+      if (!relative || relative.startsWith("..") || path.isAbsolute(relative))
+        throw Object.assign(Error("File outside saved library"), {status:403});
+      await fs.access(input);
+      return {video:input,live:false};
+    }
+    const ytUrl = kind === "youtube" ? url : item?.type === "youtube" ? item.url : "";
+    if (ytUrl) {
+      const {castYoutubeUrl} = await import("./lib/vlc-cast.js");
+      if (!castYoutubeUrl(ytUrl)) throw Object.assign(Error("Only HTTPS YouTube cast URLs allowed"),{status:400});
+      const resolved=await resolveProxiedYouTubeStreams(ytUrl, 480);
+      return {video:resolved.videoUrl,audio:resolved.audioUrl,live:false};
+    }
+    throw Object.assign(Error("Cast currently supports saved files and YouTube; live streams are not supported"),{status:422});
+  },
+});
+// Reclaim only stale scratch directories from crashed/previous sessions.
+void castService.cleanupStaleScratch().catch(error=>{
+  console.error("[cast-scratch-cleanup]",redactCastMediaPath(error.message));
+});
+async function requireCastControl(req,res,next) {
+  castService.headers(res);
+  if (!castService.available) return res.status(503).json({error:"VLC casting is disabled or missing configuration"});
+  try {
+    const origin = new URL(castControlOrigin);
+    if (origin.protocol !== "https:" || origin.pathname !== "/" || req.hostname !== origin.hostname)
+      return res.status(403).end();
+    if (req.method !== "GET" && req.get("origin") !== origin.origin)
+      return res.status(403).json({error:"Same-origin action required"});
+    const owner=await castAuth(req);
+    if (!owner) return res.status(401).json({error:"Cloudflare session could not be verified. Refresh Streamer and sign in there if prompted; no VLC code is needed."});
+    req.castOwner=owner;
+    return next();
+  } catch {return res.status(401).json({error:"Cast authorization unavailable"});}
+}
+app.post("/api/cast/sessions", requireCastControl, asyncH(async(req,res)=>{
+  res.status(201).json(await castService.create(req.body,req.castOwner));
+}));
+app.get("/api/cast/sessions/:id",requireCastControl,asyncH(async(req,res)=>{
+  await castService.sweep(); // Do not report an expired/idle session as active.
+  const state=castService.status(req.params.id,req.castOwner);
+  if (!state) return res.status(404).end();
+  res.json(state);
+}));
+app.delete("/api/cast/sessions/:id",requireCastControl,asyncH(async(req,res)=>{
+  if (!castService.owned(req.params.id,req.castOwner))return res.status(404).end();
+  await castService.stop(req.params.id);
+  res.status(204).end();
+}));
+app.get("/cast/media/:id/:token/:file",asyncH((req,res)=>
+  req.hostname === CAST_RECEIVER_HOST && CAST_RECEIVER_HOST
+    ? castService.media(req,res)
+    : res.status(404).end()));
+
+// Browser-native APNE playback: serve only completed, registered APNE MP4s.
+// Unlike /stream/item, this sends the original H.264/AAC file with HTTP byte
+// ranges; iOS Safari/QuickTime use their native player, with no MJPEG or WebCodecs.
+async function requireApneNativeAccess(req, res, next) {
+  res.set({
+    "Cache-Control": "private, no-store, max-age=0",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+  });
+  const localHost = req.hostname === "127.0.0.1" || req.hostname === "localhost" || req.hostname === "[::1]";
+  const localPeer = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress);
+  // Local-only preview is disabled in production: Cloudflare's tunnel also
+  // connects to this loopback service, so loopback alone is NOT authentication.
+  if (process.env.APNE_NATIVE_LOOPBACK_PREVIEW === "1" && localHost && localPeer) return next();
+  let origin;
+  try { origin = new URL(castControlOrigin); } catch { return res.status(503).end(); }
+  if (origin.protocol !== "https:" || req.hostname !== origin.hostname) return res.status(404).end();
+  try {
+    const owner = await castAuth(req);
+    if (!owner) return res.status(401).type("text/plain").end("Cloudflare Access sign-in required");
+    return next();
+  } catch {
+    return res.status(401).type("text/plain").end("Cloudflare Access authorization unavailable");
+  }
+}
+
+// Dedicated cross-device APNE progress. Keep signed Cloudflare Access and same-
+// origin write protections; do not mix household APNE episodes with YouTube history.
+const apneWatchProgress = createApneProgressStore({ filePath: path.join(config.dataDir, "apne-watch-progress.json") });
+app.get("/api/apne/progress", requireApneNativeAccess, asyncH(async (_req, res) => {
+  res.json({ episodes: await apneWatchProgress.list() });
+}));
+app.get("/api/apne/progress/:showId/:dateKey", requireApneNativeAccess, asyncH(async (req, res) => {
+  const entry = await apneWatchProgress.get(req.params.showId, req.params.dateKey);
+  res.json({ progress: entry });
+}));
+app.post("/api/apne/progress/:showId/:dateKey/session", requireApneNativeAccess, asyncH(async (req, res) => {
+  if (!isSameOriginRequest(req)) return res.status(403).json({ error: "Same-origin request required" });
+  res.status(201).json(await apneWatchProgress.begin(req.params.showId,req.params.dateKey));
+}));
+app.patch("/api/apne/progress/:showId/:dateKey", requireApneNativeAccess, asyncH(async (req, res) => {
+  if (!isSameOriginRequest(req)) return res.status(403).json({ error: "Same-origin request required" });
+  res.json({ progress: await apneWatchProgress.update(req.params.showId,req.params.dateKey,req.body || {}) });
+}));
+app.post("/api/apne/progress/:showId/:dateKey/mark-watched", requireApneNativeAccess, asyncH(async (req, res) => {
+  if (!isSameOriginRequest(req)) return res.status(403).json({ error: "Same-origin request required" });
+  res.json({ progress: await apneWatchProgress.mark(req.params.showId,req.params.dateKey,req.body?.watched) });
+}));
+
+async function apneNativeSavedItem(itemId) {
+  if (!/^[a-f0-9]{16}$/.test(String(itemId || ""))) return null;
+  const found = await store.findItem(itemId);
+  if (found?.playlist?.meta?.kind !== "downloaded-files" ||
+      found?.item?.type !== "file" || found.item.meta?.source !== "apnetv") return null;
+  let filePath, libraryRoot;
+  try {
+    filePath = await fs.realpath(found.item.url);
+    libraryRoot = await fs.realpath(config.libraryDir);
+  } catch { return null; }
+  const relative = path.relative(libraryRoot, filePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative) ||
+      path.extname(filePath).toLowerCase() !== ".mp4") return null;
+  const info = await fs.stat(filePath).catch(() => null);
+  if (!info?.isFile() || info.size <= 0) return null;
+  return { filePath, item: found.item };
+}
+
+// Private APNE thumbnails: look up only exact saved metadata in the registered
+// Downloaded Videos playlist. The existing native saved-file validator also
+// enforces canonical library realpath containment, extension and file size.
+async function apneThumbnailSavedEpisode(showId, dateKey) {
+  const playlists = await store.listPlaylists();
+  const candidates = playlists
+    .filter((playlist) => playlist?.meta?.kind === "downloaded-files")
+    .flatMap((playlist) => playlist.items || []);
+  const match = candidates.find((item) =>
+    item?.type === "file" && item.meta?.source === "apnetv" &&
+    item.meta?.apneShowId === showId && item.meta?.apneEpisodeDate === dateKey);
+  if (!match) return null;
+  return apneNativeSavedItem(match.id);
+}
+
+const apneThumbnails = createApneThumbnailService({
+  cacheDir: path.join(config.dataDir, "apne-thumbs"),
+  ffmpegPath: config.ffmpegPath,
+  resolveSaved: apneThumbnailSavedEpisode,
+});
+app.get("/apne/thumb/:showId/:dateKey.jpg", requireApneNativeAccess, asyncH(async (req, res) => {
+  const result = await apneThumbnails.request(req.params.showId, req.params.dateKey);
+  if (result.status === "invalid" || result.status === "missing")
+    return res.status(404).end();
+  if (result.status === "pending")
+    return res.status(202).set("Retry-After", "2").end();
+  if (result.status === "cooldown" || result.status === "busy")
+    return res.status(503).set("Retry-After", "600").end();
+  return res.type("image/jpeg").sendFile(result.file, {
+    cacheControl: false,
+    headers: {
+      "Cache-Control": "private, no-store, max-age=0",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Disposition": "inline",
+    },
+  });
+}));
+
+// Official episode artwork for APNE dates where the original files are
+// cloud-offloaded or alternate video sources cannot be safely frame-decoded.
+// Private authenticated, on-demand and strictly allowlisted; no MP4 hydration.
+const apneOfficialArtwork = createApneOfficialArtwork({
+  cacheDir: path.join(config.dataDir, "apne-official-artwork", "anupamaa"),
+});
+app.get("/apne/official-thumb/:showId/:dateKey.jpg", requireApneNativeAccess, asyncH(async (req, res) => {
+  const result = await apneOfficialArtwork.request(req.params.showId,req.params.dateKey);
+  if (result.status === "missing") return res.status(404).end();
+  if (result.status === "pending") return res.status(202).set("Retry-After","2").end();
+  if (result.status === "cooldown" || result.status === "busy") return res.status(503).set("Retry-After","600").end();
+  return res.type("image/jpeg").sendFile(result.file, {
+    cacheControl: false,
+    headers: { "Cache-Control":"private, no-store, max-age=0", "X-Content-Type-Options":"nosniff", "Content-Disposition":"inline" },
+  });
+}));
+
+// Phase C: read-only stills from a strictly bounded slice of UNSAVED HLS.
+// Same signed Cloudflare policy as saved MP4 thumbnails and native playback.
+const apneLiveThumbnails = createApneLiveThumbnailService({
+  cacheDir: path.join(config.dataDir, "apne-thumbs-live"),
+  ffmpegPath: config.ffmpegPath,
+  canPreview: async (showId, dateKey) =>
+    await apneDaily.hasConfiguredApneShow(showId) &&
+    !(await apneThumbnailSavedEpisode(showId, dateKey)),
+  resolveEpisode: apneDaily.resolveApneEpisodeByDate,
+});
+app.get("/apne/live-thumb/:showId/:dateKey.jpg", requireApneNativeAccess, asyncH(async (req, res) => {
+  const result = await apneLiveThumbnails.request(req.params.showId, req.params.dateKey);
+  if (result.status === "invalid" || result.status === "missing")
+    return res.status(404).end();
+  if (result.status === "pending")
+    return res.status(202).set("Retry-After", "3").end();
+  if (result.status === "cooldown" || result.status === "busy")
+    return res.status(503).set("Retry-After", "900").end();
+  return res.type("image/jpeg").sendFile(result.file, {
+    cacheControl: false,
+    headers: {
+      "Cache-Control": "private, no-store, max-age=0",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Disposition": "inline",
+    },
+  });
+}));
+
+app.get("/apne/watch/:itemId", requireApneNativeAccess, asyncH(async (req, res) => {
+  const saved = await apneNativeSavedItem(req.params.itemId);
+  if (!saved) return res.status(404).type("text/plain").end("Saved APNE episode not found");
+  const title = String(saved.item.title || "APNE TV episode").replace(/[&<>"']/g, (ch) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+  const videoUrl = "/apne/native-media/" + req.params.itemId + ".mp4";
+  const showId = saved.item.meta?.apneShowId;
+  const dateKey = saved.item.meta?.apneEpisodeDate;
+  const trackable = validApneProgressEpisode(showId,dateKey);
+  res.set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; media-src 'self'; form-action 'none'; object-src 'none'");
+  res.type("html").send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${title} — APNE TV</title><style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101214;color:#f5f7fa;font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:1000px;margin:0 auto;padding:20px 14px 44px}h1{font-size:clamp(19px,4vw,28px);line-height:1.3;margin:22px 0 16px}video{display:block;width:100%;max-height:75vh;aspect-ratio:16/9;background:#000;border-radius:12px}.actions{display:flex;gap:16px;flex-wrap:wrap;margin-top:20px}a{color:#a9d2ff;text-decoration:none;font-weight:600}a:focus-visible{outline:2px solid #a9d2ff;outline-offset:5px}.hint{font-size:13px;color:#b4bdc7;line-height:1.5;margin-top:18px}
+</style><script src="/apne-watch-progress.js" defer></script></head><body><main class="wrap"><h1>${title}</h1><video controls playsinline preload="metadata" x-webkit-airplay="allow" src="${videoUrl}" data-progress-show="${trackable ? showId : ''}" data-progress-date="${trackable ? dateKey : ''}">This device does not support MP4 playback.</video><div id="apneWatchProgress" role="status" aria-live="polite"></div><nav class="actions"><a href="${videoUrl}" target="_blank" rel="noopener noreferrer">Open direct MP4</a><a href="/?mode=apne" id="apneReturnToShows">Return to Shows</a><a href="/">YT Streamer home</a></nav><p class="hint">Native MP4 player · Use the player controls to seek, go fullscreen or use AirPlay where supported. A Cloudflare Access login is required on each remote browser.</p></main></body></html>`);
+}));
+
+app.get("/apne/native-media/:itemId.mp4", requireApneNativeAccess, asyncH(async (req, res) => {
+  const saved = await apneNativeSavedItem(req.params.itemId);
+  if (!saved) return res.status(404).type("text/plain").end("Saved APNE episode not found");
+  res.type("video/mp4");
+  res.sendFile(saved.filePath, {
+    acceptRanges: true,
+    cacheControl: false,
+    headers: {
+      "Cache-Control": "private, no-store, max-age=0",
+      "Content-Disposition": "inline",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}));
+
+// Browser-native, on-demand APNE HLS. This does not write episodes to the
+// Downloaded Videos library or iCloud; only requested segments flow through.
+const apneLiveRelay = createApneLiveRelay();
+const apneMp4Relay = createApneMp4Relay();
+const apneUnifiedManifests = new Map();
+function apneManifestSession(manifest) {
+  const current = Date.now();
+  for (const [id, entry] of apneUnifiedManifests) if (entry.expires <= current) apneUnifiedManifests.delete(id);
+  while (apneUnifiedManifests.size >= 12) apneUnifiedManifests.delete(apneUnifiedManifests.keys().next().value);
+  const id = crypto.randomBytes(16).toString("hex");
+  apneUnifiedManifests.set(id, {manifest, expires:current + 10 * 60000});
+  return "/apne/live/manifest/" + id;
+}
+// Resolve source selection on the authenticated backend, so the UI never
+// receives external streaming URLs or needs to choose between providers.
+// Authenticated episode-page metadata: only saved IDs and job state, never local paths.
+app.get("/api/apne/episode/:showId/:dateKey", requireApneNativeAccess, asyncH(async (req, res) => {
+  const state = await apneDaily.episodePageState(req.params.showId, req.params.dateKey);
+  if (state.download.itemId && !await apneNativeSavedItem(state.download.itemId)) {
+    state.download = {status:"Not downloaded",itemId:null,detail:"Saved file is missing",error:null};
+  }
+  res.json(state);
+}));
+app.post("/api/apne/episode/:showId/:dateKey/download", requireApneNativeAccess, asyncH(async (req, res) => {
+  if (!isSameOriginRequest(req)) return res.status(403).json({error:"Same-origin request required."});
+  res.status(202).json(await apneDaily.startEpisodeDownload(req.params.showId,req.params.dateKey));
+}));
+
+app.get("/apne/live/source/:showId/:dateKey", requireApneNativeAccess, asyncH(async (req, res) => {
+  // Use highest-quality available APNE source even on iPhone.
+  // Low-bandwidth fallback must never silently downgrade the user to 192p.
+  const provider = req.query.provider || "apne";
+  if (!["apne","yodesi"].includes(provider) || Array.isArray(req.query.provider)) return res.status(400).json({error:"Invalid source"});
+  const resolved = await apneDaily.resolveApneEpisodeByDate(req.params.showId,req.params.dateKey,{provider});
+  if (resolved.embedUrls) return res.json({format:"embed",parts:resolved.embedUrls});
+  if (resolved.mp4Url) return res.json({format:"mp4",src:apneMp4Relay.open(resolved)});
+  const manifest = await apneLiveRelay.start(resolved);
+  res.json({format:"hls",src:apneManifestSession(manifest)});
+}));
+app.get("/apne/live/manifest/:token", requireApneNativeAccess, (req, res) => {
+  const entry = apneUnifiedManifests.get(req.params.token);
+  if (!entry) return res.status(404).end();
+  if (entry.expires <= Date.now()) {apneUnifiedManifests.delete(req.params.token);return res.status(410).end();}
+  res.type("application/vnd.apple.mpegurl").send(entry.manifest);
+});
+app.get("/apne/live/mp4/:token", requireApneNativeAccess, asyncH(async (req, res) => apneMp4Relay.media(req,res)));
+
+app.get("/apne/live/watch/:showId/:dateKey", requireApneNativeAccess, asyncH(async (req, res) => {
+  const showId = String(req.params.showId || "");
+  const dateKey = String(req.params.dateKey || "");
+  if (!/^[a-z0-9-]{1,90}$/.test(showId) || !/^\d{4}-\d{2}-\d{2}(?:-e[1-9]\d{0,5})?$/.test(dateKey)) return res.status(404).end();
+  const title = (showId.replace(/-/g, " ") + " — " + dateKey).replace(/[&<>"']/g, ch =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+  const unifiedSource = "/apne/live/source/" + showId + "/" + dateKey;
+  res.set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-src https://www.blogger.com; worker-src blob:; object-src 'none'");
+  res.type("html").send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${title} — APNE Live</title><style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101214;color:#f5f7fa;font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:1000px;margin:0 auto;padding:20px 14px 44px}h1{font-size:clamp(19px,4vw,28px);line-height:1.3;margin:22px 0 16px}video,.apne-embed-stage{display:block;width:100%;max-height:75vh;aspect-ratio:16/9;background:#000;border-radius:12px}.apne-embed-stage{overflow:hidden}.apne-embed-stage[hidden],video[hidden]{display:none!important}.apne-embed-stage iframe{width:100%;height:100%;border:0;display:block}.apne-parts{display:flex;gap:12px;margin-top:12px}.apne-parts[hidden]{display:none}.apne-parts button{padding:12px 20px;border:1px solid #536074;background:#202835;color:#f5f7fa;border-radius:9px;font-weight:700;cursor:pointer}.apne-parts button[aria-pressed="true"]{border-color:#a9d2ff;background:#283952}.actions{display:flex;gap:16px;flex-wrap:wrap;margin-top:20px}a{color:#a9d2ff;text-decoration:none;font-weight:600}a:focus-visible{outline:2px solid #a9d2ff;outline-offset:5px}.hint{font-size:13px;color:#b4bdc7;line-height:1.5;margin-top:18px}#apneLiveStatus{font-size:14px;color:#b4bdc7;margin-top:14px}
+.apne-options{margin:18px 0 4px;padding:15px;background:#19212e;border:1px solid #35445d;border-radius:12px}.apne-options h2{font-size:17px;margin:0 0 10px}.apne-option-buttons{display:flex;gap:10px;flex-wrap:wrap}.apne-option-buttons button,.apne-download-actions button{background:#283b54;border:1px solid #526e8d;color:white;border-radius:9px;padding:12px 16px;min-height:46px;font-weight:600;cursor:pointer}.apne-option-buttons button[aria-pressed="true"]{border-color:#a7cfff;background:#2d5479}.apne-option-buttons button:disabled,.apne-download-actions button:disabled{opacity:.65;cursor:wait}.apne-note{font-size:13px;line-height:1.5;color:#b6c5d9;margin:9px 0 0}.apne-download-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.apne-download-actions button[data-status="downloading"]{background:#72501d;border-color:#d3a44a}.apne-download-actions button[data-status="downloaded"]{background:#1b593e;border-color:#48a779}.apne-download-actions button[hidden]{display:none}.apne-download-state{margin-top:8px;font-size:14px;color:#d3deef}</style><script src="/apne-live-player.js" defer></script><script src="/apne-episode-ui.js" defer></script><script src="/apne-watch-progress.js" defer></script></head><body><main class="wrap"><h1>${title}</h1><video id="apneLiveVideo" controls playsinline preload="metadata" data-source="${unifiedSource}" data-progress-show="${showId}" data-progress-date="${dateKey}">This browser does not support video.</video><div id="apneEmbedStage" class="apne-embed-stage" hidden></div><div id="apnePartButtons" class="apne-parts" hidden></div><section id="apneEpisodeControls" class="apne-options" data-show-id="${showId}" data-date-key="${dateKey}" aria-label="Episode source and download controls"><h2>Video source</h2><div class="apne-option-buttons" role="group" aria-label="Choose video source"><button type="button" data-apne-provider="apne" aria-pressed="true">APNE / PlayApne</button><button type="button" data-apne-provider="yodesi" aria-pressed="false" hidden>YoDesi</button></div><p class="apne-note" id="apneSourceQuality">Highest available APNE quality. No automatic low-resolution fallback. Actual 720p depends on the provider.</p><div class="apne-download-actions"><button type="button" id="apneDownloadMac" data-status="ready">Download to Mac</button><button type="button" id="apneStreamMac" data-status="downloaded" hidden>Stream from Mac</button></div><p class="apne-download-state" id="apneDownloadState" aria-live="polite">Checking saved episodes…</p></section><p id="apneLiveStatus" role="status">Connecting to APNE…</p><div id="apneWatchProgress" role="status" aria-live="polite"></div><nav class="actions"><a href="/?mode=apne" id="apneReturnToShows">Return to Shows</a><a href="/">YT Streamer home</a></nav><p class="hint">Choose APNE or YoDesi to stream, or download APNE to your Mac. Downloads are also mirrored to iCloud. Requires your Cloudflare Access login.</p></main></body></html>`);
+}));
+app.get("/apne/live/playlist/:showId/:dateKey.m3u8", requireApneNativeAccess, asyncH(async (req, res) => {
+  const resolved = await apneDaily.resolveApneEpisodeByDate(req.params.showId, req.params.dateKey);
+  const manifest = await apneLiveRelay.start(resolved);
+  res.set("Cache-Control", "private, no-store, max-age=0");
+  res.type("application/vnd.apple.mpegurl").send(manifest);
+}));
+app.get("/apne/live/media/:session/:asset", requireApneNativeAccess, asyncH(async (req, res) => {
+  res.set("Cache-Control", "private, no-store, max-age=0");
+  return apneLiveRelay.media(req, res);
+}));
+
 // ---------------------------------------------------------------------------
 // Static SPA (served last so API routes win).
 // ---------------------------------------------------------------------------
@@ -1868,6 +2250,9 @@ app.use((req, res, next) => {
   }
   next();
 });
+app.use("/api/retro-pc/remote",createRetroRemoteHTTP({authenticate:castAuth}));
+app.get("/retro-pc/media/xp-pro-sp3-x86.iso", createXPMediaHandler({root:config.root,authenticate:castAuth}));
+app.get("/retro-pc/media/blank-hdd.img", createBlankDiskHandler());
 app.use(express.static(config.publicDir, { extensions: ["html"] }));
 app.get("*", (req, res) => res.sendFile(path.join(config.publicDir, "index.html")));
 
@@ -1878,6 +2263,7 @@ await Promise.all([
 ]);
 
 httpServer = app.listen(config.port, config.host, () => {
+  apneBackgroundCheck.start();
   console.log(`\n  YT Streamer webapp`);
   console.log(`  → http://${config.host}:${config.port}`);
   console.log(`  → library: ${config.libraryDir}`);

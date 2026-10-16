@@ -1,0 +1,132 @@
+// Optional VLC handoff UI, loaded after the core player.
+(() => {
+  "use strict";
+  const get = (id) => document.getElementById(id);
+  const button = get("castVlcBtn");
+  const panel = get("castVlcPanel");
+  const detail = get("castVlcStatus");
+  const link = get("castVlcOpen");
+  if (!button || !panel || !detail || !link) return;
+  let playback = null;
+  let cast = null;
+  const updateActions = () => {
+    for (const id of ["castVlcCopy", "castVlcShare", "castVlcStop", "castVlcRefresh"]) {
+      const control=get(id);
+      if (control) control.disabled=!cast;
+    }
+  };
+  updateActions();
+  function findSource(sources, meta = {}) {
+    const yt = String(meta.youtubeUrl || "");
+    if (/^https:\/\/(www\.)?youtube\.com\/watch/.test(yt) || /^https:\/\/youtu\.be\//.test(yt))
+      return {kind: "youtube", url: yt};
+    try {
+      const value = new URL(sources?.mjpegUrl || sources?.tsUrl, location.origin);
+      if (value.origin !== location.origin) return null;
+      const item = /^\/stream\/(?:ts\/)?item\/([A-Za-z0-9_-]+)$/.exec(value.pathname);
+      if (item) return {kind: "item", id: item[1]};
+      const legacy = /^\/stream\/legacy\/([A-Za-z0-9_-]+)\/\d+$/.exec(value.pathname);
+      if (legacy) return {kind:"legacy",id:legacy[1]};
+      if (value.pathname === "/stream/youtube" || value.pathname === "/stream/ts/youtube")
+        return {kind: "youtube", url: value.searchParams.get("url")};
+    } catch {}
+    return null;
+  }
+  window.ytStreamerVlcCast = {
+    setSource(sources, meta) {
+      playback = findSource(sources, meta);
+      button.disabled = !playback;
+      button.title = playback ? "Prepare a synchronized VLC stream" : "VLC cast supports saved files and YouTube";
+    },
+  };
+  const show = (message) => { panel.hidden = false; detail.textContent = message; };
+  const describe = (s) => {
+    const playable = s.seekable === true
+      ? "Seek forward/backward or pause in VLC. Video/audio share the VOD timeline."
+      : "This source could not be prepared as seekable VOD; long pauses and seeking may fail.";
+    const limit = s.maxExpiresAt ? " Session ceiling: "+new Date(s.maxExpiresAt).toLocaleTimeString()+"." : "";
+    return playable+" Receiver activity renews the temporary session within its hard limit. "
+      +"Pausing longer than "+(s.idleMinutes||45)+" minutes ends the session."
+      +limit+" Tap Open VLC again to reconnect to the TV.";
+  };
+  async function call(method, url, body) {
+    const r = await fetch(url, {method, credentials:"same-origin", headers:{"Content-Type":"application/json"},
+      body: body ? JSON.stringify(body) : undefined, cache:"no-store"});
+    if (r.status === 204) return null;
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const error=Error(data.error || "Cast request failed (" + r.status + ")");
+      error.status=r.status;
+      throw error;
+    }
+    return data;
+  }
+  button.addEventListener("click", async () => {
+    if (!playback) return;
+    button.disabled = true;
+    show("Preparing synchronized video and audio…");
+    link.hidden = true;
+    try {
+      if (cast) await call("DELETE", "/api/cast/sessions/" + encodeURIComponent(cast.id));
+      cast = await call("POST", "/api/cast/sessions", playback);
+      updateActions();
+      link.href = "vlc-x-callback://x-callback-url/stream?url=" + encodeURIComponent(cast.url);
+      link.hidden = false;
+      show("Ready. Tap Open VLC, then select the Chromecast inside VLC. If opening fails, copy the temporary link into VLC > Network > Open Network Stream. "+describe(cast));
+    } catch(e) {
+      cast = null;
+      updateActions();
+      show(e.message + " The Cast link was not created; no code should be entered in VLC. YT Streamer's current playback is unchanged.");
+    }
+    finally { button.disabled = !playback; }
+  });
+  const refresh = async () => {
+    if (!cast) return;
+    try {
+      const state = await call("GET", "/api/cast/sessions/" + encodeURIComponent(cast.id));
+      if (!state || state.status === "error" || state.status === "ended") {
+        const error=Error("Cast session is no longer running");
+        error.status=410;
+        throw error;
+      }
+      cast = {...cast,...state};
+      show("Session active. "+describe(cast));
+    } catch(e) {
+      if(e.status === 404 || e.status === 410){
+        cast=null; link.hidden=true; updateActions();
+        show("The cast session expired or was revoked. Start a new Cast / Open in VLC session. "+e.message);
+      } else {
+        // A lost iPhone connection or temporary Access failure does not revoke
+        // the Chromecast bearer URL: preserve controls for renderer recovery.
+        show("Could not check the cast right now. The existing VLC link is preserved; retry Check / Reconnect when connectivity returns. "+e.message);
+      }
+    }
+  };
+  get("castVlcRefresh")?.addEventListener("click",refresh);
+  document.addEventListener?.("visibilitychange",()=>{
+    if(document.visibilityState==="visible" && cast)void refresh();
+  });
+  get("castVlcCopy").addEventListener("click", async () => {
+    if (!cast) return;
+    try {
+      await navigator.clipboard.writeText(cast.url);
+      show("Temporary link copied. In VLC open Network > Open Network Stream and paste.");
+    } catch { show("iOS blocked copying. Try Open VLC or Share."); }
+  });
+  get("castVlcShare").addEventListener("click", async () => {
+    if (!cast || !navigator.share) return;
+    try { await navigator.share({url:cast.url,title:"Temporary YT Streamer video"}); }
+    catch(e) { if(e.name !== "AbortError") show("Sharing unavailable. Use Open VLC."); }
+  });
+  get("castVlcClose").addEventListener("click", () => { panel.hidden = true; });
+  get("castVlcStop").addEventListener("click", async () => {
+    if (!cast) return;
+    try {
+      await call("DELETE", "/api/cast/sessions/" + encodeURIComponent(cast.id));
+      cast = null;
+      updateActions();
+      panel.hidden = true;
+      link.hidden = true;
+    } catch(e) { show("Could not revoke session: " + e.message); }
+  });
+})();
