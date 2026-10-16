@@ -151,3 +151,22 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{ou
 a.episode-art,a.latest-preview { text-decoration:none;color:inherit;cursor:pointer; }
 a.episode-art:hover,a.latest-preview:hover { outline:2px solid var(--accent);outline-offset:2px; }
 a.episode-art:focus-visible,a.latest-preview:focus-visible {outline:3px solid var(--accent);outline-offset:3px;}
+
+/* Continue Watching: latest resumed episodes from any configured show. */
+.continue[hidden]{display:none!important}
+.continue{margin:4px 0 24px;padding:17px 16px 16px;background:var(--surface);border:1px solid var(--line);border-radius:17px}
+.continue .section-head{margin-bottom:12px}
+.continue .section-head h2{font-size:21px}
+.continue-rail{display:flex;gap:12px;overflow-x:auto;padding:2px 2px 10px;scroll-snap-type:x proximity;scrollbar-width:thin;-webkit-overflow-scrolling:touch}
+.continue-card{display:flex;flex-direction:column;flex:0 0 235px;max-width:80vw;min-width:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#172438;text-decoration:none;scroll-snap-align:start;transition:border-color .12s}
+.continue-card:hover,.continue-card:focus-visible{border-color:var(--accent);outline:2px solid var(--accent);outline-offset:2px}
+.continue-art{position:relative;display:grid;place-items:center;aspect-ratio:16/9;width:100%;overflow:hidden;background:linear-gradient(135deg,#263650,#172235)}
+.continue-art img{display:block;width:100%;height:100%;object-fit:cover}
+.continue-art .preview-placeholder{color:#b9cce0;font-size:12px;padding:15px;text-align:center}
+.continue-art::after{content:"▶ Resume";position:absolute;bottom:9px;right:10px;background:#071726df;border:1px solid #9ec7bf99;padding:3px 9px;border-radius:999px;color:#f3faf7;font-size:12px;font-weight:800}
+.continue-copy{display:grid;gap:3px;padding:11px 12px 13px;min-width:0}
+.continue-copy strong{font-size:15px;line-height:1.3;overflow-wrap:anywhere}
+.continue-sub,.continue-resume{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.continue-resume{font-weight:750;color:#cbf5e5;margin-top:5px}
+.continue-card .watch-track{margin:6px 0 0}
+@media(max-width:540px){.continue{margin-top:0;padding:14px 12px}.continue-rail{gap:10px}.continue-card{flex-basis:225px}.continue .section-head h2{font-size:19px}}
