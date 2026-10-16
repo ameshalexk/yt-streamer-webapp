@@ -78,7 +78,7 @@ const state = {
   legacyPlaylists: [],
   selectedLegacyPlaylistId: null,
   legacyPlaylistVideos: [],
-  apneDaily: { today: "", shows: [], loading: false, pollTimer: null, pageByShow: {} },
+  apneDaily: { today: "", shows: [], loading: false, pollTimer: null, pageByShow: {}, expandedByShow: {}, progressByKey: {}, progressReady: false },
   youtubeAuth: null,
   recommendations: [],
   recommendationCategory: "all",
@@ -2581,6 +2581,7 @@ function retryBufferedAudioFromGesture() {
 }
 
 function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
+  globalThis.ytStreamerVlcCast?.setSource({mjpegUrl,audioUrl},meta);
   if (!bufferedMjpegSupported()) {
     playCompatStream({ mjpegUrl, audioUrl }, label, meta);
     showStreamNotice(
@@ -3057,6 +3058,7 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
 }
 
 async function playCyberdashStream(youtubeUrl, label, meta = {}) {
+  globalThis.ytStreamerVlcCast?.setSource(null,{youtubeUrl});
   const screen = $("#screen");
   const canvas = $("#cyberdashCanvas");
   const preparedId = String(meta.preparedId || "").trim();
@@ -3171,6 +3173,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
 
 // Play one synced MPEG-TS stream (H.264+AAC) via mpegts.js / MSE.
 async function playStream(sources, label, meta = {}) {
+  globalThis.ytStreamerVlcCast?.setSource(sources, meta);
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
   const youtubeUrl = String(meta.youtubeUrl || "").trim();
   activeYoutubeSourceUrl = youtubeUrl;
@@ -3354,6 +3357,7 @@ async function playItem(item) {
 }
 
 function stopPlayback() {
+  globalThis.ytStreamerVlcCast?.setSource(null);
   playbackRecovery?.reset();
   pendingPlaybackMethodRestore = null;
   stopDesktopHlsSession();
@@ -4126,10 +4130,179 @@ function apneStatusBusy(status) {
   return status === "Checking" || status === "Downloading" || status === "Saving to iCloud";
 }
 
+// For dates with verified official episode-specific artwork, avoid hydrating
+// offloaded iCloud MP4s or attempting unsupported provider media extraction.
+function apnePreviewKind(showId,dateKey,saved,status,sourceMode) {
+  if (showId === "anupamaa" && /^2026-09-2[3-8]$/.test(dateKey || "")) return "official";
+  if (saved) return "1";
+  if (status === "Listed") return "check";
+  return status === "Available" && sourceMode === "hls" ? "0" : "skip";
+}
+
+// Phases B/C: request thumbnails only when an episode tile is visible.
+// HEAD starts/queries the backend worker without downloading image bytes.
+let apneThumbnailObserver = null;
+function observeApneThumbnails(list) {
+  apneThumbnailObserver?.disconnect();
+  if (!("IntersectionObserver" in window)) return;
+  const seen = new WeakSet();
+  const observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting || seen.has(entry.target)) continue;
+      seen.add(entry.target);
+      observer.unobserve(entry.target);
+      const preview = entry.target;
+      if (["1","0","official"].includes(preview.dataset.thumbSaved)) {
+        void fetchApneThumbnail(preview);
+      } else if (preview.dataset.thumbSaved === "check") {
+        void checkApneSourceForTile(preview.dataset.showId, preview.dataset.dateKey).then((status) => {
+          if (preview.isConnected && status === "Available") void fetchApneThumbnail(preview);
+        });
+      }
+    }
+  }, { threshold: 0.01 });
+  apneThumbnailObserver = observer;
+  function observeOpenTiles(details) {
+    if (!details.open) return;
+    for (const preview of details.querySelectorAll(".apne-episode-preview[data-thumb-saved='1'], .apne-episode-preview[data-thumb-saved='0'], .apne-episode-preview[data-thumb-saved='official'], .apne-episode-preview[data-thumb-saved='check']")) {
+      if (!seen.has(preview)) observer.observe(preview);
+    }
+  }
+  for (const details of list.querySelectorAll("details.apne-show-card")) {
+    observeOpenTiles(details);
+    details.addEventListener("toggle", () => observeOpenTiles(details));
+  }
+}
+async function fetchApneThumbnail(preview) {
+  const showId = preview.dataset.showId;
+  const dateKey = preview.dataset.dateKey;
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(showId || "") ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(dateKey || "")) return;
+  const kind = preview.dataset.thumbSaved;
+  const isSaved = kind === "1";
+  const isOfficial = kind === "official";
+  const url = (isOfficial ? "/apne/official-thumb/" : (isSaved ? "/apne/thumb/" : "/apne/live-thumb/")) + encodeURIComponent(showId) + "/" + dateKey + ".jpg";
+  for (let attempt = 0; attempt < (isSaved || isOfficial ? 15 : 35) && preview.isConnected; attempt += 1) {
+    let response;
+    try { response = await fetch(url, { method: "HEAD", credentials: "same-origin", cache: "no-store" }); }
+    catch { return; }
+    if (response.status === 200) {
+      const img = document.createElement("img");
+      img.alt = isOfficial ? "Official episode artwork" : (isSaved ? "Saved episode preview" : "Episode preview");
+      img.loading = "eager"; // Tile visibility is already gated by IntersectionObserver.
+      img.decoding = "async";
+      img.onload = () => {
+        if (!preview.isConnected) return;
+        preview.replaceChildren(img);
+        preview.classList.add("has-thumbnail");
+        preview.setAttribute("aria-label", isOfficial ? "Official episode artwork" : (isSaved ? "Saved episode thumbnail" : "Episode preview thumbnail"));
+      };
+      img.onerror = () => {};
+      img.src = url;
+      return;
+    }
+    if (response.status !== 202) return;
+    await new Promise((resolve) => setTimeout(resolve, isSaved || isOfficial ? 1500 : 1800));
+  }
+}
+
+// Source checks run only for visible, unsaved episode tiles. The UI refreshes
+// just that tile to avoid resetting thumbnails, scroll position or accordions.
+const apneSourceInflight = new Map();
+function applyApneSourceStatus(showId, dateKey, result) {
+  const show = state.apneDaily.shows.find(x => x.id === showId);
+  const episode = show?.recentEpisodes?.find(x => x.dateKey === dateKey);
+  if (!episode || ["Saved", "Downloading", "Saving to iCloud"].includes(episode.status)) return;
+  episode.status = result.status;
+  episode.detail = result.detail || "";
+  episode.sourceMode = result.mode || null;
+  const wrap = Array.from($("#apneDailyList").querySelectorAll(".apne-show-wrap[data-show-id]"))
+    .find(node => node.dataset.showId === showId);
+  const tile = Array.from(wrap?.querySelectorAll(".apne-episode-tile[data-date-key]") || [])
+    .find(node => node.dataset.dateKey === dateKey);
+  if (tile) {
+    for (const name of ["is-listed", "is-stream-link-found", "is-available", "is-source-unavailable", "is-check-failed"])
+      tile.classList.remove(name);
+    tile.classList.add(apneStatusClass(result.status));
+    const badge = tile.querySelector(".apne-episode-status");
+    if (badge) { badge.className = "apne-episode-status " + apneStatusClass(result.status); badge.textContent = result.status; }
+    const note = tile.querySelector(".apne-episode-note");
+    if (note) note.textContent = result.detail || "";
+    const actions = tile.querySelector('.apne-recent-actions');
+    const primary = actions?.firstElementChild;
+    const streamOnly = result.status === "Available" && result.mode === "embed";
+    const retry = result.status === "Source unavailable" || result.status === "Check failed";
+    if (primary) {
+      primary.dataset.act = streamOnly ? "stream-apne" : (retry ? "check-apne-source" : "download-episode");
+      primary.textContent = streamOnly ? "Stream" : (retry ? "Recheck" : "Download");
+      primary.disabled = false;
+    }
+    const other = actions?.querySelector('button:nth-child(2)');
+    if (streamOnly) other?.remove();
+    else if (actions && primary && !other) {
+      const secondary = document.createElement('button');
+      secondary.type = 'button';
+      secondary.className = 'btn small secondary apne-recent-action';
+      secondary.dataset.act = 'stream-apne';
+      secondary.dataset.dateKey = dateKey;
+      secondary.textContent = 'Stream';
+      actions.appendChild(secondary);
+    }
+    const stream = actions?.querySelector('[data-act="stream-apne"]');
+    if (stream) stream.disabled = retry;
+    const preview = tile.querySelector(".apne-episode-preview");
+    if (preview) preview.dataset.thumbSaved = apnePreviewKind(showId,dateKey,false,result.status,result.mode);
+  }
+  if (show.episode?.dateKey === dateKey && show.status !== "Saved") {
+    show.status = result.status;
+    show.detail = result.detail || "";
+    const badge = wrap?.querySelector(".apne-show-toggle .apne-status");
+    if (badge) badge.lastChild.textContent = result.status;
+    const mainButton = wrap?.querySelector(".apne-show-actions .apne-download-today");
+    if (mainButton) {
+      const retry = result.status === "Source unavailable" || result.status === "Check failed";
+      mainButton.dataset.act = retry ? "check-latest-source" : "download";
+      mainButton.textContent = retry ? "Recheck source" : "Download Latest";
+    }
+    const mainStream = wrap?.querySelector('.apne-show-actions [data-act="stream-apne"]');
+    if (mainStream) mainStream.disabled = result.status === "Source unavailable";
+  }
+}
+
+async function checkApneSourceForTile(showId, dateKey, {force = false} = {}) {
+  const show = state.apneDaily.shows.find(x => x.id === showId);
+  const episode = show?.recentEpisodes?.find(x => x.dateKey === dateKey);
+  if (!episode || episode.status === "Saved") return episode?.status || null;
+  if (!force && episode.status !== "Listed") return episode.status;
+  const key = showId + ":" + dateKey;
+  if (apneSourceInflight.has(key)) return apneSourceInflight.get(key);
+  const request = (async () => {
+    try {
+      const result = await api.post("/api/apne-daily/shows/" + encodeURIComponent(showId) +
+        "/episodes/" + encodeURIComponent(dateKey) + "/check-source", {force});
+      applyApneSourceStatus(showId, dateKey, result);
+      if (force) toast(result.status + ": " + (result.detail || ""));
+      return result.status;
+    } catch (error) {
+      if (force) toast(error.message, true);
+      return null;
+    }
+  })();
+  apneSourceInflight.set(key, request);
+  try { return await request; } finally { if (apneSourceInflight.get(key) === request) apneSourceInflight.delete(key); }
+}
+
 function renderApneDaily() {
   const list = $("#apneDailyList");
   if (!list) return;
   const shows = state.apneDaily.shows || [];
+  // Polls redraw the cards while videos are downloading. Preserve native details
+  // expansion before replacing the DOM, rather than closing the user's show.
+  const focusedSummary = document.activeElement?.closest?.("summary.apne-show-toggle");
+  const focusedShowId = focusedSummary?.closest("[data-show-id]")?.dataset.showId;
+  for (const card of list.querySelectorAll("details.apne-show-card[data-show-id]")) {
+    state.apneDaily.expandedByShow[card.dataset.showId] = card.open;
+  }
   if (!shows.length) {
     list.innerHTML = '<article class="apne-show-card is-checking"><div class="apne-show-main"><h3>Anupamaa</h3><div class="apne-status"><span class="apne-status-dot"></span>Checking</div></div></article>';
     return;
@@ -4141,9 +4314,10 @@ function renderApneDaily() {
     const saved = status === "Saved";
     const episode = show.episode || {};
     const detail = show.detail || episode.dateLabel || "";
-    const buttonText = saved ? "Play Latest" : (status === "Failed" ? "Retry Latest" : "Download Latest");
+    const sourceRetry = status === "Source unavailable" || status === "Check failed";
+    const buttonText = saved ? "Play Latest" : (sourceRetry ? "Recheck source" : (status === "Failed" ? "Retry Latest" : "Download Latest"));
     const disabled = busy;
-    const action = saved ? "play" : "download";
+    const action = saved ? "play" : (sourceRetry ? "check-latest-source" : "download");
 
     const historyEpisodes = show.recentEpisodes || [];
     const pageSize = Math.max(1, Number(show.history?.pageSize || 10));
@@ -4162,34 +4336,66 @@ function renderApneDaily() {
             '<div class="apne-recent-title">Episodes</div>' +
             '<div class="apne-history-range">Last ' + esc(historyMonths) + ' months · ' + esc(historyTotal) + ' episodes</div>' +
           '</div>' +
+          '<div class="apne-episode-grid" aria-label="Episode tiles for ' + esc(show.name) + '">' +
           pageEpisodes.map((recent, pageIndex) => {
-            const recentStatus = recent.status || "Available";
+            const recentStatus = recent.status || "Listed";
+            const sourceMissing = recentStatus === "Source unavailable";
+            const sourceRetry = sourceMissing || recentStatus === "Check failed";
             const recentSaved = recentStatus === "Saved" && recent.itemId;
+            const streamOnly = recentStatus === "Available" && recent.sourceMode === "embed";
             const recentBusy = apneStatusBusy(recentStatus);
-            const recentAction = recentSaved ? "play-episode" : "download-episode";
-            const recentButton = recentSaved ? "Play" : (recentBusy ? (recentStatus === "Saving to iCloud" ? "Saving…" : "Downloading…") : (recentStatus === "Failed" ? "Retry" : "Download"));
+            const recentAction = recentSaved ? "play-episode" : (streamOnly ? "stream-apne" : (sourceRetry ? "check-apne-source" : "download-episode"));
+            const recentButton = recentSaved ? "Play" : (streamOnly ? "Stream" : (sourceRetry ? "Recheck" : (recentBusy ? (recentStatus === "Saving to iCloud" ? "Saving…" : "Downloading…") : (recentStatus === "Failed" ? "Retry" : "Download"))));
             const recentLabel = recent.dateLabel || recent.dateKey || "Episode";
             const absoluteIndex = pageStart + pageIndex;
             const badge = absoluteIndex === 0 ? "Latest" : (recent.dateKey && recent.dateKey === state.apneDaily.today ? "Today" : "");
             const subLabel = recentBusy
               ? (recent.detail || "Saving to Mac…")
-              : (recentStatus === "Failed" ? (recent.detail || "Download failed") : (recentSaved ? "Saved on Mac + iCloud Drive" : "Available"));
+              : (recentStatus === "Failed" ? (recent.detail || "Download failed") : (recentSaved ? "Saved on Mac + iCloud Drive" : (recent.detail || "Listed by APNE; stream not checked yet.")));
+            const progress = state.apneDaily.progressByKey[show.id + ":" + recent.dateKey];
+            const progressPct = progress?.durationSeconds > 0
+              ? (progress.completed ? 100 : Math.min(99, Math.floor(100 * progress.positionSeconds / progress.durationSeconds))) : null;
+            const canResume = !progress?.completed && Number(progress?.positionSeconds) >= 5;
+            const progressLabel = progress?.completed ? "Watched" : canResume
+              ? "In progress · " + (progressPct === null ? "" : progressPct + "% · ") + fmtDur(progress.positionSeconds) + " position"
+              : (streamOnly ? "Tracking unavailable for embedded video" : "Not started");
+            const progressHtml = state.apneDaily.progressReady
+              ? '<div class="apne-watch-tracker"><span class="apne-watch-label">' + esc(progressLabel) + '</span>' +
+                  (progressPct !== null
+                    ? '<div class="apne-watch-track" role="progressbar" aria-label="Episode playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + progressPct + '"><i style="width:' + progressPct + '%"></i></div>' : '') +
+                  '<div class="apne-watch-actions">' +
+                    (canResume && !streamOnly ? '<button class="btn small secondary" type="button" data-act="resume-apne" data-date-key="' + esc(recent.dateKey) + '" data-item-id="' + esc(recentSaved ? recent.itemId : '') + '">Resume</button>' : '') +
+                    '<button class="btn small ghost" type="button" data-act="mark-apne-watched" data-date-key="' + esc(recent.dateKey) + '" data-watched="' + (!progress?.completed) + '">' + (progress?.completed ? 'Mark unwatched' : 'Mark watched') + '</button>' +
+                  '</div></div>' : '';
             const episodeMeta = [
               recent.episodeNumber ? "Episode " + recent.episodeNumber : "",
               recent.episodeTitle || "",
             ].filter(Boolean).join(" · ");
 
-            return '<div class="apne-recent-row" data-date-key="' + esc(recent.dateKey || "") + '">' +
-              '<div class="apne-recent-copy">' +
+            return '<article class="apne-recent-row apne-episode-tile ' + apneStatusClass(recentStatus) + '" data-date-key="' + esc(recent.dateKey || "") + '">' +
+              '<div class="apne-episode-preview" data-show-id="' + esc(show.id) + '" data-date-key="' + esc(recent.dateKey || "") + '" data-thumb-saved="' + apnePreviewKind(show.id,recent.dateKey,Boolean(recentSaved),recentStatus,recent.sourceMode) + '" role="img" aria-label="Thumbnail not available yet for ' + esc(recentLabel) + '">' +
+                '<span class="apne-episode-preview-icon" aria-hidden="true"></span>' +
+                '<span class="apne-episode-preview-label">APNE TV</span>' +
+                '<span class="apne-episode-preview-caption">Preview coming soon</span>' +
+              '</div>' +
+              '<div class="apne-episode-tile-body">' +
                 '<div class="apne-recent-heading"><strong>' + esc(recentLabel) + '</strong>' +
                   (badge ? '<span class="apne-date-badge">' + esc(badge) + '</span>' : '') +
                 '</div>' +
-                (episodeMeta ? '<small class="apne-episode-name">' + esc(episodeMeta) + '</small>' : '') +
-                '<small class="' + (recentStatus === "Failed" ? 'apne-recent-error' : '') + '">' + esc(subLabel) + '</small>' +
+                (episodeMeta ? '<p class="apne-episode-name">' + esc(episodeMeta) + '</p>' : '') +
+                '<div class="apne-episode-status-row">' +
+                  '<span class="apne-episode-status ' + apneStatusClass(recentStatus) + '">' + esc(recentStatus) + '</span>' +
+                  '<span class="apne-episode-note ' + (recentStatus === "Failed" ? 'apne-recent-error' : '') + '">' + esc(subLabel) + '</span>' +
+                '</div>' +
+                progressHtml +
+                '<div class="apne-recent-actions">' +
+                  '<button class="btn small ' + (recentSaved ? 'secondary' : '') + ' apne-recent-action" type="button" data-act="' + recentAction + '" data-date-key="' + esc(recent.dateKey || "") + '" data-item-id="' + esc(recent.itemId || "") + '" ' + (recentBusy ? 'disabled' : '') + '>' + esc(recentButton) + '</button>' +
+                  (recent.dateKey && !streamOnly ? '<button class="btn small secondary apne-recent-action" type="button" data-act="stream-apne" data-date-key="' + esc(recent.dateKey) + '" data-item-id="' + esc(recentSaved ? recent.itemId : '') + '" ' + (sourceMissing ? 'disabled title="Source unavailable. Use Recheck first."' : '') + '>Stream</button>' : '') +
+                '</div>' +
               '</div>' +
-              '<button class="btn small ' + (recentSaved ? 'secondary' : '') + ' apne-recent-action" type="button" data-act="' + recentAction + '" data-date-key="' + esc(recent.dateKey || "") + '" data-item-id="' + esc(recent.itemId || "") + '" ' + (recentBusy ? 'disabled' : '') + '>' + esc(recentButton) + '</button>' +
-            '</div>';
+            '</article>';
           }).join("") +
+          '</div>' +
           (pageCount > 1
             ? '<div class="apne-pagination" aria-label="Episode history pages">' +
                 '<button class="btn small ghost apne-page-btn" type="button" data-act="apne-page-newer" ' + (page <= 1 ? 'disabled' : '') + '>Newer</button>' +
@@ -4205,19 +4411,41 @@ function renderApneDaily() {
       episode.episodeTitle || "",
     ].filter(Boolean).join(" · ");
 
-    return '<article class="apne-show-card ' + apneStatusClass(status) + '" data-show-id="' + esc(show.id) + '">' +
-      '<div class="apne-show-main">' +
-        '<div class="apne-show-copy"><h3>' + esc(show.name) + '</h3>' +
-          '<div class="apne-status"><span class="apne-status-dot"></span>' + esc(status) + '</div>' +
-          (detail ? '<div class="apne-episode-detail">' + esc(detail) + '</div>' : '') +
-          (latestMeta ? '<div class="apne-latest-name">' + esc(latestMeta) + '</div>' : '') +
+    const expanded = state.apneDaily.expandedByShow[show.id] === true;
+    return '<div class="apne-show-wrap" data-show-id="' + esc(show.id) + '">' +
+      '<details class="apne-show-card ' + apneStatusClass(status) + '" data-show-id="' + esc(show.id) + '"' + (expanded ? ' open' : '') + '>' +
+      '<summary class="apne-show-toggle">' +
+        '<span class="apne-show-heading"><h3>' + esc(show.name) + '</h3>' +
+          '<span class="apne-show-summary-line">' +
+            '<span class="apne-status"><span class="apne-status-dot"></span>' + esc(status) + '</span>' +
+            (detail ? '<span class="apne-show-summary-detail">' + esc(detail) + '</span>' : '') +
+          '</span>' +
+        '</span>' +
+        '<span class="apne-show-chevron" aria-hidden="true"></span>' +
+      '</summary>' +
+      '<div class="apne-show-content">' +
+        '<div class="apne-show-main">' +
+          '<div class="apne-show-copy">' +
+            (latestMeta ? '<div class="apne-latest-name">' + esc(latestMeta) + '</div>' : '') +
+          '</div>' +
+          '<div class="apne-show-actions">' +
+            '<button class="btn apne-download-today ' + (saved ? 'secondary' : '') + '" data-act="' + action + '" type="button" ' + (disabled ? 'disabled' : '') + '>' + esc(buttonText) + '</button>' +
+            (episode.dateKey ? '<button class="btn secondary apne-native-stream" data-act="stream-apne" data-date-key="' + esc(episode.dateKey) + '" data-item-id="' + esc(saved ? show.itemId : '') + '" type="button" ' + (status === "Source unavailable" ? 'disabled title="Source unavailable. Use Recheck first."' : '') + '>Stream</button>' : '') +
+          '</div>' +
         '</div>' +
-        '<button class="btn apne-download-today ' + (saved ? 'secondary' : '') + '" data-act="' + action + '" type="button" ' + (disabled ? 'disabled' : '') + '>' + esc(buttonText) + '</button>' +
+        (apneStatusBusy(status) && status !== "Checking" ? '<div class="apne-progress"><i></i></div>' : '') +
+        historyHtml +
       '</div>' +
-      (apneStatusBusy(status) && status !== "Checking" ? '<div class="apne-progress"><i></i></div>' : '') +
-      historyHtml +
-    '</article>';
+    '</details>' +
+    '<button class="btn small ghost apne-edit-name-btn" type="button" data-act="edit-apne-name" aria-label="Edit name for ' + esc(show.name) + '">Edit name</button>' +
+    '</div>';
   }).join("");
+  observeApneThumbnails(list);
+  if (focusedShowId) {
+    const restored = Array.from(list.querySelectorAll("details.apne-show-card[data-show-id]"))
+      .find((card) => card.dataset.showId === focusedShowId);
+    restored?.querySelector("summary.apne-show-toggle")?.focus({ preventScroll: true });
+  }
 }
 function scheduleApneDailyPoll() {
   if (state.apneDaily.pollTimer) clearTimeout(state.apneDaily.pollTimer);
@@ -4241,7 +4469,14 @@ async function loadApneDaily({ quiet = false } = {}) {
     renderApneDaily();
   }
   try {
-    const data = await api.get("/api/apne-daily");
+    const [data, progressResult] = await Promise.all([
+      api.get("/api/apne-daily"),
+      api.get("/api/apne/progress").catch(() => null),
+    ]);
+    if (progressResult && Array.isArray(progressResult.episodes)) {
+      state.apneDaily.progressByKey = Object.fromEntries(progressResult.episodes.map((item) => [item.showId + ":" + item.dateKey, item]));
+      state.apneDaily.progressReady = true;
+    }
     state.apneDaily.today = data.today || "";
     state.apneDaily.shows = data.shows || [];
     renderApneDaily();
@@ -4326,6 +4561,61 @@ async function startApneEpisodeDownload(showId, dateKey) {
   }
 }
 
+const APNE_RETURN_SESSION_KEY = "ytStreamerApneReturnState";
+
+function rememberApneReturnState() {
+  // Leave the native player independent of the SPA while remembering where the
+  // viewer was in APNE Daily. sessionStorage is optional (private browsing).
+  const expandedByShow = { ...state.apneDaily.expandedByShow };
+  for (const card of document.querySelectorAll("details.apne-show-card[data-show-id]")) {
+    expandedByShow[card.dataset.showId] = card.open;
+  }
+  try {
+    sessionStorage.setItem(APNE_RETURN_SESSION_KEY, JSON.stringify({
+      expandedByShow,
+      pageByShow: state.apneDaily.pageByShow,
+      scrollY: window.scrollY,
+    }));
+  } catch { /* Navigation still works when session storage is unavailable. */ }
+}
+
+function restoreApneReturnState() {
+  let saved;
+  try {
+    saved = JSON.parse(sessionStorage.getItem(APNE_RETURN_SESSION_KEY) || "null");
+    sessionStorage.removeItem(APNE_RETURN_SESSION_KEY);
+  } catch { return null; }
+  if (!saved || typeof saved !== "object") return null;
+  for (const [id, page] of Object.entries(saved.pageByShow || {})) {
+    if (/^[a-z0-9-]{1,90}$/.test(id) && Number.isInteger(page) && page >= 1 && page <= 100)
+      state.apneDaily.pageByShow[id] = page;
+  }
+  for (const [id, expanded] of Object.entries(saved.expandedByShow || {})) {
+    if (/^[a-z0-9-]{1,90}$/.test(id) && typeof expanded === "boolean")
+      state.apneDaily.expandedByShow[id] = expanded;
+  }
+  return {
+    scrollY: Number.isFinite(saved.scrollY) && saved.scrollY >= 0 ? saved.scrollY : null,
+    expandedByShow: { ...state.apneDaily.expandedByShow },
+    pageByShow: { ...state.apneDaily.pageByShow },
+  };
+}
+
+function streamApneLiveEpisode(showId, dateKey, resume = false) {
+  if (!/^[a-z0-9-]{1,90}$/.test(String(showId || "")) || !/^\d{4}-\d{2}-\d{2}(?:-e[1-9]\d{0,5})?$/.test(String(dateKey || "")))
+    return toast("APNE episode unavailable", true);
+  rememberApneReturnState();
+  window.location.assign("https://stream.ameshalex.com/apne/live/watch/" + encodeURIComponent(showId) + "/" + encodeURIComponent(dateKey) + (resume ? "?resume=1" : ""));
+}
+
+function streamApneNativeItem(itemId, resume = false) {
+  if (!/^[a-f0-9]{16}$/.test(String(itemId || ""))) return toast("Saved episode unavailable", true);
+  // Keep the existing native HTML5 / iOS AVFoundation player and authenticated
+  // external origin, but navigate in this tab rather than opening another.
+  rememberApneReturnState();
+  window.location.assign("https://stream.ameshalex.com/apne/watch/" + encodeURIComponent(itemId) + (resume ? "?resume=1" : ""));
+}
+
 async function playApneDailyItem(itemId) {
   let item = downloadedLocalItems().find((entry) => entry.id === itemId);
   if (!item) {
@@ -4334,6 +4624,47 @@ async function playApneDailyItem(itemId) {
   }
   if (!item) return toast("Saved episode is not in Downloaded Videos yet", true);
   await playItem(item);
+}
+
+function openApneRenameShow(showId) {
+  const show = state.apneDaily.shows.find((item) => item.id === showId);
+  if (!show) return toast("Show not found", true);
+  openModal(
+    '<h3>Edit show name</h3>' +
+    '<label for="apneRenameInput">Show name</label>' +
+    '<input id="apneRenameInput" maxlength="120" autocomplete="off" autofocus />' +
+    '<div class="modal-actions">' +
+      '<button class="btn ghost" id="apneRenameCancel" type="button">Cancel</button>' +
+      '<button class="btn" id="apneRenameSave" type="button">Save name</button>' +
+    '</div>'
+  );
+  const input = $("#apneRenameInput");
+  input.value = show.name;
+  input.select();
+  $("#apneRenameCancel").onclick = closeModal;
+  const save = async () => {
+    const name = input.value.trim();
+    if (!name || name.length > 120) return toast("Show name must be 1–120 characters", true);
+    const button = $("#apneRenameSave");
+    button.disabled = true;
+    try {
+      const updated = await api.patch("/api/apne-daily/shows/" + encodeURIComponent(showId), { name });
+      show.name = updated.name;
+      closeModal();
+      renderApneDaily();
+      const restored = Array.from($("#apneDailyList").querySelectorAll(".apne-show-wrap[data-show-id]"))
+        .find((node) => node.dataset.showId === showId);
+      restored?.querySelector("[data-act='edit-apne-name']")?.focus({ preventScroll: true });
+      toast("Show renamed");
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, true);
+    }
+  };
+  $("#apneRenameSave").onclick = save;
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); void save(); }
+  });
 }
 
 function renderApneManageRows() {
@@ -7863,6 +8194,7 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
     else if (tab.dataset.mode === "embed") openEmbed();
     else if (tab.dataset.mode === "library") openLegacyLibrary();
     else if (tab.dataset.mode === "apne") openApneDaily();
+    else if (tab.dataset.mode === "retro") window.open("/retro-pc/", "_blank", "noopener");
     else if (tab.dataset.mode === "tesla") window.open("/tesla", "_blank", "noopener");
     else if (tab.dataset.mode === "money") window.open("/money", "_blank", "noopener");
     else setMode(tab.dataset.mode);
@@ -7891,14 +8223,37 @@ bindTap($("#apneDailyList"), async (event) => {
   const button = event.target.closest("[data-act]");
   const card = event.target.closest("[data-show-id]");
   if (!button || !card) return;
-  if (button.dataset.act === "apne-page-newer" || button.dataset.act === "apne-page-older") {
+  if (button.dataset.act === "edit-apne-name") {
+    openApneRenameShow(card.dataset.showId);
+  } else if (button.dataset.act === "apne-page-newer" || button.dataset.act === "apne-page-older") {
     const showId = card.dataset.showId;
     const current = Math.max(1, Number(state.apneDaily.pageByShow?.[showId] || 1));
     state.apneDaily.pageByShow[showId] = button.dataset.act === "apne-page-older"
       ? current + 1
       : Math.max(1, current - 1);
     renderApneDaily();
-  } else if (button.dataset.act === "download") await startApneDailyDownload(card.dataset.showId);
+  } else if (button.dataset.act === "check-apne-source" || button.dataset.act === "check-latest-source") {
+    const dateKey = button.dataset.act === "check-latest-source"
+      ? state.apneDaily.shows.find(x => x.id === card.dataset.showId)?.episode?.dateKey : button.dataset.dateKey;
+    if (dateKey) await checkApneSourceForTile(card.dataset.showId, dateKey, {force:true});
+  } else if (button.dataset.act === "stream-apne" || button.dataset.act === "resume-apne") {
+    const resume = button.dataset.act === "resume-apne";
+    if (button.dataset.itemId) streamApneNativeItem(button.dataset.itemId, resume);
+    else streamApneLiveEpisode(card.dataset.showId, button.dataset.dateKey, resume);
+  } else if (button.dataset.act === "mark-apne-watched") {
+    const showId = card.dataset.showId, dateKey = button.dataset.dateKey;
+    if (!/^[a-z0-9-]{1,90}$/.test(showId || "") || !/^\d{4}-\d{2}-\d{2}(?:-e[1-9]\d{0,5})?$/.test(dateKey || "")) return;
+    button.disabled = true;
+    try {
+      const result = await api.post("/api/apne/progress/" + encodeURIComponent(showId) + "/" + encodeURIComponent(dateKey) + "/mark-watched", {watched:button.dataset.watched === "true"});
+      state.apneDaily.progressByKey[showId + ":" + dateKey] = result.progress;
+      renderApneDaily();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, true);
+    }
+  }
+  else if (button.dataset.act === "download") await startApneDailyDownload(card.dataset.showId);
   else if (button.dataset.act === "download-episode") await startApneEpisodeDownload(card.dataset.showId, button.dataset.dateKey);
   else if (button.dataset.act === "play-episode") {
     if (button.dataset.itemId) await playApneDailyItem(button.dataset.itemId);
@@ -9296,7 +9651,9 @@ function initEverydayControls() {
   $("#themeToggleBtn").onclick = () => {
     applyTheme(document.documentElement.dataset.theme === "day" ? "night" : "day");
   };
-  setMode("watch");
+  const returnToApne = new URLSearchParams(window.location.search).get("mode") === "apne";
+  const savedApneReturn = returnToApne ? restoreApneReturnState() : null;
+  setMode(returnToApne ? "apne" : "watch");
   resetStreamSettings();
   renderFpsPresets();
   renderQuickQuality();
@@ -9305,6 +9662,21 @@ function initEverydayControls() {
   await pingHealth();
   await refreshSessionManager({ notify: false });
   await loadPlaylists().catch((e) => toast(e.message, true));
+  if (returnToApne) {
+    await openApneDaily();
+    // Initial loading placeholders can reset both page count and expansion;
+    // restore the snapshot after the real episode list is available.
+    if (savedApneReturn) {
+      Object.assign(state.apneDaily.pageByShow, savedApneReturn.pageByShow);
+      for (const card of document.querySelectorAll("details.apne-show-card[data-show-id]")) {
+        const expanded = savedApneReturn.expandedByShow[card.dataset.showId];
+        if (typeof expanded === "boolean") card.open = expanded;
+      }
+      renderApneDaily();
+      if (savedApneReturn.scrollY !== null)
+        requestAnimationFrame(() => window.scrollTo(0, savedApneReturn.scrollY));
+    }
+  }
   setInterval(pingHealth, 10000);
   setInterval(() => refreshSessionManager({ notify: true }), SESSION_POLL_MS);
   window.addEventListener("resize", () => setMode(state.mode));

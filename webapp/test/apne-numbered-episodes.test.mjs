@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRecentEpisodesFromShowHtml, filterApneEpisodesByMonths, parseApneDateLabel } from '../src/lib/apne-daily.js';
+import { parseRecentEpisodesFromShowHtml, filterApneEpisodesByMonths, parseApneDateLabel, episodePageState } from '../src/lib/apne-daily.js';
 
 const ep = (id,label) => '<option value="_self#@#https://apnetv.xyz/Hindi-Serial/show/' + id + '/Shayad-Yahi-Hai-Pyaar">' + label + '</option>';
 
@@ -20,4 +20,13 @@ test('APNE standard dated episodes keep their original IDs', () => {
   assert.equal(data[0].airDateKey,'2026-10-16');
   assert.equal(parseApneDateLabel('12th October Episode 14 2026').episodeNumber,14);
   assert.equal(parseApneDateLabel('12th October Episode 0 2026'),null);
+});
+
+
+test('numbered APNE episodes retain local download controls but never match generic YoDesi dates', async () => {
+  const state = await episodePageState('anupamaa', '2026-10-16-e15');
+  assert.equal(state.dateKey, '2026-10-16-e15');
+  assert.deepEqual(state.sources.map(item => item.id), ['apne']);
+  assert.equal(typeof state.download.status, 'string');
+  await assert.rejects(() => episodePageState('anupamaa','2026-10-16-e0'), /Invalid APNE episode/);
 });
