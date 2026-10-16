@@ -137,3 +137,12 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{ou
 
 .archive-notice { font-size:12px; color:var(--muted); text-align:center; margin:15px 0 2px; }
 .archive-notice[hidden]{display:none}
+
+/* The selected calendar day is an exact episode filter, with a prominent exit. */
+.calendar-active {display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 13px;padding:10px 12px;border:1px solid #456e60;border-radius:12px;background:#17312c;min-height:58px;}
+.calendar-active[hidden]{display:none;}
+.calendar-active span{font-size:13px;font-weight:750;min-width:0;overflow-wrap:anywhere;color:#d2f2e3;}
+.calendar-active button{background:#eaf4ef;color:#13271f;border:0;border-radius:9px;font-weight:800;min-height:43px;padding:8px 12px;flex:none;font-size:13px;}
+@media(max-width:360px){.calendar-active{gap:8px;padding:8px}.calendar-active span{font-size:12px}.calendar-active button{padding:8px;font-size:12px}}
+
+.quick-start[hidden]{display:none!important;}

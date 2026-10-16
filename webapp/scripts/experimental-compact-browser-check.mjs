@@ -62,20 +62,77 @@ try {
   await page.locator("#calendarPanel summary").click();
   assert.equal(await page.locator("#calendarPanel").evaluate(x=>x.open),true);
   await page.locator("#episodeDate").fill("2026-10-06");
-  assert.equal(await page.locator("#pageInfo").innerText(),"11–20 of 24");
-  await page.locator("#pagerTop [data-page-move='newer']").click();
+  assert.equal(await page.locator(".episode-row").count(),1,"Exact day filter finds one");
+  assert.match(await page.locator(".episode-row").first().innerText(),/6 October 2026/);
+  assert.equal(await page.locator("#calendarPanel").evaluate(x=>x.open),false,"Calendar collapses on filter");
+  assert.equal(await page.locator("#calendarActive").isVisible(),true);
+  assert.equal(await page.locator("#pageInfo").isVisible(),false,"No paging for one episode");
+  assert.equal(await page.locator("#quickStart").isVisible(),false,"Latest-episode card hidden in date mode");
+  assert.equal(await page.locator("#archiveNotice").isVisible(),false,"No archive warning in date mode");
+  await page.locator("#exitCalendar").click();
+  assert.equal(await page.locator(".episode-row").count(),10,"Clear restores normal page");
   assert.equal(await page.locator("#pageInfo").innerText(),"1–10 of 24");
+  assert.equal(await page.locator("#calendarActive").isVisible(),false);
+  assert.equal(await page.locator("#episodeDate").inputValue(),"");
+  assert.equal(await page.locator("#quickStart").isVisible(),true);
+
   await page.locator('[data-show-id="108-base-hospital-uri"]').click();
   assert.equal(await page.locator(".episode-row").count(),6);
+  await page.locator("#calendarPanel summary").click();
+  await page.locator("#episodeDate").fill("2026-09-25");
+  assert.equal(await page.locator(".episode-row").count(),0,"No nearest-date substitution");
+  assert.match(await page.locator("#episodeList").innerText(),/No episodes listed for 25 September 2026/);
+  await page.locator("#exitCalendar").click();
+  assert.equal(await page.locator(".episode-row").count(),6,"Restore after zero results");
+
   await page.locator('[data-show-id="shayad-yahi-hai-pyaar"]').click();
   assert.equal(await page.locator(".episode-row").count(),10);
   assert.equal(await page.locator("#pageInfo").innerText(),"1–10 of 15");
+  await page.locator("#calendarPanel summary").click();
+  await page.locator("#episodeDate").fill("2026-10-12");
+  assert.equal(await page.locator("#resultCount").innerText(),"5 episodes","Shows five actual same-day numbered episodes");
+  assert.equal(await page.locator(".episode-row").count(),5);
+  assert.ok(await page.locator(".episode-row").first().innerText().then(t=>t.includes("12 October 2026")));
+  assert.equal(await page.locator("#pagerTop").isVisible(),false);
+  assert.equal(await page.locator("#calendarActive").isVisible(),true);
+  assert.equal(await page.locator("#episodeDate").inputValue(),"2026-10-12");
+  await page.locator("#exitCalendar").click();
+  assert.equal(await page.locator("#pageInfo").innerText(),"1–10 of 15");
+  assert.equal(await page.locator("#calendarActive").isVisible(),false);
   for(const width of [320,360,390,430,850]){
     await page.setViewportSize({width,height:844});
     const sizes=await page.evaluate(()=>({client:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));
     assert.ok(sizes.scroll<=sizes.client+2,"No horizontal clipping at "+width+" "+JSON.stringify(sizes));
   }
+  // Synthetic same-day archive test: verify selected-date pagination also
+  // preserves calendar mode when >10 numbered episodes share one air date.
+  const fakeEpisodes=Array.from({length:13},(_,i)=>({
+    dateKey:"2026-10-12-e"+(13-i),
+    airDateKey:"2026-10-12",
+    episodeNumber:13-i,
+    status:"Listed",
+  }));
+  await page.route("**/api/apne-daily",route=>route.fulfill({
+    status:200,contentType:"application/json",
+    body:JSON.stringify({shows:[{id:"anupamaa",name:"Anupamaa",status:"Listed",
+      episode:fakeEpisodes[0],recentEpisodes:fakeEpisodes}]}),
+  }));
+  await page.goto(base,{waitUntil:"domcontentloaded"});
+  await page.locator(".episode-row").first().waitFor({timeout:12000});
+  await page.locator("#calendarPanel summary").click();
+  await page.locator("#episodeDate").fill("2026-10-12");
+  assert.equal(await page.locator("#resultCount").innerText(),"13 episodes");
+  assert.equal(await page.locator(".episode-row").count(),10);
+  await page.locator("#pagerTop [data-page-move='older']").click();
+  assert.equal(await page.locator(".episode-row").count(),3);
+  assert.equal(await page.locator("#pageInfo").innerText(),"11–13 of 13");
+  assert.equal(await page.locator("#calendarActive").isVisible(),true);
+  assert.equal(await page.locator("#episodeDate").inputValue(),"2026-10-12");
+  await page.locator("#exitCalendar").click();
+  assert.equal(await page.locator("#pageInfo").innerText(),"1–10 of 13");
+  assert.equal(await page.locator("#calendarActive").isVisible(),false);
+
   assert.deepEqual(errors,[]);
   assert.deepEqual(writes,[]);
-  console.log("PASS: real show catalog, 10/page Older/Newer, calendar jump, show switch, cached JPEG displayed, widths 320–850px, GET-only");
+  console.log("PASS: real show catalog, 10/page Older/Newer, exact-date filter and clear, show switch, cached JPEG displayed, widths 320–850px, GET-only");
 }finally{await browser.close();}
