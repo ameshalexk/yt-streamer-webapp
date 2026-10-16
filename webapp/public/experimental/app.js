@@ -28,9 +28,12 @@
     return new Date(y,m-1,d,12).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"});
   }
   function selected() {
-    return ux.selectEpisodes(state.episodes,
+    const ordered=ux.selectEpisodes(state.episodes,
       {order:"newest",onlyUnwatched:state.onlyUnwatched},
       state.progress,state.selectedId);
+    // Exact calendar day, not the nearest date/page. airDate handles multipart
+    // keys such as 2026-10-12-e15 without dropping same-day episodes.
+    return state.date?ordered.filter(ep=>airDate(ep)===state.date):ordered;
   }
   function saveFilters() {
     if(!state.selectedId)return;
@@ -53,6 +56,7 @@
   }
   function goLatest() {
     state.date="";state.order="newest";state.onlyUnwatched=false;state.page=1;
+    $("calendarPanel").open=false;
     render();
   }
   function showPicker() {
@@ -223,7 +227,7 @@
     $("showStatus").textContent=status(item.status)+" · Latest: "+
       (item.episode?.dateKey?displayDate(item.episode.dateKey):"unknown");
     $("showStatus").classList.toggle("good",["Available","Saved"].includes(status(item.status)));
-    $("quickStart").hidden=!state.episodes.length;
+    $("quickStart").hidden=!state.episodes.length||Boolean(state.date);
     if(state.episodes.length){
       const latest=state.episodes[0];
       $("latestDate").textContent=displayDate(airDate(latest)||latest.dateKey);
@@ -237,6 +241,9 @@
       previewFallback(hero,"Loading preview…");
     }
     $("episodeDate").value=state.date;
+    $("calendarActive").hidden=!state.date;
+    $("calendarActiveDate").textContent=state.date?"Episodes for "+displayDate(state.date):"";
+    $("calendarHint").textContent=state.date?"Date filter active":"Filter by date";
     const dates=state.episodes.map(airDate).filter(Boolean).sort();
     $("episodeDate").min=dates[0]||"";
     $("episodeDate").max=dates.at(-1)||"";
@@ -253,7 +260,9 @@
       (state.date?" · Calendar: "+displayDate(state.date):"")+
       (!state.progressAvailable?" · Watched filter unavailable":"");
     $("episodeList").innerHTML=current.length?current.map((ep,i)=>episodeRow(ep,(state.page-1)*state.pageSize+i)).join(""):
-      '<div class="empty">No matching episodes. Turn off the unwatched filter to see all listings.</div>';
+      '<div class="empty">'+(state.date
+        ? 'No '+(state.onlyUnwatched?'unwatched ':'')+'episodes listed for '+safe(displayDate(state.date))+'. Choose another date or select Show all episodes.'
+        : 'No matching episodes. Turn off the unwatched filter to see all listings.')+'</div>';
     const start=current.length?(state.page-1)*state.pageSize+1:0;
     const end=(state.page-1)*state.pageSize+current.length;
     for(const nav of [$("pager"),$("pagerTop")]) {
@@ -262,7 +271,7 @@
       nav.querySelector('[data-page-move="older"]').disabled=state.page>=pages;
       nav.querySelector(".page-range").textContent=start+"–"+end+" of "+matches.length;
     }
-    $("archiveNotice").hidden=state.page<pages||!matches.length;
+    $("archiveNotice").hidden=Boolean(state.date)||state.page<pages||!matches.length;
     saveFilters();
     observePreviews();
   }
@@ -307,16 +316,13 @@
   });
   $("episodeDate").addEventListener("change",(event)=>{
     const value=event.target.value;
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(value))return;
-    const matches=selected();
-    if(!matches.length)return;
-    // Jump to the closest episode on or before the chosen date.
-    const found=matches.findIndex(ep=>airDate(ep)<=value);
-    state.page=Math.floor(Math.max(0,found)/state.pageSize)+1;
-    state.date=value;
+    state.date=/^\d{4}-\d{2}-\d{2}$/.test(value)?value:"";
+    state.page=1;
+    $("calendarPanel").open=false;
     render();
     $("episodeHeading").scrollIntoView({behavior:"smooth",block:"start"});
   });
+  $("exitCalendar").addEventListener("click",goLatest);
   $("unwatched").addEventListener("click",()=>{
     if(!state.progressAvailable)return;
     state.onlyUnwatched=!state.onlyUnwatched;state.page=1;render();
@@ -329,7 +335,6 @@
     const next=Math.min(total,Math.max(1,state.page+delta));
     if(next===state.page)return;
     state.page=next;
-    state.date="";
     render();
     $("episodeHeading").scrollIntoView({behavior:"smooth",block:"start"});
   }

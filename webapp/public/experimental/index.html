@@ -6,9 +6,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0b1220">
   <title>Experimental · APNE Stream</title>
-  <link rel="stylesheet" href="/experimental/styles.css?v=20261016-3">
-  <script defer src="/experimental/apne-mobile-browser.js?v=20261016-3"></script>
-  <script defer src="/experimental/app.js?v=20261016-3"></script>
+  <link rel="stylesheet" href="/experimental/styles.css?v=20261016-4">
+  <script defer src="/experimental/apne-mobile-browser.js?v=20261016-4"></script>
+  <script defer src="/experimental/app.js?v=20261016-4"></script>
 </head>
 <body>
   <header class="topbar">
@@ -50,11 +50,15 @@
         <span id="resultCount" class="count"></span>
       </div>
       <details class="calendar-panel" id="calendarPanel">
-        <summary><span aria-hidden="true">▦</span> Calendar <span class="calendar-hint">Jump to an episode date</span></summary>
+        <summary><span aria-hidden="true">▦</span> Calendar <span class="calendar-hint" id="calendarHint">Filter by date</span></summary>
         <label for="episodeDate">Find a date
           <input id="episodeDate" type="date" aria-describedby="rangeNotice">
         </label>
       </details>
+      <div class="calendar-active" id="calendarActive" role="status" hidden>
+        <span id="calendarActiveDate">Showing selected date</span>
+        <button type="button" id="exitCalendar">Show all episodes</button>
+      </div>
       <div class="filters">
         <button type="button" class="filter" id="unwatched" aria-pressed="false">Unwatched only</button>
         <button type="button" class="text-button" id="clearFilters">Clear filters</button>
