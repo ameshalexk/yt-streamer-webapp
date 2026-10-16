@@ -45,6 +45,18 @@
       'Not downloaded. The Mac copy is saved to the local library and then mirrored to iCloud.';
     downloadButton.setAttribute('aria-label', downloadButton.textContent);
   }
+  // Report resolution only after the native player exposes real video dimensions.
+  function updateActualQuality() {
+    if (selectedProvider === 'yodesi') return;
+    const height = Number(video.videoHeight);
+    const width = Number(video.videoWidth);
+    if (!(height > 0 && width > 0)) return;
+    const grade = height >= 720 ? 'HD verified' : 'Below 720p';
+    qualityNote.textContent = 'APNE / PlayApne · ' + width + '×' + height + ' (' + grade +
+      '). This is the actual decoded video resolution, not a provider claim.';
+  }
+  video.addEventListener('loadedmetadata', updateActualQuality);
+  video.addEventListener('resize', updateActualQuality);
   function selectSource(provider) {
     if (!['apne','yodesi'].includes(provider) || provider === selectedProvider) return;
     selectedProvider = provider;
@@ -63,7 +75,9 @@
       for (const button of buttons) {
         button.hidden = !offered.has(button.dataset.apneProvider);
       }
-      if (!offered.has(selectedProvider)) selectSource('apne');
+      if (!offered.has(selectedProvider) && offered.has('apne')) selectSource('apne');
+      // Listing a provider is not proof that an episode will play.
+      if (selectedProvider === 'apne') updateActualQuality();
       setDownloadState(state.download);
       return state;
     } catch (error) {

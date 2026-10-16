@@ -6,15 +6,15 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 
 const SHOW_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
+const DATE_KEY = /^\d{4}-\d{2}-\d{2}(?:-e[1-9]\d{0,5})?$/;
 const VERSION = "v1";
 const MAX_BYTES = 1024 * 1024;
 const TTL_MS = 30 * 86400_000;
 
 export function validApneThumbnailKey(showId, dateKey) {
   if (!SHOW_ID.test(showId) || !DATE_KEY.test(dateKey)) return false;
-  const parsed = new Date(dateKey + "T00:00:00Z");
-  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === dateKey;
+  const parsed = new Date(dateKey.slice(0, 10) + "T00:00:00Z");
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === dateKey.slice(0, 10);
 }
 
 // Share one ffmpeg slot across saved-MP4 and unsaved-HLS thumbnails.

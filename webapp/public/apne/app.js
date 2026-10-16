@@ -10,7 +10,7 @@
   const continueUx = window.ApneContinueWatching;
   const state = {
     shows: [], selectedId: "", episodes: [], date: "", order: "newest", onlyUnwatched: false,
-    page: 1, pageSize: 10, progress: {}, progressEpisodes: [], progressAvailable: false, loaded: false,
+    page: 1, pageSize: 10, progress: {}, progressEpisodes: [], progressAvailable: false, loaded: false, watchFilter: "all",
     filtersByShow: new Map(),
   };
   const thumbs = { observer: null, pending: [], active: 0, generation: 0, ready: new Map() };
@@ -30,7 +30,7 @@
   }
   function selected() {
     const ordered=ux.selectEpisodes(state.episodes,
-      {order:"newest",onlyUnwatched:state.onlyUnwatched},
+      {order:"newest",onlyUnwatched:state.onlyUnwatched,watchFilter:state.watchFilter},
       state.progress,state.selectedId);
     // Exact calendar day, not the nearest date/page. airDate handles multipart
     // keys such as 2026-10-12-e15 without dropping same-day episodes.
@@ -39,7 +39,7 @@
   function saveFilters() {
     if(!state.selectedId)return;
     state.filtersByShow.set(state.selectedId,{
-      date:state.date,order:state.order,onlyUnwatched:state.onlyUnwatched,page:state.page,
+      date:state.date,order:state.order,onlyUnwatched:state.onlyUnwatched,watchFilter:state.watchFilter,page:state.page,
     });
   }
   function switchShow(showId) {
@@ -50,13 +50,14 @@
     state.date=old?.date || "";
     state.order="newest";
     state.onlyUnwatched=state.progressAvailable && Boolean(old?.onlyUnwatched);
+    state.watchFilter=state.progressAvailable ? old?.watchFilter || "all" : "all";
     state.page=old?.page || 1;
     state.episodes=[...(show()?.recentEpisodes || [])].sort((a,b) =>
       String(b.dateKey || "").localeCompare(String(a.dateKey || "")));
     render();
   }
   function goLatest() {
-    state.date="";state.order="newest";state.onlyUnwatched=false;state.page=1;
+    state.date="";state.order="newest";state.onlyUnwatched=false;state.watchFilter="all";state.page=1;
     $("calendarPanel").open=false;
     render();
   }
@@ -79,7 +80,7 @@
   function thumbHTML(ep, showId=state.selectedId) {
     const date=ep?.dateKey || "";
     const validShow=/^[a-z0-9][a-z0-9-]{0,63}$/.test(showId);
-    const validDate=/^\d{4}-\d{2}-\d{2}$/.test(date);
+    const validDate=/^\d{4}-\d{2}-\d{2}(?:-e[1-9]\d{0,5})?$/.test(date);
     const markup = 'data-preview-show="'+safe(showId)+'" data-preview-date="'+safe(date)+
       '" data-preview-status="'+safe(ep?.status || "")+'"';
     return validShow && validDate
@@ -91,7 +92,8 @@
     const p=state.progress[state.selectedId+":"+key];
     const pct=p?.durationSeconds>0 ? (p.completed?100:
       Math.max(0,Math.min(99,Math.round((p.positionSeconds/p.durationSeconds)*100)))):null;
-    const progressText=p?.completed?"Watched":pct!==null&&pct>0?pct+"% watched":"Not started";
+    const watchState=ux.watchState(p);
+    const progressText=watchState==="watched"?"Watched":watchState==="in-progress"?(pct!==null?pct+"% watched":"In progress"):"Not started";
     const badge=key===state.episodes[0]?.dateKey?'<span class="tag">Latest</span>':"";
     const number=ep.episodeNumber?"Episode "+safe(ep.episodeNumber):"Episode";
     const buttonId="episode-"+index;
@@ -112,13 +114,13 @@
       (pct!==null&&state.progressAvailable?'<div class="watch-track" role="progressbar" aria-label="Watched percentage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="'+pct+'"><i style="width:'+pct+'%"></i></div>':"")+
       '<div class="episode-actions"><button class="details-button" aria-expanded="false" aria-controls="'+buttonId+
       '" data-detail="'+safe(index)+'" type="button">Episode details</button></div>'+
-      '<div class="row-details" id="'+buttonId+'" hidden><p>Source: '+safe(status(ep.status))+
+      '<div class="row-details" id="'+buttonId+'" hidden><p>Availability: '+safe(status(ep.status))+
       '</p><p>Air date: '+safe(displayDate(airDate(ep)||key))+
-      '</p><p>Open the episode image to play, choose a source, or download.</p></div>'+
+      '</p><p>Playback source: choose APNE, YoDesi (if offered), or a saved Mac copy on the player page.</p></div>'+
       '</div></article>';
   }
   function thumbCandidates(id,date,episodeStatus) {
-    if(!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)||!/^\d{4}-\d{2}-\d{2}$/.test(date))
+    if(!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)||!/^\d{4}-\d{2}-\d{2}(?:-e[1-9]\d{0,5})?$/.test(date))
       return [];
     const path=encodeURIComponent(id)+"/"+date+".jpg";
     const saved=episodeStatus==="Saved";
@@ -176,9 +178,31 @@
       state.progressEpisodes=[];
       state.progress={};
       state.onlyUnwatched=false;
+      state.watchFilter="all";
     }finally{progressRefreshBusy=false;}
     renderContinueWatching();
     if(redraw&&state.selectedId)render();
+  }
+  // Client-side search only: search the already authenticated catalog across shows.
+  function renderSearch() {
+    const query=$("episodeSearch").value.trim().toLocaleLowerCase();
+    const panel=$("searchResults");
+    if(query.length<2){panel.hidden=true;panel.replaceChildren();return;}
+    const matches=state.shows.flatMap(item=>(item.recentEpisodes||[]).map(ep=>({item,ep})))
+      .filter(({item,ep})=>[item.name,ep.episodeTitle,ep.episodeNumber,
+        ep.dateKey,airDate(ep)].some(value=>String(value??"").toLocaleLowerCase().includes(query)))
+      .sort((a,b)=>-ux.compareEpisodes(a.ep,b.ep)).slice(0,30);
+    panel.hidden=false;
+    const summary='<p class="muted">'+matches.length+' match'+(matches.length===1?'':'es')+
+      (matches.length===30?' (first 30)':'')+'</p>';
+    panel.innerHTML=summary+(matches.length?matches.map(({item,ep})=>{
+      const href=episodePlayerUrl(item.id,ep.dateKey);
+      if(!href)return '';
+      return '<a class="search-result" href="'+safe(href)+'"><strong>'+safe(item.name)+
+        '</strong><span>'+safe(ep.episodeNumber?'Episode '+ep.episodeNumber:'Episode')+' · '+
+        safe(displayDate(airDate(ep)||ep.dateKey))+(ep.episodeTitle?' · '+safe(ep.episodeTitle):'')+
+        '</span></a>';
+    }).join(''):'<p class="muted">No matching episodes in the indexed catalog.</p>');
   }
   function previewFallback(node,message="Preview unavailable") {
     if(!node.isConnected)return;
@@ -210,7 +234,7 @@
       if(!node.isConnected||generation!==thumbs.generation)return {kind:"aborted"};
       let response;
       try{
-        response=await fetch(url,{method:"GET",credentials:"same-origin",cache:"no-store"});
+        response=await fetch(url,{method:"GET",credentials:"same-origin",cache:"default"});
       }catch{return {kind:"failed"};}
       if(response.status===200){
         const type=response.headers.get("content-type")||"";
@@ -254,7 +278,7 @@
     previewFallback(node);
   }
   function drainPreviews() {
-    while(thumbs.active<2&&thumbs.pending.length){
+    while(thumbs.active<3&&thumbs.pending.length){
       const {node,generation}=thumbs.pending.shift();
       if(!node.isConnected||generation!==thumbs.generation)continue;
       thumbs.active++;
@@ -276,7 +300,7 @@
         thumbs.pending.push({node:entry.target,generation});
       }
       drainPreviews();
-    },{rootMargin:"200px 0px"});
+    },{rootMargin:"700px 0px"});
     for(const el of els)thumbs.observer.observe(el);
   }
   function render() {
@@ -299,7 +323,7 @@
       hero.dataset.previewShow=state.selectedId;
       hero.dataset.previewDate=latest.dateKey||"";
       hero.dataset.previewStatus=latest.status||"";
-      hero.dataset.previewValid=/^\d{4}-\d{2}-\d{2}$/.test(latest.dateKey||"")?"1":"0";
+      hero.dataset.previewValid=/^\d{4}-\d{2}-\d{2}(?:-e[1-9]\d{0,5})?$/.test(latest.dateKey||"")?"1":"0";
       hero.classList.remove("has-image");
       previewFallback(hero,"Loading preview…");
     }
@@ -311,6 +335,8 @@
     $("episodeDate").min=dates[0]||"";
     $("episodeDate").max=dates.at(-1)||"";
     $("unwatched").setAttribute("aria-pressed",String(state.onlyUnwatched));
+    $("watchFilter").value=state.watchFilter;
+    $("watchFilter").disabled=!state.progressAvailable;
     $("unwatched").disabled=!state.progressAvailable;
     $("unwatched").title=state.progressAvailable?"Show episodes not marked watched":"Watch history unavailable in preview";
     const matches=selected();
@@ -349,6 +375,7 @@
       const previous=state.selectedId;
       state.shows=data.shows;
       state.loaded=true;
+      renderSearch();
       await refreshProgress(false);
       switchShow(state.shows.some(item=>item.id===previous)?previous:
         state.shows.find(item=>item.id==="anupamaa")?.id||state.shows[0].id);
@@ -359,6 +386,7 @@
       $("resultCount").textContent="Unavailable";
     }finally{$("refresh").disabled=false;}
   }
+  $("episodeSearch").addEventListener("input",renderSearch);
   $("showGrid").addEventListener("click",(event)=>{
     const button=event.target.closest("[data-show-id]");
     if(!button)return;
@@ -379,7 +407,11 @@
   $("exitCalendar").addEventListener("click",goLatest);
   $("unwatched").addEventListener("click",()=>{
     if(!state.progressAvailable)return;
-    state.onlyUnwatched=!state.onlyUnwatched;state.page=1;render();
+    state.onlyUnwatched=!state.onlyUnwatched;state.watchFilter="all";state.page=1;render();
+  });
+  $("watchFilter").addEventListener("change",event=>{
+    state.watchFilter=["all","not-started","in-progress","watched"].includes(event.target.value)?event.target.value:"all";
+    state.onlyUnwatched=false;state.page=1;render();
   });
   $("clearFilters").addEventListener("click",goLatest);
   $("latestButton").addEventListener("click",goLatest);

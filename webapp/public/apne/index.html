@@ -6,10 +6,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0b1220">
   <title>APNE Stream · YT Streamer</title>
-  <link rel="stylesheet" href="/apne/styles.css?v=20261016-cw1">
+  <link rel="stylesheet" href="/apne/styles.css?v=20261016-apne2">
   <script defer src="/apne/apne-mobile-browser.js?v=20261016-prod-1"></script>
-  <script defer src="/apne/apne-continue-watching.js?v=20261016-cw1"></script>
-  <script defer src="/apne/app.js?v=20261016-cw1"></script>
+  <script defer src="/apne/apne-continue-watching.js?v=20261016-apne2"></script>
+  <script defer src="/apne/app.js?v=20261016-apne2"></script>
 </head>
 <body>
   <header class="topbar">
@@ -27,6 +27,11 @@
         <span class="count" id="continueCount"></span>
       </div>
       <div class="continue-rail" id="continueRail" aria-label="Episodes in progress"></div>
+    </section>
+    <section class="catalog-search" aria-label="Search episodes">
+      <label for="episodeSearch">Search shows and episodes</label>
+      <input type="search" id="episodeSearch" placeholder="Show, episode number, title, date…" autocomplete="off">
+      <div id="searchResults" class="search-results" aria-live="polite" hidden></div>
     </section>
     <section class="shows-picker" aria-labelledby="showsHeading">
       <div class="section-head"><div><p class="eyebrow">Your APNE library</p><h2 id="showsHeading">Shows</h2></div><span class="count" id="showCount"></span></div>
@@ -67,7 +72,8 @@
         <button type="button" id="exitCalendar">Show all episodes</button>
       </div>
       <div class="filters">
-        <button type="button" class="filter" id="unwatched" aria-pressed="false">Unwatched only</button>
+        <button type="button" class="filter" id="unwatched" aria-pressed="false">Not finished</button>
+        <select id="watchFilter" aria-label="Filter episodes by watch status"><option value="all">All watch statuses</option><option value="not-started">Not started</option><option value="in-progress">In progress</option><option value="watched">Watched</option></select>
         <button type="button" class="text-button" id="clearFilters">Clear filters</button>
       </div>
       <p id="rangeNotice" class="range"></p>

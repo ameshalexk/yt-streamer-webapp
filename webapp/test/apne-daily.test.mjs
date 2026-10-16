@@ -292,7 +292,7 @@ test("APNE Daily exposes a separate edit control while the show is collapsed", (
   assert.match(css, /\.apne-edit-name-btn/);
 });
 
-test("APNE Daily UI renders latest controls, three-month history, and pagination", () => {
+test("APNE Daily UI renders latest controls, expanded history, and pagination", () => {
   assert.match(html, /data-mode="apne"[^>]*>APNE Daily<\/button>/);
   assert.match(html, /id="apneDailyView"/);
   assert.match(html, /id="apneManageShowsBtn"[^>]*>Manage Shows<\/button>/);
@@ -312,7 +312,7 @@ test("APNE Daily UI renders latest controls, three-month history, and pagination
   assert.match(app, /button\.dataset\.act === "play-episode"/);
   assert.match(app, /startApneEpisodeDownload/);
   assert.match(apneDailySource, /recentEpisodes/);
-  assert.match(apneDailySource, /APNE_HISTORY_MONTHS = 3/);
+  assert.match(apneDailySource, /APNE_HISTORY_MONTHS = 12/);
   assert.match(apneDailySource, /APNE_HISTORY_PAGE_SIZE = 10/);
   assert.match(apneDailySource, /Indian TV date/);
   assert.match(app, /if \(item\.type === "youtube"\) \{[\s\S]*refreshYoutubeMetadataInBackground/);
