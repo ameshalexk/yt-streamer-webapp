@@ -78,7 +78,7 @@ const state = {
   legacyPlaylists: [],
   selectedLegacyPlaylistId: null,
   legacyPlaylistVideos: [],
-  apneDaily: { today: "", shows: [], loading: false, pollTimer: null, pageByShow: {}, expandedByShow: {}, progressByKey: {}, progressReady: false },
+  apneDaily: { today: "", shows: [], loading: false, pollTimer: null, pageByShow: {}, expandedByShow: {}, progressByKey: {}, progressReady: false, mobileFiltersByShow: {} },
   youtubeAuth: null,
   recommendations: [],
   recommendationCategory: "all",
@@ -4320,15 +4320,42 @@ function renderApneDaily() {
     const action = saved ? "play" : (sourceRetry ? "check-latest-source" : "download");
 
     const historyEpisodes = show.recentEpisodes || [];
+    const mobileActive = show.id === "anupamaa" && window.matchMedia?.("(max-width: 640px)")?.matches === true;
+    const mobileFilters = state.apneDaily.mobileFiltersByShow[show.id] || { date: "", order: "newest", onlyUnwatched: false };
+    const visibleEpisodes = mobileActive && window.ApneMobileBrowser
+      ? window.ApneMobileBrowser.selectEpisodes(historyEpisodes, mobileFilters, state.apneDaily.progressByKey, show.id)
+      : historyEpisodes;
     const pageSize = Math.max(1, Number(show.history?.pageSize || 10));
-    const pageCount = Math.max(1, Math.ceil(historyEpisodes.length / pageSize));
+    const pageCount = Math.max(1, Math.ceil(visibleEpisodes.length / pageSize));
     const requestedPage = Math.max(1, Number(state.apneDaily.pageByShow?.[show.id] || 1));
     const page = Math.min(pageCount, requestedPage);
     state.apneDaily.pageByShow[show.id] = page;
     const pageStart = (page - 1) * pageSize;
-    const pageEpisodes = historyEpisodes.slice(pageStart, pageStart + pageSize);
+    const pageEpisodes = visibleEpisodes.slice(pageStart, pageStart + pageSize);
     const historyMonths = Number(show.history?.months || 3);
     const historyTotal = Number(show.history?.total ?? historyEpisodes.length);
+    const availableDates = mobileActive && window.ApneMobileBrowser
+      ? window.ApneMobileBrowser.recentDates(historyEpisodes, 7) : [];
+    const mobileToolsHtml = mobileActive
+      ? '<nav class="apne-mobile-tools" aria-label="Anupamaa episodes by date">' +
+          '<div class="apne-mobile-date-heading"><strong>Browse by date</strong>' +
+            '<button class="apne-mobile-latest" data-act="apne-jump-latest" type="button">Jump to latest</button></div>' +
+          '<div class="apne-mobile-days" aria-label="Recent episode dates">' +
+            '<button type="button" class="apne-mobile-day" data-act="apne-date" data-date-key="" aria-pressed="' + (!mobileFilters.date) + '"><b>All</b><span>dates</span></button>' +
+            availableDates.map((dateKey) => {
+              const label = window.ApneMobileBrowser.dateChipLabel(dateKey);
+              return '<button type="button" class="apne-mobile-day" data-act="apne-date" data-date-key="' + esc(dateKey) + '" aria-pressed="' + (mobileFilters.date === dateKey) + '"><b>' + esc(label.day) + '</b><span>' + esc(label.date) + '</span></button>';
+            }).join("") +
+          '</div>' +
+          '<div class="apne-mobile-controls">' +
+            '<label>Find episode by date<input type="date" data-role="apne-date-picker" aria-label="Find episode by date" value="' + esc(mobileFilters.date || "") + '"></label>' +
+            '<label>Sort episodes<select data-role="apne-sort" aria-label="Sort episodes">' +
+              '<option value="newest"' + (mobileFilters.order !== "oldest" ? ' selected' : '') + '>Newest first</option>' +
+              '<option value="oldest"' + (mobileFilters.order === "oldest" ? ' selected' : '') + '>Oldest first</option>' +
+            '</select></label>' +
+          '</div>' +
+          '<button type="button" class="apne-mobile-unwatched" data-act="apne-unwatched" aria-pressed="' + Boolean(mobileFilters.onlyUnwatched) + '" ' + (!state.apneDaily.progressReady ? 'disabled title="Loading watch history"' : '') + '>✓ Unwatched episodes only</button>' +
+        '</nav>' : "";
 
     const historyHtml = historyEpisodes.length
       ? '<div class="apne-recent">' +
@@ -4336,6 +4363,7 @@ function renderApneDaily() {
             '<div class="apne-recent-title">Episodes</div>' +
             '<div class="apne-history-range">Last ' + esc(historyMonths) + ' months · ' + esc(historyTotal) + ' episodes</div>' +
           '</div>' +
+          mobileToolsHtml +
           '<div class="apne-episode-grid" aria-label="Episode tiles for ' + esc(show.name) + '">' +
           pageEpisodes.map((recent, pageIndex) => {
             const recentStatus = recent.status || "Listed";
@@ -4347,8 +4375,8 @@ function renderApneDaily() {
             const recentAction = recentSaved ? "play-episode" : (streamOnly ? "stream-apne" : (sourceRetry ? "check-apne-source" : "download-episode"));
             const recentButton = recentSaved ? "Play" : (streamOnly ? "Stream" : (sourceRetry ? "Recheck" : (recentBusy ? (recentStatus === "Saving to iCloud" ? "Saving…" : "Downloading…") : (recentStatus === "Failed" ? "Retry" : "Download"))));
             const recentLabel = recent.dateLabel || recent.dateKey || "Episode";
-            const absoluteIndex = pageStart + pageIndex;
-            const badge = absoluteIndex === 0 ? "Latest" : (recent.dateKey && recent.dateKey === state.apneDaily.today ? "Today" : "");
+            const badge = recent.dateKey && recent.dateKey === historyEpisodes[0]?.dateKey
+              ? "Latest" : (recent.dateKey && recent.dateKey === state.apneDaily.today ? "Today" : "");
             const subLabel = recentBusy
               ? (recent.detail || "Saving to Mac…")
               : (recentStatus === "Failed" ? (recent.detail || "Download failed") : (recentSaved ? "Saved on Mac + iCloud Drive" : (recent.detail || "Listed by APNE; stream not checked yet.")));
@@ -4396,6 +4424,8 @@ function renderApneDaily() {
             '</article>';
           }).join("") +
           '</div>' +
+          (mobileActive && !visibleEpisodes.length
+            ? '<div class="apne-mobile-empty" role="status">No matching episodes in the available ' + esc(historyMonths) + '-month history. Try another date or turn off the unwatched filter.<div><button class="btn small secondary" type="button" data-act="apne-jump-latest">Show all dates</button></div></div>' : '') +
           (pageCount > 1
             ? '<div class="apne-pagination" aria-label="Episode history pages">' +
                 '<button class="btn small ghost apne-page-btn" type="button" data-act="apne-page-newer" ' + (page <= 1 ? 'disabled' : '') + '>Newer</button>' +
@@ -4411,8 +4441,9 @@ function renderApneDaily() {
       episode.episodeTitle || "",
     ].filter(Boolean).join(" · ");
 
-    const expanded = state.apneDaily.expandedByShow[show.id] === true;
-    return '<div class="apne-show-wrap" data-show-id="' + esc(show.id) + '">' +
+    const expanded = state.apneDaily.expandedByShow[show.id] === true ||
+      (mobileActive && state.apneDaily.expandedByShow[show.id] === undefined);
+    return '<div class="apne-show-wrap' + (mobileActive ? ' apne-mobile-featured' : '') + '" data-show-id="' + esc(show.id) + '">' +
       '<details class="apne-show-card ' + apneStatusClass(status) + '" data-show-id="' + esc(show.id) + '"' + (expanded ? ' open' : '') + '>' +
       '<summary class="apne-show-toggle">' +
         '<span class="apne-show-heading"><h3>' + esc(show.name) + '</h3>' +
@@ -8219,12 +8250,33 @@ $("#emptyEmbedBtn").onclick = openEmbed;
 $("#emptyLibraryBtn").onclick = openLegacyLibrary;
 $("#apneDailyRefreshBtn").onclick = () => loadApneDaily();
 $("#apneManageShowsBtn").onclick = openApneManageShows;
+$("#apneDailyList").addEventListener("change", (event) => {
+  const control = event.target.closest("[data-role]");
+  if (!control || !control.closest('.apne-show-wrap[data-show-id="anupamaa"]')) return;
+  if (!["apne-date-picker", "apne-sort"].includes(control.dataset.role)) return;
+  const filters = state.apneDaily.mobileFiltersByShow.anupamaa ||= { date: "", order: "newest", onlyUnwatched: false };
+  if (control.dataset.role === "apne-date-picker") {
+    filters.date = /^\d{4}-\d{2}-\d{2}$/.test(control.value) ? control.value : "";
+  } else {
+    filters.order = control.value === "oldest" ? "oldest" : "newest";
+  }
+  state.apneDaily.pageByShow.anupamaa = 1;
+  renderApneDaily();
+});
 bindTap($("#apneDailyList"), async (event) => {
   const button = event.target.closest("[data-act]");
   const card = event.target.closest("[data-show-id]");
   if (!button || !card) return;
   if (button.dataset.act === "edit-apne-name") {
     openApneRenameShow(card.dataset.showId);
+  } else if (card.dataset.showId === "anupamaa" &&
+      ["apne-date", "apne-jump-latest", "apne-unwatched"].includes(button.dataset.act)) {
+    const filters = state.apneDaily.mobileFiltersByShow.anupamaa ||= { date: "", order: "newest", onlyUnwatched: false };
+    if (button.dataset.act === "apne-date") filters.date = button.dataset.dateKey || "";
+    if (button.dataset.act === "apne-unwatched") filters.onlyUnwatched = !filters.onlyUnwatched;
+    if (button.dataset.act === "apne-jump-latest") Object.assign(filters, {date:"", order:"newest", onlyUnwatched:false});
+    state.apneDaily.pageByShow.anupamaa = 1;
+    renderApneDaily();
   } else if (button.dataset.act === "apne-page-newer" || button.dataset.act === "apne-page-older") {
     const showId = card.dataset.showId;
     const current = Math.max(1, Number(state.apneDaily.pageByShow?.[showId] || 1));

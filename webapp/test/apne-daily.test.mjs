@@ -347,7 +347,7 @@ test("APNE source fallback supports two-part embedded streaming without pretendi
   assert.match(server, /frame-src https:\/\/www\.blogger\.com/);
   assert.match(server, /id="apneEmbedStage"/);
   assert.match(player, /source\.format === 'embed'/);
-  assert.match(player, /sandbox',\s*'allow-scripts allow-same-origin allow-presentation'/);
+  assert.match(player, /setAttribute\('sandbox', 'allow-scripts allow-same-origin allow-presentation'\)/);
   assert.match(player, /Part ' \+ \(i \+ 1\)/);
   assert.match(app, /streamOnly \? "stream-apne"/);
   assert.match(app, /recent\.dateKey && !streamOnly/);
@@ -366,7 +366,7 @@ test("APNE Daily Phase A renders responsive episode tiles and preview placeholde
   assert.match(app, /class="apne-recent-actions"/);
   assert.match(app, /data-act="stream-apne"/);
   assert.match(app, /data-act="' \+ recentAction/);
-  assert.match(app, /'<\/div>' \+\s*\(pageCount > 1/);
+  assert.match(app, /mobileActive && !visibleEpisodes\.length/);
   assert.match(css, /container: apne-episodes \/ inline-size/);
   assert.match(css, /@container apne-episodes \(min-width: 450px\)/);
   assert.match(css, /aspect-ratio: 16 \/ 9/);
@@ -412,8 +412,8 @@ test("APNE Daily uses one Available label and routes live playback or downloads 
 
 test("APNE Daily offers native Stream actions and routes unsaved episodes to live HLS", () => {
   assert.match(app, /data-act=\"stream-apne\"/);
-  assert.match(app, /function streamApneLiveEpisode\(showId, dateKey(?:, resume = false)?\)/);
-  assert.match(app, /streamApneLiveEpisode\(card\.dataset\.showId, button\.dataset\.dateKey(?:, resume)?\)/);
+  assert.match(app, /function streamApneLiveEpisode\(showId, dateKey, resume = false\)/);
+  assert.match(app, /streamApneLiveEpisode\(card\.dataset\.showId, button\.dataset\.dateKey, resume\)/);
   assert.match(app, /https:\/\/stream\.ameshalex\.com\/apne\/live\/watch\//);
   assert.match(app, /recent\.dateKey && !streamOnly \? '<button class=/);
   assert.match(app, /episode\.dateKey \? '<button class=/);
@@ -422,7 +422,7 @@ test("APNE Daily offers native Stream actions and routes unsaved episodes to liv
   assert.match(server, /app\.get\("\/apne\/live\/media\/:session\/:asset"/);
   assert.match(server, /resolveApneEpisodeByDate/);
   assert.match(server, /requireApneNativeAccess/);
-  assert.match(app, /function streamApneNativeItem\(itemId(?:, resume = false)?\)/);
+  assert.match(app, /function streamApneNativeItem\(itemId, resume = false\)/);
   assert.match(app, /https:\/\/stream\.ameshalex\.com\/apne\/watch\//);
   assert.match(app, /recent\.dateKey && !streamOnly \? '<button class=/);
   assert.match(app, /episode\.dateKey \? '<button class=/);

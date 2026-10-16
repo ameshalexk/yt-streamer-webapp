@@ -1,0 +1,49 @@
+/* Anupamaa-only mobile episode browser. Other APNE cards stay unchanged. */
+@media (max-width: 640px) {
+  #apneDailyView .panel-head { gap: 10px; align-items: center; }
+  #apneDailyView .panel-head h2 { font-size: 21px; }
+  #apneDailyView .apne-daily-subtitle { display: none; }
+  #apneDailyView .panel-actions { flex-direction: row; align-items: center; gap: 6px; }
+  #apneDailyView .panel-actions .btn { min-height: 40px; font-size: 12px; padding: 8px 10px; }
+  #apneDailyList .apne-show-wrap.apne-mobile-featured { margin-bottom: 12px; }
+  #apneDailyList .apne-mobile-featured > .apne-edit-name-btn { display: none; }
+  #apneDailyList .apne-mobile-featured .apne-show-card { border-radius: 18px; background: #111b2b; padding: 14px; }
+  #apneDailyList .apne-mobile-featured .apne-show-toggle { padding: 2px 4px 8px 0; padding-right: 0; }
+  #apneDailyList .apne-mobile-featured .apne-show-toggle h3 { font-size: 26px; }
+  #apneDailyList .apne-mobile-featured .apne-show-summary-detail { font-size: 12px; }
+  #apneDailyList .apne-mobile-featured .apne-show-content { margin-top: 8px; padding-top: 12px; }
+  #apneDailyList .apne-mobile-featured .apne-show-actions { grid-template-columns: 1fr 1fr; }
+  #apneDailyList .apne-mobile-featured .apne-show-actions .btn { font-size: 13px; padding: 8px; min-height: 44px; }
+  #apneDailyList .apne-mobile-featured .apne-recent-head { margin-top: 12px; }
+  #apneDailyList .apne-mobile-featured .apne-history-range { font-size: 11px; }
+  .apne-mobile-tools { display: grid; gap: 12px; margin: 14px 0; }
+  .apne-mobile-date-heading { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .apne-mobile-date-heading strong { font-size: 16px; }
+  .apne-mobile-tools button, .apne-mobile-tools select, .apne-mobile-tools input { font: inherit; color: var(--text); }
+  .apne-mobile-latest { padding: 7px 10px; border: 1px solid #52637b; background: #1c293c; border-radius: 11px; min-height: 42px; }
+  .apne-mobile-days { display:flex; gap:7px; overflow-x:auto; padding-bottom:5px; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
+  .apne-mobile-day { flex: 0 0 70px; display: grid; gap: 3px; justify-items: center; align-content: center; background: #1b283a; border: 1px solid #2c3d54; border-radius: 11px; min-height: 63px; font-size: 12px; white-space: nowrap; }
+  .apne-mobile-day span { color: #adbdd0; }
+  .apne-mobile-day[aria-pressed="true"] { background: #eaf1fa; color: #111b2b; border-color: white; }
+  .apne-mobile-day[aria-pressed="true"] span { color: #334256; }
+  .apne-mobile-controls { display: grid; grid-template-columns: minmax(0,1fr) 1fr; gap: 8px; }
+  .apne-mobile-controls label { display: grid; gap: 5px; font-size: 11px; color: #b8c5d7; }
+  .apne-mobile-controls input, .apne-mobile-controls select { width: 100%; min-width: 0; background: #1b293b; border: 1px solid #35445b; border-radius: 10px; min-height: 44px; padding: 0 8px; color-scheme: dark; }
+  .apne-mobile-unwatched { border: 1px solid #3a4d65; background: #1d2a3b; border-radius: 10px; min-height: 42px; padding: 8px 12px; text-align: left; }
+  .apne-mobile-unwatched[aria-pressed="true"] { border-color: #79dcae; color: #79dcae; }
+  .apne-mobile-unwatched:disabled { opacity: .55; }
+  #apneDailyList .apne-mobile-featured .apne-episode-grid { display: grid; grid-template-columns: 1fr; gap: 0; }
+  #apneDailyList .apne-mobile-featured .apne-episode-tile { display: grid; grid-template-columns: minmax(0, 105px) minmax(0, 1fr); gap: 10px; padding: 13px 0; border: 0; border-bottom: 1px solid #2a3950; border-radius: 0; background: transparent; min-height: 0; }
+  #apneDailyList .apne-mobile-featured .apne-episode-preview { width: 105px; min-height: 79px; aspect-ratio: 4/3; border-radius: 9px; }
+  #apneDailyList .apne-mobile-featured .apne-episode-preview-caption { display: none; }
+  #apneDailyList .apne-mobile-featured .apne-episode-tile-body { min-width:0; gap:5px; }
+  #apneDailyList .apne-mobile-featured .apne-recent-heading strong { font-size: 15px; }
+  #apneDailyList .apne-mobile-featured .apne-episode-note { display: none; }
+  #apneDailyList .apne-mobile-featured .apne-watch-tracker { padding:0; }
+  #apneDailyList .apne-mobile-featured .apne-watch-track { height: 4px; }
+  #apneDailyList .apne-mobile-featured .apne-watch-label { font-size: 11px; }
+  #apneDailyList .apne-mobile-featured .apne-watch-actions, #apneDailyList .apne-mobile-featured .apne-recent-actions { display:flex; flex-wrap:wrap; gap:5px; margin-top:5px; }
+  #apneDailyList .apne-mobile-featured .apne-recent-actions .btn, #apneDailyList .apne-mobile-featured .apne-watch-actions .btn { flex: 1 1 60px; min-height: 38px; padding: 6px; font-size: 11px; }
+  .apne-mobile-empty { padding: 20px 8px; text-align: center; color: #b8c5d7; line-height: 1.5; }
+  .apne-mobile-empty .btn { margin-top: 12px; }
+}
