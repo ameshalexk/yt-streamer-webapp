@@ -8,9 +8,20 @@ const fixture={
   shows:[{id:"anupamaa",name:"Anupamaa",status:"Available",episode:{dateKey:"2026-10-16"},
     history:{months:3},recentEpisodes:Array.from({length:13},(_,i)=>({
       dateKey:"2026-10-"+String(16-i).padStart(2,"0"),status:i===1?"Saved":"Available",episodeNumber:1423-i
-    }))}]
+    }))},
+    {id:"seher-hone-ko-hai",name:"Seher",status:"Listed",episode:{dateKey:"2026-10-16"},
+      history:{months:3},recentEpisodes:[
+        {dateKey:"2026-10-16",status:"Listed"},
+        {dateKey:"2026-10-13",status:"Available"}]},
+    {id:"shayad-yahi-hai-pyaar",name:"Shayad Yahi Hai Pyaar",status:"Listed",
+      episode:{dateKey:"2026-10-12-e2"},history:{months:3},
+      recentEpisodes:[{dateKey:"2026-10-12-e2",status:"Listed"},
+        {dateKey:"2026-10-12-e1",status:"Listed"}]}
+  ]
 };
 let wrote=false;
+let previewHeads=0;
+let previewGets=0;
 const server=createServer(async(req,res)=>{
   const url=new URL(req.url,"http://127.0.0.1/");
   if(url.pathname==="/api/apne-daily"||url.pathname==="/api/apne/progress"){
@@ -18,7 +29,14 @@ const server=createServer(async(req,res)=>{
     const body=url.pathname.endsWith("progress")?{episodes:[{showId:"anupamaa",dateKey:"2026-10-15",completed:true,durationSeconds:1200,positionSeconds:1200}]}:fixture;
     res.writeHead(200,{"content-type":"application/json"}).end(JSON.stringify(body));return;
   }
-  if(req.method!=="GET"){wrote=true;res.writeHead(405).end();return;}
+  if(url.pathname.startsWith("/apne/live-thumb/")||url.pathname.startsWith("/apne/thumb/")){
+    if(!["GET","HEAD"].includes(req.method)){wrote=true;res.writeHead(405).end();return;}
+    if(req.method==="HEAD"){previewHeads++;res.writeHead(previewHeads===1?202:200).end();return;}
+    previewGets++;
+    const photo=await readFile(path.resolve(root,"icons/apple-touch-icon.png"));
+    res.writeHead(200,{"content-type":"image/png"}).end(photo);return;
+  }
+  if(!["GET","HEAD"].includes(req.method)){wrote=true;res.writeHead(405).end();return;}
   const route=url.pathname==="/experimental/"?"/experimental/index.html":url.pathname;
   const file=path.resolve(root,"."+route);
   if(!file.startsWith(root+"/")){res.writeHead(403).end();return;}
@@ -39,6 +57,16 @@ try{
   assert.equal(await page.locator(".episode-row").count(),10,"Shows ten per page");
   assert.equal(await page.locator("#resultCount").innerText(),"13 episodes");
   assert.equal(await page.locator("#showTitle").innerText(),"Anupamaa");
+  assert.equal(await page.locator(".show-choice").count(),3,"Lists all configured shows");
+  await page.locator('[data-show-id="seher-hone-ko-hai"]').click();
+  assert.equal(await page.locator("#showTitle").innerText(),"Seher");
+  assert.equal(await page.locator("#resultCount").innerText(),"2 episodes");
+  await page.locator('[data-show-id="shayad-yahi-hai-pyaar"]').click();
+  assert.equal(await page.locator("#resultCount").innerText(),"2 episodes");
+  await page.locator('[data-date="2026-10-12"]').click();
+  assert.equal(await page.locator("#resultCount").innerText(),"2 episodes","Same-day multipart episodes filter by air date");
+  await page.locator('[data-show-id="anupamaa"]').click();
+  assert.equal(await page.locator("#resultCount").innerText(),"13 episodes");
   await page.locator("#older").click();
   assert.equal(await page.locator(".episode-row").count(),3,"Older page");
   await page.locator("#newer").click();
@@ -56,9 +84,12 @@ try{
   assert.equal(await page.locator("#resultCount").innerText(),"13 episodes");
   await page.locator(".episode-row [data-detail]").first().click();
   assert.equal(await page.locator(".row-details:not([hidden])").count(),1);
+  await page.locator(".episode-art.has-image").first().waitFor({timeout:10000});
+  assert.ok(previewHeads>=2,"Preview worker polled existing thumbnail endpoint");
+  assert.ok(previewGets>=1,"Generated preview image was fetched and displayed");
   assert.ok(!wrote,"Never wrote API data");
   assert.deepEqual(errors,[],"No browser errors");
-  for(const width of [320,390,850]){
+  for(const width of [320,390,430,850]){
     await page.setViewportSize({width,height:844});
     const dim=await page.evaluate(()=>({w:document.documentElement.clientWidth,sw:document.documentElement.scrollWidth}));
     assert.ok(dim.sw<=dim.w+2,"No horizontal overflow at "+width+": "+JSON.stringify(dim));
@@ -70,7 +101,7 @@ try{
     await page.locator(".episode-row").first().scrollIntoViewIfNeeded();
     await page.screenshot({path:"/tmp/apne-experimental-episodes.png",fullPage:false});
   }
-  console.log("PASS: Experimental read-only page; live-shaped fixture; dates, 13 episodes/pagination, sort, watched filter, details; 320/390/850 responsive; no API writes or errors");
+  console.log("PASS: All-show Experimental: date filtering incl multipart, preview generation/caching, pagination, sorting, filters, touch layout 320/390/430/850, read-only API");
 } finally {
   await browser?.close();
   await new Promise(r=>server.close(r));
