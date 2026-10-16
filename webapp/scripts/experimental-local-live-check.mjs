@@ -9,6 +9,18 @@ try{
  page.on("pageerror",e=>errors.push(e.message));
  await page.goto(base,{waitUntil:"networkidle",timeout:20000});
  await page.locator(".episode-row").first().waitFor({timeout:15000});
+ const showButtons=page.locator(".show-choice");
+ const configured=await showButtons.count();
+ assert.ok(configured>=8,"All eight configured APNE shows should appear; found "+configured);
+ for(const label of ["Anupamaa","seher","Udne ki aasha","mannat","Shayad Yahi Hai Pyaar","108 Base Hospital Uri"]){
+  assert.ok((await page.locator("#showGrid").innerText()).includes(label),"Missing "+label);
+ }
+ await page.locator('[data-show-id="108-base-hospital-uri"]').click();
+ assert.equal(await page.locator("#showTitle").innerText(),"108 Base Hospital Uri");
+ assert.ok(await page.locator(".episode-row").count()>=1,"Hospital has episodes");
+ await page.locator('[data-show-id="shayad-yahi-hai-pyaar"]').click();
+ assert.ok(await page.locator("#episodeList").innerText().then(v=>v.includes("October")),"Multipart episodes show day labels");
+ await page.locator('[data-show-id="anupamaa"]').click();
  const before=await page.locator(".episode-row").count();
  const label=await page.locator("#resultCount").innerText();
  assert.match(label,/\d+ episodes?/);
@@ -22,9 +34,17 @@ try{
  assert.equal(await page.locator(".row-details:not([hidden])").count(),1);
  assert.deepEqual(errors,[]);
  assert.deepEqual(writes,[]);
+ for(const width of [320,390,430,850]){
+  await page.setViewportSize({width,height:844});
+  const dims=await page.evaluate(()=>({inner:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));
+  assert.ok(dims.scroll<=dims.inner+2,"No overflow at "+width+"px "+JSON.stringify(dims));
+ }
+ await page.setViewportSize({width:390,height:844});
  if(process.env.APNE_CAPTURE_UI==="1") {
   await page.goto(base,{waitUntil:"networkidle"});
   await page.screenshot({path:"/tmp/apne-experimental-actual-live.png",fullPage:false});
+  await page.locator(".episode-row").first().scrollIntoViewIfNeeded();
+  await page.screenshot({path:"/tmp/apne-experimental-all-shows-episodes-live.png",fullPage:false});
  }
- console.log("PASS: Real local APNE API through hosted /experimental; "+label+"; source controls read-only; menu/stable unaffected; no browser errors.");
+ console.log("PASS: Real /experimental API; "+configured+" configured shows including hospital/multipart titles, "+label+" selected, 320/390/430/850 responsive, thumbnails safe fallback, no mutation.");
 }finally{await browser.close();}

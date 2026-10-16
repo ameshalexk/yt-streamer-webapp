@@ -11,3 +11,10 @@ Scope: Experimental only, https://stream.ameshalex.com/experimental/. No promoti
 Tests: npm run check, npm test (325/325 pass), node scripts/experimental-route-check.mjs (all shows, multipart dates, mocked real preview and 202 status polling, 320/390/430/850 responsiveness, no writes). Verify live after publishing.
 
 Rollback: restore only namespaced experimental static files from ~/Documents/YTStreamerRollback/experimental-v1-20261016/. Do not replace stable files. No stable homepage, player, backend or Cloudflare edits for this update.
+
+## Post-publish verification
+- Published only namespaced experimental/index.html, app.js and styles.css on the running Mac.
+- Stable homepage SHA-256 remained 133a08411d766dc6 before/after. No restart.
+- Authenticated existing thumbnail routes stay protected by Cloudflare Access. Local unauthenticated HEAD cannot provide real JPEG; graceful fallback applies. Real JPEG and HTTP 202 retry verified with isolated mocked backend.
+- Real APNE GET data: 8 configured shows and 24 Anupamaa episodes at verification. Hospital Uri and Shayad multipart titles present. Responsive at 320/390/430/850px, no write requests.
+- Production main code has not been promoted. User review is next.
