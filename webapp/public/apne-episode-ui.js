@@ -9,6 +9,7 @@
   const base = '/api/apne/episode/' + encodeURIComponent(showId) + '/' + encodeURIComponent(dateKey);
   const video = document.querySelector('#apneLiveVideo');
   const qualityNote = document.querySelector('#apneSourceQuality');
+  const qualitySummary = document.querySelector('#apneQualitySummary');
   const statusText = document.querySelector('#apneDownloadState');
   const downloadButton = document.querySelector('#apneDownloadMac');
   const macButton = document.querySelector('#apneStreamMac');
@@ -54,6 +55,7 @@
     const grade = height >= 720 ? 'HD verified' : 'Below 720p';
     qualityNote.textContent = 'APNE / PlayApne · ' + width + '×' + height + ' (' + grade +
       '). This is the actual decoded video resolution, not a provider claim.';
+    if (qualitySummary) qualitySummary.textContent = 'Quality · ' + height + 'p';
   }
   video.addEventListener('loadedmetadata', updateActualQuality);
   video.addEventListener('resize', updateActualQuality);
@@ -64,6 +66,7 @@
     qualityNote.textContent = provider === 'yodesi'
       ? 'YoDesi • embedded source. Resolution cannot be verified as 720p. YoDesi download is unsupported; Download to Mac uses APNE.'
       : 'APNE / PlayApne • highest offered source, never an automatic low-quality downgrade. Resolution depends on the episode.';
+    if (qualitySummary) qualitySummary.textContent = 'Quality · Source';
     video.dataset.source = '/apne/live/source/' + encodeURIComponent(showId) + '/' + encodeURIComponent(dateKey)
       + '?provider=' + encodeURIComponent(provider);
     window.dispatchEvent(new Event('apne:source-change'));

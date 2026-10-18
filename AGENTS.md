@@ -19,3 +19,5 @@ A request to change YT Streamer targets both `stream.ameshalex.com` (Mac) and
 - Report CI-tested, installed, and verified separately for each host. Mac-only
   capture/browser/audio and iCloud features need explicit platform reporting.
 - Publishing artifacts does not deploy them. See `docs/SHARED_RELEASE.md`.
+
+- iPhone-first acceptance: follow `docs/IPHONE_FIRST_UI.md` and run `node webapp/scripts/mobile-player-browser-check.mjs` on every user-facing player/layout change.

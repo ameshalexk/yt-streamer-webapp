@@ -11,14 +11,14 @@ test("V2-03 defines complete Low Medium High profiles", () => {
   assert.match(app, /high:\s*Object\.freeze\(\{ id: "high", label: "High", height: "480", fps: "24", quality: "4" \}\)/);
 });
 
-test("quality profiles live in the shared video overlay with friendly details", () => {
-  const overlay = html.match(/<div class="video-controls-overlay"[\s\S]*?<div class="screen-empty"/)?.[0] || "";
-  assert.match(overlay, /id="playerQualityPresets"/);
-  assert.match(overlay, /data-stream-profile="low"[\s\S]*360p · 12/);
-  assert.match(overlay, /data-stream-profile="medium"[\s\S]*480p · 15/);
-  assert.match(overlay, /data-stream-profile="high"[\s\S]*480p · 24/);
-  assert.match(overlay, /id="playerQualityCustom"/);
-  assert.doesNotMatch(overlay, /Q(?:4|7|12)/);
+test("quality profiles live in an accessible player panel, not over the phone video", () => {
+  const panel = html.match(/<section class="player-quality-panel"[\s\S]*?<div class="quick"/)?.[0] || "";
+  assert.match(panel, /id="playerQualityPresets"/);
+  assert.match(panel, /data-stream-profile="low"[\s\S]*360p · 12/);
+  assert.match(panel, /data-stream-profile="medium"[\s\S]*480p · 15/);
+  assert.match(panel, /data-stream-profile="high"[\s\S]*480p · 24/);
+  assert.match(panel, /id="playerQualityCustom"/);
+  assert.doesNotMatch(panel, /Q(?:4|7|12)/);
 });
 
 test("selected preset requires height fps and JPEG quality to all match", () => {
