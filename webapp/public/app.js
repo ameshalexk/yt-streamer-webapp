@@ -2623,7 +2623,10 @@ function markBufferedStreamPlaying(attempt, stats = null, { revealControls = tru
   $("#screen").classList.remove("loading");
   const buffered = Number(stats?.queueSeconds || 0);
   const suffix = buffered > 0 ? " · " + buffered.toFixed(1) + "s buf" : "";
-  setBadge("live", (activeCompat?.frameFormat === "jxl" ? "JXL EXP · " : "▶ ") + currentSettingsLabel() + suffix, { revealControls });
+  const actualModeLabel = activeCompat?.frameFormat === "jxl"
+    ? "JXL EXP · up to 12 FPS"
+    : "▶ " + currentSettingsLabel();
+  setBadge("live", actualModeLabel + suffix, { revealControls });
   if (streamSeek.seekable) {
     if (!streamSeek.timer) startStreamSeekTimer();
   }
@@ -8762,6 +8765,36 @@ $("#muteBtn").onclick = () => {
   if (soundOn && !playbackPaused && activeCompat?.audioUrl) startCompatAudio(true);
 };
 $("#pauseBtn").onclick = togglePlaybackPause;
+// Check actual image decoding, not just the browser version/UA. Tesla's
+// Chromium may lag desktop Chrome, so a libjxl-capable server isn't enough.
+async function browserSupportsExperimentalJxl() {
+  const fixture = "/wpPBgATCAEAKAFnEygBAFChMsq4wcu5ni8/dFhM27jO0FbbFpYkioxjk3QCh5ACOzJmzBhjxswYg+eMMcZkSCk/AMDBOHQRBGzjP6/zLAR4hJUkAA==";
+  try {
+    const bytes = Uint8Array.from(atob(fixture), (character) => character.charCodeAt(0));
+    const blob = new Blob([bytes], { type: "image/jxl" });
+    if (typeof createImageBitmap === "function") {
+      const bitmap = await createImageBitmap(blob);
+      try { return bitmap.width === 64 && bitmap.height === 64; }
+      finally { bitmap.close?.(); }
+    }
+    if (!window.Image || !URL.createObjectURL) return false;
+    const imageUrl = URL.createObjectURL(blob);
+    try {
+      const image = await new Promise((resolve, reject) => {
+        const value = new Image();
+        value.onload = () => resolve(value);
+        value.onerror = () => reject(new Error("JXL image decode failed"));
+        value.src = imageUrl;
+      });
+      return image.naturalWidth === 64 && image.naturalHeight === 64;
+    } finally {
+      URL.revokeObjectURL(imageUrl);
+    }
+  } catch {
+    return false;
+  }
+}
+
 $("#playbackMethodToggle")?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-playback-method]");
   if (!button) return;
@@ -8769,6 +8802,9 @@ $("#playbackMethodToggle")?.addEventListener("click", async (event) => {
   if (!["mjpeg", "webcodecs", "jxl"].includes(next)) return;
   if (next === "jxl") {
     try {
+      if (!await browserSupportsExperimentalJxl()) {
+        throw new Error("This browser cannot decode JPEG XL. Use MJPEG or WebCodecs.");
+      }
       const response = await fetch("/api/experimental/jxl", { cache: "no-store" });
       if (!response.ok) throw new Error("Could not check JPEG XL encoder");
       const status = await response.json();
