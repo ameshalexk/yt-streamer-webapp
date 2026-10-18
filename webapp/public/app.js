@@ -369,6 +369,51 @@ function screenIsPlaying() {
   return Boolean($("#screen")?.classList.contains("playing"));
 }
 
+// New playback must bring the player into view on narrow screens, regardless
+// of whether the video was chosen in Browse, Recs, Library, or APNE. This is
+// deliberately NOT called during seek/retry/quality changes: those must not
+// steal the user's scroll position while browsing.
+let mobilePlayerRevealPending = false;
+let mobilePlayerRevealToken = 0;
+function scheduleMobilePlayerReveal() {
+  if (!isMobileMode() || isScreenFullscreen()) return;
+  mobilePlayerRevealPending = true;
+  ++mobilePlayerRevealToken;
+  setPlayerDropdownOpen(true);
+  requestAnimationFrame(maybeRevealMobilePlayer);
+}
+function maybeRevealMobilePlayer() {
+  if (!mobilePlayerRevealPending || !isMobileMode() || !screenIsPlaying() || isScreenFullscreen()) return;
+  const screen = $("#screen");
+  if (!screen || !screen.getClientRects().length) return;
+  const token = mobilePlayerRevealToken;
+  mobilePlayerRevealPending = false;
+  setPlayerDropdownOpen(true);
+  setPlayerQualityPanelOpen(false);
+  // Let the video replace its placeholders before scrolling. scrollIntoView
+  // scrolls the correct ancestor in both Classic and the watch accordion.
+  const reveal = () => {
+    if (token !== mobilePlayerRevealToken || !screen.isConnected || !screenIsPlaying() || !isMobileMode()) return;
+    screen.scrollIntoView({ block: "start", inline: "nearest", behavior: "auto" });
+  };
+  requestAnimationFrame(reveal);
+  // The New UI, iOS dynamic address bar, and watch disclosures can finish
+  // laying out after the first frame. Correct a shifted player once only.
+  setTimeout(() => {
+    if (token !== mobilePlayerRevealToken || !screen.isConnected || !screenIsPlaying()) return;
+    const rect = screen.getBoundingClientRect();
+    if (rect.top < -24 || rect.top > Math.max(40, window.innerHeight * 0.35)) reveal();
+  }, 150);
+}
+function installMobilePlayerReveal() {
+  const screen = $("#screen");
+  if (!screen || screen.dataset.mobileRevealInstalled) return;
+  screen.dataset.mobileRevealInstalled = "true";
+  new MutationObserver(maybeRevealMobilePlayer).observe(screen, {
+    attributes: true, attributeFilter: ["class"],
+  });
+}
+
 function setPlayerDropdownOpen(open) {
   const player = $(".player");
   const button = $("#playerDropdownBtn");
@@ -389,6 +434,7 @@ function syncPlayerDropdownForMode(mode) {
 }
 
 function setMode(mode) {
+  setPlayerQualityPanelOpen(false);
   if (mode === "embed" && !EMBED_FEATURE_VISIBLE) mode = "watch";
   const previousMode = state.mode;
   state.mode = mode;
@@ -1090,6 +1136,7 @@ function resetStreamSettings({ persist = true } = {}) {
 }
 
 function beginNewPlaybackQuality() {
+  scheduleMobilePlayerReveal();
   if (typeof playbackRecovery !== "undefined") playbackRecovery?.reset();
   resetStreamSettings({ persist: true });
   renderFpsPresets();
@@ -1106,6 +1153,37 @@ function qualityProfilesAvailableForCurrentMode() {
     && !screen?.classList.contains("browser-mode");
 }
 
+function setPlayerQualityPanelOpen(open) {
+  const panel = $("#playerQualityPanel");
+  const button = $("#playerQualityBtn");
+  if (!panel || !button) return;
+  const expanded = Boolean(open);
+  panel.hidden = !expanded;
+  button.setAttribute("aria-expanded", String(expanded));
+  if (expanded) {
+    renderQuickQuality();
+  }
+}
+
+function updatePlayerQualityAccess() {
+  const playing = screenIsPlaying();
+  const available = qualityProfilesAvailableForCurrentMode();
+  const trigger = $("#playerQualityBtn");
+  const context = $("#playerQualityContext");
+  const slot = $("#playerQualitySlot");
+  if (slot) slot.hidden = playing && !available;
+  if (trigger) {
+    const active = streamQualitySelection === AUTO_STREAM_QUALITY_ID
+      ? "Auto"
+      : streamQualityProfileForSettings()?.label || "Custom";
+    trigger.textContent = available ? "Quality · " + active : "Quality · Source";
+    trigger.title = available ? "Change playback quality" : "Source controls quality in this playback mode";
+  }
+  if (context) context.textContent = available
+    ? "Choose Auto, Low, Medium, or High. Changing quality may restart the stream at your saved position."
+    : "This source manages its own resolution. Use the embedded video or remote player settings when available.";
+}
+
 function renderQuickQuality() {
   const current = streamQualitySelection === AUTO_STREAM_QUALITY_ID
     ? { id: AUTO_STREAM_QUALITY_ID }
@@ -1117,11 +1195,7 @@ function renderQuickQuality() {
   });
   const custom = $("#playerQualityCustom");
   if (custom) custom.hidden = Boolean(current);
-  const slot = $("#playerQualitySlot");
-  if (slot) {
-    const unavailable = $("#screen")?.classList.contains("playing") && !qualityProfilesAvailableForCurrentMode();
-    slot.hidden = Boolean(unavailable);
-  }
+  updatePlayerQualityAccess();
 }
 
 function renderSettingOptions() {
@@ -3357,6 +3431,9 @@ async function playItem(item) {
 }
 
 function stopPlayback() {
+  mobilePlayerRevealPending = false;
+  ++mobilePlayerRevealToken;
+  setPlayerQualityPanelOpen(false);
   globalThis.ytStreamerVlcCast?.setSource(null);
   playbackRecovery?.reset();
   pendingPlaybackMethodRestore = null;
@@ -6961,6 +7038,7 @@ function applyDesktopPreset(name) {
 }
 
 function playDesktopStream() {
+  scheduleMobilePlayerReveal();
   state.playingItemId = null;
   renderItems();
   if (isMobileMode()) setPlayerDropdownOpen(true);
@@ -7592,6 +7670,7 @@ function queueBrowserSettingsUpdate({ immediate = false } = {}) {
 }
 
 async function playBrowserStream() {
+  scheduleMobilePlayerReveal();
   primeBrowserAudioFromGesture();
   const url = $("#browserUrl").value.trim();
   if (!url) {
@@ -7637,6 +7716,7 @@ async function playBrowserStream() {
 }
 
 async function playRealChromeStream() {
+  scheduleMobilePlayerReveal();
   primeBrowserAudioFromGesture();
   const viewport = parseBrowserViewport();
   const fps = browserFpsValue();
@@ -8410,6 +8490,10 @@ function handleStreamProfileClick(e) {
   e.preventDefault();
   e.stopPropagation();
   requestQualityProfile(btn.dataset.streamProfile);
+  if (e.currentTarget?.id === "playerQualityPresets") {
+    setPlayerQualityPanelOpen(false);
+    if (isMobileMode()) requestAnimationFrame(() => $("#screen")?.scrollIntoView({ block: "start", behavior: "auto" }));
+  }
 }
 
 $("#qualityQuick").addEventListener("click", handleStreamProfileClick);
@@ -8437,6 +8521,14 @@ $("#stopBtn").onclick = stopPlayback;
 $("#autoplayBtn").onclick = () => setAutoplayEnabled(!autoplayEnabled);
 $("#restreamBtn").onclick = restreamPlayback;
 $("#fullscreenBtn").onclick = toggleScreenFullscreen;
+$("#playerQualityBtn").onclick = () => {
+  if (isScreenFullscreen()) exitScreenFullscreen();
+  setPlayerQualityPanelOpen($("#playerQualityPanel").hidden);
+  if (!$("#playerQualityPanel").hidden && isMobileMode()) {
+    $("#playerQualityPanel").scrollIntoView({ block: "nearest", behavior: "auto" });
+  }
+};
+$("#playerQualityCloseBtn").onclick = () => setPlayerQualityPanelOpen(false);
 $("#streamRetryBtn").onclick = () => {
   playbackRecovery?.reset();
   if (!replayFn) return;
@@ -9661,6 +9753,10 @@ function initEverydayControls() {
   }
   const savedApneReturn = returnToApne ? restoreApneReturnState() : null;
   setMode(returnToApne ? "apne" : "watch");
+  installMobilePlayerReveal();
+  new MutationObserver(updatePlayerQualityAccess).observe($("#screen"), {
+    attributes: true, attributeFilter: ["class"],
+  });
   resetStreamSettings();
   renderFpsPresets();
   renderQuickQuality();

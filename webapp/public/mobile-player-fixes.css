@@ -1,0 +1,193 @@
+
+/* October 2026 iPhone player consistency: shared by Classic and New UI.
+   No codec pipeline changes. The quality control stays attached to the player
+   (not inside an auto-hidden controls overlay or an off-screen settings tab). */
+.screen > .player-quality-trigger {
+  position: absolute;
+  z-index: 49;
+  top: 9px;
+  right: 9px;
+  width: auto;
+  max-width: calc(100% - 130px);
+  min-width: 102px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255,255,255,.40);
+  border-radius: 11px;
+  background: rgba(9,14,19,.88);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.15;
+  font-weight: 800;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 2px 12px rgba(0,0,0,.4);
+  touch-action: manipulation;
+}
+.screen:not(.playing) > .player-quality-trigger { display: none; }
+.screen > .player-quality-trigger[aria-expanded="true"] {
+  background: rgba(32,105,175,.97);
+  border-color: #9bcfff;
+}
+.screen > .player-quality-trigger:focus-visible,
+.player-quality-panel button:focus-visible {
+  outline: 3px solid #9bcfff;
+  outline-offset: 2px;
+}
+/* The source and controls are outside the video image to prevent an
+   oversized four-button overlay hiding most of an iPhone's picture. */
+.player-quality-panel {
+  flex: 0 0 auto;
+  margin: 0 18px 12px;
+  padding: 12px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.player-quality-panel[hidden] { display: none !important; }
+.player-quality-panel-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+.player-quality-panel-head strong {
+  color: var(--text);
+  font-size: 15px;
+}
+.player-quality-panel-head .btn { flex: 0 0 auto; width: auto; min-height: 42px; }
+.player-quality-context {
+  margin: 7px 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.player-quality-panel .player-quality-slot {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.player-quality-panel .player-quality-presets {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: 100%;
+}
+.player-quality-panel .player-quality-btn {
+  min-height: 46px;
+  border-radius: 10px;
+}
+body.screen-fullscreen .player-quality-panel { display: none !important; }
+
+@media (max-width: 900px) {
+  html { scroll-padding-top: max(10px, env(safe-area-inset-top)); }
+  /* Ensure the video comes before secondary controls in both watch layouts.
+     The accordion's toolbar stays in its own disclosure below the screen. */
+  .player-body > .home-tiles { order: -1; }
+  .player-body > .screen { order: 0; scroll-margin-top: 10px; }
+  .player-body > .player-quality-panel { order: 1; }
+  .player-body > .quick { order: 3; }
+  .player-body > .browser-player-settings { order: 4; }
+  .player-body > .player-toolbar { order: 5; }
+  .player-body > .stream-settings { order: 6; }
+  .player-body > .watch-accordion { order: 7; }
+  .player .col-head {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .player .col-head #nowPlaying {
+    flex: 1 1 145px;
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    line-height: 1.25;
+    font-size: clamp(14px, 3.8vw, 18px);
+  }
+  .player .player-actions {
+    flex: 0 1 auto;
+    width: auto;
+    justify-content: flex-end;
+    gap: 6px;
+    min-width: 0;
+  }
+  .player .player-actions .btn.small {
+    padding-left: 10px;
+    padding-right: 10px;
+    min-height: 44px;
+    font-size: 13px;
+  }
+  .player-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 8px;
+  }
+  .player-toolbar > .btn,
+  .player-toolbar .playback-method-toggle .btn {
+    flex: 0 0 auto;
+    min-height: 44px;
+  }
+  .playback-method-toggle { flex-wrap: wrap; }
+  .player-quality-panel { margin: 0 12px 12px; }
+  .screen > .player-quality-trigger { min-height: 44px; }
+  .video-controls-row { flex-wrap: wrap; gap: 8px; }
+  .video-controls-row .playback-speed-control { min-height: 44px; padding: 0 8px; }
+  .video-controls-row .playback-speed-control select { min-height: 40px; }
+}
+@media (max-width: 520px) {
+  .player .col-head { padding: 10px; }
+  .player .col-head #nowPlaying { flex: 1 1 100%; }
+  .player .player-actions { flex: 1 1 100%; justify-content: flex-start; }
+  .player .player-actions .btn.small { min-height: 44px; }
+  .player-toolbar { gap: 7px; padding: 10px; }
+  .player-toolbar > .btn { min-width: 0; font-size: 13px; }
+  .player-quality-panel { margin: 0 10px 12px; padding: 11px; }
+  .player-quality-panel .player-quality-presets {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .player-quality-panel .player-quality-btn { min-height: 48px; }
+  .player-quality-panel .player-quality-btn strong { font-size: 14px; }
+  .player-quality-panel .player-quality-btn small { font-size: 11px; }
+  .screen > .player-quality-trigger {
+    top: 7px;
+    right: 7px;
+    padding: 6px 9px;
+    min-width: 95px;
+    font-size: 12px;
+    max-width: calc(100% - 108px);
+  }
+  .screen .video-controls-panel { padding: 9px; }
+  .screen .video-controls-row { gap: 7px; }
+  .screen .video-control-btn { min-height: 44px; padding: 0 10px; font-size: 13px; }
+  .screen .video-control-btn.icon-only { min-width: 44px; width: 44px; }
+  .screen .video-controls-row .playback-speed-control { min-height: 44px; }
+  .screen .stream-seek-row .btn {
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 12px;
+  }
+  .screen .stream-seek-track { min-width: 0; }
+  .stream-settings-head, .quality-quick { flex-wrap: wrap; }
+}
+@media (max-width: 355px) {
+  .player .player-actions .btn.small { font-size: 12px; padding: 0 8px; }
+  .screen .video-controls-row .playback-speed-control { padding: 0 5px; }
+  .screen .video-controls-row .playback-speed-control span { display: none; }
+}

@@ -21,10 +21,11 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e10600'/><polygon points='40,30 72,50 40,70' fill='white'/></svg>" />
   <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <link rel="stylesheet" href="/styles.css?v=20261004-accordion-latest" />
+  <link rel="stylesheet" href="/styles.css?v=20261018-iphone-player-fix" />
   <link rel="stylesheet" href="/everyday-controls.css?v=20261007" />
   <link rel="stylesheet" href="/ui-switch.css?v=20261008-v3" />
   <script src="/ui-switch.js?v=20261008-v3"></script>
+  <link rel="stylesheet" href="/mobile-player-fixes.css?v=20261018-iphone-first" />
   <style>
     .experimental-menu-link { display:flex; align-items:center; min-height:40px; padding:0 18px; border-radius:9px; color:var(--muted); text-decoration:none; font-size:15px; font-weight:800; white-space:nowrap; }
     .experimental-menu-link:hover, .experimental-menu-link:focus-visible { background:var(--panel-2); color:var(--text); }
@@ -232,6 +233,8 @@
 
         <div class="screen" id="screen">
           <button class="browser-close-popup" id="browserClosePopupBtn" type="button" aria-label="Close popup tab" title="Close popup tab" hidden>×</button>
+          <button class="player-quality-trigger" id="playerQualityBtn" type="button"
+            aria-expanded="false" aria-controls="playerQualityPanel" aria-label="Quality settings">Quality · Auto</button>
           <div class="stream-badge" id="streamBadge" hidden></div>
           <div class="stream-notice" id="streamNotice" hidden>
             <div class="notice-title" id="streamNoticeTitle"></div>
@@ -299,15 +302,6 @@
                     <option value="4">4×</option>
                   </select>
                 </label>
-                <div class="player-quality-slot" id="playerQualitySlot" data-v2-story="quality-presets">
-                  <div class="player-quality-presets" id="playerQualityPresets" role="group" aria-label="Playback quality profile">
-                    <button class="player-quality-btn" type="button" data-stream-profile="auto" aria-pressed="false"><strong>Auto</strong><small>Adaptive</small></button>
-                    <button class="player-quality-btn" type="button" data-stream-profile="low" aria-pressed="false"><strong>Low</strong><small>360p · 12</small></button>
-                    <button class="player-quality-btn" type="button" data-stream-profile="medium" aria-pressed="false"><strong>Medium</strong><small>480p · 15</small></button>
-                    <button class="player-quality-btn" type="button" data-stream-profile="high" aria-pressed="false"><strong>High</strong><small>480p · 24</small></button>
-                  </div>
-                  <span class="player-quality-custom" id="playerQualityCustom">Custom</span>
-                </div>
                 <span class="video-controls-spacer" aria-hidden="true"></span>
                 <button class="video-control-btn icon-only" id="fullscreenBtn" type="button" aria-label="Full screen" title="Full screen"><span class="fullscreen-icon" aria-hidden="true"></span></button>
               </div>
@@ -317,6 +311,23 @@
             <div class="big">▶</div>
           </div>
         </div>
+
+        <section class="player-quality-panel" id="playerQualityPanel" aria-label="Player quality settings" hidden>
+          <div class="player-quality-panel-head">
+            <strong>Playback quality</strong>
+            <button class="btn small ghost" id="playerQualityCloseBtn" type="button">Close</button>
+          </div>
+          <p class="player-quality-context" id="playerQualityContext">Choose a quality profile for this stream.</p>
+                <div class="player-quality-slot" id="playerQualitySlot" data-v2-story="quality-presets">
+                  <div class="player-quality-presets" id="playerQualityPresets" role="group" aria-label="Playback quality profile">
+                    <button class="player-quality-btn" type="button" data-stream-profile="auto" aria-pressed="false"><strong>Auto</strong><small>Adaptive</small></button>
+                    <button class="player-quality-btn" type="button" data-stream-profile="low" aria-pressed="false"><strong>Low</strong><small>360p · 12</small></button>
+                    <button class="player-quality-btn" type="button" data-stream-profile="medium" aria-pressed="false"><strong>Medium</strong><small>480p · 15</small></button>
+                    <button class="player-quality-btn" type="button" data-stream-profile="high" aria-pressed="false"><strong>High</strong><small>480p · 24</small></button>
+                  </div>
+                  <span class="player-quality-custom" id="playerQualityCustom">Custom</span>
+                </div>
+        </section>
 
         <div class="quick">
           <input id="quickUrl" type="text" inputmode="url" value="https://youtu.be/gF3X54sk0hc?is=WNtys9VQQKxryft4" placeholder="Paste a channel URL, M3U playlist, or YouTube link…" />
@@ -828,7 +839,7 @@
   <script src="/playback-recovery.js?v=20261007"></script>
   <script src="/everyday-controls.js?v=20261007"></script>
   <script src="/extractor-controls.js?v=20261007"></script>
-  <script src="/app.js?v=20261007-recovery-storage"></script>
+  <script src="/app.js?v=20261018-mobile-player"></script>
   <script src="/modern-ui.js?v=20261008-v3"></script>
   <script src="/vlc-cast.js?v=20261011-issue35"></script>
 </body>

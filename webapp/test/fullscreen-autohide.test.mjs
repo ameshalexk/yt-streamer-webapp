@@ -8,7 +8,7 @@ test("periodic buffered stats do not keep waking fullscreen controls", () => {
   assert.match(app, /if \(revealControls\) showFullscreenOverlays\(\{ withProgress: false \}\)/);
 });
 
-test("one shared overlay owns the essential video controls and seek surface", () => {
+test("one shared player owns seek/pause and persistent in-player quality access", () => {
   const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const overlay = html.match(/<div class="video-controls-overlay"[\s\S]*?<div class="screen-empty"/)?.[0] || "";
   assert.match(overlay, /id="pauseBtn"/);
@@ -16,9 +16,11 @@ test("one shared overlay owns the essential video controls and seek surface", ()
   assert.match(overlay, /id="fullscreenBtn"/);
   assert.match(overlay, /id="streamSeek"/);
   assert.match(overlay, /id="liveSeekStatus"/);
-  assert.match(overlay, /id="playerQualitySlot"[^>]*data-v2-story="quality-presets"/);
-  assert.match(overlay, /id="playerQualityPresets"/);
-  assert.doesNotMatch(overlay, /id="playerQualitySlot"[^>]*\shidden(?:\s|>)/);
+  assert.match(html, /id="playerQualityBtn"[^>]*aria-expanded="false"[^>]*aria-controls="playerQualityPanel"/);
+  assert.match(html, /id="playerQualitySlot"[^>]*data-v2-story="quality-presets"/);
+  assert.match(html, /id="playerQualityPresets"/);
+  assert.doesNotMatch(overlay, /id="playerQualitySlot"/);
+  assert.match(html, /id="playerQualityPanel"[^>]*hidden/);
   for (const id of ["pauseBtn", "muteBtn", "fullscreenBtn", "streamSeek"]) {
     assert.equal((html.match(new RegExp(`id="${id}"`, "g")) || []).length, 1, `${id} must have one shared instance`);
   }
@@ -28,9 +30,11 @@ test("idle player overlay becomes invisible and non-interactive", () => {
   const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
   assert.match(css, /body\.fullscreen-controls-idle \.video-controls-overlay \{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
   assert.match(css, /\.video-control-btn \{[^}]*min-height:\s*52px;/s);
-  assert.match(css, /\.player-quality-slot \{[^}]*min-width:\s*300px;[^}]*display:\s*flex;/s);
-  assert.match(css, /\.player-quality-btn \{[^}]*min-height:\s*52px;/s);
-  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.player-quality-slot \{[^}]*flex:\s*1 0 100%;/s);
+  const mobileCss = fs.readFileSync(new URL("../public/mobile-player-fixes.css", import.meta.url), "utf8");
+  assert.match(mobileCss, /\.screen > \.player-quality-trigger/);
+  assert.match(mobileCss, /\.screen:not\(\.playing\) > \.player-quality-trigger/);
+  assert.match(mobileCss, /\.player-quality-panel \.player-quality-btn \{[^}]*min-height:\s*46px;/s);
+  assert.match(mobileCss, /@media \(max-width: 520px\)[\s\S]*\.player-quality-panel \.player-quality-presets/);
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.stream-badge \{[^}]*top:\s*8px;[^}]*bottom:\s*auto;/s);
 });
 
