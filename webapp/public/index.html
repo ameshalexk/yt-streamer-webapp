@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="/everyday-controls.css?v=20261007" />
   <link rel="stylesheet" href="/ui-switch.css?v=20261008-v3" />
   <script src="/ui-switch.js?v=20261008-v3"></script>
-  <link rel="stylesheet" href="/mobile-player-fixes.css?v=20261018-jxl-opt-in" />
+  <link rel="stylesheet" href="/mobile-player-fixes.css?v=20261018-audio-codec-status" />
   <style>
     .experimental-menu-link { display:flex; align-items:center; min-height:40px; padding:0 18px; border-radius:9px; color:var(--muted); text-decoration:none; font-size:15px; font-weight:800; white-space:nowrap; }
     .experimental-menu-link:hover, .experimental-menu-link:focus-visible { background:var(--panel-2); color:var(--text); }
@@ -315,7 +315,12 @@
             <button class="btn small ghost" type="button" data-playback-method="webcodecs" aria-pressed="false">WebCodecs</button>
             <button class="btn small ghost video-mode-experimental" type="button" data-playback-method="jxl" aria-pressed="false" title="Experimental JPEG XL — verifies this browser and Mac encoder first">JXL · Experimental</button>
           </div>
-          <span class="player-video-modes-hint" id="videoModeHint">Choose MJPEG, WebCodecs, or experimental JPEG XL. Unsupported JXL browsers stay on the current mode.</span>
+          <div class="player-active-status" aria-live="polite" aria-atomic="true">
+            <span id="activePlaybackCodec" class="player-active-codec">Not playing · Selected: MJPEG</span>
+            <span id="activePlaybackAudio" class="player-active-audio">Audio: idle</span>
+          </div>
+          <button class="btn small ghost player-audio-retry" id="playerRetryAudioBtn" type="button" hidden>Retry audio</button>
+          <span class="player-video-modes-hint" id="videoModeHint">Selected buttons are preferences; the status above shows the actual active player and audio state.</span>
         </section>
 
         <section class="player-quality-panel" id="playerQualityPanel" aria-label="Player quality settings" hidden>
@@ -845,7 +850,7 @@
   <script src="/playback-recovery.js?v=20261007"></script>
   <script src="/everyday-controls.js?v=20261007"></script>
   <script src="/extractor-controls.js?v=20261007"></script>
-  <script src="/app.js?v=20261018-jxl-opt-in"></script>
+  <script src="/app.js?v=20261018-audio-codec-status"></script>
   <script src="/modern-ui.js?v=20261008-v3"></script>
   <script src="/vlc-cast.js?v=20261011-issue35"></script>
 </body>

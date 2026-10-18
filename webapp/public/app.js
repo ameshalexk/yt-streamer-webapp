@@ -674,6 +674,48 @@ let cyberdashModule = null;
 let cyberdashPlayer = null;
 let activeYoutubeSourceUrl = "";
 
+function updateActivePlaybackStatus() {
+  const codec = $("#activePlaybackCodec");
+  const audioInfo = $("#activePlaybackAudio");
+  const retry = $("#playerRetryAudioBtn");
+  if (!codec || !audioInfo) return;
+  const screen = $("#screen");
+  const playing = Boolean(screen?.classList.contains("playing"));
+  // These labels describe the renderer that is actually running. The selected
+  // radio buttons describe only the preferred mode for a subsequent request.
+  const actual = screen?.classList.contains("cyberdash-mode")
+    ? "WebCodecs · H.264"
+    : activeCompat?.frameFormat === "jxl" && screen?.classList.contains("mjpeg-buffered-mode")
+      ? "JPEG XL · JXL"
+      : screen?.classList.contains("mjpeg-buffered-mode")
+        ? "MJPEG · JPEG frames"
+        : screen?.classList.contains("mjpeg-mode")
+          ? "MJPEG · Browser image player"
+          : screen?.classList.contains("video-mode")
+            ? "Native video player"
+            : null;
+  const preference = {mjpeg: "MJPEG", webcodecs: "WebCodecs", jxl: "JXL Experimental"}[youtubePlaybackMethod] || "MJPEG";
+  const videoState = playing
+    ? (screen?.classList.contains("loading") ? "Loading" : "Playing")
+    : "Not playing";
+  const codecText = actual ? videoState + ": " + actual : videoState + " · Selected: " + preference;
+  if (codec.textContent !== codecText) codec.textContent = codecText;
+  const status = playing
+    ? (!soundOn ? "muted" : activeCompat?.audioStatus || (actual ? "source" : "idle"))
+    : "idle";
+  const audioText = status === "synced" ? "Audio: synchronized"
+    : status === "ready" ? "Audio: preparing"
+    : status === "starting" ? "Audio: connecting"
+    : status === "retrying" ? "Audio: reconnecting (" + (activeCompat?.audioRetryCount || 1) + "/3)"
+    : status === "silent" ? "Audio: unavailable · video clock (silent)"
+    : status === "muted" ? "Audio: muted"
+    : status === "source" ? "Audio: source-managed"
+    : "Audio: idle";
+  if (audioInfo.textContent !== audioText) audioInfo.textContent = audioText;
+  audioInfo.dataset.state = status;
+  if (retry) retry.hidden = !(playing && status === "silent" && typeof activeCompat?.repairAudio === "function");
+}
+
 function renderYoutubePlaybackMethod() {
   document.querySelectorAll("[data-playback-method]").forEach((button) => {
     const active = button.dataset.playbackMethod === youtubePlaybackMethod;
@@ -681,6 +723,7 @@ function renderYoutubePlaybackMethod() {
     button.setAttribute("aria-pressed", active ? "true" : "false");
   });
   renderYoutubePlaybackRate();
+  updateActivePlaybackStatus();
 }
 
 function renderYoutubePlaybackRate() {
@@ -1231,10 +1274,11 @@ function renderFpsPresets() {
 
 function setBadge(mode, text, { revealControls = true } = {}) {
   const b = $("#streamBadge");
-  if (mode === "hidden") { b.hidden = true; return; }
+  if (mode === "hidden") { b.hidden = true; updateActivePlaybackStatus(); return; }
   b.hidden = false;
   b.className = "stream-badge " + mode;
   b.textContent = text;
+  updateActivePlaybackStatus();
   if (revealControls) showFullscreenOverlays({ withProgress: false });
 }
 
@@ -1737,6 +1781,7 @@ function renderMuteButton() {
   btn.textContent = soundOn ? "🔊 Sound" : "🔇 Muted";
   btn.setAttribute("aria-label", soundOn ? "Mute sound" : "Turn sound on");
   btn.setAttribute("aria-pressed", soundOn ? "false" : "true");
+  updateActivePlaybackStatus();
 }
 
 function resetPauseControl(disabled = false) {
@@ -2738,11 +2783,24 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     bufferedPlayer: null,
     browserAudio: false,
     browserPcm: false,
+    audioStatus: !soundOn ? "muted" : (audioUrl ? "starting" : "source"),
+    audioRetryCount: 0,
   };
+  updateActivePlaybackStatus();
 
   let player = null;
   let loggedPlaying = false;
   let loggedRebufferCount = 0;
+  let audioRetryCount = 0;
+  let audioRetryTimer = null;
+  let audioLoadTimer = null;
+  let audioFailureHandled = false;
+  const cancelAudioTimers = () => {
+    clearTimeout(audioRetryTimer);
+    clearTimeout(audioLoadTimer);
+    audioRetryTimer = null;
+    audioLoadTimer = null;
+  };
   player = new window.BufferedMjpeg.BufferedMjpegPlayer({
     url: bufferedUrl,
     canvas,
@@ -2932,57 +2990,131 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   });
 
   activeCompat.bufferedPlayer = player;
-  activeCompat.repairAudio = async () => {
-    if (!currentAttempt(attempt) || playbackPaused || document.hidden || !soundOn) return;
+  const handleBufferedAudioFailure = (reason) => {
+    if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+    // Some browsers emit both audio.onerror and a rejected source attach for
+    // the same failed resource. Count one failure per loading attempt.
+    if (audioFailureHandled) return;
+    audioFailureHandled = true;
+    cancelAudioTimers();
+    const clockPosition = player.currentTime();
+    audioFailed = true;
+    activeCompat.audioReady = true;
+    player.setAudioDisabled(true, clockPosition);
+    player.setAudioReady(true);
+    const mediaError = Number(audio.error?.code || 0);
+    reportPlaybackEvent("buffered_audio_failed", {
+      label,
+      reason: "media=" + mediaError + "; retry=" + audioRetryCount,
+      message: String(reason || "Audio source failed").slice(0, 100),
+    });
+    if (audioUrl && soundOn && audioRetryCount < 3) {
+      audioRetryCount++;
+      activeCompat.audioRetryCount = audioRetryCount;
+      activeCompat.audioStatus = "retrying";
+      updateActivePlaybackStatus();
+      const delayMs = [0, 900, 2000, 4000][audioRetryCount];
+      audioRetryTimer = setTimeout(() => {
+        audioRetryTimer = null;
+        if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player || !soundOn) return;
+        if (playbackPaused || document.hidden) {
+          activeCompat.audioStatus = "silent";
+          updateActivePlaybackStatus();
+          return;
+        }
+        void activeCompat.repairAudio().catch((error) =>
+          handleBufferedAudioFailure(error.message || "Audio reconnection failed"));
+      }, delayMs);
+      return;
+    }
+    activeCompat.audioStatus = "silent";
+    updateActivePlaybackStatus();
+    toast("Sound unavailable · video continues silently. Tap Retry audio.", true);
+    showStreamNotice("warning", "Audio connection failed",
+      "Video continues using its own clock. Tap Retry audio to reconnect sound, or select WebCodecs for synchronized audio/video.");
+  };
+
+  const armAudioLoadTimeout = () => {
+    clearTimeout(audioLoadTimer);
+    audioLoadTimer = setTimeout(() => {
+      audioLoadTimer = null;
+      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      if (!audioReadyForSync(audio)) handleBufferedAudioFailure("Audio did not buffer within 12 seconds");
+    }, 12000);
+  };
+
+  const markAudioReady = () => {
+    if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+    if (!audioReadyForSync(audio) || (audioFailureHandled && audioRetryTimer)) return;
+    clearTimeout(audioLoadTimer);
+    audioLoadTimer = null;
+    audioFailureHandled = false;
+    audioFailed = false;
+    activeCompat.audioReady = true;
+    activeCompat.audioStatus = "ready";
+    updateActivePlaybackStatus();
+    player.setAudioReady(true);
+  };
+  activeCompat.repairAudio = async ({ manual = false } = {}) => {
+    if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player
+        || playbackPaused || document.hidden || !soundOn || !audioUrl) return false;
+    if (manual) {
+      audioRetryCount = 0;
+      activeCompat.audioRetryCount = 0;
+    }
+    cancelAudioTimers();
     const localTime = Math.max(0, player.currentTime());
     const absoluteTime = streamSeek.startAt + localTime;
     const url = new URL(audioUrl, location.origin);
-    const fullFile = url.pathname.startsWith('/stream/legacy-audio/');
-    url.searchParams.set('_', String(Date.now()));
-    if (!fullFile) url.searchParams.set('timestamp', String(absoluteTime));
-    if (!player.beginAudioRecovery(fullFile ? streamSeek.startAt : -localTime)) return;
+    const fullFile = url.pathname.startsWith("/stream/legacy-audio/");
+    url.searchParams.set("_", String(Date.now()));
+    if (!fullFile) url.searchParams.set("timestamp", String(absoluteTime));
+    if (!player.beginAudioRecovery(fullFile ? streamSeek.startAt : -localTime)) return false;
     audioFailed = false;
+    audioFailureHandled = false;
     activeCompat.audioReady = false;
+    activeCompat.audioStatus = "retrying";
+    updateActivePlaybackStatus();
     audio.onloadedmetadata = () => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
       if (fullFile) { try { audio.currentTime = absoluteTime; } catch {} }
+      markAudioReady();
     };
-    await setCompatAudioSource(audio, url.pathname + url.search);
+    armAudioLoadTimeout();
+    try {
+      await setCompatAudioSource(audio, url.pathname + url.search);
+    } catch (error) {
+      handleBufferedAudioFailure(error.message || "Audio source could not reconnect");
+      return false;
+    }
+    return true;
   };
+
   updateBufferedMjpegDebug(player.getStats());
   audio.muted = !soundOn;
 
   if (audioUrl && soundOn) {
-    const markAudioReady = () => {
-      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
-      if (!audioReadyForSync(audio)) return;
-      activeCompat.audioReady = true;
-      player.setAudioReady(true);
-    };
-    audio.onloadedmetadata = () => {
-      if (meta.audioElementStartAt) {
-        try { audio.currentTime = meta.audioElementStartAt; } catch {}
-      }
-      markAudioReady();
-    };
+    audio.onloadedmetadata = markAudioReady;
     audio.onloadeddata = markAudioReady;
     audio.oncanplay = markAudioReady;
     audio.oncanplaythrough = markAudioReady;
+    audio.onplaying = () => {
+      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      cancelAudioTimers();
+      audioFailureHandled = false;
+      audioFailed = false;
+      activeCompat.audioStatus = "synced";
+      updateActivePlaybackStatus();
+    };
     audio.onerror = () => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
-      audioFailed = true;
-      activeCompat.audioReady = true;
-      toast("Audio failed; continuing with video clock", true);
-      player.setAudioReady(true);
+      handleBufferedAudioFailure("HTML audio error " + Number(audio.error?.code || 0));
     };
+    armAudioLoadTimeout();
     setCompatAudioSource(audio, audioUrl).then(() => {
       markAudioReady();
     }).catch((error) => {
-      if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
-      console.warn("[buffered-mjpeg-audio] source failed:", error.message);
-      audioFailed = true;
-      activeCompat.audioReady = true;
-      player.setAudioReady(true);
+      handleBufferedAudioFailure(error.message || "Could not load audio");
     });
   } else {
     player.setAudioReady(true);
@@ -3485,6 +3617,7 @@ function stopPlayback() {
   renderDesktopInputUi();
   setBadge("hidden");
   $("#screen").classList.remove("playing", "loading", "video-mode", "mjpeg-mode", "mjpeg-buffered-mode", "cyberdash-mode", "embed-mode", "browser-mode", "startup-preview");
+  updateActivePlaybackStatus();
   $("#screen").style.height = "";
   $("#screen").style.aspectRatio = "";
   $("#nowPlaying").textContent = "Player";
@@ -8555,6 +8688,13 @@ $("#playerQualityBtn").onclick = () => {
   }
 };
 $("#playerQualityCloseBtn").onclick = () => setPlayerQualityPanelOpen(false);
+$("#playerRetryAudioBtn").onclick = () => {
+  const repair = activeCompat?.repairAudio;
+  if (typeof repair !== "function") return;
+  void repair({ manual: true }).catch((error) => {
+    toast("Audio retry failed: " + (error?.message || "unavailable"), true);
+  });
+};
 $("#streamRetryBtn").onclick = () => {
   playbackRecovery?.reset();
   if (!replayFn) return;
