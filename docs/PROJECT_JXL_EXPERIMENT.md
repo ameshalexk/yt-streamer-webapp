@@ -86,3 +86,24 @@ export MAMBA_ROOT_PREFIX="$ROOT/manager"
 - Check iPhone and the parked Tesla browser; if native decoding fails, keep MJPEG fallback. Do not promise WASM compatibility without a separate implementation and measurement.
 - Preserve MJPEG and WebCodecs regression tests and the unaffected shared Mac/HA release.
 - Obtain explicit user approval before merging either draft PR, changing launchd, exposing an experimental URL, or deploying.
+
+
+## Mac mini M1 encoder benchmark — October 18, 2026
+
+Re-run: from `webapp` with `JXL_FFMPEG_PATH` set to the isolated encoder, execute:
+
+```bash
+python3 scripts/jxl-mac-benchmark.py --resolution both --seconds 12
+```
+
+Only a disposable FFmpeg synthetic `testsrc2` source was used (12 FPS, 144 frames per codec/resolution). FFmpeg outputs are written to an OS temporary folder, which is deleted when the command finishes. Tests were sequential, not competing. MJPEG uses existing `/opt/homebrew/bin/ffmpeg` with `-q:v 7`; JXL uses conda-forge FFmpeg `-distance 2.6 -effort 1 -threads 2`. These **are not equal-quality settings**, and the two binaries are independently built; do not treat the Mbps delta as a verified visual-quality improvement.
+
+| Metric | MJPEG 480p | JXL 480p | MJPEG 720p | JXL 720p |
+|---|---:|---:|---:|---:|
+| Payload Mbps | 2.377 | 2.140 | 3.874 | 3.694 |
+| Process wall time for 12s footage | 0.15s | 1.02s | 0.22s | 2.06s |
+| Process CPU seconds | 0.32s | 1.49s | 0.60s | 3.01s |
+| Peak encoder RSS memory | 33.7 MiB | 135.4 MiB | 54.0 MiB | 206.4 MiB |
+| Frames output and indexed | 144 | 144 | 144 | 144 |
+
+JXL's synthetic bandwidth savings are roughly 10% at 480p and 5% at 720p, with roughly 5x total CPU time and 4x maximum process RSS. Both encode faster than 12 FPS on this **synthetic sample**. This does not establish real-world streaming performance, battery/thermal impact, parity of visual quality, or improved network efficiency at equal quality. **Next meaningful gate:** use representative real video with audio and seeking on an isolated localhost preview, and measure live decode stalls, buffer backlog, video/audio sync, and CPU/RAM before ever considering a deployment.
