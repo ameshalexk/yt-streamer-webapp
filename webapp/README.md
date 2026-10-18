@@ -152,12 +152,20 @@ browser decoder fails. This is intentionally not enabled by default. Tesla's
 documented Chromium 140 cannot decode JXL by default (support starts in Chrome
 155); verify the actual vehicle browser after Tesla firmware updates.
 
-Prerequisite: a separate FFmpeg executable built with libjxl (for example,
-Homebrew's keg-only ffmpeg-full), optionally pointed to via the
-JXL_FFMPEG_PATH environment variable. **Do not replace production FFmpeg or
-upgrade unrelated Homebrew packages just for this experiment.** The server
-uses the supported FFmpeg tee + framecrc outputs to get exact compressed
-packet lengths, rather than assuming JPEG-style frame delimiters.
+Prerequisite: a separate FFmpeg executable built with libjxl, supplied via
+an **explicit absolute** `JXL_FFMPEG_PATH`. JXL fails closed when this variable
+is missing. This safeguards the existing production/Homebrew FFmpeg from
+accidental selection. Do not replace production FFmpeg or upgrade unrelated
+Homebrew packages for the experiment. The FFmpeg tee + framecrc outputs give
+exact packet lengths, rather than guessing frame delimiters.
+
+**Dedicated experimental project:** [PROJECT_JXL_EXPERIMENT](../docs/PROJECT_JXL_EXPERIMENT.md).
+On the Mac mini, an isolated conda-forge FFmpeg 9.0.2 environment with
+libjxl was verified October 18, 2026 under
+`~/Library/Application Support/YTStreamer-JXL-Experiment/ffmpeg/bin/ffmpeg`.
+Run `npm run test:jxl-real` with `JXL_FFMPEG_PATH` set to that path for
+local-only real-encoder / Chrome decoding verification. Package storage is
+~429 MiB after clearing the project-local install cache. No service changes.
 
 For testing compare 480p/12 fps MJPEG versus 480p/12 fps JXL, including
 network Mbps, dropped frames, CPU, initial latency and audio sync. JPEG XL
