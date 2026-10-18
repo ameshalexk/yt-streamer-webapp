@@ -39,7 +39,7 @@ test("APNE native player has the same nearby honest quality disclosure",()=>{
 });
 
 
-test("MJPEG and WebCodecs are directly below video, never inside hidden playback accordion",()=>{
+test("MJPEG, WebCodecs, and experimental JXL remain beside the player outside the accordion",()=>{
  const screen=html.indexOf('id="screen"');
  const videoModes=html.indexOf('id="playerVideoModes"');
  const qualityPanel=html.indexOf('id="playerQualityPanel"');
@@ -47,8 +47,22 @@ test("MJPEG and WebCodecs are directly below video, never inside hidden playback
  assert.ok(screen > hiddenToolbar, "video appears after the expandable Playback controls section");
  assert.ok(videoModes > screen && videoModes < qualityPanel, "playback-mode switch must be a direct sibling below the active video");
  assert.equal((html.match(/id="playbackMethodToggle"/g)||[]).length, 1);
- assert.deepEqual([...html.matchAll(/data-playback-method="([^"]+)"/g)].map(x=>x[1]),["mjpeg","webcodecs"]);
+ assert.deepEqual([...html.matchAll(/data-playback-method="([^"]+)"/g)].map(x=>x[1]),["mjpeg","webcodecs","jxl"]);
  assert.match(css,/\.player-body > \.player-video-modes \{ order: 1/);
  assert.match(css,/\.player-video-modes \.playback-method-toggle \.btn \{[^}]*min-height: 44px/s);
  assert.match(app,/\$\("#playbackMethodToggle"\)\?\.addEventListener\("click"/);
+});
+
+test("JXL is opt-in, one-process limited, and safely refuses unsupported browsers", () => {
+ const source=fs.readFileSync(new URL("../src/lib/stream.js",import.meta.url),"utf8");
+ assert.match(html,/data-playback-method="jxl"[^>]*>JXL · Experimental/);
+ assert.match(app,/async function browserSupportsExperimentalJxl/);
+ assert.match(app,/if \(!await browserSupportsExperimentalJxl\(\)\)/);
+ assert.match(app,/\/api\/experimental\/jxl/);
+ assert.match(app,/return playBufferedMjpegStream\(\{ mjpegUrl, audioUrl \}, label, \{ \.\.\.meta, experimentalJxl: true \}\)/);
+ assert.match(app,/JPEG XL unavailable or decode failed · returning to MJPEG/);
+ assert.match(source,/let activeJxl = 0/);
+ assert.match(source,/activeJxl >= 1/);
+ const player=fs.readFileSync(new URL("../public/buffered-mjpeg.js",import.meta.url),"utf8");
+ assert.match(player,/Continue to <img>|Do not lose the native fallback/);
 });

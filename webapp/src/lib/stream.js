@@ -7,8 +7,11 @@ import fssync from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
 import { RawJpegStreamParser, encodeEautoFrame } from "./eauto-framing.js";
+import { jxlEncoderStatus, streamJxl } from "./jxl-stream.js";
+export { jxlEncoderStatus } from "./jxl-stream.js";
 
 let active = 0;
+let activeJxl = 0; // The M1 mini has limited memory; allow only one experimental encode.
 const hlsSessions = new Map();
 const audioHlsSessions = new Map();
 const desktopMjpegCleanups = new Set();
@@ -327,6 +330,32 @@ export function streamMjpeg(req, res, {
   timing = null,
   onTelemetry = null,
 }) {
+  if (req.query?.format === "jxl" && !framed) {
+    const status = jxlEncoderStatus();
+    if (!status.available) {
+      res.status(503).json({ error: status.reason, fallback: "mjpeg" });
+      return;
+    }
+    if (activeJxl >= 1 || active >= config.maxConcurrentStreams) {
+      res.status(429).json({ error: "JXL experimental encoder is busy. Try MJPEG or WebCodecs.", fallback: "mjpeg" });
+      return;
+    }
+    active++;
+    activeJxl++;
+    try {
+      return streamJxl(req, res, {
+        input, audioInput, params, isLive, userAgent, referer,
+        startAt, paceInput, allowBurst,
+      }, buildMjpegArgs, () => {
+        active = Math.max(0, active - 1);
+        activeJxl = Math.max(0, activeJxl - 1);
+      });
+    } catch (error) {
+      active = Math.max(0, active - 1);
+      activeJxl = Math.max(0, activeJxl - 1);
+      throw error;
+    }
+  }
   if (active >= config.maxConcurrentStreams) {
     res.status(429).type("text/plain").end("Too many active streams. Stop one and retry.");
     return;

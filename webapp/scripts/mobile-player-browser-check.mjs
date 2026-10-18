@@ -62,9 +62,10 @@ try{
    assert.ok(!before.overlayHasPresets,style+" "+width+": presets obscure video");
    assert.ok(before.docWidth<=before.vw+2,style+" "+width+": horizontal overflow "+JSON.stringify(before));
    const modeButtons = page.locator("#playerVideoModes [data-playback-method]");
-   assert.equal(await modeButtons.count(), 2, style+" "+width+": missing visible video-mode buttons");
+   assert.equal(await modeButtons.count(), 3, style+" "+width+": missing visible video-mode buttons");
    assert.ok(await modeButtons.first().isVisible(),style+" "+width+": MJPEG hidden");
-   assert.ok(await modeButtons.last().isVisible(),style+" "+width+": WebCodecs hidden");
+   assert.ok(await modeButtons.nth(1).isVisible(),style+" "+width+": WebCodecs hidden");
+   assert.ok(await modeButtons.nth(2).isVisible(),style+" "+width+": JXL hidden");
    const modeHost = await page.locator("#playerVideoModes").evaluate(el=>({
      hidden:!el.getClientRects().length, top:el.getBoundingClientRect().top,
      inAccordion:!!el.closest(".watch-accordion"),
@@ -72,11 +73,28 @@ try{
    }));
    assert.ok(!modeHost.hidden && !modeHost.inAccordion && modeHost.width>0,
      style+" "+width+": playback-mode controls are hidden in accordion "+JSON.stringify(modeHost));
-   await modeButtons.last().click();
-   assert.equal(await modeButtons.last().getAttribute("aria-pressed"),"true",style+" "+width+": WebCodecs selection didn't apply");
+   await modeButtons.nth(1).click();
+   assert.equal(await modeButtons.nth(1).getAttribute("aria-pressed"),"true",style+" "+width+": WebCodecs selection didn't apply");
    await modeButtons.first().click();
    assert.equal(await modeButtons.first().getAttribute("aria-pressed"),"true",style+" "+width+": MJPEG selection didn't apply");
    assert.equal(await page.locator("#playbackMethodToggle").isVisible(), true);
+   await modeButtons.nth(2).click();
+   assert.equal(await modeButtons.first().getAttribute("aria-pressed"),"true",
+     style+" "+width+": failed JXL attempt changed the user's MJPEG mode");
+   // Chrome 155+ must activate JXL when both genuine browser decoding and
+   // server capability are positive. This is a UI/preflight test only; the
+   // separate real-FFmpeg test validates actual transmitted frames.
+   if (width === 390 && style === "classic") {
+     await page.route("**/api/experimental/jxl", async route =>
+       route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({available:true,reason:null})}));
+     await modeButtons.nth(2).click();
+     await page.waitForFunction(() => document.querySelector('[data-playback-method="jxl"]')?.getAttribute("aria-pressed") === "true", {timeout: 6000});
+     assert.equal(await modeButtons.nth(2).getAttribute("aria-pressed"),"true",
+       "Chrome 155 successful JXL preflight should activate opt-in JXL");
+     await modeButtons.first().click();
+     assert.equal(await modeButtons.first().getAttribute("aria-pressed"),"true",
+       "Switch back to MJPEG after successful JXL preflight");
+   }
    await page.locator("#playerQualityBtn").click();
    const after=await page.evaluate(()=>{
     const panel=document.querySelector("#playerQualityPanel");

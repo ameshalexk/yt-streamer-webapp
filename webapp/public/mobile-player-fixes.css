@@ -256,3 +256,36 @@ body.screen-fullscreen .player-quality-panel { display: none !important; }
   .player-video-modes .playback-method-toggle { width: 100%; min-width: 0; }
   .player-video-modes .playback-method-toggle .btn { min-height: 48px; font-size: 14px; }
 }
+
+
+/* JPEG XL is an opt-in third mode, never an automatic default for new visitors.
+   All three controls remain directly under the video on iPhones. */
+.player-video-modes .playback-method-toggle {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(100%, 530px);
+}
+.player-video-modes .playback-method-toggle .video-mode-experimental {
+  font-size: 12px;
+  white-space: normal;
+  line-height: 1.15;
+}
+.player-video-modes .playback-method-toggle .video-mode-experimental[aria-pressed="true"] {
+  background: var(--accent);
+  color: #fff;
+}
+@media (max-width: 520px) {
+  .player-video-modes .playback-method-toggle {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    gap: 3px;
+  }
+  .player-video-modes .playback-method-toggle .btn {
+    padding: 6px 4px;
+    font-size: 12px;
+    min-height: 48px;
+    overflow-wrap: anywhere;
+  }
+  .player-video-modes .playback-method-toggle .video-mode-experimental {
+    font-size: 11px;
+  }
+}

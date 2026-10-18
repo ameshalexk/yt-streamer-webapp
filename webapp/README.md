@@ -136,6 +136,57 @@ mpegts.js is served locally from `node_modules` at `/vendor/mpegts.js` (with a C
 
 ---
 
+## Experimental JPEG XL frame streaming (opt-in)
+
+The YouTube method selector includes **JXL · Experimental** alongside MJPEG and
+WebCodecs. It sends independently encoded JPEG XL frames in a multipart
+HTTP stream with image/jxl parts. The existing buffered canvas renderer handles
+seeking and separate audio; WebCodecs and MJPEG remain untouched. The experiment
+is capped at **12 fps** to protect the Mac mini from encoding overload. It does
+not use JXL animation or native video playback.
+
+The selector decodes a real 64x64 JXL fixture to check the *client browser*,
+then checks GET /api/experimental/jxl for the server encoder. Both checks must
+pass before JXL can be selected. It falls back to MJPEG when a JXL stream or
+browser decoder fails. This is intentionally not enabled by default. Tesla's
+documented Chromium 140 cannot decode JXL by default (support starts in Chrome
+155); verify the actual vehicle browser after Tesla firmware updates.
+
+Prerequisite: a separate FFmpeg executable built with libjxl, supplied via
+an **explicit absolute** `JXL_FFMPEG_PATH`. JXL fails closed when this variable
+is missing. This safeguards the existing production/Homebrew FFmpeg from
+accidental selection. Do not replace production FFmpeg or upgrade unrelated
+Homebrew packages for the experiment. The FFmpeg tee + framecrc outputs give
+exact packet lengths, rather than guessing frame delimiters.
+
+**Dedicated experimental project:** [PROJECT_JXL_EXPERIMENT](../docs/PROJECT_JXL_EXPERIMENT.md).
+On the Mac mini, an isolated conda-forge FFmpeg 9.0.2 environment with
+libjxl was verified October 18, 2026 under
+`~/Library/Application Support/YTStreamer-JXL-Experiment/ffmpeg/bin/ffmpeg`.
+Run `npm run test:jxl-real` with `JXL_FFMPEG_PATH` set to that path for
+local-only real-encoder / Chrome decoding verification. Package storage is
+~429 MiB after clearing the project-local install cache. No service changes.
+
+For testing compare 480p/12 fps MJPEG versus 480p/12 fps JXL, including
+network Mbps, dropped frames, CPU, initial latency and audio sync. JPEG XL
+decoding capability varies by browser (especially older Tesla Chromium).
+Always verify on the actual target device before switching from MJPEG.
+The experimental branch is not a production deployment.
+
+Reproducible local **Chrome JXL transport smoke test**: from webapp run
+node scripts/jxl-browser-smoke.mjs, optionally set JXL_TEST_BROWSER to
+a Chrome 155+ executable. This uses a fixture encoder and genuine JPEG XL
+frames to test HTTP packaging, canvas decoding, and rendering without changing
+production FFmpeg or contacting YouTube. On October 18 this rendered eight
+of eight frames on the Mac's Chrome 155. It is not an end-to-end test with
+real FFmpeg on that Mac or a Tesla browser.
+
+A separate 8-second synthetic-motion FFmpeg benchmark on Linux (854x480,
+12 fps) measured MJPEG ~2.39 Mbps, JXL ~2.13 Mbps, H.264 ~0.69 Mbps.
+JXL encoding ran ~5.7x slower than MJPEG on that host. These are
+**illustrative**, not quality-matched or representative of Mac mini load or
+real videos. No production performance claim should be made from them.
+
 ## Configuration
 
 Override defaults with environment variables (e.g. in the launchd plist or your shell):
