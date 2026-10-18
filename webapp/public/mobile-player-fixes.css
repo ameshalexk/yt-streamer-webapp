@@ -289,3 +289,35 @@ body.screen-fullscreen .player-quality-panel { display: none !important; }
     font-size: 11px;
   }
 }
+
+/* Selected video preference is not the same as the actual decoder/codec.
+   Keep both codec + audio health readable next to the mode selector. */
+.player-active-status {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.player-active-codec {
+  color: var(--text);
+  font-weight: 800;
+}
+.player-active-audio { color: var(--muted); }
+.player-active-audio[data-state="synced"] { color: #67d596; }
+.player-active-audio[data-state="retrying"],
+.player-active-audio[data-state="silent"] { color: #e8b96d; }
+.player-video-modes .player-audio-retry {
+  display: inline-flex;
+  min-height: 44px;
+  flex: 0 0 auto;
+  border: 1px solid #c79753;
+}
+.player-video-modes .player-audio-retry[hidden] { display: none !important; }
+@media (max-width: 520px) {
+  .player-active-status { font-size: 12px; flex-direction: column; align-items: flex-start; gap: 3px; }
+  .player-video-modes .player-audio-retry { width: 100%; justify-content: center; min-height: 48px; }
+}
