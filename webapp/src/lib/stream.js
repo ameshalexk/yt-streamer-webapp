@@ -7,6 +7,8 @@ import fssync from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
 import { RawJpegStreamParser, encodeEautoFrame } from "./eauto-framing.js";
+import { jxlEncoderStatus, streamJxl } from "./jxl-stream.js";
+export { jxlEncoderStatus } from "./jxl-stream.js";
 
 let active = 0;
 const hlsSessions = new Map();
@@ -327,6 +329,22 @@ export function streamMjpeg(req, res, {
   timing = null,
   onTelemetry = null,
 }) {
+  if (req.query?.format === "jxl" && !framed) {
+    const status = jxlEncoderStatus();
+    if (!status.available) {
+      res.status(503).json({ error: status.reason, fallback: "mjpeg" });
+      return;
+    }
+    if (active >= config.maxConcurrentStreams) {
+      res.status(429).type("text/plain").end("Too many active streams. Stop one and retry.");
+      return;
+    }
+    active++;
+    return streamJxl(req, res, {
+      input, audioInput, params, isLive, userAgent, referer,
+      startAt, paceInput, allowBurst,
+    }, buildMjpegArgs, () => { active = Math.max(0, active - 1); });
+  }
   if (active >= config.maxConcurrentStreams) {
     res.status(429).type("text/plain").end("Too many active streams. Stop one and retry.");
     return;
