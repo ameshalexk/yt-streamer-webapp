@@ -8773,9 +8773,13 @@ async function browserSupportsExperimentalJxl() {
     const bytes = Uint8Array.from(atob(fixture), (character) => character.charCodeAt(0));
     const blob = new Blob([bytes], { type: "image/jxl" });
     if (typeof createImageBitmap === "function") {
-      const bitmap = await createImageBitmap(blob);
-      try { return bitmap.width === 64 && bitmap.height === 64; }
-      finally { bitmap.close?.(); }
+      try {
+        const bitmap = await createImageBitmap(blob);
+        try { if (bitmap.width === 64 && bitmap.height === 64) return true; }
+        finally { bitmap.close?.(); }
+      } catch {
+        // Continue to <img>; WebKit can support JXL there but not via ImageBitmap.
+      }
     }
     if (!window.Image || !URL.createObjectURL) return false;
     const imageUrl = URL.createObjectURL(blob);
@@ -8800,6 +8804,7 @@ $("#playbackMethodToggle")?.addEventListener("click", async (event) => {
   if (!button) return;
   const next = button.dataset.playbackMethod;
   if (!["mjpeg", "webcodecs", "jxl"].includes(next)) return;
+  if (next === youtubePlaybackMethod) return;
   if (next === "jxl") {
     try {
       if (!await browserSupportsExperimentalJxl()) {

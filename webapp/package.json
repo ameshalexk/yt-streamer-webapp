@@ -16,7 +16,8 @@
     "preview:ui": "node scripts/start-ui-v3-preview.mjs",
     "test:ui": "node scripts/ui-v3-browser-check.mjs",
     "test:vlc-native": "node scripts/vlc-cast-native-vlc-smoke.mjs",
-    "test:jxl-real": "node scripts/jxl-real-smoke.mjs"
+    "test:jxl-real": "node scripts/jxl-real-smoke.mjs",
+    "test:jxl-e2e": "node scripts/jxl-actual-stream-e2e.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",

@@ -437,13 +437,18 @@
 
   async function decodeJpeg(blob) {
     if (typeof globalThis.createImageBitmap === "function") {
-      const bitmap = await globalThis.createImageBitmap(blob);
-      return {
-        source: bitmap,
-        width: bitmap.width,
-        height: bitmap.height,
-        release: () => { try { bitmap.close?.(); } catch {} },
-      };
+      try {
+        const bitmap = await globalThis.createImageBitmap(blob);
+        return {
+          source: bitmap,
+          width: bitmap.width,
+          height: bitmap.height,
+          release: () => { try { bitmap.close?.(); } catch {} },
+        };
+      } catch {
+        // Safari/WebKit can support JPEG XL through HTMLImageElement even
+        // when createImageBitmap rejects it. Do not lose the native fallback.
+      }
     }
     if (!globalThis.Image || !globalThis.URL?.createObjectURL) throw new Error("Browser cannot decode buffered JPEG frames");
     const url = globalThis.URL.createObjectURL(blob);
@@ -451,7 +456,7 @@
       const image = await new Promise((resolve, reject) => {
         const value = new Image();
         value.onload = () => resolve(value);
-        value.onerror = () => reject(new Error("JPEG decode failed"));
+        value.onerror = () => reject(new Error("Image frame decode failed"));
         value.src = url;
       });
       return {
