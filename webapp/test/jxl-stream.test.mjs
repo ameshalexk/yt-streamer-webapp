@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildJxlArgs, frameSizeFromCrcLine, JxlFrameAssembler,
-  multipartJxlFrame, jxlEncoderStatus,
+  multipartJxlFrame, jxlEncoderStatus, jxlFfmpegPath,
 } from "../src/lib/jxl-stream.js";
 
 await import("../public/buffered-mjpeg.js");
@@ -72,4 +72,22 @@ test("codec availability accurately reports a supported or unsupported FFmpeg bu
   const status = jxlEncoderStatus();
   assert.equal(typeof status.available, "boolean");
   if (!status.available) assert.match(status.reason, /libjxl/);
+});
+
+test("JXL requires an explicit standalone absolute encoder path", () => {
+  const previous = process.env.JXL_FFMPEG_PATH;
+  try {
+    delete process.env.JXL_FFMPEG_PATH;
+    assert.equal(jxlFfmpegPath(), null);
+    assert.equal(jxlEncoderStatus().available, false);
+    process.env.JXL_FFMPEG_PATH = "ffmpeg";
+    assert.equal(jxlFfmpegPath(), null);
+    assert.equal(jxlEncoderStatus().available, false);
+    process.env.JXL_FFMPEG_PATH = "/this/path/does/not/exist/ffmpeg";
+    assert.equal(jxlFfmpegPath(), null);
+    assert.equal(jxlEncoderStatus().available, false);
+  } finally {
+    if (previous === undefined) delete process.env.JXL_FFMPEG_PATH;
+    else process.env.JXL_FFMPEG_PATH = previous;
+  }
 });

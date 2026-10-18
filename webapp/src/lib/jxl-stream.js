@@ -4,18 +4,35 @@
 // into length-delimited multipart image/jxl frames for buffered canvas playback.
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import { config } from "../config.js";
+import path from "node:path";
 
 const BOUNDARY = "ytstreamer-jxl";
 const MAX_FRAME = 4 * 1024 * 1024;
 const MAX_PENDING = 20 * 1024 * 1024;
 let cachedStatus = null;
 
+// JXL requires an explicitly configured *separate* absolute executable.
+// This branch must never silently pick the production/Homebrew FFmpeg.
+export function jxlFfmpegPath() {
+  const candidate = (process.env.JXL_FFMPEG_PATH || "").trim();
+  if (!candidate || !path.isAbsolute(candidate)) return null;
+  try {
+    if (!fs.statSync(candidate).isFile()) return null;
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
 export function jxlEncoderStatus() {
-  const ffmpegPath = process.env.JXL_FFMPEG_PATH ||
-    (fs.existsSync("/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg")
-      ? "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg"
-      : config.ffmpegPath);
+  const ffmpegPath = jxlFfmpegPath();
+  if (!ffmpegPath) {
+    return {
+      available: false,
+      reason: "JPEG XL requires an explicitly configured absolute JXL_FFMPEG_PATH to a separate libjxl-enabled FFmpeg.",
+    };
+  }
   if (cachedStatus?.path === ffmpegPath && Date.now() - cachedStatus.at < 30_000) {
     return cachedStatus.value;
   }
@@ -25,7 +42,7 @@ export function jxlEncoderStatus() {
   const available = probe.status === 0 && /^\s*V\S*\s+libjxl\s/m.test(probe.stdout || "");
   const value = {
     available,
-    reason: available ? null : "JPEG XL requires an FFmpeg build with the libjxl encoder (for Homebrew: ffmpeg-full).",
+    reason: available ? null : "The configured JXL_FFMPEG_PATH does not provide libjxl encoding.",
   };
   cachedStatus = { path: ffmpegPath, at: Date.now(), value };
   return value;
@@ -127,10 +144,7 @@ export function streamJxl(req, res, options, buildBaseArgs, onCleanup = () => {}
   }
   const params = { ...options.params, fps: Math.min(12, options.params.fps) };
   const args = buildJxlArgs(buildBaseArgs({ ...options, params, framed: false }), params.quality);
-  const ffmpegPath = process.env.JXL_FFMPEG_PATH ||
-    (fs.existsSync("/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg")
-      ? "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg"
-      : config.ffmpegPath);
+  const ffmpegPath = jxlFfmpegPath();
   const ff = spawn(ffmpegPath, args, { stdio: ["ignore", "pipe", "pipe", "pipe"] });
   let opened = false;
   let cleaned = false;
