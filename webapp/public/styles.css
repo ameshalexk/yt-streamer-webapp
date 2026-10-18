@@ -153,6 +153,7 @@ textarea {
 .player-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; flex-shrink: 0; }
 .playback-method-toggle {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 4px;
   align-items: center;
 }

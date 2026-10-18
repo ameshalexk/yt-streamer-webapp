@@ -1569,6 +1569,9 @@ app.get("/internal/googlevideo/:id", asyncH(async (req, res) => {
     .pipe(res);
 }));
 
+// The JPEG XL option is gated by an actual installed libjxl encoder.
+app.get("/api/experimental/jxl", (_req, res) => res.json(stream.jxlEncoderStatus()));
+
 // Stream a saved item by id (resolves type: m3u8 | youtube | file).
 app.get("/stream/item/:itemId", asyncH(async (req, res) => {
   const found = await store.findItem(req.params.itemId);

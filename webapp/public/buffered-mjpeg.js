@@ -54,6 +54,14 @@
       && bytes[bytes.byteLength - 1] === 0xd9;
   }
 
+  function isJxl(bytes) {
+    // JPEG XL raw codestream (FF 0A) or ISO BMFF container signature.
+    return (bytes.byteLength >= 2 && bytes[0] === 0xff && bytes[1] === 0x0a)
+      || (bytes.byteLength >= 12 && bytes[0] === 0 && bytes[1] === 0
+        && bytes[2] === 0 && bytes[3] === 12 && bytes[4] === 0x4a
+        && bytes[5] === 0x58 && bytes[6] === 0x4c && bytes[7] === 0x20);
+  }
+
   function abortError() {
     try { return new DOMException("Aborted", "AbortError"); } catch {
       const error = new Error("Aborted");
@@ -73,10 +81,12 @@
       maxFrameBytes = 3 * 1024 * 1024,
       maxHeaderBytes = 16 * 1024,
       maxParserBytes = null,
+      frameMimeType = "image/jpeg",
     } = {}) {
       const clean = String(boundary || "").replace(/^--/, "");
       if (!clean) throw new Error("MJPEG boundary is required");
       this.boundary = clean;
+      this.frameMimeType = frameMimeType === "image/jxl" ? "image/jxl" : "image/jpeg";
       this.boundaryBytes = asciiBytes(`--${clean}`);
       this.bodyBoundaryBytes = asciiBytes(`\r\n--${clean}`);
       this.maxFrameBytes = maxFrameBytes;
@@ -114,7 +124,7 @@
         headers[key] = value;
       }
       const contentType = String(headers["content-type"] || "").toLowerCase();
-      if (contentType && !contentType.includes("image/jpeg")) {
+      if (contentType && !contentType.includes(this.frameMimeType)) {
         throw new Error(`Unexpected MJPEG part content type: ${headers["content-type"]}`);
       }
       const lengthRaw = headers["content-length"];
@@ -127,7 +137,8 @@
 
     _finishFrame(frame, frames) {
       if (frame.byteLength > this.maxFrameBytes) throw new Error(`MJPEG frame exceeds ${this.maxFrameBytes} bytes`);
-      if (!isJpeg(frame)) throw new Error("Malformed MJPEG frame");
+      if (this.frameMimeType === "image/jpeg" && !isJpeg(frame)) throw new Error("Malformed MJPEG frame");
+      if (this.frameMimeType === "image/jxl" && !isJxl(frame)) throw new Error("Malformed JPEG XL frame");
       frames.push(frame);
       this.framesParsed += 1;
       this.expectedLength = null;
@@ -474,6 +485,7 @@
       maxQueueSeconds = 8,
       maxQueueBytes = 24 * 1024 * 1024,
       maxFrameBytes = 3 * 1024 * 1024,
+      frameFormat = "jpeg",
       onState = () => {},
       onStats = () => {},
       onMilestone = () => {},
@@ -481,6 +493,7 @@
       onEnded = () => {},
     }) {
       this.url = url;
+      this.frameMimeType = frameFormat === "jxl" ? "image/jxl" : "image/jpeg";
       this.canvas = canvas;
       this.ctx = canvas?.getContext?.("2d") || null;
       this.audio = audio;
@@ -685,7 +698,7 @@
           this.queue.fps = serverFps;
           this.stats.fps = serverFps;
         }
-        this.parser = new MultipartMjpegParser(boundary, { maxFrameBytes: this.maxFrameBytes });
+        this.parser = new MultipartMjpegParser(boundary, { maxFrameBytes: this.maxFrameBytes, frameMimeType: this.frameMimeType });
         this.reader = response.body.getReader();
         await this._pump();
       } catch (error) {
@@ -744,7 +757,7 @@
         time: index / this.fps,
         bytes,
         size: bytes.byteLength,
-        blob: new Blob([bytes], { type: "image/jpeg" }),
+        blob: new Blob([bytes], { type: this.frameMimeType }),
         decoded: null,
         decodePromise: null,
         released: false,
