@@ -81,6 +81,20 @@ try{
    await modeButtons.nth(2).click();
    assert.equal(await modeButtons.first().getAttribute("aria-pressed"),"true",
      style+" "+width+": failed JXL attempt changed the user's MJPEG mode");
+   // Chrome 155+ must activate JXL when both genuine browser decoding and
+   // server capability are positive. This is a UI/preflight test only; the
+   // separate real-FFmpeg test validates actual transmitted frames.
+   if (width === 390 && style === "classic") {
+     await page.route("**/api/experimental/jxl", async route =>
+       route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({available:true,reason:null})}));
+     await modeButtons.nth(2).click();
+     await page.waitForFunction(() => document.querySelector('[data-playback-method="jxl"]')?.getAttribute("aria-pressed") === "true", {timeout: 6000});
+     assert.equal(await modeButtons.nth(2).getAttribute("aria-pressed"),"true",
+       "Chrome 155 successful JXL preflight should activate opt-in JXL");
+     await modeButtons.first().click();
+     assert.equal(await modeButtons.first().getAttribute("aria-pressed"),"true",
+       "Switch back to MJPEG after successful JXL preflight");
+   }
    await page.locator("#playerQualityBtn").click();
    const after=await page.evaluate(()=>{
     const panel=document.querySelector("#playerQualityPanel");
