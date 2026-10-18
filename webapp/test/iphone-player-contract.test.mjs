@@ -37,3 +37,18 @@ test("APNE native player has the same nearby honest quality disclosure",()=>{
  assert.match(server,/id="apneQualitySummary">Quality · Source/);
  assert.match(server,/video id="apneLiveVideo"[\s\S]*?id="apneQualityDetails"/);
 });
+
+
+test("MJPEG and WebCodecs are directly below video, never inside hidden playback accordion",()=>{
+ const screen=html.indexOf('id="screen"');
+ const videoModes=html.indexOf('id="playerVideoModes"');
+ const qualityPanel=html.indexOf('id="playerQualityPanel"');
+ const hiddenToolbar=html.indexOf('class="player-toolbar"');
+ assert.ok(screen > hiddenToolbar, "video appears after the expandable Playback controls section");
+ assert.ok(videoModes > screen && videoModes < qualityPanel, "playback-mode switch must be a direct sibling below the active video");
+ assert.equal((html.match(/id="playbackMethodToggle"/g)||[]).length, 1);
+ assert.deepEqual([...html.matchAll(/data-playback-method="([^"]+)"/g)].map(x=>x[1]),["mjpeg","webcodecs"]);
+ assert.match(css,/\.player-body > \.player-video-modes \{ order: 1/);
+ assert.match(css,/\.player-video-modes \.playback-method-toggle \.btn \{[^}]*min-height: 44px/s);
+ assert.match(app,/\$\("#playbackMethodToggle"\)\?\.addEventListener\("click"/);
+});

@@ -191,3 +191,68 @@ body.screen-fullscreen .player-quality-panel { display: none !important; }
   .screen .video-controls-row .playback-speed-control { padding: 0 5px; }
   .screen .video-controls-row .playback-speed-control span { display: none; }
 }
+
+
+/* Player mode must never live in the accordion's hidden Playback controls:
+   this row stays with the video for both Classic/New UI, phone and desktop. */
+.player-video-modes {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+  margin: 0 18px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.player-video-modes-label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.player-video-modes .playback-method-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  min-width: min(230px, 100%);
+  min-height: 44px;
+  padding: 4px;
+  border-radius: 11px;
+  background: var(--panel-2);
+}
+.player-video-modes .playback-method-toggle .btn {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 750;
+  text-align: center;
+}
+.player-video-modes-hint {
+  flex: 1 1 100%;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.player-video-modes .playback-method-toggle .btn:focus-visible {
+  outline: 3px solid var(--accent-2);
+  outline-offset: 2px;
+}
+@media (max-width: 900px) {
+  .player-body > .player-video-modes { order: 1; }
+  .player-body > .player-quality-panel { order: 2; }
+  .player-video-modes { margin: 0 12px 10px; padding: 9px 10px; }
+  .player-video-modes .playback-method-toggle { flex: 1 1 215px; }
+}
+@media (max-width: 520px) {
+  .player-video-modes { margin: 0 10px 10px; gap: 7px; }
+  .player-video-modes-label { flex: 0 0 100%; }
+  .player-video-modes .playback-method-toggle { width: 100%; min-width: 0; }
+  .player-video-modes .playback-method-toggle .btn { min-height: 48px; font-size: 14px; }
+}

@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="/everyday-controls.css?v=20261007" />
   <link rel="stylesheet" href="/ui-switch.css?v=20261008-v3" />
   <script src="/ui-switch.js?v=20261008-v3"></script>
-  <link rel="stylesheet" href="/mobile-player-fixes.css?v=20261018-iphone-first" />
+  <link rel="stylesheet" href="/mobile-player-fixes.css?v=20261018-iphone-modes" />
   <style>
     .experimental-menu-link { display:flex; align-items:center; min-height:40px; padding:0 18px; border-radius:9px; color:var(--muted); text-decoration:none; font-size:15px; font-weight:800; white-space:nowrap; }
     .experimental-menu-link:hover, .experimental-menu-link:focus-visible { background:var(--panel-2); color:var(--text); }
@@ -117,10 +117,6 @@
         <div class="player-body" id="playerBody">
           <div class="player-toolbar" aria-label="Playback controls">
             <button class="btn small ghost" id="autoplayBtn" type="button" aria-pressed="false" title="Play the next video in Recs or Library">Autoplay Off</button>
-            <div class="playback-method-toggle" id="playbackMethodToggle" role="group" aria-label="YouTube playback method">
-              <button class="btn small ghost" type="button" data-playback-method="mjpeg" aria-pressed="true">MJPEG</button>
-              <button class="btn small ghost" type="button" data-playback-method="webcodecs" aria-pressed="false">WebCodecs</button>
-            </div>
             <button class="btn small ghost" id="castVlcBtn" type="button" disabled>Cast / Open in VLC</button>
             <button class="btn small ghost" id="restreamBtn" disabled title="Reload stream">↻ Restream</button>
             <button class="btn small ghost" id="stopBtn" disabled>■ Stop</button>
@@ -311,6 +307,15 @@
             <div class="big">▶</div>
           </div>
         </div>
+
+        <section class="player-video-modes" id="playerVideoModes" aria-label="Video playback mode">
+          <span class="player-video-modes-label" id="videoModeLabel">Video mode</span>
+          <div class="playback-method-toggle" id="playbackMethodToggle" role="group" aria-labelledby="videoModeLabel">
+            <button class="btn small ghost" type="button" data-playback-method="mjpeg" aria-pressed="true">MJPEG</button>
+            <button class="btn small ghost" type="button" data-playback-method="webcodecs" aria-pressed="false">WebCodecs</button>
+          </div>
+          <span class="player-video-modes-hint" id="videoModeHint">Choose how YouTube and downloaded videos play.</span>
+        </section>
 
         <section class="player-quality-panel" id="playerQualityPanel" aria-label="Player quality settings" hidden>
           <div class="player-quality-panel-head">
