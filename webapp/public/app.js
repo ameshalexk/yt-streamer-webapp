@@ -663,7 +663,8 @@ let activeCompat = null; // active MJPEG + audio fallback URLs
 const YOUTUBE_PLAYBACK_METHOD_KEY = "ytStreamerYoutubePlaybackMethod";
 const YOUTUBE_PLAYBACK_RATE_KEY = "ytStreamerYoutubePlaybackRate";
 const YOUTUBE_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 3, 4];
-let youtubePlaybackMethod = localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY) === "webcodecs" ? "webcodecs" : "mjpeg";
+let youtubePlaybackMethod = ["mjpeg", "webcodecs", "jxl"].includes(localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY))
+  ? localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY) : "mjpeg";
 let youtubePlaybackRate = (() => {
   const saved = Number(localStorage.getItem(YOUTUBE_PLAYBACK_RATE_KEY));
   return YOUTUBE_PLAYBACK_RATES.includes(saved) ? saved : 1;
@@ -2622,7 +2623,7 @@ function markBufferedStreamPlaying(attempt, stats = null, { revealControls = tru
   $("#screen").classList.remove("loading");
   const buffered = Number(stats?.queueSeconds || 0);
   const suffix = buffered > 0 ? " · " + buffered.toFixed(1) + "s buf" : "";
-  setBadge("live", "▶ " + currentSettingsLabel() + suffix, { revealControls });
+  setBadge("live", (activeCompat?.frameFormat === "jxl" ? "JXL EXP · " : "▶ ") + currentSettingsLabel() + suffix, { revealControls });
   if (streamSeek.seekable) {
     if (!streamSeek.timer) startStreamSeekTimer();
   }
@@ -2689,7 +2690,10 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const quietTransition = Boolean(pendingQualityRestore?.silent);
   const startupTrace = meta.startupTrace || null;
   if (startupTrace && !Number.isFinite(startupTrace.playerStartedAt)) startupTrace.playerStartedAt = performance.now();
-  const bufferedUrl = withUrlParam(mjpegUrl, "buffered", "1");
+  const bufferedUrl = withUrlParam(
+    meta.experimentalJxl ? withUrlParam(mjpegUrl, "format", "jxl") : mjpegUrl,
+    "buffered", "1"
+  );
   setSlowBufferSuggestionScope(bufferedUrl);
   let audioFailed = false;
   const parsed = new URL(bufferedUrl, window.location.origin);
@@ -2727,6 +2731,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     videoStarted: true,
     playbackStarted: false,
     buffered: true,
+    frameFormat: meta.experimentalJxl ? "jxl" : "jpeg",
     bufferedPlayer: null,
     browserAudio: false,
     browserPcm: false,
@@ -2740,6 +2745,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     canvas,
     audio,
     fps: requestedFps,
+    frameFormat: meta.experimentalJxl ? "jxl" : "jpeg",
     audioClockOffset: meta.audioElementStartAt || 0,
     sessionId: attempt,
     isCurrent: (sessionId) => currentAttempt(sessionId)
@@ -2750,7 +2756,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     rebufferSeconds: bufferPolicy.rebufferSeconds,
     maxQueueSeconds: bufferPolicy.maxQueueSeconds,
     maxQueueBytes: 24 * 1024 * 1024,
-    maxFrameBytes: 3 * 1024 * 1024,
+    maxFrameBytes: meta.experimentalJxl ? 4 * 1024 * 1024 : 3 * 1024 * 1024,
     onState: (stateName, detail = {}) => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
       const stats = detail.stats || player.getStats();
@@ -2890,6 +2896,19 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     },
     onError: (error) => {
       if (!currentAttempt(attempt)) return;
+      if (meta.experimentalJxl && youtubePlaybackMethod === "jxl") {
+        youtubePlaybackMethod = "mjpeg";
+        localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, "mjpeg");
+        renderYoutubePlaybackMethod();
+        toast("JPEG XL unavailable or decode failed · returning to MJPEG", true);
+        const fallbackPosition = streamSeek.seekable ? streamReplayTime() : 0;
+        queueMicrotask(() => {
+          if (!currentAttempt(attempt) || !replayFn) return;
+          const result = replayFn(fallbackPosition);
+          if (result?.catch) result.catch((failure) => toast(failure.message, true));
+        });
+        return;
+      }
       reportPlaybackEvent("buffered_error", {
         label,
         streamUrl: bufferedUrl,
@@ -3253,6 +3272,9 @@ async function playStream(sources, label, meta = {}) {
   activeYoutubeSourceUrl = youtubeUrl;
   if (youtubeUrl && youtubePlaybackMethod === "webcodecs" && !meta.isLive) {
     return playCyberdashStream(youtubeUrl, label, { ...meta, audioUrl });
+  }
+  if (youtubeUrl && youtubePlaybackMethod === "jxl" && !meta.isLive && mjpegUrl) {
+    return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, { ...meta, experimentalJxl: true });
   }
   if (meta.bufferedMjpeg && mjpegUrl) return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta);
   const screen = $("#screen"), video = $("#video");
@@ -5199,6 +5221,7 @@ function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = nu
       mjpegUrl: legacyStreamUrl(startAt),
       audioUrl: `/stream/legacy-audio/${encodeURIComponent(item.id)}?_=${Date.now()}`,
     }, item.title || "Processed video", {
+      experimentalJxl: youtubePlaybackMethod === "jxl",
       seekable: true,
       bufferedMjpeg: true,
       duration: item.duration,
@@ -8739,10 +8762,22 @@ $("#muteBtn").onclick = () => {
   if (soundOn && !playbackPaused && activeCompat?.audioUrl) startCompatAudio(true);
 };
 $("#pauseBtn").onclick = togglePlaybackPause;
-$("#playbackMethodToggle")?.addEventListener("click", (event) => {
+$("#playbackMethodToggle")?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-playback-method]");
   if (!button) return;
-  const next = button.dataset.playbackMethod === "webcodecs" ? "webcodecs" : "mjpeg";
+  const next = button.dataset.playbackMethod;
+  if (!["mjpeg", "webcodecs", "jxl"].includes(next)) return;
+  if (next === "jxl") {
+    try {
+      const response = await fetch("/api/experimental/jxl", { cache: "no-store" });
+      if (!response.ok) throw new Error("Could not check JPEG XL encoder");
+      const status = await response.json();
+      if (!status.available) throw new Error(status.reason || "JPEG XL encoder unavailable");
+    } catch (error) {
+      toast(error.message || "JPEG XL unavailable on the server", true);
+      return;
+    }
+  }
   if (next === youtubePlaybackMethod) return;
   const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
   const restorePause = playbackPaused;
@@ -8757,7 +8792,7 @@ $("#playbackMethodToggle")?.addEventListener("click", (event) => {
     const result = replayFn(resumeAt);
     if (result?.catch) result.catch((error) => toast(error.message, true));
   } else {
-    toast(next === "webcodecs" ? "WebCodecs selected for YouTube" : "MJPEG selected for YouTube");
+    toast(next === "jxl" ? "JPEG XL experiment · capped at 12 FPS" : (next === "webcodecs" ? "WebCodecs selected for YouTube" : "MJPEG selected for YouTube"));
   }
 });
 $("#playbackSpeedSelect")?.addEventListener("change", (event) => {

@@ -136,6 +136,33 @@ mpegts.js is served locally from `node_modules` at `/vendor/mpegts.js` (with a C
 
 ---
 
+## Experimental JPEG XL frame streaming (opt-in)
+
+The YouTube method selector includes **JXL · Experimental** alongside MJPEG and
+WebCodecs. It sends independently encoded JPEG XL frames in a multipart
+HTTP stream with image/jxl parts. The existing buffered canvas renderer handles
+seeking and separate audio; WebCodecs and MJPEG remain untouched. The experiment
+is capped at **12 fps** to protect the Mac mini from encoding overload. It does
+not use JXL animation or native video playback.
+
+The selector checks GET /api/experimental/jxl before enabling JXL. It fails
+closed if the server does not have FFmpeg's libjxl encoder, and playback falls
+back to MJPEG when a JXL stream or browser decoder fails. This is intentionally
+not enabled by default.
+
+Prerequisite: a separate FFmpeg executable built with libjxl (for example,
+Homebrew's keg-only ffmpeg-full), optionally pointed to via the
+JXL_FFMPEG_PATH environment variable. **Do not replace production FFmpeg or
+upgrade unrelated Homebrew packages just for this experiment.** The server
+uses the supported FFmpeg tee + framecrc outputs to get exact compressed
+packet lengths, rather than assuming JPEG-style frame delimiters.
+
+For testing compare 480p/12 fps MJPEG versus 480p/12 fps JXL, including
+network Mbps, dropped frames, CPU, initial latency and audio sync. JPEG XL
+decoding capability varies by browser (especially older Tesla Chromium).
+Always verify on the actual target device before switching from MJPEG.
+The experimental branch is not a production deployment.
+
 ## Configuration
 
 Override defaults with environment variables (e.g. in the launchd plist or your shell):
