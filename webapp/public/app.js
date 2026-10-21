@@ -840,6 +840,10 @@ let browserInputTouchScroll = false;
 let browserInputTouchMoved = false;
 let browserInputMouseDragging = false;
 let browserInputStartEvent = null;
+// Touch Events own finger gestures when available; pointer events remain the
+// fallback for browsers with no Touch Events and for real desktop mice.
+let browserNativeTouch = null;
+let browserSuppressCompatMouseUntil = 0;
 let browserInputQueue = Promise.resolve();
 let browserInputPendingMotion = null;
 let browserInputPendingScroll = null;
@@ -895,6 +899,8 @@ function setBrowserStreamActive(active) {
   browserStreamActive = Boolean(active);
   document.body.classList.toggle("browser-streaming", browserStreamActive);
   if (!browserStreamActive) {
+    browserNativeTouch = null;
+    browserSuppressCompatMouseUntil = 0;
     browserSettingsOpen = false;
     hideBrowserKeyboard();
   }
@@ -7704,8 +7710,11 @@ function postBrowserInput(payload) {
     if (browserInputPendingScroll === entry) browserInputPendingScroll = null;
     if (browserSessionId !== id || realChromeActive !== (base === "real-chrome")) return null;
     try {
-      return await api.post(`/api/${base}/${encodeURIComponent(id)}/input`, entry.payload);
+      const response = await api.post(`/api/${base}/${encodeURIComponent(id)}/input`, entry.payload);
+      if (entry.payload.type === "scroll") browserGestureTrace("accepted");
+      return response;
     } catch (err) {
+      if (entry.payload.type === "scroll") browserGestureTrace("error");
       if (Date.now() - browserInputLastErrorAt > 2500) {
         browserInputLastErrorAt = Date.now();
         toast(err.message || "Browser input failed", true);
@@ -9279,6 +9288,7 @@ function browserInputPointOrCenter(clientX, clientY) {
 }
 
 function sendBrowserPointer(type, e) {
+  if (type === "drag" || type === "tap") browserGestureTrace(type);
   const point = browserInputPointFromClient(e.clientX, e.clientY, type === "up" || type === "drag");
   if (!point) return false;
   const result = postBrowserInput({ type, ...point, button: desktopInputButton(e), pointerType: e.pointerType || "" });
@@ -9297,6 +9307,7 @@ function sendBrowserPointer(type, e) {
 }
 
 function sendBrowserScrollFromClient(clientX, clientY, dx, dy) {
+  browserGestureTrace("scroll");
   void postBrowserInput({
     type: "scroll",
     ...browserInputPointOrCenter(clientX, clientY),
@@ -9349,8 +9360,144 @@ function updateBrowserPinch() {
   return true;
 }
 
+// Opt-in, client-only diagnostics: ?touchdebug=1. Never record coordinates,
+// destination URLs, browser contents or user input, and never send telemetry.
+const browserGestureDiagnostics = {
+  touchMoves: 0, pointerMoves: 0, pointerMouse: 0,
+  scrolls: 0, accepted: 0, drags: 0, taps: 0, errors: 0,
+  last: "none",
+};
+function browserGestureTrace(type, pointerType = "") {
+  if (typeof location === "undefined" || !new URLSearchParams(location.search).has("touchdebug")) return;
+  if (type === "touchmove") browserGestureDiagnostics.touchMoves++;
+  if (type === "pointermove") browserGestureDiagnostics.pointerMoves++;
+  if (type === "pointermouse") browserGestureDiagnostics.pointerMouse++;
+  if (type === "scroll") browserGestureDiagnostics.scrolls++;
+  if (type === "accepted") browserGestureDiagnostics.accepted++;
+  if (type === "drag") browserGestureDiagnostics.drags++;
+  if (type === "tap") browserGestureDiagnostics.taps++;
+  if (type === "error") browserGestureDiagnostics.errors++;
+  browserGestureDiagnostics.last = pointerType ? type + ":" + pointerType : type;
+  if (typeof document === "undefined") return;
+  let panel = document.getElementById("browserGestureDebug");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "browserGestureDebug";
+    panel.setAttribute("aria-label", "Browser input diagnostics");
+    panel.style.cssText = "position:fixed;left:12px;top:70px;z-index:9999;pointer-events:none;" +
+      "font:12px/1.5 monospace;background:#001729e8;color:#fff;padding:8px;border-radius:6px;white-space:pre";
+    document.body.appendChild(panel);
+  }
+  const d=browserGestureDiagnostics;
+  panel.textContent = "Remote browser gesture diagnostic\n"
+    + "last: " + d.last + "\n"
+    + "touchMove:" + d.touchMoves + " pointerMove:" + d.pointerMoves + " mouseType:" + d.pointerMouse + "\n"
+    + "sentScroll:" + d.scrolls + " accepted:" + d.accepted
+    + " drag:" + d.drags + " taps:" + d.taps + " errors:" + d.errors;
+}
+
+function browserPointerIsFinger(e) {
+  // Some embedded Chromium builds expose a touchscreen as a mouse pointer.
+  // A touch-capable device must not drag a remote page on a one-finger swipe.
+  if (e.pointerType !== "mouse") return true;
+  return typeof navigator !== "undefined" && Number(navigator.maxTouchPoints) > 0;
+}
+
+function browserTouchEventAllowed(e) {
+  return browserInputActiveForScreen()
+    && !e.target?.closest?.("button, input, select, textarea, a, [role=button], .video-controls-overlay button");
+}
+
+function browserNativeTouchStart(e) {
+  if (!browserTouchEventAllowed(e) || !e.touches?.length) return false;
+  browserGestureTrace("touchstart");
+  const t = e.touches[0];
+  if (!browserNativeTouch) {
+    if (!browserInputPointFromClient(t.clientX, t.clientY)) return false;
+    browserNativeTouch = {
+      startX: t.clientX, startY: t.clientY,
+      lastX: t.clientX, lastY: t.clientY,
+      moved: false, pinching: false,
+    };
+  }
+  // A pointerdown may precede touchstart, but touch events are the authoritative
+  // gesture source. Never send a second pointer-up tap or remote mouse drag.
+  browserInputPointerId = null;
+  browserInputMouseDragging = false;
+  browserInputTouchScroll = false;
+  browserZoom.pointers.clear();
+  if (e.touches.length >= 2) {
+    const a = e.touches[0], b = e.touches[1];
+    browserNativeTouch.pinching = true;
+    browserNativeTouch.moved = true;
+    browserZoom.pointers.set(a.identifier, {clientX:a.clientX,clientY:a.clientY});
+    browserZoom.pointers.set(b.identifier, {clientX:b.clientX,clientY:b.clientY});
+    beginBrowserPinch();
+  }
+  if (e.cancelable) e.preventDefault();
+  return true;
+}
+
+function browserNativeTouchMove(e) {
+  if (!browserNativeTouch || !browserInputActiveForScreen()) return false;
+  browserGestureTrace("touchmove");
+  if (e.cancelable) e.preventDefault();
+  if (e.touches.length >= 2) {
+    const a=e.touches[0], b=e.touches[1];
+    if (!browserNativeTouch.pinching) {
+      browserNativeTouch.pinching = true;
+      browserNativeTouch.moved = true;
+      browserZoom.pointers.clear();
+      browserZoom.pointers.set(a.identifier,{clientX:a.clientX,clientY:a.clientY});
+      browserZoom.pointers.set(b.identifier,{clientX:b.clientX,clientY:b.clientY});
+      beginBrowserPinch();
+    } else {
+      browserZoom.pointers.clear();
+      browserZoom.pointers.set(a.identifier,{clientX:a.clientX,clientY:a.clientY});
+      browserZoom.pointers.set(b.identifier,{clientX:b.clientX,clientY:b.clientY});
+      updateBrowserPinch();
+    }
+    return true;
+  }
+  const t=e.touches[0];
+  if (!t || browserNativeTouch.pinching) return true;
+  const state=browserNativeTouch;
+  const total=Math.hypot(t.clientX-state.startX,t.clientY-state.startY);
+  if (total > BROWSER_TOUCH_SCROLL_THRESHOLD_PX) state.moved=true;
+  if (state.moved) {
+    const dx=state.lastX-t.clientX, dy=state.lastY-t.clientY;
+    if (dx || dy) sendBrowserScrollFromClient(t.clientX,t.clientY,dx*1.8,dy*1.8);
+  }
+  state.lastX=t.clientX;
+  state.lastY=t.clientY;
+  return true;
+}
+
+function browserNativeTouchEnd(e, cancelled=false) {
+  if (!browserNativeTouch) return false;
+  if (e.cancelable) e.preventDefault();
+  if (e.touches?.length) {
+    // Never turn the remaining finger of a pinch into a tap or scroll.
+    return true;
+  }
+  const state=browserNativeTouch;
+  browserNativeTouch=null;
+  browserSuppressCompatMouseUntil=performance.now()+550;
+  browserZoom.pointers.clear();
+  browserZoom.pinching=false;
+  browserInputPointerId=null;
+  browserInputTouchScroll=false;
+  browserInputMouseDragging=false;
+  browserInputStartEvent=null;
+  if (!cancelled && !state.moved && !state.pinching) {
+    sendBrowserPointer("tap",{clientX:state.startX,clientY:state.startY,pointerType:"touch",button:0});
+  }
+  return true;
+}
+
 function handleBrowserInputPointerDown(e) {
   if (!browserInputActiveForScreen()) return false;
+  if (browserNativeTouch || (e.pointerType === "mouse" && performance.now() < browserSuppressCompatMouseUntil)) return false;
   if (e.target.closest("button, input, select, textarea, a")) return false;
   if (e.pointerType === "mouse" && typeof e.button === "number" && e.button > 2) return false;
   if (e.pointerType !== "mouse") {
@@ -9371,7 +9518,7 @@ function handleBrowserInputPointerDown(e) {
   browserInputStartY = e.clientY;
   browserInputLastX = e.clientX;
   browserInputLastY = e.clientY;
-  browserInputTouchScroll = e.pointerType !== "mouse";
+  browserInputTouchScroll = browserPointerIsFinger(e);
   browserInputTouchMoved = false;
   browserInputMouseDragging = false;
   browserInputStartEvent = { clientX: e.clientX, clientY: e.clientY, button: e.button, pointerType: e.pointerType };
@@ -9385,6 +9532,9 @@ function handleBrowserInputPointerDown(e) {
 
 function handleBrowserInputPointerMove(e) {
   if (!browserInputActiveForScreen()) return false;
+  browserGestureTrace("pointermove", e.pointerType || "unknown");
+  if (e.pointerType === "mouse") browserGestureTrace("pointermouse");
+  if (browserNativeTouch) return false;
   if (browserZoom.pointers.has(e.pointerId)) {
     browserZoom.pointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
   }
@@ -9440,7 +9590,7 @@ function handleBrowserInputPointerMove(e) {
 }
 
 function handleBrowserInputPointerUp(e) {
-  if (!browserInputActiveForScreen()) return false;
+  if (!browserInputActiveForScreen() || browserNativeTouch) return false;
   const wasPinching = browserZoom.pinching || browserZoom.pointers.size > 1;
   if (browserZoom.pointers.has(e.pointerId)) browserZoom.pointers.delete(e.pointerId);
   if (wasPinching) {
@@ -9485,6 +9635,7 @@ function handleBrowserInputPointerUp(e) {
 }
 
 function handleBrowserInputPointerCancel(e) {
+  if (typeof browserNativeTouch !== "undefined" && browserNativeTouch) return false;
   const tracked = browserInputPointerId === e.pointerId || browserZoom.pointers.has(e.pointerId);
   if (!tracked) return false;
 
@@ -9692,9 +9843,20 @@ function handleDesktopPanPointerUp(e) {
       e.preventDefault();
     }
   });
+  // Touch events are processed regardless of whether PointerEvent exists.
+  // This also works if an embedded Tesla browser sends pointerType=mouse,
+  // cancels pointer streams mid-gesture, or omits pointermove altogether.
+  screen.addEventListener("touchstart", (e) => {
+    browserNativeTouchStart(e);
+  }, { passive: false });
   screen.addEventListener("touchmove", (e) => {
-    if (!browserInputActiveForScreen() || e.target?.closest?.("button, input, select, textarea, a")) return;
-    if (e.cancelable) e.preventDefault();
+    browserNativeTouchMove(e);
+  }, { passive: false });
+  screen.addEventListener("touchend", (e) => {
+    browserNativeTouchEnd(e);
+  }, { passive: false });
+  screen.addEventListener("touchcancel", (e) => {
+    browserNativeTouchEnd(e, true);
   }, { passive: false });
 
   screen.addEventListener("wheel", (e) => {
