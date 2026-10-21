@@ -143,3 +143,55 @@ test('Mac viewport preserves native display scale and scales only the JPEG captu
   assert.equal(calls.find(c=>c.method==='Emulation.setDeviceMetricsOverride').params.deviceScaleFactor,0);
   assert.equal(cdp.captureScale,0.5);
 });
+
+
+test('Touch Events scroll remote Chrome without pointermove and never send a drag', async () => {
+  const h=harness();
+  const touch=(x,y,id=1)=>({clientX:x,clientY:y,identifier:id});
+  const event=(type,points)=>({type,touches:points,target:{closest:()=>null},cancelable:true,preventDefault(){},});
+  h.context.browserNativeTouchStart(event('touchstart',[touch(500,500)]));
+  h.context.browserNativeTouchMove(event('touchmove',[touch(500,430)]));
+  h.context.browserNativeTouchMove(event('touchmove',[touch(500,350)]));
+  h.context.browserNativeTouchEnd(event('touchend',[]));
+  await h.flush();
+  assert.ok(h.sent.length>=1);
+  assert.ok(h.sent.every(v=>v.type==='scroll'));
+  assert.ok(h.sent.some(v=>v.dy>0));
+});
+
+test('Touch Event tap produces one click even if pointerup arrives first', async () => {
+  const h=harness();
+  const t={identifier:1,clientX:500,clientY:500};
+  const event=(type,points)=>({type,touches:points,target:{closest:()=>null},cancelable:true,preventDefault(){}});
+  h.down(h.event('pointerdown',500,500,'touch'));
+  h.context.browserNativeTouchStart(event('touchstart',[t]));
+  h.up(h.event('pointerup',500,500,'touch'));
+  h.context.browserNativeTouchEnd(event('touchend',[]));
+  await h.flush();
+  assert.deepEqual(h.sent.map(v=>v.type),['tap']);
+});
+
+test('Touch cancellation and two-finger pinch never click or remotely drag', async () => {
+  const h=harness();
+  const t=(id,x)=>({identifier:id,clientX:x,clientY:500});
+  const e=(type,p)=>({type,touches:p,target:{closest:()=>null},cancelable:true,preventDefault(){}});
+  h.context.browserNativeTouchStart(e('touchstart',[t(1,480)]));
+  h.context.browserNativeTouchStart(e('touchstart',[t(1,480),t(2,520)]));
+  h.context.browserNativeTouchMove(e('touchmove',[t(1,450),t(2,550)]));
+  h.context.browserNativeTouchEnd(e('touchend',[]));
+  h.context.browserNativeTouchStart(e('touchstart',[t(1,500)]));
+  h.context.browserNativeTouchEnd(e('touchcancel',[]),true);
+  await h.flush();
+  assert.deepEqual(h.sent.map(v=>v.type),[]);
+});
+
+test('Touch-capable embedded browser mouse-classified swipes become scrolls', async () => {
+  const h=harness();
+  h.run('var navigator={maxTouchPoints:16};');
+  h.down(h.event('pointerdown',500,500,'mouse'));
+  h.move(h.event('pointermove',500,380,'mouse'));
+  h.up(h.event('pointerup',500,380,'mouse'));
+  await h.flush();
+  assert.ok(h.sent.some(v=>v.type==='scroll'));
+  assert.ok(h.sent.every(v=>v.type!=='down'&&v.type!=='drag'&&v.type!=='up'));
+});
