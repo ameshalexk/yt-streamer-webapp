@@ -52,3 +52,12 @@ test("a tap from the hidden state reveals controls without toggling playback", (
   assert.match(app, /fullscreenTapRevealOnly = canAutoHideScreenOverlays\(\)[\s\S]*document\.body\.classList\.contains\("fullscreen-controls-idle"\)/);
   assert.match(app, /if \(fullscreenTapRevealOnly\) \{[\s\S]*e\.preventDefault\(\);[\s\S]*return;[\s\S]*\}/);
 });
+
+test("release outside the overlay and resting keyboard focus cannot strand controls", () => {
+  const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  assert.match(app, /document\.addEventListener\("pointerup", finishVideoControlsPointer, true\)/);
+  assert.match(app, /document\.addEventListener\("pointercancel", finishVideoControlsPointer, true\)/);
+  assert.match(app, /videoControlsOverlay\.addEventListener\("focusin", \(\) => showFullscreenOverlays\(\)\)/);
+  assert.match(app, /videoControlsOverlay\.addEventListener\("keydown", \(\) => showFullscreenOverlays\(\)\)/);
+  assert.doesNotMatch(app, /videoControlsOverlay\.addEventListener\("focusin", beginScreenControlInteraction\)/);
+});
