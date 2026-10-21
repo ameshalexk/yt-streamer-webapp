@@ -8853,20 +8853,27 @@ $("#streamSeekTrack").addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight") { e.preventDefault(); seekStreamTo(getStreamCurrentTime() + 10); }
 });
 const videoControlsOverlay = $("#videoControlsOverlay");
+let videoControlsPointerId = null;
 videoControlsOverlay.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
+  // The seek slider owns its drag lifecycle, including off-slider releases.
+  if (e.target.closest(".stream-seek-track") && streamSeek.seekable) return;
+  videoControlsPointerId = e.pointerId;
   beginScreenControlInteraction();
 });
-videoControlsOverlay.addEventListener("pointerup", (e) => {
-  if (!e.target.closest(".stream-seek-track")) endScreenControlInteraction();
-});
-videoControlsOverlay.addEventListener("pointercancel", endScreenControlInteraction);
-videoControlsOverlay.addEventListener("focusin", beginScreenControlInteraction);
-videoControlsOverlay.addEventListener("focusout", () => {
-  requestAnimationFrame(() => {
-    if (!videoControlsOverlay.contains(document.activeElement)) endScreenControlInteraction();
-  });
-});
+function finishVideoControlsPointer(e) {
+  if (videoControlsPointerId !== e.pointerId) return;
+  videoControlsPointerId = null;
+  // Pointerup/cancel may occur outside the overlay after a swipe or drag.
+  endScreenControlInteraction();
+}
+// Capture release events even when a nested player control stops propagation.
+document.addEventListener("pointerup", finishVideoControlsPointer, true);
+document.addEventListener("pointercancel", finishVideoControlsPointer, true);
+// Focus and keyboard navigation reveal controls but are not indefinite activity.
+// An unfocused/idle keyboard controller should also auto-hide after five seconds.
+videoControlsOverlay.addEventListener("focusin", () => showFullscreenOverlays());
+videoControlsOverlay.addEventListener("keydown", () => showFullscreenOverlays());
 $("#muteBtn").onclick = () => {
   const a = $("#audio");
   const bufferedPlayer = activeCompat?.bufferedPlayer;
@@ -9684,6 +9691,18 @@ function handleDesktopPanPointerUp(e) {
       if (touch && handleTap(touch.clientX, touch.clientY, e.target)) e.preventDefault();
     }, { passive: false });
   }
+
+  // A native image drag or Tesla viewport pan must never steal the remote
+  // browser's vertical scroll gesture. Pointer handlers still send Chrome wheel.
+  screen.addEventListener("dragstart", (e) => {
+    if (browserInputActiveForScreen() && e.target?.matches?.("img, video, canvas")) {
+      e.preventDefault();
+    }
+  });
+  screen.addEventListener("touchmove", (e) => {
+    if (!browserInputActiveForScreen() || e.target?.closest?.("button, input, select, textarea, a")) return;
+    if (e.cancelable) e.preventDefault();
+  }, { passive: false });
 
   screen.addEventListener("wheel", (e) => {
     if (handleDesktopZoomWheel(e)) return;
