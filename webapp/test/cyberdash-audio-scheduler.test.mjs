@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fastPlaybackBufferTargets, normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
+import { advanceAudioHealthIncident, classifyAudioSchedule, fastPlaybackBufferTargets, normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
 
 const FRAME = 1024 / 48000;
 
@@ -104,4 +104,31 @@ test("fast playback prebuffer scales source video with playback rate", () => {
   assert.equal(two.startupVideoFrames, 195);
   assert.equal(two.rebufferHighWallSec, 2.5);
   assert.equal(two.rebufferHighVideoSourceSec, 5);
+});
+
+
+test("audio diagnostic classifies running-video scheduling gaps without affecting playback", () => {
+  const base = { playing: true, audioStarted: true, videoMoving: true, audioContextState: "running", audioAheadSec: 0.01 };
+  assert.equal(classifyAudioSchedule(base), "audio_schedule_empty");
+  assert.equal(classifyAudioSchedule({ ...base, audioAheadSec: 0.4 }), null);
+  assert.equal(classifyAudioSchedule({ ...base, audioContextState: "suspended" }), "audio_context_not_running");
+  assert.equal(classifyAudioSchedule({ ...base, muted: true }), null);
+  assert.equal(classifyAudioSchedule({ ...base, playing: false }), null);
+  assert.equal(classifyAudioSchedule({ ...base, videoMoving: false }), null);
+  assert.equal(classifyAudioSchedule({ ...base, audioStarted: false }), null);
+});
+
+
+test("audio diagnostics require persistent gaps, report once and record recovery", () => {
+  const state = { audioDiagnosticGapReason: null, audioDiagnosticGapAt: 0, audioDiagnosticReported: false };
+  assert.equal(advanceAudioHealthIncident(state, 1000, "audio_schedule_empty"), null);
+  assert.equal(advanceAudioHealthIncident(state, 3000, "audio_schedule_empty"), null);
+  assert.deepEqual(advanceAudioHealthIncident(state, 3600, "audio_schedule_empty"), {
+    event: "cyberdash_audio_anomaly", reason: "audio_schedule_empty",
+  });
+  assert.equal(advanceAudioHealthIncident(state, 4000, "audio_schedule_empty"), null);
+  assert.deepEqual(advanceAudioHealthIncident(state, 4100, null), {
+    event: "cyberdash_audio_recovered", reason: "audio_schedule_empty",
+  });
+  assert.equal(advanceAudioHealthIncident(state, 4200, null), null);
 });
