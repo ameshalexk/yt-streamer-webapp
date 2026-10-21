@@ -40,3 +40,12 @@ test("Audio response cannot report HTTP 200 until real MP3 data exists",()=>{
  assert.doesNotMatch(block[0],/req\.on\("close"/);
  assert.match(block[0],/res\.status\(502\)\.json/);
 });
+
+test("Codec mode visually distinguishes actual output and JXL requires explicit session opt-in",()=>{
+ assert.match(app,/button\.classList\.toggle\("is-rendering", isOutput\)/);
+ assert.match(app,/button\.dataset\.output = isOutput/);
+ assert.match(css,/\.btn\.is-rendering[^{]*\{/);
+ assert.match(html,/green outline and dot/);
+ assert.match(app,/\["mjpeg", "webcodecs"\]\.includes\(localStorage\.getItem/);
+ assert.match(app,/if \(next === "jxl"\) localStorage\.removeItem/);
+});

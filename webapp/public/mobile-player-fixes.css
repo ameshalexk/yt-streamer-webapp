@@ -321,3 +321,15 @@ body.screen-fullscreen .player-quality-panel { display: none !important; }
   .player-active-status { font-size: 12px; flex-direction: column; align-items: flex-start; gap: 3px; }
   .player-video-modes .player-audio-retry { width: 100%; justify-content: center; min-height: 48px; }
 }
+
+/* Active decoder (green outline) is separate from saved button selection. */
+.player-video-modes .playback-method-toggle .btn.is-rendering {
+  outline: 3px solid #67d596;
+  outline-offset: -3px;
+  box-shadow: 0 0 0 1px #133c2a;
+}
+.player-video-modes .playback-method-toggle .btn.is-rendering::after {
+  content: " ●";
+  color: #67d596;
+  font-weight: 900;
+}

@@ -663,7 +663,8 @@ let activeCompat = null; // active MJPEG + audio fallback URLs
 const YOUTUBE_PLAYBACK_METHOD_KEY = "ytStreamerYoutubePlaybackMethod";
 const YOUTUBE_PLAYBACK_RATE_KEY = "ytStreamerYoutubePlaybackRate";
 const YOUTUBE_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 3, 4];
-let youtubePlaybackMethod = ["mjpeg", "webcodecs", "jxl"].includes(localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY))
+// JXL must be explicitly opted into on each page visit, never restored from storage.
+let youtubePlaybackMethod = ["mjpeg", "webcodecs"].includes(localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY))
   ? localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY) : "mjpeg";
 let youtubePlaybackRate = (() => {
   const saved = Number(localStorage.getItem(YOUTUBE_PLAYBACK_RATE_KEY));
@@ -700,6 +701,16 @@ function updateActivePlaybackStatus() {
     : "Not playing";
   const codecText = actual ? videoState + ": " + actual : videoState + " · Selected: " + preference;
   if (codec.textContent !== codecText) codec.textContent = codecText;
+  // The blue selection is a preference; the green outline identifies the
+  // actual running renderer, including when a fallback changed the output.
+  const outputMethod = screen?.classList.contains("cyberdash-mode") ? "webcodecs"
+    : activeCompat?.frameFormat === "jxl" && screen?.classList.contains("mjpeg-buffered-mode") ? "jxl"
+    : screen?.classList.contains("mjpeg-buffered-mode") || screen?.classList.contains("mjpeg-mode") ? "mjpeg" : null;
+  document.querySelectorAll("[data-playback-method]").forEach((button) => {
+    const isOutput = playing && outputMethod === button.dataset.playbackMethod;
+    button.classList.toggle("is-rendering", isOutput);
+    button.dataset.output = isOutput ? "active" : "inactive";
+  });
   const status = playing
     ? (!soundOn ? "muted" : activeCompat?.audioStatus || (actual ? "source" : "idle"))
     : "idle";
@@ -8964,7 +8975,9 @@ $("#playbackMethodToggle")?.addEventListener("click", async (event) => {
   const restorePause = playbackPaused;
   const beforeAttempt = streamAttempt;
   youtubePlaybackMethod = next;
-  localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
+  // Explicit opt-in only: a reload cannot silently re-enable experimental JXL.
+  if (next === "jxl") localStorage.removeItem(YOUTUBE_PLAYBACK_METHOD_KEY);
+  else localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
   renderYoutubePlaybackMethod();
   if (activeYoutubeSourceUrl && replayFn) {
     pendingPlaybackMethodRestore = restorePause
