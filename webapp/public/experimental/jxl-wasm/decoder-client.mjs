@@ -69,6 +69,13 @@ export function createExperimentalJxlDecoder({ timeoutMs = 5000, maxPending = 2,
         pump();
       });
     },
+    // A seek destroys the old buffered player but an in-flight WASM decode
+    // cannot be cancelled inside the worker. Replace that worker so stale
+    // frames don't monopolize the new seek's first seconds.
+    recreate() {
+      finishWithError(new Error('Decoder replaced for seek'));
+      return createExperimentalJxlDecoder({ timeoutMs, maxPending, preferBitmap });
+    },
     close() { finishWithError(new Error('Decoder closed')); },
   };
 }

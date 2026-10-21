@@ -689,7 +689,26 @@
       if (!supportsBufferedMjpeg(this.canvas)) throw new Error("Buffered MJPEG is not supported by this browser");
       this._setState("buffering", { reason: "startup" });
       try {
-        const response = await this.fetchImpl(this.url, { cache: "no-store", signal: this.controller.signal });
+        // Seeking quickly can race the single JXL FFmpeg encoder's shutdown.
+        // Retry ONLY the experimental JXL 429 handoff. Ordinary MJPEG and
+        // unrelated failures still fail immediately. Aborting a superseded
+        // seek must cancel both the request and any pending retry timer.
+        let response;
+        for (let retry = 0; retry <= 5; retry += 1) {
+          response = await this.fetchImpl(this.url, { cache: "no-store", signal: this.controller.signal });
+          if (!this._active()) return;
+          if (this.frameMimeType !== "image/jxl" || response.status !== 429 || retry === 5) break;
+          try { await response.body?.cancel?.(); } catch {}
+          this._setState("buffering", { reason: "encoder-handoff", retry: retry + 1 });
+          await new Promise((resolve, reject) => {
+            const signal = this.controller.signal;
+            if (signal.aborted) { reject(abortError()); return; }
+            let timer;
+            const onAbort = () => { clearTimeout(timer); signal.removeEventListener("abort", onAbort); reject(abortError()); };
+            timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, 150 * (retry + 1));
+            signal.addEventListener("abort", onAbort, { once: true });
+          });
+        }
         if (!this._active()) return;
         this.stats.responseStartMs = Math.round(performance.now() - this.startedAt);
         const resolveMs = Number.parseFloat(response.headers.get("x-mjpeg-resolve-ms") || "");

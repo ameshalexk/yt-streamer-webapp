@@ -2689,7 +2689,9 @@ function markBufferedStreamPlaying(attempt, stats = null, { revealControls = tru
   const buffered = Number(stats?.queueSeconds || 0);
   const suffix = buffered > 0 ? " · " + buffered.toFixed(1) + "s buf" : "";
   const actualModeLabel = activeCompat?.frameFormat === "jxl"
-    ? (activeCompat?.decodeEngine === "wasm" ? "JXL WASM EXP · 480p / 12 FPS max" : "JXL EXP · up to 12 FPS")
+    ? (activeCompat?.decodeEngine === "wasm"
+      ? `JXL WASM EXP · 480p / ${activeCompat?.jxlFps || 12} FPS max`
+      : "JXL EXP · up to 12 FPS")
     : "▶ " + currentSettingsLabel();
   setBadge("live", actualModeLabel + suffix, { revealControls });
   if (streamSeek.seekable) {
@@ -2746,6 +2748,13 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const canvas = $("#mjpegCanvas");
   const audio = $("#audio");
   cleanupMedia(Boolean(meta.watchHistoryKey && watchProgress.session?.key === meta.watchHistoryKey));
+  // Keep the JXL selection but discard any uninterruptible pending decode
+  // from the player replaced by a seek.
+  if (meta.experimentalJxl && jxlWasmDecoder && Number(meta.startAt) > 0) {
+    const previous = jxlWasmDecoder;
+    jxlWasmDecoder = previous.recreate();
+    jxlWasmDecoder.profile = previous.profile;
+  }
   resetPauseControl(false);
   if (meta.autoplayContext) {
     setAutoplayContext(meta.autoplayContext.kind, meta.autoplayContext.itemId, meta.autoplayContext.queue);
@@ -2765,7 +2774,9 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   // Conservative Tesla experiment only: do not apply resolution or FPS limits
   // to native JPEG XL, standard MJPEG, or WebCodecs playback.
   if (meta.experimentalJxl && jxlWasmDecoder) {
-    bufferedUrl = withUrlParam(withUrlParam(bufferedUrl, "height", "480"), "fps", "12");
+    const chosenFps = jxlWasmDecoder.profile?.fps === 15 ? 15 : 12;
+    bufferedUrl = withUrlParam(withUrlParam(bufferedUrl, "height", "480"), "fps", String(chosenFps));
+    bufferedUrl = withUrlParam(bufferedUrl, "wasm", "1");
   }
   setSlowBufferSuggestionScope(bufferedUrl);
   let audioFailed = false;
@@ -2806,6 +2817,7 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     buffered: true,
     frameFormat: meta.experimentalJxl ? "jxl" : "jpeg",
     decodeEngine: meta.experimentalJxl ? (jxlWasmDecoder ? "wasm" : "native") : "native",
+    jxlFps: meta.experimentalJxl && jxlWasmDecoder ? (jxlWasmDecoder.profile?.fps || 12) : 12,
     bufferedPlayer: null,
     browserAudio: false,
     browserPcm: false,
@@ -8992,6 +9004,27 @@ $("#playbackMethodToggle")?.addEventListener("click", async (event) => {
         const result = await candidate.decode(new Blob([bytes], { type: "image/jxl" }));
         if (result.width !== 64 || result.height !== 64) throw new Error("JXL WASM capability test failed");
         result.release();
+        // Warm decode of a representative 480p JXL frame, not the tiny 64px
+        // capability fixture. Only faster browsers opt into 15 FPS; slower
+        // Tesla Chromium remains at the known 12 FPS profile.
+        candidate.profile = { fps: 12, height: 480 };
+        try {
+          const sampleResponse = await fetch("/experimental/jxl-wasm/480p-probe.jxl", { cache: "force-cache" });
+          if (sampleResponse.ok) {
+            const sample = await sampleResponse.blob();
+            const warm = await candidate.decode(sample);
+            warm.release();
+            const started = performance.now();
+            const measured = await candidate.decode(sample);
+            measured.release();
+            const elapsedMs = performance.now() - started;
+            if (elapsedMs <= 48) candidate.profile.fps = 15;
+            candidate.profile.probeMs = Math.round(elapsedMs);
+          }
+        } catch {
+          // The experimental 15 FPS probe is optional, not a prerequisite for
+          // proven JXL WASM 12 FPS availability.
+        }
       }
       const response = await fetch("/api/experimental/jxl", { cache: "no-store" });
       if (!response.ok) throw new Error("Could not check JPEG XL encoder");
@@ -9022,7 +9055,7 @@ $("#playbackMethodToggle")?.addEventListener("click", async (event) => {
     const result = replayFn(resumeAt);
     if (result?.catch) result.catch((error) => toast(error.message, true));
   } else {
-    toast(next === "jxl" ? (candidate ? "JXL WebAssembly experiment · 480p / 12 FPS cap" : "JPEG XL experiment · capped at 12 FPS")
+    toast(next === "jxl" ? (candidate ? `JXL WebAssembly experiment · 480p / ${candidate.profile?.fps || 12} FPS cap` : "JPEG XL experiment · capped at 12 FPS")
       : (next === "webcodecs" ? "WebCodecs selected for YouTube" : "MJPEG selected for YouTube"));
   }
 });
