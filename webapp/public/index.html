@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="/everyday-controls.css?v=20261007" />
   <link rel="stylesheet" href="/ui-switch.css?v=20261008-v3" />
   <script src="/ui-switch.js?v=20261008-v3"></script>
-  <link rel="stylesheet" href="/mobile-player-fixes.css?v=20261018-audio-codec-status" />
+  <link rel="stylesheet" href="/mobile-player-fixes.css?v=20261021-output-indicator" />
   <style>
     .experimental-menu-link { display:flex; align-items:center; min-height:40px; padding:0 18px; border-radius:9px; color:var(--muted); text-decoration:none; font-size:15px; font-weight:800; white-space:nowrap; }
     .experimental-menu-link:hover, .experimental-menu-link:focus-visible { background:var(--panel-2); color:var(--text); }
@@ -320,7 +320,7 @@
             <span id="activePlaybackAudio" class="player-active-audio">Audio: idle</span>
           </div>
           <button class="btn small ghost player-audio-retry" id="playerRetryAudioBtn" type="button" hidden>Retry audio</button>
-          <span class="player-video-modes-hint" id="videoModeHint">Selected buttons are preferences; the status above shows the actual active player and audio state.</span>
+          <span class="player-video-modes-hint" id="videoModeHint">Selected mode is a preference (blue). The active video output has a green outline and dot; status shows the codec actually in use.</span>
         </section>
 
         <section class="player-quality-panel" id="playerQualityPanel" aria-label="Player quality settings" hidden>
@@ -850,7 +850,7 @@
   <script src="/playback-recovery.js?v=20261007"></script>
   <script src="/everyday-controls.js?v=20261007"></script>
   <script src="/extractor-controls.js?v=20261007"></script>
-  <script src="/app.js?v=20261018-audio-codec-status"></script>
+  <script src="/app.js?v=20261021-output-indicator"></script>
   <script src="/modern-ui.js?v=20261008-v3"></script>
   <script src="/vlc-cast.js?v=20261011-issue35"></script>
 </body>
