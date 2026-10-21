@@ -109,6 +109,12 @@ function playbackStats(value) {
     "audioReadyMs", "audioStartMs", "firstRenderedMs", "serverResolveMs",
     "serverFirstOutputMs", "ffmpegFirstOutputMs", "resolveCache", "rebufferCount",
     "recoveryTargetSeconds", "lastAvDriftMs", "eof",
+    // Audio diagnostics are scalar metadata only. Never store PCM or OAuth data.
+    "audioMode", "audioContextState", "audioAheadMs", "audioDecodedBlocks",
+    "audioScheduledBlocks", "audioLateBlocks", "audioOverlapPrevented",
+    "audioContinuityCorrections", "audioMaxScheduleSlipMs", "audioFeedDone",
+    "videoFeedDone", "audioMuted", "audioMediaReadyState", "audioMediaNetworkState",
+    "audioMediaPaused", "audioMediaTimeSec", "playbackPositionSec",
   ];
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
 }

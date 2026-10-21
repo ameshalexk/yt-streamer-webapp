@@ -24,3 +24,11 @@ test("CyberDash start route receives YouTube VOD metadata", () => {
   assert.match(start, /if \(isLive\)/);
   assert.match(start, /fallback: "mjpeg"/);
 });
+
+
+test("diagnostic event ingestion retains only safe audio metadata", () => {
+  for (const name of ["audioContextState", "audioAheadMs", "audioDecodedBlocks", "audioScheduledBlocks", "audioMaxScheduleSlipMs", "playbackPositionSec"]) {
+    assert.ok(server.includes(`"${name}"`), `expected scalar diagnostic key: ${name}`);
+  }
+  assert.match(server, /PLAYBACK_LOG_MAX_BYTES = 5 \* 1024 \* 1024/);
+});

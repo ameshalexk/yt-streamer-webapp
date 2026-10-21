@@ -182,6 +182,96 @@ function scheduledAudioAheadSec(state) {
   return Math.max(0, Number(state.audioScheduleCursor) - state.audioCtx.currentTime);
 }
 
+// Diagnostic-only audio probes. They never change playback or capture audio content.
+// A running audio clock does not prove the speaker is producing sound; the
+// scheduled-buffer horizon helps distinguish video-only continuation.
+export function classifyAudioSchedule({
+  playing = false, muted = false, audioStarted = false, videoMoving = false,
+  audioContextState = "running", audioAheadSec = 0,
+} = {}) {
+  if (!playing || muted || !audioStarted || !videoMoving) return null;
+  if (audioContextState !== "running") return "audio_context_not_running";
+  if (Number(audioAheadSec) < 0.05) return "audio_schedule_empty";
+  return null;
+}
+
+function audioHealthSnapshot(state) {
+  const external = state.externalAudioElement;
+  return {
+    audioMode: external ? "media-element" : "web-audio",
+    audioContextState: external ? "external" : (state.audioCtx?.state || "missing"),
+    audioAheadMs: external ? null : round(scheduledAudioAheadSec(state) * 1000),
+    audioDecodedBlocks: state.decodedAudioBlocks,
+    audioScheduledBlocks: state.scheduledAudioBlocks,
+    audioLateBlocks: state.audioLateBlocks,
+    audioOverlapPrevented: state.audioOverlapPrevented,
+    audioContinuityCorrections: state.audioContinuityCorrections,
+    audioMaxScheduleSlipMs: round(state.maxAudioScheduleSlipMs),
+    audioFeedDone: Boolean(state.audioFeedDone),
+    videoFeedDone: Boolean(state.videoFeedDone),
+    audioMuted: Boolean(state.requestedMuted),
+    audioMediaReadyState: external?.readyState ?? null,
+    audioMediaNetworkState: external?.networkState ?? null,
+    audioMediaPaused: external?.paused ?? null,
+    audioMediaTimeSec: external ? round(Number(external.currentTime), 2) : null,
+    playbackPositionSec: round(state.startAt + playbackElapsed(state), 2),
+  };
+}
+
+function sendAudioDiagnostic(state, event, reason) {
+  // Best effort: no extra media requests, no raw waveform, and no retry loop.
+  const stats = audioHealthSnapshot(state);
+  void fetch("/api/playback-event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      event, reason, label: "embedded-webcodecs-audio",
+      streamUrl: state.sourceUrl,
+      stats,
+    }),
+  }).catch(() => {});
+}
+
+export function advanceAudioHealthIncident(state, now, anomaly) {
+  if (anomaly) {
+    if (state.audioDiagnosticGapReason !== anomaly) {
+      state.audioDiagnosticGapReason = anomaly;
+      state.audioDiagnosticGapAt = now;
+      state.audioDiagnosticReported = false;
+    } else if (!state.audioDiagnosticReported && now - state.audioDiagnosticGapAt >= 2500) {
+      state.audioDiagnosticReported = true;
+      return { event: "cyberdash_audio_anomaly", reason: anomaly };
+    }
+  } else {
+    const recovered = state.audioDiagnosticReported ? state.audioDiagnosticGapReason : null;
+    state.audioDiagnosticGapReason = null;
+    state.audioDiagnosticReported = false;
+    if (recovered) return { event: "cyberdash_audio_recovered", reason: recovered };
+  }
+  return null;
+}
+
+function auditAudioHealth(state, now, videoMoving) {
+  if (state.stopRequested || state.paused || state.rebuffering || state.audioStart == null) return;
+  // Only flag known schedule gaps, not unmeasurable hardware/output-volume issues.
+  const anomaly = state.externalAudioElement ? null : classifyAudioSchedule({
+    playing: true,
+    muted: state.requestedMuted,
+    audioStarted: state.decodedAudioBlocks > 0,
+    videoMoving,
+    audioContextState: state.audioCtx?.state,
+    audioAheadSec: scheduledAudioAheadSec(state),
+  });
+  const transition = advanceAudioHealthIncident(state, now, anomaly);
+  if (transition) sendAudioDiagnostic(state, transition.event, transition.reason);
+  // A bounded heartbeat captures a 15-minute video's final minute even when
+  // neither decoder throws and no rebuffer state is entered.
+  if (now - state.audioDiagnosticLastReportAt >= 20000) {
+    state.audioDiagnosticLastReportAt = now;
+    sendAudioDiagnostic(state, "cyberdash_audio_health", "periodic");
+  }
+}
+
 function playbackElapsed(state) {
   const segmentOffset = Math.max(0, Number(state.segmentOffsetSourceSec) || 0);
   if (state.externalAudioElement) {
@@ -511,6 +601,8 @@ function startRenderLoop(state) {
       const queueDelta = queueSeconds - lastStatsQueueSeconds;
       const queueTrend = queueDelta > 0.12 ? "growing" : (queueDelta < -0.12 ? "shrinking" : "stable");
       const lastDriftMs = state.drifts.length ? state.drifts[state.drifts.length - 1] : 0;
+      auditAudioHealth(state, now, state.renderedFrames > state.audioDiagnosticLastFrames);
+      state.audioDiagnosticLastFrames = state.renderedFrames;
       state.onStats({
         fps: state.requestedFps,
         renderedFps,
@@ -882,6 +974,8 @@ async function sendSummary(state, result, message = "") {
           resolveMs: round(state.resolveMs, 1),
           videoQueueMax: state.maxVideoQueue,
           audioQueueMax: state.maxAudioQueue,
+          audioDiagnosticGapReason: state.audioDiagnosticGapReason || "none",
+          ...audioHealthSnapshot(state),
           receivedMbps: round(state.receivedBytes * 8 / Math.max(0.25, (performance.now() - state.startedAt) / 1000) / 1_000_000, 2),
           startupVideoBufferSec: round(state.startupVideoBufferSec, 2),
           startupAudioBufferSec: round(state.startupAudioBufferSec, 2),
@@ -1012,6 +1106,11 @@ export function createCyberdashPlayer({
       droppedFrames: 0,
       decodedAudioBlocks: 0,
       scheduledAudioBlocks: 0,
+      audioDiagnosticLastReportAt: performance.now(),
+      audioDiagnosticLastFrames: 0,
+      audioDiagnosticGapAt: 0,
+      audioDiagnosticGapReason: null,
+      audioDiagnosticReported: false,
       receivedBytes: 0,
       compressedPrefetchSourceSec: 0,
       compressedPrefetchBytesMax: 0,
