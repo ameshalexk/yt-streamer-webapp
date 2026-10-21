@@ -9722,6 +9722,18 @@ function handleDesktopPanPointerUp(e) {
     }, { passive: false });
   }
 
+  // A native image drag or Tesla viewport pan must never steal the remote
+  // browser's vertical scroll gesture. Pointer handlers still send Chrome wheel.
+  screen.addEventListener("dragstart", (e) => {
+    if (browserInputActiveForScreen() && e.target?.matches?.("img, video, canvas")) {
+      e.preventDefault();
+    }
+  });
+  screen.addEventListener("touchmove", (e) => {
+    if (!browserInputActiveForScreen() || e.target?.closest?.("button, input, select, textarea, a")) return;
+    if (e.cancelable) e.preventDefault();
+  }, { passive: false });
+
   screen.addEventListener("wheel", (e) => {
     if (handleDesktopZoomWheel(e)) return;
     if (handleBrowserZoomWheel(e)) return;
