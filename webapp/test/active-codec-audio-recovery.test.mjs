@@ -60,6 +60,7 @@ test("JXL WebAssembly experimental mode is explicit and bounded with MJPEG fallb
  assert.match(ui,/releaseJxlWasmDecoder\(\)/);
  assert.match(app,/const chosenFps = jxlWasmDecoder\.profile\?\.fps === 15 \? 15 : 12/);
  assert.match(app,/bufferedUrl = withUrlParam\(withUrlParam\(bufferedUrl, "height", "480"\), "fps", String\(chosenFps\)\)/);
+ assert.match(app,/replacedWasmPlayback = activeCompat\?\.buffered && activeCompat\?\.decodeEngine === "wasm"/);
  assert.match(app,/jxlWasmDecoder = previous\.recreate\(\)/);
  assert.match(app,/frameDecoder: meta\.experimentalJxl && jxlWasmDecoder/);
  assert.match(app,/jxlFallbackInProgress = true/);

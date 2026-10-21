@@ -2747,10 +2747,11 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   const screen = $("#screen");
   const canvas = $("#mjpegCanvas");
   const audio = $("#audio");
+  const replacedWasmPlayback = activeCompat?.buffered && activeCompat?.decodeEngine === "wasm";
   cleanupMedia(Boolean(meta.watchHistoryKey && watchProgress.session?.key === meta.watchHistoryKey));
-  // Keep the JXL selection but discard any uninterruptible pending decode
-  // from the player replaced by a seek.
-  if (meta.experimentalJxl && jxlWasmDecoder && Number(meta.startAt) > 0) {
+  // A seek to any position (including zero) must discard uninterruptible
+  // pending decodes from the superseded JXL worker.
+  if (meta.experimentalJxl && jxlWasmDecoder && replacedWasmPlayback) {
     const previous = jxlWasmDecoder;
     jxlWasmDecoder = previous.recreate();
     jxlWasmDecoder.profile = previous.profile;

@@ -86,6 +86,14 @@ try {
  assert.match(afterSeek.video,/wasm=1/);
  assert.ok([12,15].includes(afterSeek.profile.fps));
  assert.match(afterSeek.video,/fps=(?:12|15)/);
+ // Seeking back to zero must also retire the previous worker.
+ await page.evaluate(()=>seekStreamTo(0));
+ await page.waitForFunction(()=>streamSeek.startAt===0 && window.__YT_STREAMER_BUFFER_STATS__?.renderedFrames>=1,{timeout:12000});
+ const afterZeroSeek=await page.evaluate(()=>({mode:youtubePlaybackMethod,workers:window.__workerStats,video:activeCompat?.mjpegUrl}));
+ assert.equal(afterZeroSeek.mode,'jxl');
+ assert.equal(afterZeroSeek.workers.created,3);
+ assert.equal(afterZeroSeek.workers.terminated,2);
+ assert.match(afterZeroSeek.video,/timestamp=0/);
  await page.locator('[data-playback-method="mjpeg"]').click();
  const afterSwitch=await page.evaluate(()=>({mode:youtubePlaybackMethod,worker:Boolean(jxlWasmDecoder),stats:window.__workerStats}));
  assert.equal(afterSwitch.mode,'mjpeg');assert.equal(afterSwitch.worker,false);assert.equal(afterSwitch.stats.created,afterSwitch.stats.terminated);
@@ -118,6 +126,6 @@ try {
  const blocked=await page.evaluate(()=>({mode:youtubePlaybackMethod,worker:Boolean(jxlWasmDecoder),stats:window.__workerStats}));
  assert.equal(blocked.mode,'mjpeg');assert.equal(blocked.worker,false);assert.equal(blocked.stats.created,1);
  assert.equal(errors.length,0,errors.join(';'));
- console.log('PASS opt-in mode, seek 429 retry/worker reset, FPS probe, corrupt-stream MJPEG recovery, reload reset, encoder block',JSON.stringify({activated,afterSeek,seekBusyResponses,seekAccepted,afterSwitch,recovered,afterReload,blocked,wasmFetches}));
+ console.log('PASS opt-in mode, seek 429 retry/worker reset, FPS probe, corrupt-stream MJPEG recovery, reload reset, encoder block',JSON.stringify({activated,afterSeek,afterZeroSeek,seekBusyResponses,seekAccepted,afterSwitch,recovered,afterReload,blocked,wasmFetches}));
  await page.close();
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
