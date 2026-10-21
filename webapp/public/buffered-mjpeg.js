@@ -491,6 +491,7 @@
       maxQueueBytes = 24 * 1024 * 1024,
       maxFrameBytes = 3 * 1024 * 1024,
       frameFormat = "jpeg",
+      frameDecoder = decodeJpeg,
       onState = () => {},
       onStats = () => {},
       onMilestone = () => {},
@@ -499,6 +500,7 @@
     }) {
       this.url = url;
       this.frameMimeType = frameFormat === "jxl" ? "image/jxl" : "image/jpeg";
+      this.frameDecoder = typeof frameDecoder === "function" ? frameDecoder : decodeJpeg;
       this.canvas = canvas;
       this.ctx = canvas?.getContext?.("2d") || null;
       this.audio = audio;
@@ -544,6 +546,8 @@
       this.firstRenderedAt = null;
       this.decodeTotalMs = 0;
       this.decodeCount = 0;
+      this.workerDecodeCount = 0;
+      this.workerDecodeTotalMs = 0;
       this.stats = {
         state: "idle",
         fps: this.fps,
@@ -563,6 +567,9 @@
         producerSpeed: null,
         averageDecodeMs: null,
         maxDecodeMs: null,
+        wasmWorkerDecodeMs: null,
+        wasmWorkerMaxDecodeMs: null,
+        wasmTransferMode: null,
         startupMs: null,
         responseStartMs: null,
         firstByteMs: null,
@@ -994,11 +1001,18 @@
       if (frame.decoded) return Promise.resolve(frame.decoded);
       if (frame.decodePromise) return frame.decodePromise;
       const decodeStartedAt = performance.now();
-      frame.decodePromise = decodeJpeg(frame.blob).then((decoded) => {
+      frame.decodePromise = this.frameDecoder(frame.blob).then((decoded) => {
         const decodeMs = Math.max(0, performance.now() - decodeStartedAt);
         this.decodeTotalMs += decodeMs;
         this.decodeCount += 1;
         this.stats.maxDecodeMs = Math.max(Number(this.stats.maxDecodeMs || 0), Math.round(decodeMs * 10) / 10);
+        if (Number.isFinite(decoded.decodeMs)) {
+          this.workerDecodeCount += 1;
+          this.workerDecodeTotalMs += decoded.decodeMs;
+          this.stats.wasmWorkerDecodeMs = Math.round(this.workerDecodeTotalMs / this.workerDecodeCount * 10) / 10;
+          this.stats.wasmWorkerMaxDecodeMs = Math.max(Number(this.stats.wasmWorkerMaxDecodeMs || 0), decoded.decodeMs);
+          this.stats.wasmTransferMode = decoded.transport || "unknown";
+        }
         if (this.stats.firstFrameDecodedMs == null) {
           this.stats.firstFrameDecodedMs = Math.round(performance.now() - this.startedAt);
           this._milestone("first-frame-decoded");

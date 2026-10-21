@@ -19,7 +19,8 @@
     "test:jxl-real": "node scripts/jxl-real-smoke.mjs",
     "test:jxl-e2e": "node scripts/jxl-actual-stream-e2e.mjs",
     "test:audio-stream": "node scripts/audio-real-stream-e2e.mjs",
-    "test:audio-recovery-browser": "node scripts/audio-recovery-browser-check.mjs"
+    "test:audio-recovery-browser": "node scripts/audio-recovery-browser-check.mjs",
+    "test:jxl-wasm": "node scripts/jxl-wasm-browser-smoke.mjs && node scripts/jxl-wasm-player-stream-smoke.mjs && node scripts/jxl-wasm-mode-browser-check.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",
