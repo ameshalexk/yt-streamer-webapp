@@ -16,9 +16,10 @@ test("browser frame image cannot be dragged while remote touch is active", () =>
 
 test("viewport touch swipes cancel native dragging without blocking controls", () => {
   const touch = app.slice(app.indexOf('screen.addEventListener("touchmove", (e) => {'));
-  assert.match(touch, /browserInputActiveForScreen\(\)/);
-  assert.match(touch, /e\.target\?\.closest\?\.\("button, input, select, textarea, a"\)/);
-  assert.match(touch, /e\.cancelable\) e\.preventDefault\(\)/);
+  assert.match(touch, /browserNativeTouchMove\(e\)/);
+  assert.match(app, /function browserTouchEventAllowed\(e\)/);
+  assert.match(app, /e\.target\?\.closest\?\.\("button, input, select, textarea, a, \[role=button\]/);
+  assert.match(app, /if \(e\.cancelable\) e\.preventDefault\(\)/);
   assert.match(touch, /passive: false/);
   assert.match(app, /screen\.addEventListener\("dragstart"/);
 });
