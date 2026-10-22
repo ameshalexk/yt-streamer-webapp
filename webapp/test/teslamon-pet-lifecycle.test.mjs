@@ -24,8 +24,9 @@ test('superseded pre-dispatch requests are aborted and cannot remain current',()
   assert.equal(current.current(),false);
 });
 
-async function launchPet(fetchImpl,{local=false}={}){
+async function launchPet(fetchImpl,{local=false,speechBehavior={},interpretImpl=()=>({error:'Use optional AI'})}={}){
   let captureOptions;
+  const speechSessions=[],timers=new Map();let nextTimer=0;
   const elements=new Map();
   class Element{
     constructor(id=''){this.id=id;this.listeners={};this.dataset={};this.style={};
@@ -49,7 +50,12 @@ async function launchPet(fetchImpl,{local=false}={}){
   const pet=new Element('#teslamonPet');pet.querySelector=s=>elements.get(s);
   pet.querySelectorAll=()=>actions;
   const window={listeners:{},addEventListener(name,fn){(this.listeners[name]??=[]).push(fn);},
-    SpeechRecognition:class{start(){} stop(){} abort(){}}};
+    SpeechRecognition:class{
+      constructor(){if(speechBehavior.constructorThrows)throw Error('constructor failed');this.aborted=false;this.stopped=false;speechSessions.push(this);}
+      start(){if(speechBehavior.startThrows)throw Error('start failed');if(speechBehavior.endOnStart)this.onend?.();}
+      stop(){this.stopped=true;if(speechBehavior.endOnStop)this.onend?.();if(speechBehavior.stopThrows)throw Error('stop failed');}
+      abort(){this.aborted=true;if(speechBehavior.endOnAbort)this.onend?.();}
+    }};
   if(local)window.MediaRecorder=class{};
   const document={hidden:false,listeners:{},body:{append(){}},
     createElement(tag){return tag==='aside'?pet:new Element(tag);},
@@ -57,13 +63,17 @@ async function launchPet(fetchImpl,{local=false}={}){
   const context={location:{hostname:'stream.ameshalex.com',protocol:'https:'},document,window,
     navigator:local?{mediaDevices:{getUserMedia:()=>Promise.resolve({})}}:{},innerWidth:390,innerHeight:844,localStorage:{getItem(){return null;},setItem(){}},
     Option:class{constructor(text,value){this.text=text;this.value=value;}},fetch:fetchImpl,
-    interpretTeslaMon:()=>({error:'Use optional AI'}),
+    interpretTeslaMon:interpretImpl,
     createTeslaMonCapture:options=>{captureOptions=options;return {};},bindTeslaMonCaptureButton:()=>({dispose(){},targetChanged(){}}),
-    createTeslaMonPetLifecycle,AbortController,console};
+    createTeslaMonPetLifecycle,AbortController,console,
+    setTimeout(fn,ms){const id=++nextTimer;timers.set(id,{fn,ms});return id;},
+    clearTimeout(id){timers.delete(id);}};
   const source=(await readFile(new URL('../public/teslamon-pet.js',import.meta.url),'utf8'))
     .replace(/^import .*;\n/gm,'');
   vm.runInNewContext(source,context);
-  return {elements,window,document,actions,get captureOptions(){return captureOptions;}};
+  return {elements,window,document,actions,speechSessions,timers,
+    fireTimers(){for(const [id,timer] of [...timers]){timers.delete(id);timer.fn();}},
+    get captureOptions(){return captureOptions;}};
 }
 
 test('pet serializes target selections and blocks commands until the newest target is selected',async()=>{
@@ -216,4 +226,96 @@ test('local transcription is cancelled on close and microphone cannot start with
   await assert.rejects(harness.captureOptions.getUserMedia({audio:true}),/Select a connected browser/);
   transcription.d.resolve(answer({status:'ok',text:'pause'}));await tick();
   assert.equal(calls.filter(c=>c.url.endsWith('/command')||c.url.endsWith('/interpret')).length,0);
+});
+
+test('native speech times out at 20 seconds, aborts, and ignores late partial or end callbacks',async()=>{
+  const calls=[];
+  const harness=await launchPet(url=>{
+    calls.push(url);
+    if(url.endsWith('/devices'))return Promise.resolve(answer({enabled:true,
+      devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A',localTranscription:false}));
+    if(url.endsWith('/command')||url.endsWith('/interpret'))return Promise.resolve(answer({status:'accepted'}));
+    throw Error(`unexpected request ${url}`);
+  });
+  const {elements,speechSessions,timers,fireTimers}=harness;
+  elements.get('#tmFace').fire('click');await tick();
+  elements.get('#tmMic').fire('click');
+  const session=speechSessions[0];
+  assert.equal(timers.size,1);
+  assert.equal([...timers.values()][0].ms,20000);
+  fireTimers();
+  assert.equal(session.aborted,true);
+  assert.match(elements.get('#tmState').textContent,/timed out after 20 seconds.*Try again or type/i);
+  session.onresult({results:[[{transcript:'pause'}]]});session.onend();await tick();
+  assert.equal(calls.some(url=>url.endsWith('/command')||url.endsWith('/interpret')),false,
+    'terminated session cannot dispatch a late transcript');
+  assert.equal(timers.size,0);
+});
+
+test('native speech cancellation on blur, hidden, target change, close, and pagehide aborts each session',async()=>{
+  for(const cancel of ['blur','hidden','target','close','pagehide']){
+    const harness=await launchPet(url=>url.endsWith('/devices')?Promise.resolve(answer({enabled:true,
+      devices:[{deviceKey:'A',label:'A'},{deviceKey:'B',label:'B'}],selectedDeviceKey:'A'})):
+      Promise.resolve(answer({status:'selected'})));
+    const {elements,window,document,speechSessions,timers}=harness;
+    elements.get('#tmFace').fire('click');await tick();
+    elements.get('#tmMic').fire('click');const session=speechSessions[0];
+    if(cancel==='blur')for(const fn of window.listeners.blur||[])fn();
+    if(cancel==='hidden'){document.hidden=true;for(const fn of document.listeners.visibilitychange||[])fn();}
+    if(cancel==='target'){elements.get('#tmDevices').value='B';elements.get('#tmDevices').fire('change');await tick();}
+    if(cancel==='close')elements.get('#tmClose').fire('click');
+    if(cancel==='pagehide')for(const fn of window.listeners.pagehide||[])fn();
+    assert.equal(session.aborted,true,cancel);
+    assert.equal(timers.size,0,cancel+' clears timeout');
+  }
+});
+
+test('native speech stop and start exceptions clean up timers and synchronous end dispatches once',async()=>{
+  const calls=[];
+  const harness=await launchPet(url=>{
+    calls.push(url);
+    if(url.endsWith('/devices'))return Promise.resolve(answer({enabled:true,
+      devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A'}));
+    if(url.endsWith('/command'))return Promise.resolve(answer({status:'accepted'}));
+    throw Error(`unexpected request ${url}`);
+  },{speechBehavior:{endOnStop:true},interpretImpl:()=>({tool:'pause',args:{}})});
+  const {elements,speechSessions,timers}=harness;
+  elements.get('#tmFace').fire('click');await tick();
+  elements.get('#tmMic').fire('click');
+  const session=speechSessions[0];
+  session.onresult({results:[[{transcript:'pause'}]]});
+  elements.get('#tmMic').fire('click');await tick();await tick();
+  assert.equal(session.stopped,true);
+  assert.equal(timers.size,0);
+  assert.equal(calls.filter(url=>url.endsWith('/command')).length,1);
+
+  const failing=await launchPet(url=>url.endsWith('/devices')?Promise.resolve(answer({enabled:true,
+    devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A'})):Promise.resolve(answer({status:'accepted'})),
+    {speechBehavior:{startThrows:true}});
+  failing.elements.get('#tmFace').fire('click');await tick();
+  failing.elements.get('#tmMic').fire('click');
+  assert.equal(failing.timers.size,0,'failed start leaves no timer');
+  assert.match(failing.elements.get('#tmState').textContent,/unavailable.*Type a command or retry/i);
+
+  const stopFailure=await launchPet(url=>url.endsWith('/devices')?Promise.resolve(answer({enabled:true,
+    devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A'})):Promise.resolve(answer({status:'accepted'})),
+    {speechBehavior:{stopThrows:true}});
+  stopFailure.elements.get('#tmFace').fire('click');await tick();
+  stopFailure.elements.get('#tmMic').fire('click');
+  const failedSession=stopFailure.speechSessions[0];
+  stopFailure.elements.get('#tmMic').fire('click');
+  assert.equal(failedSession.aborted,true,'failed stop falls back to abort');
+  assert.equal(stopFailure.timers.size,0,'failed stop clears timeout');
+  assert.match(stopFailure.elements.get('#tmState').textContent,/failed.*Type a command or retry/i);
+});
+
+
+test('native speech construction failure preserves typed fallback without a timer',async()=>{
+  const harness=await launchPet(url=>Promise.resolve(answer({enabled:true,
+    devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A'})),
+    {speechBehavior:{constructorThrows:true}});
+  harness.elements.get('#tmFace').fire('click');await tick();
+  assert.doesNotThrow(()=>harness.elements.get('#tmMic').fire('click'));
+  assert.equal(harness.timers.size,0);
+  assert.match(harness.elements.get('#tmState').textContent,/unavailable.*Type a command or retry/i);
 });
