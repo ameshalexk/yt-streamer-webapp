@@ -2377,6 +2377,8 @@ if(process.env.YT_AI_AGENT_ACCESS_AUDIENCE && process.env.YT_AI_AGENT_CONTROL_DI
       audience:process.env.YT_AI_AGENT_ACCESS_AUDIENCE,
       allowedSubjects:(process.env.YT_AI_AGENT_ALLOWED_SUBJECTS || '').split(',').map(x=>x.trim()).filter(Boolean),
       enableTeslaMon:process.env.YT_TESLAMON_ENABLED === '1',
+      origin:process.env.YT_TESLAMON_PUBLIC_ORIGIN==='https://teslamon-stage.ameshalex.com'?
+        'https://teslamon-stage.ameshalex.com':'https://stream.ameshalex.com',
     });
     console.log('[ai-media] private Mac Control bridge enabled');
     for (const signal of ['SIGTERM','SIGINT']) process.once(signal,()=>{

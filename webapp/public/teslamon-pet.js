@@ -2,7 +2,7 @@ import {interpretTeslaMon} from './teslamon-intent.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 
-if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
+if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
   const pet=document.createElement('aside');
   pet.id='teslamonPet';
   pet.setAttribute('aria-label','TeslaMon playback assistant');
