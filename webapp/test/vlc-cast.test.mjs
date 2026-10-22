@@ -53,7 +53,12 @@ test("Access controls verify signature, audience, expiry and subject",async()=>{
     "oversized cookies rejected");
   assert.equal(await auth({get:()=>sign({aud:"wrong-aud"})}),null);
   assert.equal(await auth({get:()=>sign({exp:100})}),null);
-  assert.equal(await auth({get:()=>sign().slice(0,-2)+"zz"}),null);
+  const tamperSignature=(jwt)=>{
+    const position=jwt.lastIndexOf(".")+1;
+    const altered=jwt[position]==="A"?"B":"A";
+    return jwt.slice(0,position)+altered+jwt.slice(position+1);
+  };
+  assert.equal(await auth({get:()=>tamperSignature(sign())}),null);
   assert.equal(await auth({get:()=>""}),null);
   assert.equal(await createCastAccess({issuer:"http://127.0.0.1",audience})({get:()=>sign()}),null);
 });
