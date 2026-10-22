@@ -5,7 +5,7 @@ import {spawn} from 'node:child_process';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 const MAX_BYTES=5*1024*1024;
-const TYPES=new Set(['audio/webm','audio/mp4','audio/ogg']);
+const TYPES=new Set(['audio/webm','audio/mp4','audio/ogg','audio/wav']);
 const helper=fileURLToPath(new URL('./teslamon-poweralx-bridge.py',import.meta.url));
 const failed=(code,status='failed')=>({status,code});
 const BINARY=/^(\/[A-Za-z0-9_.@+-]+)+$/;
@@ -79,7 +79,7 @@ export function createTeslaMonTranscriber({
       if(!available)return failed('poweralx_worker_not_configured','unavailable');
       const mime=String(contentType||'').split(';')[0].trim().toLowerCase();
       if(!TYPES.has(mime)||!Buffer.isBuffer(data)||data.length<128||
-        data.length>MAX_BYTES)return failed('invalid_audio');
+        data.length>MAX_BYTES)return failed('invalid_audio_payload');
       if(signal?.aborted)return failed('request_cancelled');
       if(busy)return failed('speech_transcriber_busy');
       busy=true;

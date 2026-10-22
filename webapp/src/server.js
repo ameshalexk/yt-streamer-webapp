@@ -2284,7 +2284,7 @@ app.post('/api/teslamon/capabilities',verifyTeslaMonVoiceRequest,(req,res)=>{
     modelConfigured:false,engine:teslamonPowerAlxSTT.engine});
 });
 app.post('/api/teslamon/transcribe',verifyTeslaMonVoiceRequest,
-  express.raw({type:['audio/webm','audio/ogg','audio/mp4'],limit:'5mb'}),async(req,res)=>{
+  express.raw({type:['audio/webm','audio/ogg','audio/mp4','audio/wav'],limit:'5mb'}),async(req,res)=>{
     if(!teslamonPowerAlxSTT.available)
       return res.status(503).json({status:'unavailable',code:'poweralx_worker_not_configured'});
     try{

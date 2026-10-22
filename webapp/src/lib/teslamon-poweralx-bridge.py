@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -19,7 +20,7 @@ import tempfile
 import time
 from uuid import uuid4
 
-TYPES = {"audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mp4": ".m4a"}
+TYPES = {"audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mp4": ".m4a", "audio/wav": ".wav"}
 MAX_BYTES = 5 * 1024 * 1024
 MAX_SECONDS = 21.0
 ROOT = Path.home() / "Documents/Codex/2026-09-11/life-recorder/receiver"
@@ -35,20 +36,69 @@ def echo(status, code="", text=""):
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 def media_duration(source: Path) -> float:
+    """Read audio packet timing even when Safari's fragmented MP4 lacks duration.
+
+    This is a bounded metadata probe only, NEVER media decoding or transcription.
+    """
+    base = ["/opt/homebrew/bin/ffprobe", "-v", "error",
+            "-select_streams", "a:0"]
     try:
-        process = subprocess.run(
-            ["/opt/homebrew/bin/ffprobe", "-v", "error", "-show_entries",
-             "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
-             str(source)], capture_output=True, timeout=8, check=True, text=True,
+        info = subprocess.run(
+            base + ["-show_entries", "format=duration:stream=codec_type,duration",
+                    "-of", "json", str(source)],
+            capture_output=True, timeout=8, check=True, text=True,
         )
-        seconds = float(process.stdout.strip())
+        metadata = json.loads(info.stdout)
+        streams = metadata.get("streams", [])
+        if not streams or streams[0].get("codec_type") != "audio":
+            raise TranscribeFailed("invalid_audio_container")
+
+        durations = []
+        for raw in (metadata.get("format", {}).get("duration"),
+                    streams[0].get("duration")):
+            try:
+                number = float(raw)
+                if math.isfinite(number) and number > 0:
+                    durations.append(number)
+            except (TypeError, ValueError):
+                pass
+        if durations:
+            seconds = max(durations)
+        else:
+            # iOS Safari MediaRecorder can omit format/stream duration for
+            # fragmented MP4. The actual audio packets still contain timestamps.
+            packets = subprocess.run(
+                base + ["-show_packets", "-show_entries",
+                        "packet=pts_time,dts_time,duration_time",
+                        "-of", "json", str(source)],
+                capture_output=True, timeout=8, check=True, text=True,
+            )
+            rows = json.loads(packets.stdout).get("packets", [])
+            if not rows or len(rows) > 15000:
+                raise TranscribeFailed("invalid_audio_timing")
+            starts, ends = [], []
+            for packet in rows:
+                try:
+                    timestamp = float(packet.get("pts_time",
+                                                 packet.get("dts_time")))
+                    interval = float(packet.get("duration_time", 0))
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(timestamp) or not math.isfinite(interval) or interval < 0:
+                    continue
+                starts.append(timestamp)
+                ends.append(timestamp + interval)
+            if not starts:
+                raise TranscribeFailed("invalid_audio_timing")
+            seconds = max(ends) - min(starts)
         if not (0.1 < seconds <= MAX_SECONDS):
             raise TranscribeFailed("invalid_audio_duration")
         return seconds
     except TranscribeFailed:
         raise
-    except (ValueError, OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-        raise TranscribeFailed("invalid_audio")
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError, OSError,
+            subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        raise TranscribeFailed("invalid_audio_container")
 
 def validate_response(payload: object, request_id: str, sha: str) -> str:
     if not isinstance(payload, dict) or payload.get("id") != request_id or payload.get("sha256") != sha:
@@ -90,7 +140,7 @@ def run(mime: str, host: str, root: str, release: str):
     from remote_worker import remote_command, transfer, ps_command
     data = sys.stdin.buffer.read(MAX_BYTES + 1)
     if len(data) < 128 or len(data) > MAX_BYTES:
-        raise TranscribeFailed("invalid_audio")
+        raise TranscribeFailed("invalid_audio_payload")
     # Ephemeral Mac temp files for SSH/SCP only: never decode or transcribe
     # locally. The temporary directory disappears even on remote failure.
     with tempfile.TemporaryDirectory(prefix="teslamon-forward-") as tmp:

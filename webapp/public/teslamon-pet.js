@@ -1,6 +1,7 @@
 import {interpretTeslaMon} from './teslamon-intent.js';
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261022-auto-fullscreen1';
 import {createTeslaMonCapture} from './teslamon-capture.js';
+import {convertTeslaMonAudioToWav} from './teslamon-wav-fallback.js';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 
 if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
@@ -106,6 +107,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         unreconciled_prior_mutation:'An earlier action is uncertain. Reconcile before sending another.',
         target_busy:'Another command is running.',
         stale_or_unknown_candidate:'Selection expired. Search again.',
+        invalid_audio_payload:'Recording was empty or incomplete. Hold to talk for 2–3 seconds.',
+        invalid_audio_container:'iPhone sent an unreadable audio recording. Try again or type a command.',
+        invalid_audio_timing:'iPhone recording had no valid audio timing. Try again.',
+        invalid_audio_duration:'Recording was too short or too long. Hold for 2–3 seconds.',
+        iphone_wav_fallback_failed:'Safari sent unreadable MP4 audio and WAV conversion failed. Try again.',
         no_speech_detected:'No speech detected. Try again or type your command.'
       };
       status(reasons[response?.code]||('Command failed: '+(response?.code||'unknown')),'warn');
@@ -212,7 +218,19 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         const before=selected,epoch=micEpoch;
         void(async()=>{
           try{
-            const reply=await post('/api/teslamon/transcribe',blob,blob.type);
+            let reply=await post('/api/teslamon/transcribe',blob,blob.type);
+            // Safari WebKit sometimes records MP4 with unusable container
+            // metadata. Repair in the iPhone browser without re-recording,
+            // cloud services or putting decoding/transcription on the Mac.
+            if(blob.type?.split(';')[0]==='audio/mp4' &&
+               ['invalid_audio','invalid_audio_container','invalid_audio_timing','invalid_audio_duration'].includes(reply?.code)){
+              try{
+                const wav=await convertTeslaMonAudioToWav(blob);
+                if(before!==selected||epoch!==micEpoch||!opened)return;
+                status('Converting iPhone audio for PowerALX…');
+                reply=await post('/api/teslamon/transcribe',wav,wav.type);
+              }catch{reply={status:'failed',code:'iphone_wav_fallback_failed'};}
+            }
             if(before!==selected||epoch!==micEpoch||!opened)return;
             if(reply.status==='ok'&&typeof reply.text==='string'){
               input.value=reply.text;interpret(reply.text);

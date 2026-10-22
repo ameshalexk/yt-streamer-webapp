@@ -24,7 +24,7 @@ test('Reject invalid media before sending data to PowerALX',async()=>{
     [Buffer.alloc(300),'text/html'],
     [Buffer.alloc(300),'application/json'],
     [Buffer.alloc(5*1024*1024+1),'audio/mp4']
-  ])assert.equal((await t.transcribe(bytes,mime)).code,'invalid_audio');
+  ])assert.equal((await t.transcribe(bytes,mime)).code,'invalid_audio_payload');
   assert.equal(invoked,0);
 });
 test('Forwards single short audio clip to injected transport unchanged, returns bounded transcript',async()=>{
@@ -39,6 +39,16 @@ test('Forwards single short audio clip to injected transport unchanged, returns 
     {status:'ok',text:'play latest MKBHD video'});
   assert.equal(received.bytes,audio);
   assert.equal(received.mime,'audio/webm');
+});
+test('PCM WAV recorded on iPhone is forwarded unchanged, never decoded on Mac',async()=>{
+  const audio=Buffer.alloc(2048,42);
+  let forwarded=null;
+  const t=createTeslaMonTranscriber({...config,runner:async(bytes,mime)=>{
+    forwarded={bytes,mime};return {status:'ok',text:'pause'};
+  }});
+  assert.equal((await t.transcribe(audio,'audio/wav')).text,'pause');
+  assert.equal(forwarded.mime,'audio/wav');
+  assert.equal(forwarded.bytes,audio);
 });
 test('Never accepts unbounded/private transport content as a public transcript',async()=>{
   const t=createTeslaMonTranscriber({...config,runner:async()=>({
