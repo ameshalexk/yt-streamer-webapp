@@ -6,7 +6,11 @@ import {randomUUID} from "node:crypto";
 import {verifyAccessJwt} from "./ai-media-agent-remote-authorization.js";
 import {AuthenticatedBrowserRegistrationRegistry} from "./ai-media-agent-browser-registration.js";
 
-const deny=()=>{throw Error("trusted_browser_denied");};
+const deny=(code='unknown')=>{
+  const error=Error('trusted_browser_denied');
+  error.authCode=code;
+  throw error;
+};
 function cookieJwt(raw){
   if(typeof raw!=="string"||raw.length>20000)return null;
   const matches=raw.split(";").map(x=>x.trim()).filter(x=>x.startsWith("CF_Authorization="));
@@ -35,9 +39,12 @@ export class TrustedBrowserRegistrationFlow {
   // and exact audience verification. Do not accept headers describing users.
   async authenticateHttp(req){
     const h=req?.headers;
-    if(req?.method!=="POST" || !this.#origins.has(h?.origin) ||
-       h?.host!==new URL(h.origin).host ||
-       (h["sec-fetch-site"] && h["sec-fetch-site"]!=="same-origin")) deny();
+    if(req?.method!=="POST")deny('method');
+    if(!this.#origins.has(h?.origin))deny('origin');
+    // Cloudflare Tunnel can use an internal origin Host/port while keeping
+    // the browser Origin unchanged. Require the pinned public Origin and
+    // Cloudflare-signed app JWT instead of equating these different hosts.
+    if(h["sec-fetch-site"] && h["sec-fetch-site"]!=="same-origin")deny('fetch_site');
     const {identity,expiresAt}=await this.#verifyIdentity(h);
     return {subject:identity.subject,issuer:identity.issuer,expires_at:expiresAt};
   }
@@ -59,15 +66,24 @@ export class TrustedBrowserRegistrationFlow {
   async #verifyIdentity(h){
     const header=h["cf-access-jwt-assertion"];
     const cookie=cookieJwt(h.cookie);
-    if(header!=null&&(typeof header!=="string"||!header))deny();
-    if(header&&cookie&&header!==cookie)deny();
+    if(header!=null&&(typeof header!=="string"||!header))deny('malformed_assertion');
+    // Cloudflare may rotate/refresh its edge assertion independently of the
+    // browser's HttpOnly application cookie. They are not byte-identical by
+    // contract. Prefer the edge's assertion when available; never downgrade
+    // a present but invalid assertion to a cookie supplied by the browser.
     const jwt=header||cookie;
-    if(!jwt)deny();
+    if(!jwt)deny('no_signed_jwt');
     let identity,expiresAt;
     try{
       let jwks=await this.#jwks.get();
       const verifyCurrent=keys=>verifyAccessJwt(jwt,{jwks:keys,
         issuer:this.#jwks.issuer,audience:this.#audience,
+        // Respect the actual Cloudflare Access policy's signed expiry.
+        // The owner's session is legitimately longer than 30 days. An
+        // arbitrary shorter maxTTL rejected a valid login (ttl_too_long).
+        // All cryptographic validation, issuer, audience, subject, iat,
+        // nbf and actual expiration checks stay mandatory.
+        maxTokenLifetimeSeconds:null,
         nowSeconds:Math.floor(this.#now()/1000)});
       try{
         identity=verifyCurrent(jwks);
@@ -94,7 +110,24 @@ export class TrustedBrowserRegistrationFlow {
       expiresAt=body.exp*1000;
       if((this.#subjects&&!this.#subjects.has(identity.subject))||!Number.isSafeInteger(expiresAt)
          ||expiresAt<=this.#now())deny();
-    }catch{deny();}
+    }catch(error){
+      if(error?.authCode)throw error;
+      let code='verification_failed';
+      // Record only bounded rejection categories. Never log JWTs, cookies,
+      // identity, subject, email, or arbitrary network error text.
+      try {
+        const body=JSON.parse(Buffer.from(jwt.split('.')[1],'base64url').toString('utf8'));
+        const current=Math.floor(this.#now()/1000);
+        if(body.iss!==this.#jwks.issuer)code='issuer_mismatch';
+        else if(!(Array.isArray(body.aud)?body.aud.includes(this.#audience):body.aud===this.#audience))code='audience_mismatch';
+        else if(!body.sub)code='missing_subject';
+        else if(!Number.isSafeInteger(body.exp)||body.exp<=current)code='expired';
+        else if(!Number.isSafeInteger(body.iat)||body.iat>current+30)code='iat_invalid';
+        else if(body.nbf!=null&&body.nbf>current)code='not_yet_valid';
+        else code='verification_failed';
+      }catch {code='token_parse_or_jwks';}
+      deny(code);
+    }
     return {identity,expiresAt};
   }
   #live(handle){

@@ -26,16 +26,15 @@
   const toggle=document.createElement('button');toggle.type='button';toggle.id='aiMediaProductionToggle';
   toggle.textContent=consent?'Disable AI':'Enable AI';
   toggle.style.cssText='min-height:34px;margin-right:8px;font:inherit;padding:4px 10px;border-radius:7px;background:#f1f4fa;color:#182330;border:0';
-  // Always expose a full-page Access entrypoint: background fetch/WS traffic
-  // cannot display Cloudflare's OTP form in an already-open player tab.
-  // A top-level request prompts for OTP only when Access requires it; do not
-  // auto-log out or revoke sessions on other protected applications.
+  // Cloudflare Access owns the authorization cookie. A site-only refresh
+  // cannot sign out a browser; Cloudflare's real logout route can.
+  // This explicit owner action revokes the Access session across apps.
   const signIn=document.createElement('a');
   signIn.id='aiMediaProductionSignIn';
-  signIn.href='/?ai_access_signin=1';
-  signIn.textContent='Sign in again';
-  signIn.setAttribute('aria-label','Reopen YT Streamer through Cloudflare Access sign-in');
-  signIn.style.cssText='display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:4px 9px;color:#d6e7ff;border:1px solid #8192ac;border-radius:7px;text-decoration:underline;font:inherit';
+  signIn.href='/cdn-cgi/access/logout';
+  signIn.textContent='Reset Cloudflare login';
+  signIn.setAttribute('aria-label','Sign out of Cloudflare Access and log in again');
+  signIn.style.cssText='display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:4px 9px;background:#2f4159;color:#e4f0ff;border:1px solid #8192ac;border-radius:7px;font:inherit;text-decoration:underline';
   const actions=document.createElement('div');
   actions.style.cssText='display:flex;gap:6px;flex-wrap:wrap;align-items:center';
   toggle.style.marginRight='0';
@@ -109,7 +108,7 @@
       });
       if(!response.ok){
         report(response.status===401||response.status===403
-          ?'AI: sign-in required — tap Sign in again'
+          ?'AI: authorization rejected — use Reset Cloudflare login only if you want to sign out'
           :'AI: connection service unavailable ('+response.status+')');
         scheduleRetry(epoch);return;
       }
@@ -119,7 +118,7 @@
       ticket=content.ticket;
     }catch{
       if(epoch===generation&&consent){
-        report('AI: login or network check failed — use Sign in again');
+        report('AI: session or network verification failed');
         scheduleRetry(epoch);
       }
       return;
@@ -158,12 +157,12 @@
       clearInterval(ticker);ticker=null;socket=null;deviceId=null;
       completed.clear();
       if(consent){
-        report(event.code===1008?'AI: pairing rejected ('+(event.reason||'authentication')+') — use Sign in again'
+        report(event.code===1008?'AI: pairing rejected ('+(event.reason||'authentication')+')'
           :'AI: disconnected; reconnecting when browser is active');
         scheduleRetry(epoch);
       }
     });
-    ws.addEventListener('error',()=>{if(socket===ws)report('AI: WebSocket connection rejected — Sign in again or retry');});
+    ws.addEventListener('error',()=>{if(socket===ws)report('AI: WebSocket connection rejected');});
   }
   toggle.addEventListener('click',event=>{
     if(!event.isTrusted||!navigator.userActivation?.isActive)return;
