@@ -50,3 +50,9 @@ User reports that signing in to YT Streamer still triggered a second Cloudflare 
 Removed the ineffective `/?ai_access_signin=1` **Sign in again** link. A **Reconnect AI** button now cancels its in-page socket/pairing attempt and retries using the already-authenticated browser session, without navigating the webpage or displaying a new OTP. Authentication failures no longer instruct the owner to log in a second time. New cache-busted script version `20261022-reuse-existing-access1`. Existing permission/opt-in still required, no Cloudflare protection changes, no new login or public control endpoint.
 
 **Do not claim the real-browser issue verified resolved.** The user explicitly requested no tests; this release was statically reviewed and deployed without executing test suites, browser checks or live request probes. Previous known-good Mac runtime remains backed up for rollback.
+
+## 2026-10-22: Restore the existing one-login Cloudflare reauthentication path
+
+After the owner reported that **Reconnect AI** only retried the rejected bootstrap, restore the existing **Sign in again** link from the prior UI. It performs a top-level request to the same Access-protected site (`/?ai_access_signin=1`); Cloudflare reuses a valid session and prompts once only when it needs a fresh login. The stored AI opt-in survives the page reload, so the normal client reconnects through that same site session. No AI-specific login, Cloudflare policy change, or new authentication endpoint is introduced. The client asset query version is `20261022-access-reauth-restore1`.
+
+This is a source/PR update only. Tests and real-browser verification were not run. Production deployment and iPhone acceptance remain pending.
