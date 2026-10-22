@@ -26,7 +26,11 @@ export function bindTeslaMonCaptureButton({ button, capture, document, window, o
   }
 
   function start(press) {
-    invoke('start').catch(error => {
+    invoke('start').then(started => {
+      // A busy/denied controller did not acquire this press. Do not let its
+      // later release cancel a different recording that is still finishing.
+      if (started === false && held === press) clearHeld();
+    }).catch(error => {
       report(error);
       if (held === press) {
         clearHeld();

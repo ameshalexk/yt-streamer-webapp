@@ -107,3 +107,28 @@ Continuation verification: **38/38** combined capture/binding fake tests pass
 pass. Independent read-only review completed; root checks added hidden-page and
 Escape cancellation after release. Still no mounted UI, microphone, STT or physical
 acceptance. The prior 7da1f12 CI result does not validate this newer commit.
+
+## Composed lifecycle verification
+
+`test/teslamon-capture-integration.test.mjs` composes the real capture controller
+and button binding. Only DOM/media/clock interfaces are replaced with synthetic
+fixtures, including browser-like lost-pointer-capture on pointer release and
+manually delayed recorder-stop delivery. This checks the component boundary that
+separate unit suites could not prove. It is still synthetic lifecycle evidence,
+not an actual microphone, STT, browser permission prompt or real-device result.
+
+The other chat's active full-code worktree owns pet, transcription, server and
+coordinator integration; these files remain untouched here. Capture continuation
+commits must be reconciled into that branch before broader browser acceptance.
+
+The composed tests reproduced two defects: `capture.start()` resolves `false`
+when busy or denied, but the binder retained the rejected press. Its later release
+could cancel a previous recording still waiting for stop, and denied permission
+left pointer capture held. The binder now clears only that rejected press; it
+never cancels a different stopping session. A successful later press remains
+usable. Session identity prevents a late result from clearing a newer press.
+
+Verification: **53/53** tests across capture, event-binding and composed integration
+suites passed (27 + 11 + 15), along with changed-module/test syntax and whitespace
+checks. No actual microphone or provider request occurred. Deployment and real
+browser/device acceptance are still separate gates.
