@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 // the owner and browser at ingress. Pairing validation deliberately defaults DENY.
 const MUTATIONS = new Set(["play_media", "pause", "resume", "stop", "next", "seek", "set_volume", "request_fullscreen"]);
 const READS = new Set(["get_player_state", "search_media"]);
-const VALID_STATUSES = new Set(["completed", "failed", "unsupported", "needs_user_gesture", "accepted", "playing", "buffering"]);
+const VALID_STATUSES = new Set(["completed", "failed", "unsupported", "needs_user_gesture", "accepted", "playing", "paused", "buffering"]);
+const VALID_PHASES = new Set(["idle", "playing", "paused", "buffering", "failed", "needs_user_gesture"]);
 
 function text(value, max = 80) {
   return typeof value === "string" && value.trim().length > 0 && value.length <= max;
@@ -22,6 +23,7 @@ function boundedResult(value) {
 }
 function boundedState(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value.playback_phase !== undefined && !VALID_PHASES.has(value.playback_phase)) return null;
   const state = {};
   for (const name of ["title", "media_id", "mode", "fullscreen_kind", "playback_phase", "audio_observation"]) {
     if (typeof value[name] === "string") state[name] = value[name].slice(0, 180);
@@ -52,10 +54,13 @@ export function validateMediaCommand(action, args = {}) {
 export class AgentSessionRegistry {
   #sessions = new Map();
   #pending = new Map();
+  #completed = new Map();
   #now; #authorizePairing; #ttlMs; #timeoutMs; #maxPending; #rateLimit; #rateWindowMs;
+  #maxSessions; #maxCompleted; #commandTtlMs;
 
   constructor({ authorizePairing = () => false, now = Date.now, ttlMs = 30000,
-    timeoutMs = 3000, maxPending = 4, rateLimit = 20, rateWindowMs = 10000 } = {}) {
+    timeoutMs = 3000, maxPending = 4, rateLimit = 20, rateWindowMs = 10000,
+    commandTtlMs = 60000, maxCompleted = 256, maxSessions = 64 } = {}) {
     if (typeof authorizePairing !== "function" || typeof now !== "function") fail("invalid_configuration");
     this.#authorizePairing = authorizePairing;
     this.#now = now;
@@ -64,11 +69,24 @@ export class AgentSessionRegistry {
     this.#maxPending = maxPending;
     this.#rateLimit = rateLimit;
     this.#rateWindowMs = rateWindowMs;
+    if (![maxSessions,maxCompleted,commandTtlMs].every(Number.isSafeInteger)
+        || maxSessions<1 || maxSessions>256 || maxCompleted<1 || maxCompleted>4096
+        || commandTtlMs<1 || commandTtlMs>600000) fail("invalid_configuration");
+    this.#maxSessions=maxSessions;
+    this.#maxCompleted=maxCompleted;
+    this.#commandTtlMs=commandTtlMs;
+  }
+  #pruneCompleted() {
+    const at=this.#now();
+    for (const [id,seenAt] of this.#completed) if(at-seenAt>=this.#commandTtlMs)
+      this.#completed.delete(id);
   }
 
   register({ principal, pairingProof, label, connectionId, send }) {
     if (!text(principal, 160) || !text(connectionId, 160) || !text(label, 64) || typeof send !== "function") fail("invalid_registration");
     if (this.#authorizePairing({ principal, pairingProof, connectionId }) !== true) fail("unauthorized_pairing");
+    this.sweep();
+    if(this.#sessions.size>=this.#maxSessions) fail("session_limit");
     const session = {
       id: randomUUID(), principal, connectionId, label, send,
       lastSeenAt: this.#now(), lastState: null, commandTimes: [],
@@ -113,21 +131,25 @@ export class AgentSessionRegistry {
       }));
   }
 
-  async dispatch({ principal, deviceId, action, args = {} }) {
+  async dispatch({ principal, deviceId, action, args = {}, commandId = randomUUID() }) {
     const validated = validateMediaCommand(action, args);
     if (!text(deviceId, 80) || !text(principal, 160)) fail("invalid_target");
+    if(!text(commandId,160)) fail("invalid_command_id");
+    this.#pruneCompleted();
+    if(this.#pending.has(commandId) || this.#completed.has(commandId))
+      return {status:"duplicate_command_id",device_id:deviceId,command_id:commandId};
     const session = this.#active(deviceId, principal);
-    if (!session) return { status: "offline", device_id: deviceId };
+    if (!session) return { status: "offline", device_id: deviceId, command_id: commandId };
+    if(this.#pending.size+this.#completed.size>=this.#maxCompleted)
+      return {status:"busy",device_id:deviceId,command_id:commandId};
     const at = this.#now();
     session.commandTimes = session.commandTimes.filter((time) => at - time < this.#rateWindowMs);
     if (session.commandTimes.length >= this.#rateLimit) return { status: "rate_limited", device_id: deviceId };
     if ([...this.#pending.values()].filter((p) => p.session === session).length >= this.#maxPending) return { status: "busy", device_id: deviceId };
     session.commandTimes.push(at);
-    const commandId = randomUUID();
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        if (!this.#pending.delete(commandId)) return;
-        resolve({ status: "timeout_uncertain", device_id: deviceId, command_id: commandId });
+        this.#finish(commandId,{ status:"timeout_uncertain",device_id:deviceId,command_id:commandId });
       }, this.#timeoutMs);
       // Keep a pending command timeout referenced until it resolves; otherwise an
       // isolated MCP call/test can be abandoned when no other event-loop handles exist.
@@ -148,6 +170,8 @@ export class AgentSessionRegistry {
     if (!pending) return false;
     clearTimeout(pending.timer);
     this.#pending.delete(commandId);
+    this.#pruneCompleted();
+    this.#completed.set(commandId,this.#now());
     pending.resolve(outcome);
     return true;
   }
@@ -158,6 +182,7 @@ export class AgentSessionRegistry {
     if (!pending || !session || pending.session !== session || session.connectionId !== connectionId) return false;
     if (!VALID_STATUSES.has(status)) return false;
     const confirmedState = boundedState(state);
+    if (state !== undefined && confirmedState===null) return false;
     if (confirmedState) session.lastState = confirmedState;
     return this.#finish(commandId, {
       status, device_id: deviceId, command_id: commandId,

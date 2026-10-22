@@ -32,8 +32,13 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
       || typeof pairingToken !== "string" || pairingToken.length < 32 || equalSecret(ownerToken, pairingToken)) {
     throw new Error("loopback_and_distinct_long_tokens_required");
   }
-  if (browserOrigin !== null && !/^http:\/\/127\.0\.0\.1:\d{2,5}$/.test(browserOrigin)) {
-    throw new Error("browser_origin_must_be_explicit_loopback");
+  if (browserOrigin !== null) {
+    let url;
+    try { url = new URL(browserOrigin); } catch { throw Error("browser_origin_must_be_explicit_loopback"); }
+    if(url.origin!==browserOrigin || url.protocol!=="http:" ||
+       !["127.0.0.1","localhost"].includes(url.hostname) ||
+       !url.port || url.pathname!=="/" || url.search || url.hash ||
+       url.username || url.password) throw Error("browser_origin_must_be_explicit_loopback");
   }
   const clients = new Set();
   const approvals = new BrowserApprovalRegistry();
@@ -53,7 +58,11 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
       res.writeHead(204, { "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Max-Age": "300" });
       res.end(); return;
     }
-    if (req.headers.origin && req.headers.origin !== allowedOrigin) return json(res, 403, { error: "wrong_origin" });
+    // Explicit-origin browser harness requests must include that exact Origin.
+    // Legacy server-side loopback fixture mode (no configured origin) may omit
+    // Origin, but still requires a distinct long owner bearer token.
+    if ((browserOrigin!==null || req.headers.origin!==undefined) &&
+        req.headers.origin!==allowedOrigin) return json(res, 403, { error: "wrong_origin" });
     if (!equalSecret(req.headers.authorization, `Bearer ${ownerToken}`)) return json(res, 401, { error: "unauthorized" });
     if (req.url === "/dev/mcp") return handleDevMcp(req, res, registry, readJson);
     if (req.method === "GET" && req.url === "/dev/devices") return json(res, 200, { devices: registry.list("owner") });
@@ -62,7 +71,8 @@ export async function startLocalAgentRelay({ ownerToken, pairingToken, port = 0,
       const input = await readJson(req);
       if (!input || typeof input !== "object") return json(res, 400, { error: "invalid_command" });
       const outcome = await registry.dispatch({
-        principal: "owner", deviceId: input.device_id, action: input.action, args: input.args || {},
+        principal: "owner", deviceId: input.device_id, action: input.action,
+        args: input.args || {}, commandId: input.command_id,
       });
       json(res, 200, outcome);
     } catch (error) { json(res, 400, { error: error.code || error.message || "bad_request" }); }
