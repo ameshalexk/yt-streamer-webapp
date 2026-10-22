@@ -26,7 +26,22 @@
   const toggle=document.createElement('button');toggle.type='button';toggle.id='aiMediaProductionToggle';
   toggle.textContent=consent?'Disable AI':'Enable AI';
   toggle.style.cssText='min-height:34px;margin-right:8px;font:inherit;padding:4px 10px;border-radius:7px;background:#f1f4fa;color:#182330;border:0';
-  box.append(toggle,status);
+  // Always expose a full-page Access entrypoint: background fetch/WS traffic
+  // cannot display Cloudflare's OTP form in an already-open player tab.
+  // A top-level request prompts for OTP only when Access requires it; do not
+  // auto-log out or revoke sessions on other protected applications.
+  const signIn=document.createElement('a');
+  signIn.id='aiMediaProductionSignIn';
+  signIn.href='/?ai_access_signin=1';
+  signIn.textContent='Sign in again';
+  signIn.setAttribute('aria-label','Reopen YT Streamer through Cloudflare Access sign-in');
+  signIn.style.cssText='display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:4px 9px;color:#d6e7ff;border:1px solid #8192ac;border-radius:7px;text-decoration:underline;font:inherit';
+  const actions=document.createElement('div');
+  actions.style.cssText='display:flex;gap:6px;flex-wrap:wrap;align-items:center';
+  toggle.style.marginRight='0';
+  actions.append(toggle,signIn);
+  status.style.cssText='display:block;margin-top:5px;overflow-wrap:anywhere';
+  box.append(actions,status);
   document.body.append(box);
   let socket=null,ticker=null,retryTimer=null,retryMs=1500,generation=0,deviceId=null,pairing=false;
   const completed=new Map();
@@ -86,11 +101,15 @@
       // one-use ticket replaces requiring a JWT in a browser WS upgrade.
       const response=await fetch('/api/ai-agent/bootstrap',{
         method:'POST',mode:'same-origin',credentials:'same-origin',cache:'no-store',
-        headers:{'Content-Type':'application/json'},body:'{}'
+        redirect:'error',
+        // Cloudflare Access responds with 401 (instead of a hidden 302 OTP
+        // redirect) for expired sessions on an XMLHttpRequest.
+        headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+        body:'{}'
       });
       if(!response.ok){
         report(response.status===401||response.status===403
-          ?'AI: Cloudflare session verification required'
+          ?'AI: sign-in required — tap Sign in again'
           :'AI: connection service unavailable ('+response.status+')');
         scheduleRetry(epoch);return;
       }
@@ -100,7 +119,7 @@
       ticket=content.ticket;
     }catch{
       if(epoch===generation&&consent){
-        report('AI: existing login or network could not be verified');
+        report('AI: login or network check failed — use Sign in again');
         scheduleRetry(epoch);
       }
       return;
@@ -139,12 +158,12 @@
       clearInterval(ticker);ticker=null;socket=null;deviceId=null;
       completed.clear();
       if(consent){
-        report(event.code===1008?'AI: pairing rejected ('+(event.reason||'authentication')+')'
+        report(event.code===1008?'AI: pairing rejected ('+(event.reason||'authentication')+') — use Sign in again'
           :'AI: disconnected; reconnecting when browser is active');
         scheduleRetry(epoch);
       }
     });
-    ws.addEventListener('error',()=>{if(socket===ws)report('AI: WebSocket connection rejected');});
+    ws.addEventListener('error',()=>{if(socket===ws)report('AI: WebSocket connection rejected — Sign in again or retry');});
   }
   toggle.addEventListener('click',event=>{
     if(!event.isTrusted||!navigator.userActivation?.isActive)return;

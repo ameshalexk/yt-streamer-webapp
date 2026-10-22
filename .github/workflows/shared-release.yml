@@ -57,6 +57,9 @@ jobs:
         working-directory: webapp
       - run: npm test
         working-directory: webapp
+      - name: AI Access sign-in UI browser smoke
+        run: npm run test:ai-agent-access-ui
+        working-directory: webapp
       - name: Isolated JXL WebAssembly browser smoke (experimental)
         run: npm run test:jxl-wasm
         working-directory: webapp
