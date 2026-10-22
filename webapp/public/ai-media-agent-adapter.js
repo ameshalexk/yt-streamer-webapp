@@ -4,7 +4,9 @@
 (() => {
   "use strict";
   const params = new URLSearchParams(location.search);
-  if (!params.has("ai_agent_dev") || !["127.0.0.1", "localhost"].includes(location.hostname)) return;
+  // Both clients remain localhost-only. Neither mode is enabled by default.
+  if (!(params.has("ai_agent_dev") || params.has("ai_agent_trusted_dev"))
+      || !["127.0.0.1", "localhost"].includes(location.hostname)) return;
 
   const results = new Map();
   let lastEvidence = null;

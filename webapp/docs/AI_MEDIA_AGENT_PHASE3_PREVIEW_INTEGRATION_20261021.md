@@ -29,6 +29,21 @@ The branches independently added `scripts/ai-agent-local-relay.mjs`, `src/lib/ai
 - Base Phase 2 PR #69 head `4a86b89` GH Actions run `39711546448`: **SUCCESS**, including both macOS/Ubuntu and HA containers, as verified before preview creation. Preview itself requires its **own** CI before approval.
 - No real Cloudflare Access login, real iPhone/ChatGPT custom tool call, publicly reachable trusted browser connector, or physical Tesla audio/video test was performed.
 
+## Phase 3 authenticated browser follow-up — 2026-10-21
+
+A separate opt-in localhost-only browser client has been added, without exposing any production listener:
+
+- public/ai-media-agent-trusted-dev.js is activated only on localhost/127.0.0.1 with ?ai_agent_trusted_dev. A local relay port is entered, not an arbitrary remote host. It uses the browser-supplied HttpOnly Access cookie and does not read or log JWT credentials. The user clicks Connect this tab to enroll.
+- The existing signed Access relay verifies RS256 signature, issuer/audience/subject, origin and expiry before assigning a server-owned device ID. The browser displays each requester and exact actions using textContent, not untrusted innerHTML. An authentic local click and transient user activation are required before it sends a grant request, while synthetic DOM events and dismissal do not authorize. This DOES NOT substitute for an independent CSP/XSS review or a cryptographic human-gesture guarantee.
+- The previously tested browser playback adapter now accepts this explicit local development mode. Ordinary deployments remain inert. The trusted UI permits get_player_state, search_media, play_media, pause, resume, stop, but not arbitrary URLs or scripts. There is no auto reconnect. Local action scopes and pending approvals are cleared on disconnect/pagehide.
+- scripts/ai-media-agent-trusted-browser-check.mjs runs signed Cookie + real Chrome + secure WebSocket + MCP gateway integration with a deterministic simulated player: unsigned and disallowed-subject clients rejected, selected/decoy tabs isolated, unapproved/forged synthetic clicks denied, user dismissal denied, real click claims grant, actual MCP search/play/pause/resume/stop/state and disconnect revocation. This fixture does not make a claim about actual media rendering.
+
+Local test evidence: npm run check PASS; npm test 478/478 PASS; npm run test:ai-agent-browser real-player Classic/Experimental/legacy MJPEG PASS; npm run test:ai-agent-trusted-browser signed Access real Chrome 155 PASS.
+
+Account capability gate: Current OpenAI custom MCP documentation (https://help.openai.com/en/articles/12584461-creating-custom-mcp-apps-in-chatgpt) says full custom MCP write tools are in beta for Business, Enterprise and Edu; a Plus chat has NOT been verified eligible for native custom MCP playback. ChatGPT requires a remote HTTPS server or supported Secure MCP Tunnel rather than connecting directly to loopback. No user plugin connection, Cloudflare Access route or Secure MCP Tunnel has been created.
+
+Remaining: a unified signed-relay-to-real-player smoke with media frames/audio (separate halves currently verified), explicit owner-approved actual Access/TLS ingress and CSP/XSS/CSRF review, ChatGPT custom MCP account eligibility or compatible agent fallback, and physical parked Tesla QA. Phase 3 is therefore IN PROGRESS, not completed; production remains untouched.
+
 ## Known follow-up gates
 
 1. Phase 1 Codex branch may still be advancing. Reconcile any later commits before considering this preview final.
