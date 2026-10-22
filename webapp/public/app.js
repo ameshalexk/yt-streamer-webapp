@@ -3941,6 +3941,15 @@ function toggleScreenFullscreen() {
   else enterScreenFullscreen();
 }
 
+// Narrow existing-player hooks for the private TeslaMon relay.
+// Browser gesture restrictions are respected; the current player's existing
+// in-page fullscreen fallback is used when native fullscreen is unavailable.
+globalThis.YTStreamerTeslaMonFullscreen=Object.freeze({
+  enter:()=>enterScreenFullscreen(),
+  exit:()=>exitScreenFullscreen(),
+  kind:()=>isScreenFullscreen()?(syntheticFullscreen?'in_page':'native'):'none'
+});
+
 function legacyProfileHeightFallback(requestedHeight) {
   if (!legacy.playing) return { height: String(requestedHeight), fallback: false };
   const available = [...new Set((legacy.playing.resolutions || [])
