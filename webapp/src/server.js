@@ -2250,6 +2250,17 @@ app.get("/apne/live/media/:session/:asset", requireApneNativeAccess, asyncH(asyn
 }));
 
 // ---------------------------------------------------------------------------
+// Signed same-origin pairing bootstrap. No public remote-control commands.
+// Cloudflare Access enforces the existing login; the backend independently
+// verifies the Access JWT before issuing a single-use 15s WSS pairing ticket.
+let productionMediaRelay = null;
+app.post('/api/ai-agent/bootstrap',async(req,res)=>{
+  res.set('Cache-Control','no-store');
+  if(!productionMediaRelay)return res.status(503).json({error:'agent_unavailable'});
+  try{return res.json(await productionMediaRelay.bootstrap(req));}
+  catch{return res.status(401).json({error:'signed_access_required'});}
+});
+
 // Static SPA (served last so API routes win).
 // ---------------------------------------------------------------------------
 // Serve the mpegts.js player from node_modules so the Tesla loads it locally (no CDN needed).
@@ -2284,7 +2295,7 @@ httpServer = app.listen(config.port, config.host, () => {
 // The Mac Control command endpoint is a private 0600 Unix socket, never HTTP.
 if(process.env.YT_AI_AGENT_ACCESS_AUDIENCE && process.env.YT_AI_AGENT_CONTROL_DIR){
   try {
-    const productionMediaRelay=await startProductionMediaRelay({
+    productionMediaRelay=await startProductionMediaRelay({
       server:httpServer,controlDir:process.env.YT_AI_AGENT_CONTROL_DIR,
       teamDomain:process.env.YT_AI_AGENT_ACCESS_TEAM_DOMAIN || 'ameshalex.cloudflareaccess.com',
       audience:process.env.YT_AI_AGENT_ACCESS_AUDIENCE,

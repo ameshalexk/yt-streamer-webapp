@@ -28,7 +28,7 @@
   toggle.style.cssText='min-height:34px;margin-right:8px;font:inherit;padding:4px 10px;border-radius:7px;background:#f1f4fa;color:#182330;border:0';
   box.append(toggle,status);
   document.body.append(box);
-  let socket=null,ticker=null,retryTimer=null,retryMs=1500,generation=0,deviceId=null;
+  let socket=null,ticker=null,retryTimer=null,retryMs=1500,generation=0,deviceId=null,pairing=false;
   const completed=new Map();
   const report=value=>{status.textContent=value;};
   const snapshot=()=>{
@@ -72,17 +72,52 @@
     while(completed.size>256)completed.delete(completed.keys().next().value);
     send(ack);
   }
-  function connect(){
-    if(!consent||socket?.readyState===WebSocket.OPEN||socket?.readyState===WebSocket.CONNECTING)return;
+  async function connect(){
+    if(!consent||pairing||socket?.readyState===WebSocket.OPEN||
+       socket?.readyState===WebSocket.CONNECTING)return;
     if(!navigator.onLine){report('AI: offline');scheduleRetry(generation);return;}
     const epoch=++generation;
     clearTimeout(retryTimer);retryTimer=null;
+    pairing=true;
+    report('AI: verifying existing session…');
+    let ticket;
+    try{
+      // Same-origin Access session is validated by the server. A short-lived
+      // one-use ticket replaces requiring a JWT in a browser WS upgrade.
+      const response=await fetch('/api/ai-agent/bootstrap',{
+        method:'POST',mode:'same-origin',credentials:'same-origin',cache:'no-store',
+        headers:{'Content-Type':'application/json'},body:'{}'
+      });
+      if(!response.ok){
+        report(response.status===401||response.status===403
+          ?'AI: Cloudflare session verification required'
+          :'AI: connection service unavailable ('+response.status+')');
+        scheduleRetry(epoch);return;
+      }
+      const content=await response.json();
+      if(typeof content.ticket!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(content.ticket))
+        throw Error('pairing_ticket_missing');
+      ticket=content.ticket;
+    }catch{
+      if(epoch===generation&&consent){
+        report('AI: existing login or network could not be verified');
+        scheduleRetry(epoch);
+      }
+      return;
+    }finally{pairing=false;}
+    if(!consent||epoch!==generation)return;
     report('AI: connecting…');
-    const ws=new WebSocket('wss://stream.ameshalex.com/ai-agent/player');
+    let ws;
+    try{ws=new WebSocket('wss://stream.ameshalex.com/ai-agent/player');}
+    catch{
+      report('AI: browser WebSocket unsupported');scheduleRetry(epoch);return;
+    }
     socket=ws;
     ws.addEventListener('open',()=>{
       if(socket!==ws||epoch!==generation)return;
-      send({kind:'hello',tab_key:tabKey,label:platform+' YT Streamer',consent:true});
+      send({kind:'hello',tab_key:tabKey,label:platform+' YT Streamer',
+        consent:true,ticket});
+      ticket=null;
     });
     ws.addEventListener('message',event=>{
       if(socket!==ws||epoch!==generation)return;
@@ -95,18 +130,21 @@
         beat();clearInterval(ticker);ticker=setInterval(beat,5000);
       }else if(msg.kind==='command'&&deviceId){void execute(msg);}
       else if(msg.kind==='remote_approval_request'){
-        // General approval operations still require an explicit, separate
-        // consent flow. Do not silently grant broad or external MCP scopes.
+        // No generic approval bypass; only the specific consented media facade.
         report('AI: general approval needs a separate confirmation');
       }
     });
-    ws.addEventListener('close',()=>{
+    ws.addEventListener('close',event=>{
       if(socket!==ws||epoch!==generation)return;
       clearInterval(ticker);ticker=null;socket=null;deviceId=null;
       completed.clear();
-      if(consent){report('AI: reconnecting when browser is active');scheduleRetry(epoch);}
+      if(consent){
+        report(event.code===1008?'AI: pairing rejected ('+(event.reason||'authentication')+')'
+          :'AI: disconnected; reconnecting when browser is active');
+        scheduleRetry(epoch);
+      }
     });
-    ws.addEventListener('error',()=>{if(socket===ws)report('AI: connection unavailable');});
+    ws.addEventListener('error',()=>{if(socket===ws)report('AI: WebSocket connection rejected');});
   }
   toggle.addEventListener('click',event=>{
     if(!event.isTrusted||!navigator.userActivation?.isActive)return;

@@ -37,16 +37,36 @@ function control(socket,action,args={}){
   conn.on('error',reject);
  });
 }
-function openBrowser(port,token,key,{label='iPhone YT Streamer',originHeader=origin,consent=true}={}){
+async function bootstrap(port,token,requestOrigin=origin){
  return new Promise((resolve,reject)=>{
+  const req=http.request({hostname:'127.0.0.1',port,path:'/api/ai-agent/bootstrap',
+   method:'POST',headers:{host:'stream.ameshalex.com',origin:requestOrigin,
+    'sec-fetch-site':'same-origin','cf-access-jwt-assertion':token,
+    'content-type':'application/json'}},res=>{
+    let body='';res.setEncoding('utf8');res.on('data',s=>body+=s);
+    res.once('end',()=>{try{resolve({status:res.statusCode,body:JSON.parse(body)});}catch(ex){reject(ex);}});
+   });
+  req.on('error',reject);req.end('{}');
+ });
+}
+async function openBrowser(port,token,key,{label='iPhone YT Streamer',originHeader=origin,
+ consent=true,overrideTicket=null}={}){
+ const pair=await bootstrap(port,token,originHeader);
+ if(pair.status!==200)throw Error('bootstrap_'+pair.status);
+ return connectWithTicket(port,overrideTicket??pair.body.ticket,key,{label,originHeader,consent});
+}
+function connectWithTicket(port,ticket,key,{label='iPhone YT Streamer',originHeader=origin,
+ consent=true}={}){
+ return new Promise((resolve,reject)=>{
+  // Crucial regression: WebSocket contains NO Cloudflare JWT/cookie.
   const ws=new WebSocket('ws://127.0.0.1:'+port+'/ai-agent/player',{
-   headers:{origin:originHeader,'cf-access-jwt-assertion':token}});
+   headers:{origin:originHeader}});
   let live=false,paused=true;
-  ws.on('open',()=>ws.send(JSON.stringify({kind:'hello',tab_key:key,label,consent})));
+  ws.on('open',()=>ws.send(JSON.stringify({kind:'hello',tab_key:key,label,consent,ticket})));
   ws.on('message',bytes=>{
    const data=JSON.parse(String(bytes));
-   if(data.kind==='registered'){live=true;
-    ws.send(JSON.stringify({kind:'heartbeat',state:pauseState}));
+   if(data.kind==='registered'){
+    live=true;ws.send(JSON.stringify({kind:'heartbeat',state:pauseState}));
     resolve({ws,deviceId:data.device_id,key});
    }
    if(data.kind==='command'){
@@ -61,16 +81,32 @@ function openBrowser(port,token,key,{label='iPhone YT Streamer',originHeader=ori
   ws.on('close',()=>{if(!live)reject(Error('browser_rejected'));});
  });
 }
+function testServer(){
+ let relay;
+ const server=http.createServer((req,res)=>{
+  if(req.url==='/api/ai-agent/bootstrap'&&req.method==='POST'){
+   void relay.bootstrap(req).then(result=>{
+    res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});
+    res.end(JSON.stringify(result));
+   }).catch(()=>{
+    res.writeHead(401,{'content-type':'application/json'});
+    res.end(JSON.stringify({error:'signed_access_required'}));
+   });
+  }else{res.writeHead(404);res.end();}
+ });
+ return {server,setRelay:r=>{relay=r;}};
+}
 async function eventually(fn,limit=2000){
  const since=Date.now();while(Date.now()-since<limit){if(await fn())return;await new Promise(r=>setTimeout(r,25));}
  throw Error('condition_not_met');
 }
 test('production Access browser relay and one-call private controls select exact device, reconnect and queue safely',async t=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'yt-ai-prod-'));
- const server=http.createServer((_req,res)=>{res.writeHead(404);res.end();});
+ const {server,setRelay}=testServer();
  await new Promise(r=>server.listen(0,'127.0.0.1',r));
  const port=server.address().port;
  const relay=await startProductionMediaRelay({server,controlDir:dir,audience,jwksProvider:provider});
+ setRelay(relay);
  t.after(async()=>{await relay.close();await new Promise(r=>server.close(r));await fs.rm(dir,{recursive:true,force:true});});
  const socket=relay.socketPath;
  const keyA=randomUUID(),keyB=randomUUID();
@@ -99,13 +135,35 @@ test('production Access browser relay and one-call private controls select exact
 });
 test('unverified or foreign-origin browser cannot register a production device',async t=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'yt-ai-prod-deny-'));
- const server=http.createServer((_req,res)=>res.end());
+ const {server,setRelay}=testServer();
  await new Promise(r=>server.listen(0,'127.0.0.1',r));
  const relay=await startProductionMediaRelay({server,controlDir:dir,audience,jwksProvider:provider});
+ setRelay(relay);
  t.after(async()=>{await relay.close();await new Promise(r=>server.close(r));await fs.rm(dir,{recursive:true,force:true});});
  const port=server.address().port;
  for(const [token,requestOrigin] of [[jwt({aud:'wrong-app'}),origin],[jwt(),'https://evil.test']]){
   await assert.rejects(()=>openBrowser(port,token,randomUUID(),{originHeader:requestOrigin}));
  }
  assert.equal((await control(relay.socketPath,'list_devices')).result.devices.length,0);
+});
+
+test('signed HTTP bootstrap is required; tickets are single-use; unauthenticated WS is inert',async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'yt-ai-ticket-'));
+ const {server,setRelay}=testServer();
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ const relay=await startProductionMediaRelay({server,controlDir:dir,audience,jwksProvider:provider});
+ setRelay(relay);
+ t.after(async()=>{await relay.close();await new Promise(r=>server.close(r));await fs.rm(dir,{recursive:true,force:true});});
+ const port=server.address().port;
+ assert.equal((await bootstrap(port,'not-a-jwt')).status,401);
+ assert.equal((await bootstrap(port,jwt(),'https://attacker.test')).status,401);
+ const claim=await bootstrap(port,jwt());
+ assert.equal(claim.status,200);
+ assert.match(claim.body.ticket,/^[A-Za-z0-9_-]{43}$/);
+ const registered=await connectWithTicket(port,claim.body.ticket,randomUUID());
+ await assert.rejects(()=>connectWithTicket(port,claim.body.ticket,randomUUID()),/browser_rejected/);
+ await assert.rejects(()=>connectWithTicket(port,'bogus',randomUUID()),/browser_rejected/);
+ await assert.rejects(()=>connectWithTicket(port,claim.body.ticket,randomUUID(),{originHeader:'https://attacker.test'}));
+ assert.equal(relay.devices().length,1);
+ registered.ws.close();
 });
