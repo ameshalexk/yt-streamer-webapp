@@ -3,7 +3,7 @@
 **Created:** 2026-10-21  
 **Parent:** [GitHub epic #26](https://github.com/ameshalexk/yt-streamer-webapp/issues/26)  
 **Obsidian:** `Projects/YT Streamer - AI Media Agent and WebMCP.md`  
-**Status:** Phase 0 planning started; **0/6 phase exit gates accepted**. Existing code is an isolated prototype; ChatGPT-to-Tesla is **not live**.
+**Status:** Phase 0 baseline/contract accepted; **1/6 phase exit gates accepted**. Experimental player/MCP code remains unintegrated; ChatGPT-to-Tesla is **not live**.
 
 ## MVP boundary
 
@@ -61,10 +61,13 @@ From a **ChatGPT text conversation** or other supported MCP client, "play <speci
 ### Codex B — Phase 4
 > Work only on YT Streamer AI Media Agent Phase 4 (GitHub epic #26, issues #28/#29/#32 and phase plan). Wait for Phase 1 and 2 integration commit references, inspect current tests and avoid overlapping file ownership. Build negative/reconnection/idempotency and player regression coverage for current MJPEG/WebCodecs/JXL and Classic/New UI. Use isolated fixture data and real browser tests; verify both-platform CI and report measurable results. Work on a separate branch/draft PR, do not merge or deploy.
 
-## Current Phase 0 work remaining
+## Phase 0 verified exit — 2026-10-21
 
-- Verify a **fresh working Git checkout** (old agent worktrees reported broken Git common-dir links) and exact current `main`/production/development SHA with read-only inspections.
-- Diff current live player behavior vs stacked agent branches and name the stable interface boundary for concurrent coding.
-- Record Phase 0 exit evidence in GitHub #26, Obsidian, and a Mac Control project checkpoint **before assigning agents to independent lanes**.
+- **Accepted baseline:** New isolated clean clone at `~/Developer/ytstreamer-ai-agent-baseline-20261021`; `main` is `a34ac3afb015691d73a416aa53abe2db9ea2611d`. Live Mac `/api/health` reports `6adcff204b37206d4f897b3f41f612a179d52c1a` (tip of `fix/jxl-wasm-seek-fps-probe-20261021`), a descendant of main.
+- **New integration branch:** [`integration/ai-media-agent-mvp-20261021`](https://github.com/ameshalexk/yt-streamer-webapp/tree/integration/ai-media-agent-mvp-20261021) pinned directly to **live-source revision `6adcff2`**, no application code changes. Agents should create new feature branches from **this integration ref**, not from old October 8 branches or the outdated main tip.
+- **Existing agent stacked source:** PR #34 `524ebff` based on PR #33 `d19d410`, forked from common ancestor `06507e5`; current production has 117 changed files while the development agent branch has 37 changed files. **Only two files were changed on both sides:** `webapp/package.json` and `webapp/public/index.html`. These are reserved for integrator-only reconciliation after independent Phase 1 and Phase 2 work; do not blindly copy entire old files.
+- **Old worktree issue confirmed:** older `~/Developer/yt-streamer-ai-media-agent*` `.git` files reference deleted `/Users/amesh/Desktop/ytstreamerhabkupfin/.git/worktrees/...`; those files/worktrees were not modified or removed.
+- **Command interface frozen for parallel development:** typed commands and exact device/command IDs with truthful ACK states are specified above; browser files and server security files are distinct ownership lanes. No auto deployment/merge. Phase 0 completed by read-only audit, clone, isolated Git branch and documentation only; source implementation still needs Phase 1 onward.
+- **Tracking:** [draft docs PR #68](https://github.com/ameshalexk/yt-streamer-webapp/pull/68), epic #26, Obsidian canonical note, durable Mac Control project checkpoint.
 
 **Do not promote experimental WebMCP #31 into the MVP critical path.**
