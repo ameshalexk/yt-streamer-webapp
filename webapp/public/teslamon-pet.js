@@ -1,8 +1,9 @@
 import {interpretTeslaMon} from './teslamon-intent.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
+import {createTeslaMonPetLifecycle} from './teslamon-pet-lifecycle.js';
 
-if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
+if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
   const pet=document.createElement('aside');
   pet.id='teslamonPet';
   pet.setAttribute('aria-label','TeslaMon playback assistant');
@@ -49,7 +50,11 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
-    captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0;
+    captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,
+    selectionBusy=false,selectionVersion=0,selectionQueue=Promise.resolve(),
+    nativeSpeechEngine=null,selectionInFlight=0,selectionDesired=null,
+    selectionCleared=false;
+  const lifecycle=createTeslaMonPetLifecycle();
 
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
@@ -97,14 +102,15 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
       status(reasons[response?.code]||('Command failed: '+(response?.code||'unknown')),'warn');
     }
   }
-  async function post(url,data,contentType='application/json'){
+  async function post(url,data,contentType='application/json',signal){
     const answer=await fetch(url,{
       method:'POST',credentials:'same-origin',mode:'same-origin',
       cache:'no-store',redirect:'error',headers:{
         'Content-Type':contentType,
         'X-Requested-With':'XMLHttpRequest'
       },
-      body:contentType==='application/json'?JSON.stringify(data):data
+      body:contentType==='application/json'?JSON.stringify(data):data,
+      ...(signal?{signal}:{})
     });
     if(answer.status===401||answer.status===403)
       return {status:'failed',code:'signed_access_required'};
@@ -117,43 +123,53 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
   }
   async function issue(intent){
     if(busy){status('Wait for the current command.','warn');return;}
-    if(!enabled||!selected){status('Select a connected browser first.','warn');return;}
-    busy=true;const epoch=++generation;
+    if(!opened||document.hidden||!enabled||!selected||selectionBusy){status('Select a connected browser first.','warn');return;}
+    busy=true;const epoch=++generation,target=selected,targetEpoch=micEpoch;
     status('Sending command…');
     try{const result=await post('/api/teslamon/command',intent);
-      if(epoch===generation)report(result);
+      if(epoch===generation&&target===selected&&targetEpoch===micEpoch&&opened)report(result);
     }catch{
-      if(epoch===generation)status('Network error. Playback outcome is uncertain.','warn');
+      if(epoch===generation&&target===selected&&targetEpoch===micEpoch&&opened)
+        status('Network error. Playback outcome is uncertain.','warn');
     }finally{busy=false;}
   }
   async function interpret(text){
+    if(!opened||document.hidden||!enabled||!selected||selectionBusy)return;
     const command=interpretTeslaMon(text);
     if(!command.error){input.value='';void issue(command);return;}
     if(!modelOptIn.checked||modelLabel.hidden){
       status(command.error,'warn');return;
     }
     if(modelBusy||busy){status('A command is already being processed.','warn');return;}
-    modelBusy=true;const target=selected,epoch=micEpoch;
+    modelBusy=true;const target=selected,epoch=micEpoch,request=lifecycle.begin('interpret');
     status('Interpreting command with optional AI…');
     try{
-      const result=await post('/api/teslamon/interpret',{text,optIn:true});
-      if(target!==selected||epoch!==micEpoch||!opened)return;
+      const result=await post('/api/teslamon/interpret',{text,optIn:true},'application/json',request.signal);
+      if(!request.current()||target!==selected||epoch!==micEpoch||!opened)return;
       if(result.status==='ok'&&typeof result.tool==='string'){
         input.value='';void issue({tool:result.tool,args:result.args});
       }else report(result);
-    }catch{status('Model interpretation unavailable. Use a direct playback command.','warn');}
-    finally{modelBusy=false;}
+    }catch{if(request.current()&&target===selected&&epoch===micEpoch&&opened)
+      status('Model interpretation unavailable. Use a direct playback command.','warn');}
+    finally{const current=request.current();request.finish();if(current)modelBusy=false;}
   }
   function cancelMic(){
     micEpoch++;
+    lifecycle.cancel('interpret');lifecycle.cancel('transcribe');
+    modelBusy=false;
     captureBinding?.targetChanged();
     if(speech){speech.cancelled=true;try{speech.abort();}catch{}speech=null;}
   }
   async function refresh(){
+    if(selectionBusy)return;
+    cancelMic();clearChoices();selected=null;enabled=false;
+    const request=lifecycle.begin('refresh');
     try{
-      const result=await post('/api/teslamon/devices',{});
+      const result=await post('/api/teslamon/devices',{},'application/json',request.signal);
+      if(!request.current()||!opened||selectionBusy)return;
       enabled=result.enabled===true;
       if(!enabled){
+        if(selected!==null)cancelMic();
         selected=null;devices.replaceChildren(new Option('No available players',''));
         devices.disabled=true;mic.disabled=true;
         report(result);return;
@@ -162,9 +178,10 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
       devices.replaceChildren(new Option('Choose connected browser',''),
         ...(result.devices||[]).map(v=>new Option(v.label,v.deviceKey)));
       const target=result.selectedDeviceKey;
-      if((result.devices||[]).some(v=>v.deviceKey===target)){
-        devices.value=target;selected=target;
-      }else{devices.value='';selected=null;}
+      const nextSelected=!selectionCleared&&(result.devices||[]).some(v=>v.deviceKey===target)?target:null;
+      if(nextSelected!==selected)cancelMic();
+      if(nextSelected){devices.value=nextSelected;selected=nextSelected;}
+      else{devices.value='';selected=null;}
       modelLabel.hidden=result.modelConfigured!==true;
       if(modelLabel.hidden)modelOptIn.checked=false;
       if(result.localTranscription)setupRecorder();
@@ -172,18 +189,50 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
       status(!result.devices?.length?'Enable AI playback on a browser and refresh.':
         selected?'Ready. Speak or type a playback command.':
         'Choose which connected browser to control.',selected?'ok':'info');
-    }catch{status('TeslaMon connection unavailable. Check network and sign-in.','warn');}
+    }catch{if(request.current()&&opened)
+      status('TeslaMon connection unavailable. Check network and sign-in.','warn');}
+    finally{request.finish();}
   }
   async function choose(){
     cancelMic();clearChoices();selected=null;
     const deviceKey=devices.value;
-    if(!deviceKey){status('Choose a browser.');return;}
-    try{
-      const result=await post('/api/teslamon/select',{deviceKey});
-      if(result.status==='selected'){
-        selected=deviceKey;status('Browser selected. Ready.','ok');
-      }else{report(result);void refresh();}
-    }catch{status('Selection request failed.','warn');}
+    const version=++selectionVersion;
+    selectionDesired=deviceKey||'';
+    if(!deviceKey){
+      selectionCleared=true;selectionBusy=selectionInFlight>0;
+      status('Choose a browser.');return;
+    }
+    selectionCleared=false;
+    selectionBusy=true;status('Selecting browser…');
+    const run=selectionQueue.then(async()=>{
+      if(version!==selectionVersion){
+        if(selectionDesired===''&&selectionInFlight===0)selectionBusy=false;
+        return;
+      }
+      const request=lifecycle.begin('select');
+      selectionInFlight++;
+      try{
+        const result=await post('/api/teslamon/select',{deviceKey});
+        if(version!==selectionVersion||!request.current()||!opened||devices.value!==deviceKey)return;
+        if(result.status==='selected'){
+          selected=deviceKey;status('Browser selected. Ready.','ok');
+        }else{report(result);selectionQueue.finally(()=>{
+          if(version===selectionVersion&&opened)refreshWhenReady();
+        });}
+      }catch{if(version===selectionVersion&&request.current()&&opened&&devices.value===deviceKey)
+        status('Selection request failed.','warn');}
+      finally{
+        request.finish();
+        selectionInFlight--;
+        if(version===selectionVersion)selectionBusy=false;
+        else if(selectionDesired===''&&selectionInFlight===0)selectionBusy=false;
+      }
+    });
+    selectionQueue=run.catch(()=>{});
+  }
+  function refreshWhenReady(){
+    if(selectionBusy){selectionQueue.finally(()=>{if(opened)void refresh();});return;}
+    void refresh();
   }
   function setupRecorder(){
     if(speechMode==='local')return;
@@ -194,62 +243,69 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
     }
     mic.disabled=false;mic.textContent='Hold to talk';
     const capture=createTeslaMonCapture({
-      getUserMedia:c=>navigator.mediaDevices.getUserMedia(c),
+      getUserMedia:c=>{
+        if(!opened||document.hidden||!enabled||!selected||selectionBusy)
+          return Promise.reject(new Error('Select a connected browser first.'));
+        return navigator.mediaDevices.getUserMedia(c);
+      },
       MediaRecorder:window.MediaRecorder,
       onState:value=>{
+        if(!opened)return;
         if(value.state==='recording')status('Listening… release to transcribe.','ok');
         else if(value.state==='stopping')status('Transcribing locally…');
       },
       onAudio:blob=>{
-        if(!selected)return;
-        const before=selected,epoch=micEpoch;
+        if(!selected||!enabled||!opened||document.hidden||selectionBusy)return;
+        const before=selected,epoch=micEpoch,request=lifecycle.begin('transcribe');
         void(async()=>{
           try{
-            const reply=await post('/api/teslamon/transcribe',blob,blob.type);
-            if(before!==selected||epoch!==micEpoch||!opened)return;
+            const reply=await post('/api/teslamon/transcribe',blob,blob.type,request.signal);
+            if(!request.current()||before!==selected||epoch!==micEpoch||!opened)return;
             if(reply.status==='ok'&&typeof reply.text==='string'){
               input.value=reply.text;interpret(reply.text);
             }else report(reply);
-          }catch{status('Transcription failed. Type a command.','warn');}
+          }catch{if(request.current()&&before===selected&&epoch===micEpoch&&opened)
+            status('Transcription failed. Type a command.','warn');}
+          finally{request.finish();}
         })();
       },
-      onError:()=>status('Microphone error. Type a command or retry.','warn')
+      onError:()=>{if(opened)status('Microphone error. Type a command or retry.','warn');}
     });
     captureBinding?.dispose();
     captureBinding=bindTeslaMonCaptureButton({button:mic,capture,document,window,
       onError:()=>status('Microphone unavailable.','warn')});
   }
-  function setupNativeSpeech(){
-    if(speechMode==='native')return;
-    if(captureBinding){captureBinding.dispose();captureBinding=null;}
-    speechMode='native';
-    const Engine=window.SpeechRecognition||window.webkitSpeechRecognition;
-    if(!Engine){
-      mic.disabled=true;mic.title='Speech input unsupported here. Type a command.';
-      return;
-    }
-    mic.disabled=false;mic.textContent='Tap to speak';
-    mic.addEventListener('click',()=>{
-      if(speechMode!=='native'||!selected)return;
+  function startNativeSpeech(){
+      if(speechMode!=='native'||!selected||!enabled||!opened||document.hidden||selectionBusy)return;
       if(speech){try{speech.stop();}catch{}return;}
       let transcript='';
       const before=selected,epoch=micEpoch;
-      const session=new Engine();speech=session;
+      const session=new nativeSpeechEngine();speech=session;
       session.lang='en-US';session.continuous=false;session.interimResults=false;
-      session.onresult=event=>{
-        transcript=event.results?.[0]?.[0]?.transcript?.trim()||'';
-      };
-      session.onerror=()=>status('Speech input failed. Type a command or retry.','warn');
+      session.onresult=event=>{transcript=event.results?.[0]?.[0]?.transcript?.trim()||'';};
+      session.onerror=()=>{if(speech===session&&!session.cancelled&&epoch===micEpoch&&opened)
+        status('Speech input failed. Type a command or retry.','warn');};
       session.onend=()=>{
         if(speech===session)speech=null;
         if(session.cancelled)return;
         if(transcript&&before===selected&&epoch===micEpoch&&opened)interpret(transcript);
-        else status('No speech recognized. Try again or type.','warn');
+        else if(before===selected&&epoch===micEpoch&&opened)status('No speech recognized. Try again or type.','warn');
       };
       try{session.start();status('Listening… tap again to stop.','ok');}
-      catch{speech=null;status('Speech recognition unavailable.','warn');}
-    });
+      catch{speech=null;if(epoch===micEpoch&&opened)status('Speech recognition unavailable.','warn');}
   }
+  function setupNativeSpeech(){
+    if(speechMode==='native')return;
+    if(captureBinding){captureBinding.dispose();captureBinding=null;}
+    speechMode='native';
+    nativeSpeechEngine=window.SpeechRecognition||window.webkitSpeechRecognition;
+    if(!nativeSpeechEngine){
+      mic.disabled=true;mic.title='Speech input unsupported here. Type a command.';
+      return;
+    }
+    mic.disabled=false;mic.textContent='Tap to speak';
+  }
+  mic.addEventListener('click',startNativeSpeech);
   function alignPanel(){
     const bounds=pet.getBoundingClientRect();
     const width=Math.min(336,Math.max(200,innerWidth-16));
@@ -300,14 +356,14 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
   face.addEventListener('click',()=>{
     opened=!opened;panel.hidden=!opened;
     face.setAttribute('aria-expanded',String(opened));
-    if(opened){alignPanel();void refresh();input.focus();}
-    else cancelMic();
+    if(opened){selectionCleared=false;alignPanel();refreshWhenReady();input.focus();}
+    else{cancelMic();selected=null;enabled=false;lifecycle.cancel('refresh');}
   });
   $('#tmClose').addEventListener('click',()=>{
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
-    cancelMic();face.focus();
+    cancelMic();selected=null;enabled=false;lifecycle.cancel('refresh');face.focus();
   });
-  $('#tmRefresh').addEventListener('click',()=>void refresh());
+  $('#tmRefresh').addEventListener('click',refreshWhenReady);
   devices.addEventListener('change',()=>void choose());
   $('#tmForm').addEventListener('submit',event=>{
     event.preventDefault();interpret(input.value);
@@ -317,10 +373,13 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
       tool:button.dataset.tm,args:{}
     })));
   document.addEventListener('visibilitychange',()=>{
-    if(document.hidden)cancelMic();
-    else if(opened)void refresh();
+    if(document.hidden){cancelMic();selected=null;enabled=false;lifecycle.cancel('refresh');}
+    else if(opened)refreshWhenReady();
   });
   window.addEventListener('pagehide',()=>{
-    captureBinding?.dispose();try{speech?.abort();}catch{}
+    opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
+    cancelMic();selected=null;enabled=false;lifecycle.cancelAll();
+    captureBinding?.dispose();captureBinding=null;speechMode=null;
+    try{speech?.abort();}catch{}speech=null;
   });
 }
