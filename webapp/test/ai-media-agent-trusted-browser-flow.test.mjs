@@ -59,13 +59,35 @@ test("trusted browser upgrade denies spoofed, expired, wrong scope and unverifie
     request(jwt({audience:"wrong-audience"})),
     request(jwt({iss:"https://another.cloudflareaccess.com"})),
     request(jwt({exp:nowSec-1})),
-    request(good,{cookie:"CF_Authorization="+jwt({sub:"other"})}),
     request(good,{"cf-access-jwt-assertion":undefined,cookie:"CF_Authorization=bad"})
   ])await assert.rejects(()=>flow.connect(req),/trusted_browser_denied/);
+  // Cloudflare's verified edge assertion can be newer than the browser's
+  // HttpOnly Access cookie. Authenticate the edge assertion; never downgrade
+  // an invalid assertion to a different valid cookie.
+  const rotated=await flow.connect(request(good,{cookie:"CF_Authorization="+jwt({sub:"other"})}));
+  flow.disconnect(rotated.handle);
+  await assert.rejects(()=>flow.connect(request("bad.jwt.assertion",{cookie:"CF_Authorization="+good})),/trusted_browser_denied/);
   const cookieSession=await flow.connect(request(good,{"cf-access-jwt-assertion":undefined,
     cookie:"another=abc; CF_Authorization="+good}));
   assert.ok(cookieSession.handle,"signed Access cookie accepted without supplied principal");
   flow.disconnect(cookieSession.handle);
+});
+test("Access-proxied HTTP accepts Cloudflare Host rewrite and long signed login",async()=>{
+ const flow=makeFlow();
+ const request={method:"POST",headers:{
+   host:"127.0.0.1:8099",origin,"sec-fetch-site":"same-origin",
+   "cf-access-jwt-assertion":jwt({iat:nowSec-5,exp:nowSec+45*86400})}};
+ const subject=await flow.authenticateHttp(request);
+ assert.equal(subject.subject,"owner");
+ await assert.rejects(()=>flow.authenticateHttp({
+   ...request,headers:{...request.headers,origin:"https://untrusted.example"}}),
+ /trusted_browser_denied/);
+ await assert.rejects(()=>flow.authenticateHttp({
+   ...request,headers:{...request.headers,"sec-fetch-site":"cross-site"}}),
+ /trusted_browser_denied/);
+ await assert.rejects(()=>flow.authenticateHttp({
+   ...request,headers:{...request.headers,"cf-access-jwt-assertion":jwt({audience:"wrong-audience"})}}),
+ /trusted_browser_denied/);
 });
 test("JWT expiry closes active authorization and reconnection mints new identifiers",async()=>{
   let clock=nowSec*1000;

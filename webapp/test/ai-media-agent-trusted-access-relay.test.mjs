@@ -125,12 +125,27 @@ test("forged, wrong-origin and wrong-subject Access browser upgrades never regis
         ["not-a-jwt",{}],
         [jwt({sub:"intruder"}),{}],
         [jwt({aud:"wrong-audience"}),{}],
-        [jwt(),{wsOrigin:"http://127.0.0.1:6666"}],
-        [jwt(),{extra:{Cookie:"CF_Authorization="+jwt({sub:"intruder"})}}]
+        [jwt(),{wsOrigin:"http://127.0.0.1:6666"}]
       ]){
         assert.equal(await unauthorized(open(relay,token,extra)),401);
         assert.equal(relay.registry.list("owner").length,0);
       }
+      // A current signed edge assertion takes precedence when the browser's
+      // valid but older cookie represents another Access session.
+      const edgeToken=jwt();
+      const refreshed=open(relay,edgeToken,{extra:{
+        Cookie:"CF_Authorization="+jwt({sub:"intruder"})
+      }});
+      const accepted=await nextFrame(refreshed,"registered");
+      assert.ok(accepted.device_id);
+      refreshed.close();
+      await new Promise(resolve=>refreshed.once("close",resolve));
+      for(let i=0;i<30&&relay.registry.list("owner").length;i++)await wait(10);
+      assert.equal(relay.registry.list("owner").length,0);
+      // An invalid edge assertion is never downgraded to a valid cookie.
+      assert.equal(await unauthorized(open(relay,"bad.jwt.assertion",{
+        extra:{Cookie:"CF_Authorization="+jwt()}
+      })),401);
       assert.equal((await fetch(relay.origin+"/trusted/player")).status,404,
         "the trusted WebSocket has no unprotected HTTP command route");
     }finally{await relay.close();}
