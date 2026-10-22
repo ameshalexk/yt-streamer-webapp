@@ -2273,7 +2273,9 @@ const teslamonSelfTabOnly=process.env.YT_TESLAMON_SELF_TAB_ONLY==='1';
 // Disabled by default; the HA host returns unavailable until a signed Mac
 // coordinator is explicitly deployed and reviewed.
 const teslamonSTT=createTeslaMonTranscriber();
-const teslamonModel=createTeslaMonModelPlanner();
+const teslamonModel=process.env.YT_TESLAMON_DISABLE_MODEL==='1'?
+  Object.freeze({available:false,async interpret(){return {status:'unavailable',code:'model_disabled'};}}):
+  createTeslaMonModelPlanner();
 function teslamonFail(res,error){
   const unavailable=String(error?.message||'').includes('teslamon_disabled');
   return res.status(unavailable?503:401)

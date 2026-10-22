@@ -1,3 +1,5 @@
+> **Updated 2026-10-22: Mac-local Whisper is not used or permitted for TeslaMon. The current staging implementation reuses the existing PowerALX Life Recorder GPU worker release phase1-20260912-b over SSH/SCP. See TESLAMON_STAGING_RUNBOOK_20261022.md for the authoritative, current voice topology. Model/API interpretation is disabled in staging. Older sections below describe superseded original implementation.**
+
 # TeslaMon — Mac MVP implementation, code handoff
 
 Date: 2026-10-22. **Source implemented in isolated branch. Not merged, deployed, signed-browser tested, or verified on an iPhone/Tesla.** User requested to defer hands-on tests and finish code first.

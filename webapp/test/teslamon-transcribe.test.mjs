@@ -1,62 +1,78 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
 import {createTeslaMonTranscriber} from '../src/lib/teslamon-transcribe.js';
-
-test('unconfigured local STT is unavailable without touching audio',async()=>{
-  const stt=createTeslaMonTranscriber({model:undefined});
-  assert.equal(stt.available,false);
-  const result=await stt.transcribe(Buffer.alloc(800),'audio/webm');
-  assert.equal(result.code,'local_stt_not_configured');
+const config={
+  workerRoot:'C:\\Users\\Amesh\\life-recorder-worker',
+  release:'phase1-20260912-b',host:'poweralx',python:'/usr/bin/python3'
+};
+test('No Mac model or remote commands when PowerALX worker not configured',async()=>{
+  let invoked=0;
+  const t=createTeslaMonTranscriber({workerRoot:'',release:'',runner:async()=>{
+    invoked++;return {status:'ok',text:'play movie'};
+  }});
+  assert.equal(t.available,false);
+  assert.deepEqual(await t.transcribe(Buffer.alloc(300),'audio/webm'),
+    {status:'unavailable',code:'poweralx_worker_not_configured'});
+  assert.equal(invoked,0);
 });
-test('rejects unapproved MIME, missing audio and oversize chunks before running commands',async()=>{
-  let ran=0;
-  const stt=createTeslaMonTranscriber({
-    model:'/does/not/exist',run:async()=>{ran++;}
+test('Reject invalid media before sending data to PowerALX',async()=>{
+  let invoked=0;
+  const t=createTeslaMonTranscriber({...config,runner:async()=>{invoked++;}});
+  assert.equal(t.available,true);
+  for(const [bytes,mime] of [
+    [Buffer.alloc(99),'audio/webm'],
+    [Buffer.alloc(300),'text/html'],
+    [Buffer.alloc(300),'application/json'],
+    [Buffer.alloc(5*1024*1024+1),'audio/mp4']
+  ])assert.equal((await t.transcribe(bytes,mime)).code,'invalid_audio');
+  assert.equal(invoked,0);
+});
+test('Forwards single short audio clip to injected transport unchanged, returns bounded transcript',async()=>{
+  let received=null;
+  const audio=Buffer.alloc(300,8);
+  const t=createTeslaMonTranscriber({...config,runner:async (bytes,mime)=>{
+    received={bytes,mime};
+    return {status:'ok',text:'play latest MKBHD video'};
+  }});
+  assert.equal(t.engine,'existing_poweralx_worker');
+  assert.deepEqual(await t.transcribe(audio,'audio/webm;codecs=opus'),
+    {status:'ok',text:'play latest MKBHD video'});
+  assert.equal(received.bytes,audio);
+  assert.equal(received.mime,'audio/webm');
+});
+test('Never accepts unbounded/private transport content as a public transcript',async()=>{
+  const t=createTeslaMonTranscriber({...config,runner:async()=>({
+    status:'ok',text:'private data'.repeat(80),credentials:'SHOULD_NOT_ESCAPE'
+  })});
+  const reply=await t.transcribe(Buffer.alloc(500),'audio/mp4');
+  assert.equal(reply.status,'failed');
+  assert.equal(JSON.stringify(reply).includes('SHOULD_NOT_ESCAPE'),false);
+});
+test('Serializes requests instead of spawning simultaneous PowerALX GPU jobs',async()=>{
+  let release;
+  const gate=new Promise(resolve=>{release=resolve});
+  const t=createTeslaMonTranscriber({...config,runner:async()=>{await gate;return {
+    status:'ok',text:'pause'
+  };}});
+  const first=t.transcribe(Buffer.alloc(300),'audio/webm');
+  assert.equal((await t.transcribe(Buffer.alloc(300),'audio/webm')).code,'speech_transcriber_busy');
+  release();assert.equal((await first).text,'pause');
+});
+test('Worker offline and cancellation never fall back to local Mac Whisper',async()=>{
+  const t=createTeslaMonTranscriber({...config,runner:async()=>({
+    status:'unavailable',code:'poweralx_worker_unavailable'
+  })});
+  assert.deepEqual(await t.transcribe(Buffer.alloc(300),'audio/ogg'),{
+    status:'unavailable',code:'poweralx_worker_unavailable'
   });
-  for(const [buf,mime] of [
-    [Buffer.alloc(999),'application/json'],
-    [Buffer.alloc(1),'audio/webm'],
-    [Buffer.alloc(5*1024*1024+1),'audio/mp4'],
-    [null,'audio/webm']
-  ]){
-    const result=await stt.transcribe(buf,mime);
-    assert.equal(result.code,'invalid_audio');
-  }
-  assert.equal(ran,0);
+  const ctrl=new AbortController();ctrl.abort();
+  assert.equal((await t.transcribe(Buffer.alloc(300),'audio/ogg',{signal:ctrl.signal})).code,'request_cancelled');
 });
-test('conversion/transcription uses private temporary files and removes recording afterward',async()=>{
-  const modelDir=await fs.mkdtemp(path.join(os.tmpdir(),'tm-model-fixture-'));
-  const model=path.join(modelDir,'model.bin');
-  await fs.writeFile(model,Buffer.alloc(100001),{mode:0o600});
-  const directories=new Set();
-  let calls=0;
-  const run=async(bin,args)=>{
-    calls++;
-    if(calls===1){
-      assert.equal(bin,'ffmpeg-fixture');
-      const input=args[args.indexOf('-i')+1];
-      assert.equal((await fs.stat(input)).mode&0o077,0);
-      directories.add(path.dirname(input));
-      await fs.writeFile(args.at(-1),Buffer.alloc(256),{mode:0o600});
-    }else{
-      assert.equal(bin,'whisper-fixture');
-      const out=args[args.indexOf('-of')+1];
-      directories.add(path.dirname(out));
-      await fs.writeFile(out+'.txt','  pause the video  \n',{mode:0o600});
-    }
-  };
-  try{
-    const stt=createTeslaMonTranscriber({
-      model,ffmpeg:'ffmpeg-fixture',whisper:'whisper-fixture',run
-    });
-    assert.equal(stt.available,true);
-    const result=await stt.transcribe(Buffer.alloc(1000),'audio/webm;codecs=opus');
-    assert.deepEqual(result,{status:'ok',text:'pause the video'});
-    assert.equal(calls,2);
-    for(const directory of directories)
-      await assert.rejects(fs.stat(directory),ex=>ex.code==='ENOENT');
-  }finally{await fs.rm(modelDir,{recursive:true,force:true});}
+test('Reject malformed worker endpoint settings rather than command injection',async()=>{
+  for(const overrides of [
+    {workerRoot:'C:\\bad; rm -rf'},
+    {host:'poweralx;echo unsafe'},
+    {release:'../../bad'},
+    {python:'python3'}
+  ])assert.equal(createTeslaMonTranscriber({...config,...overrides}).available,false);
 });
