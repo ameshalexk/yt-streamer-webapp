@@ -182,3 +182,13 @@ test('hidden document and Escape cancel after release while capture is still sto
   assert.deepEqual(s.calls, ['start', 'release', 'cancel', 'start', 'release', 'cancel']);
   s.binding.dispose();
 });
+
+test('Safari button blur after pointerup never cancels final recorder flush',()=>{
+  const s=setup();
+  s.button.dispatch('pointerdown',{pointerId:41,button:0,isPrimary:true});
+  s.button.dispatch('pointerup',{pointerId:41,button:0});
+  s.button.dispatch('blur');
+  s.button.dispatch('lostpointercapture',{pointerId:41});
+  assert.deepEqual(s.calls,['start','release']);
+  s.binding.dispose();
+});

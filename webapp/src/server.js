@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
 import {startProductionMediaRelay} from "./lib/ai-media-agent-production-relay.js";
+import {createTeslaMonTranscriber} from "./lib/teslamon-transcribe.js";
 import * as store from "./lib/store.js";
 import * as storageManager from "./lib/storage-manager.js";
 import { findSavedPlayback } from "./lib/saved-playback.js";
@@ -2254,6 +2255,46 @@ app.get("/apne/live/media/:session/:asset", requireApneNativeAccess, asyncH(asyn
 // Cloudflare Access enforces the existing login; the backend independently
 // verifies the Access JWT before issuing a single-use 15s WSS pairing ticket.
 let productionMediaRelay = null;
+// Transport-only: forwards explicitly recorded short audio to the existing
+// PowerALX Life Recorder worker. No Mac model, Whisper or fallback ASR.
+const teslamonPowerAlxSTT=createTeslaMonTranscriber();
+async function verifyTeslaMonVoiceRequest(req,res,next){
+  res.set('Cache-Control','private, no-store');
+  // Cloudflare Tunnel can rewrite Host/port; use the pinned public Origin,
+  // same-origin fetch metadata and the cryptographically verified Access JWT
+  // below, rather than comparing against a potentially internal Host value.
+  const origin=req.get('origin');
+  const fetchSite=req.get('sec-fetch-site');
+  if(origin!=='https://stream.ameshalex.com' ||
+     (fetchSite && fetchSite!=='same-origin'))
+    return res.status(403).json({status:'failed',code:'wrong_origin'});
+  if(!productionMediaRelay?.authenticateTeslaMonVoice)
+    return res.status(503).json({status:'unavailable',code:'voice_auth_unavailable'});
+  try{
+    await productionMediaRelay.authenticateTeslaMonVoice(req);
+    next();
+  }catch{
+    return res.status(401).json({status:'failed',code:'signed_access_required'});
+  }
+}
+app.post('/api/teslamon/capabilities',verifyTeslaMonVoiceRequest,(req,res)=>{
+  if(req.body&&Object.keys(req.body).length)
+    return res.status(400).json({status:'failed',code:'unexpected_body'});
+  return res.json({status:'ok',localTranscription:teslamonPowerAlxSTT.available,
+    modelConfigured:false,engine:teslamonPowerAlxSTT.engine});
+});
+app.post('/api/teslamon/transcribe',verifyTeslaMonVoiceRequest,
+  express.raw({type:['audio/webm','audio/ogg','audio/mp4'],limit:'5mb'}),async(req,res)=>{
+    if(!teslamonPowerAlxSTT.available)
+      return res.status(503).json({status:'unavailable',code:'poweralx_worker_not_configured'});
+    try{
+      const result=await teslamonPowerAlxSTT.transcribe(
+        req.body,req.headers['content-type']);
+      return res.status(result.status==='unavailable'?503:
+        result.status==='failed'?422:200).json(result);
+    }catch{return res.status(503).json({status:'unavailable',
+      code:'poweralx_worker_unavailable'});}
+  });
 app.post('/api/ai-agent/bootstrap',async(req,res)=>{
   res.set('Cache-Control','no-store');
   if(!productionMediaRelay)return res.status(503).json({error:'agent_unavailable'});

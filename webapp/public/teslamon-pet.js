@@ -96,7 +96,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     else if(response?.status==='unsupported')status('Not supported by this player.','warn');
     else{
       const reasons={
-        local_stt_not_configured:'Local speech transcription is not configured.',
+        poweralx_worker_not_configured:'PowerALX transcription is not configured.',
+        poweralx_worker_unavailable:'PowerALX transcription is unavailable. Use typed commands.',
+        poweralx_transcription_failed:'PowerALX could not transcribe this clip. Try again.',
+        poweralx_timeout_or_cancelled:'PowerALX took too long. Try a shorter voice command.',
+        poweralx_result_incomplete:'The transcript was incomplete. Please try again.',
         signed_access_required:'Open YT Streamer through your Cloudflare sign-in.',
         teslamon_unavailable:'TeslaMon is not enabled on this server.',
         unreconciled_prior_mutation:'An earlier action is uncertain. Reconcile before sending another.',
@@ -169,29 +173,42 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       return;
     }
     status('Ready to control this browser tab.','ok');
-    // This narrow production release has no server model or STT endpoints.
-    // Browser speech is optional; text playback commands always remain.
-    modelLabel.hidden=true;
-    modelOptIn.checked=false;
-    setupNativeSpeech();
+    // These are optional signed server capabilities, never remote targeting.
+    try{
+      const result=await post('/api/teslamon/capabilities',{});
+      modelLabel.hidden=result.modelConfigured!==true;
+      if(modelLabel.hidden)modelOptIn.checked=false;
+      if(result.localTranscription)setupRecorder();
+      else {mic.disabled=true;mic.textContent='PowerALX unavailable';
+        status('PowerALX transcription is not configured. Use typed commands.','warn');}
+    }catch{
+      modelLabel.hidden=true;
+      modelOptIn.checked=false;
+      mic.disabled=true;mic.textContent='Voice unavailable';
+      status('Could not verify the PowerALX voice service. Use typed commands.','warn');
+    }
   }
   function setupRecorder(){
     if(speechMode==='local')return;
     if(speech){speech.cancelled=true;try{speech.abort();}catch{}speech=null;}
     speechMode='local';
     if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){
-      speechMode=null;setupNativeSpeech();return;
+      speechMode=null;mic.disabled=true;mic.textContent='Voice unavailable';
+      status('Microphone capture is unsupported here. Use typed commands.','warn');return;
     }
     mic.disabled=false;mic.textContent='Hold to talk';
     const capture=createTeslaMonCapture({
       getUserMedia:c=>navigator.mediaDevices.getUserMedia(c),
       MediaRecorder:window.MediaRecorder,
       onState:value=>{
-        if(value.state==='recording')status('Listening… release to transcribe.','ok');
-        else if(value.state==='stopping')status('Transcribing locally…');
+        if(value.state==='requesting')status('Requesting microphone access…');
+        else if(value.state==='recording')status('Recording audio… release to finish.','ok');
+        else if(value.state==='stopping')status('Finishing recording…');
+        else if(value.state==='empty')status('No audio was captured. Hold the mic a little longer.','warn');
       },
       onAudio:blob=>{
         if(!localPlayer.ready)return;
+        status('Audio captured. Sending to PowerALX…');
         const before=selected,epoch=micEpoch;
         void(async()=>{
           try{
@@ -203,42 +220,25 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           }catch{status('Transcription failed. Type a command.','warn');}
         })();
       },
-      onError:()=>status('Microphone error. Type a command or retry.','warn')
+      onError:error=>{
+        const detail=String(error?.message||'').toLowerCase();
+        const code=String(error?.name||'').toLowerCase();
+        if(code==='notallowederror'||detail.includes('permission')||detail.includes('denied'))
+          status('Microphone permission was denied or interrupted. Check browser permissions.','warn');
+        else if(detail.includes('stop')||detail.includes('recorder'))
+          status('iPhone could not finish the recording. Try holding the mic for 2–3 seconds.','warn');
+        else if(detail.includes('format'))
+          status('This browser cannot record a supported audio format.','warn');
+        else status('Audio capture failed before sending to PowerALX. Try again.','warn');
+      }
     });
     captureBinding?.dispose();
     captureBinding=bindTeslaMonCaptureButton({button:mic,capture,document,window,
-      onError:()=>status('Microphone unavailable.','warn')});
-  }
-  function setupNativeSpeech(){
-    if(speechMode==='native')return;
-    if(captureBinding){captureBinding.dispose();captureBinding=null;}
-    speechMode='native';
-    const Engine=window.SpeechRecognition||window.webkitSpeechRecognition;
-    if(!Engine){
-      mic.disabled=true;mic.title='Speech input unsupported here. Type a command.';
-      return;
-    }
-    mic.disabled=false;mic.textContent='Tap to speak';
-    mic.addEventListener('click',()=>{
-      if(speechMode!=='native'||!localPlayer.ready)return;
-      if(speech){try{speech.stop();}catch{}return;}
-      let transcript='';
-      const before=selected,epoch=micEpoch;
-      const session=new Engine();speech=session;
-      session.lang='en-US';session.continuous=false;session.interimResults=false;
-      session.onresult=event=>{
-        transcript=event.results?.[0]?.[0]?.transcript?.trim()||'';
-      };
-      session.onerror=()=>status('Speech input failed. Type a command or retry.','warn');
-      session.onend=()=>{
-        if(speech===session)speech=null;
-        if(session.cancelled)return;
-        if(transcript&&before===selected&&epoch===micEpoch&&opened)interpret(transcript);
-        else status('No speech recognized. Try again or type.','warn');
-      };
-      try{session.start();status('Listening… tap again to stop.','ok');}
-      catch{speech=null;status('Speech recognition unavailable.','warn');}
-    });
+      onError:error=>{
+        const name=String(error?.name||'').toLowerCase();
+        if(name==='notallowederror')status('Microphone access was blocked by the browser.','warn');
+        else status('Microphone input was interrupted. Try holding to record again.','warn');
+      }});
   }
   function alignPanel(){
     const bounds=pet.getBoundingClientRect();
@@ -301,12 +301,12 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   });
   // Only the current document can receive TeslaMon playback commands.
   $('#tmForm').addEventListener('submit',event=>{
-    event.preventDefault();interpret(input.value);
+    event.preventDefault();cancelMic();interpret(input.value);
   });
   pet.querySelectorAll('[data-tm]').forEach(button=>
-    button.addEventListener('click',()=>void issue({
+    button.addEventListener('click',()=>{cancelMic();return void issue({
       tool:button.dataset.tm,args:{}
-    })));
+    });}));
   document.addEventListener('visibilitychange',()=>{
     if(document.hidden)cancelMic();
     else if(opened)void refresh();

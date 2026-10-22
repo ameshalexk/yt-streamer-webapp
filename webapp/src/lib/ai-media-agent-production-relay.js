@@ -220,7 +220,12 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
   try{bridge=await startMacControlLocalBridge({relay,
     socketPath,maxRequestsPerMinute:80});}
   catch(ex){clearInterval(sweep);server.off('upgrade',onUpgrade);await new Promise(r=>wss.close(r));throw ex;}
-  return {socketPath:bridge.socketPath,devices,bootstrap,async close(){
+  return {socketPath:bridge.socketPath,devices,bootstrap,
+    // Read-only authenticated identity seam for the separately bounded,
+    // same-tab TeslaMon voice upload. Does not issue pairing tickets,
+    // select a remote browser or authorize any new playback control.
+    authenticateTeslaMonVoice:req=>flow.authenticateHttp(req),
+    async close(){
     if(closed)return;closed=true;clearInterval(sweep);server.off('upgrade',onUpgrade);
     for(const ws of clients.keys())ws.terminate();
     await bridge.close();await new Promise(r=>wss.close(r));

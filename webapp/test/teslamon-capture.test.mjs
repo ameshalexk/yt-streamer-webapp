@@ -12,7 +12,7 @@ class FakeTimers {
   }
 }
 
-function recorderHarness({ mimeTypes = ['audio/webm;codecs=opus'], startError, stopEvent = true, syncStop = false, actualMimeType } = {}) {
+function recorderHarness({ mimeTypes = ['audio/webm;codecs=opus'], startError, stopEvent = true, syncStop = false, actualMimeType, chunkOnStop = false } = {}) {
   const instances = [];
   class FakeRecorder {
     static isTypeSupported(type) { return mimeTypes.includes(type); }
@@ -32,7 +32,18 @@ function recorderHarness({ mimeTypes = ['audio/webm;codecs=opus'], startError, s
     start() { if (startError) throw startError; this.state = 'recording'; }
     stop() {
       this.state = 'inactive';
-      if (stopEvent) syncStop ? this.emit('stop') : queueMicrotask(() => this.emit('stop'));
+      if (stopEvent) {
+        const flush=()=>{
+          if(chunkOnStop){
+            if(this.stream.getTracks().some(t=>t.stopped)) {
+              this.emit('error',{error:new Error('track stopped before final audio')});return;
+            }
+            this.chunk(512,chunkOnStop===true?this.mimeType:chunkOnStop);
+          }
+          this.emit('stop');
+        };
+        if(syncStop)flush();else queueMicrotask(flush);
+      }
     }
     chunk(size, type = this.mimeType) { this.emit('dataavailable', { data: new Blob([new Uint8Array(size)], { type }) }); }
   }
@@ -143,8 +154,8 @@ test('re-entrant callbacks, actual MIME, chunk MIME, and configurable limits fai
     const c = createTeslaMonCapture({ getUserMedia: async () => stream, MediaRecorder: harness.Recorder, onError: e => errors.push(e) });
     assert.equal(await c.start(), false); assert.equal(track.stopped, 1); assert.match(errors[0].message, /unsupported audio format/);
   });
-  await t.test('chunk MIME is checked, including missing type', async () => {
-    for (const type of ['audio/x-unknown', '']) {
+  await t.test('unsupported chunk MIME is rejected', async () => {
+    for (const type of ['audio/x-unknown', 'video/mp4']) {
       const harness = recorderHarness(); const { stream, track } = trackStream(); const audio = []; const errors = [];
       const c = createTeslaMonCapture({ getUserMedia: async () => stream, MediaRecorder: harness.Recorder, onAudio: b => audio.push(b), onError: e => errors.push(e) });
       await c.start(); harness.instances[0].chunk(4, type);
@@ -190,7 +201,7 @@ test('duration cap stops capture; a stop event watchdog releases a hung recorder
   await second.start();
   second.release();
   assert.equal(second.state, 'stopping');
-  hungTimers.run(1_000);
+  hungTimers.run(8_000);
   assert.equal(hungTrack.stopped, 1);
   assert.match(errors[0].message, /did not stop/);
 });
@@ -279,4 +290,44 @@ test('terminal state callback that changes target or starts another session supp
   assert.equal(controller.state, 'recording');
   assert.equal(streams[0].track.stopped, 1);
   controller.cancel();
+});
+
+
+test('Safari: final dataavailable arrives only on stop, before tracks are released',async()=>{
+  const {Recorder,instances}=recorderHarness({mimeTypes:['audio/mp4'],chunkOnStop:'audio/mp4;codecs=mp4a.40.2'});
+  const {stream,track}=trackStream();
+  const audio=[];const errors=[];
+  const c=createTeslaMonCapture({getUserMedia:async()=>stream,MediaRecorder:Recorder,
+    onAudio:blob=>audio.push(blob),onError:e=>errors.push(e)});
+  assert.equal(await c.start(),true);
+  c.release();
+  assert.equal(track.stopped,0,'microphone tracks must remain alive while Safari flushes last chunk');
+  await settle();
+  assert.equal(track.stopped,1);
+  assert.equal(errors.length,0);
+  assert.equal(audio.length,1);
+  assert.equal(audio[0].size,512);
+  assert.equal(audio[0].type,'audio/mp4');
+});
+
+test('Safari accepts codec-decorated recorder MIME and an empty chunk MIME',async()=>{
+  const {Recorder,instances}=recorderHarness({mimeTypes:['audio/mp4'],actualMimeType:'audio/mp4;codecs=mp4a.40.2'});
+  const {stream,track}=trackStream();const audio=[];
+  const c=createTeslaMonCapture({getUserMedia:async()=>stream,MediaRecorder:Recorder,onAudio:b=>audio.push(b)});
+  assert.equal(await c.start(),true);
+  instances[0].chunk(50,'');
+  c.release();await settle();
+  assert.equal(audio.length,1);assert.equal(audio[0].size,50);assert.equal(track.stopped,1);
+});
+
+test('iOS may delay stop event beyond one second; watchdog must not erase pending recording',async()=>{
+  const {Recorder,instances}=recorderHarness({stopEvent:false,mimeTypes:['audio/mp4']});
+  const timers=new FakeTimers();const {stream,track}=trackStream();const audio=[],errors=[];
+  const c=createTeslaMonCapture({getUserMedia:async()=>stream,MediaRecorder:Recorder,timers,
+    onAudio:b=>audio.push(b),onError:e=>errors.push(e)});
+  await c.start();c.release();timers.run(1000);
+  assert.equal(c.state,'stopping');assert.equal(track.stopped,0);
+  instances[0].chunk(64,'audio/mp4');instances[0].emit('stop');
+  assert.equal(audio.length,1);assert.equal(errors.length,0);
+  assert.equal(track.stopped,1);
 });
