@@ -49,11 +49,12 @@ function strictSocketPath(socketPath){
 }
 
 export async function startMacControlLocalBridge({relay,socketPath,
-  maxRequestsPerMinute=60,now=Date.now}={}){
+  maxRequestsPerMinute=60,approvalTtlMs=120000,now=Date.now}={}){
   const filename=strictSocketPath(socketPath);
   if(!relay?.registry||!relay?.approvals||
     typeof relay?.remoteHooks?.requestBrowserApproval!=="function"||
     !Number.isInteger(maxRequestsPerMinute)||maxRequestsPerMinute<1||maxRequestsPerMinute>180||
+    !Number.isInteger(approvalTtlMs)||approvalTtlMs<1000||approvalTtlMs>300000||
     typeof now!=="function")throw error("invalid_mac_bridge_config");
   const parent=path.dirname(filename);
   // Require the caller to create the private directory explicitly; do not
@@ -82,7 +83,8 @@ export async function startMacControlLocalBridge({relay,socketPath,
       const connectionId=relay.registry.connectionFor("owner",args.device_id);
       if(!connectionId)return {status:"offline"};
       const requested=relay.approvals.request({
-        identity:IDENTITY,deviceId:args.device_id,connectionId,actions:args.actions
+        identity:IDENTITY,deviceId:args.device_id,connectionId,
+        actions:args.actions,ttlMs:approvalTtlMs
       });
       if(!relay.remoteHooks.requestBrowserApproval({
         deviceId:args.device_id,connectionId,requestId:requested.request_id,
