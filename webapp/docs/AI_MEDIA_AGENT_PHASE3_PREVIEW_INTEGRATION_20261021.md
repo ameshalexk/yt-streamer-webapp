@@ -46,6 +46,14 @@ Unified signed-relay-to-REAL player check now completed: npm run test:ai-agent-t
 
 Remaining: explicit owner-approved actual Access/TLS ingress and CSP/XSS/CSRF review, ChatGPT custom MCP account eligibility or compatible agent fallback, and physical parked Tesla QA. Phase 3 is still IN PROGRESS, not completed; production remains untouched.
 
+## Mac Control CLI bridge — 2026-10-21
+
+- Implemented and verified: connected Mac Control MCP executes strict Node CLI scripts/ai-agent-mac-control-cli.mjs, through 0600 Unix socket in 0700 owner-only directory. Browser approval still required. No new ChatGPT custom MCP integration or Cloudflare JWT in Mac Control CLI.
+- Browser must click an explicit selected-tab consent request before scoped actions. Signed browser displays Mac Control (local) subject. Server binds short-lived grant to exact device and connection and revokes on disconnect. Same-OS-user processes can access socket, so local workstation is part of trust boundary.
+- Local npm run check PASS; npm test 480/480 PASS, including Unix socket permissions, replay prevention, argument allowlist, approval and revoked selected-device commands. npm run test:ai-agent-mac-control-browser PASS actual Chrome 155, authenticated WS signed test cookie, actual YT Streamer video frames and MP3 fixture request, pause/resume/stop and decoy idle.
+- Details: [Mac Control Bridge developer handoff](AI_MEDIA_AGENT_MAC_CONTROL_BRIDGE_20261021.md).
+- No deployment: no persistent service/socket, Tesla, Cloudflare/tunnel, Mac launchd, HA or main branch modification.
+
 ## Known follow-up gates
 
 1. Phase 1 Codex branch may still be advancing. Reconcile any later commits before considering this preview final.
