@@ -7,7 +7,7 @@ import path from "node:path";
 import {randomUUID} from "node:crypto";
 import {fileURLToPath} from "node:url";
 
-const permitted=new Set(["list_devices","resume_paired_preview","request_browser_approval",
+const permitted=new Set(["list_devices","resume_paired_preview","pause_paired_preview","request_browser_approval",
   "claim_browser_approval","revoke_browser_approval","get_player_state",
   "search_media","play_media","pause","resume","stop"]);
 const help="Usage: node scripts/ai-agent-mac-control-cli.mjs --socket /private/path/bridge.sock --action list_devices --args '{}'\n";

@@ -72,6 +72,12 @@ async function deliverResume(deviceId){
 }
 const relay={
  registry,approvals,
+ async previewPause(){
+  queuedResume=null;
+  const target=registry.list("owner")[0];
+  if(!target)return {status:"offline",reason:"safari_tab_disconnected_or_suspended"};
+  return registry.dispatch({principal:"owner",deviceId:target.device_id,action:"pause",args:{}});
+ },
  async previewResume(){
   const target=registry.list("owner")[0];
   if(target){

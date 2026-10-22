@@ -48,9 +48,13 @@ async function resume(){
 }
 async function onCommand(f){
  if(!uuid(f.command_id)||f.device_id!==device||
-   !["resume","get_player_state"].includes(f.action))return;
+   !["resume","pause","get_player_state"].includes(f.action))return;
  let result;
- try{result=f.action==="resume"?await resume():{status:"completed"};}
+ try{
+  if(f.action==="resume")result=await resume();
+  else if(f.action==="pause"){video.pause();result={status:video.paused?"completed":"failed"};}
+  else result={status:"completed"};
+ }
  catch(ex){result={status:"failed",error:String(ex?.message||"unknown").slice(0,100)};}
  display();
  send({kind:"ack",command_id:f.command_id,status:result.status,state:state(),error:result.error});
