@@ -52,7 +52,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,
     selectionBusy=false,selectionVersion=0,selectionQueue=Promise.resolve(),
-    nativeSpeechEngine=null,selectionInFlight=0,selectionDesired=null,
+    nativeSpeechEngine=null,nativeSpeechTimer=null,selectionInFlight=0,selectionDesired=null,
     selectionCleared=false;
   const lifecycle=createTeslaMonPetLifecycle();
 
@@ -158,7 +158,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     lifecycle.cancel('interpret');lifecycle.cancel('transcribe');
     modelBusy=false;
     captureBinding?.targetChanged();
-    if(speech){speech.cancelled=true;try{speech.abort();}catch{}speech=null;}
+    cancelNativeSpeech();
+  }
+  function cancelNativeSpeech(){
+    if(nativeSpeechTimer!==null){clearTimeout(nativeSpeechTimer);nativeSpeechTimer=null;}
+    const session=speech;
+    if(!session)return;
+    session.cancelled=true;speech=null;
+    try{session.abort();}catch{try{session.stop();}catch{}}
   }
   async function refresh(){
     if(selectionBusy)return;
@@ -236,7 +243,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   }
   function setupRecorder(){
     if(speechMode==='local')return;
-    if(speech){speech.cancelled=true;try{speech.abort();}catch{}speech=null;}
+    cancelNativeSpeech();
     speechMode='local';
     if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){
       speechMode=null;setupNativeSpeech();return;
@@ -277,22 +284,47 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   }
   function startNativeSpeech(){
       if(speechMode!=='native'||!selected||!enabled||!opened||document.hidden||selectionBusy)return;
-      if(speech){try{speech.stop();}catch{}return;}
+      if(speech){
+        const session=speech;
+        try{session.stop();}
+        catch{
+          if(speech===session){cancelNativeSpeech();if(opened)
+            status('Speech input failed. Type a command or retry.','warn');}
+        }
+        return;
+      }
       let transcript='';
       const before=selected,epoch=micEpoch;
-      const session=new nativeSpeechEngine();speech=session;
+      let session;
+      try{session=new nativeSpeechEngine();}
+      catch{status('Speech recognition unavailable. Type a command or retry.','warn');return;}
+      speech=session;
       session.lang='en-US';session.continuous=false;session.interimResults=false;
-      session.onresult=event=>{transcript=event.results?.[0]?.[0]?.transcript?.trim()||'';};
+      session.onresult=event=>{if(speech===session&&!session.cancelled&&epoch===micEpoch&&opened&&before===selected)
+        transcript=event.results?.[0]?.[0]?.transcript?.trim()||'';};
       session.onerror=()=>{if(speech===session&&!session.cancelled&&epoch===micEpoch&&opened)
         status('Speech input failed. Type a command or retry.','warn');};
       session.onend=()=>{
-        if(speech===session)speech=null;
-        if(session.cancelled)return;
+        if(speech!==session||session.cancelled)return;
+        speech=null;
+        if(nativeSpeechTimer!==null){clearTimeout(nativeSpeechTimer);nativeSpeechTimer=null;}
         if(transcript&&before===selected&&epoch===micEpoch&&opened)interpret(transcript);
         else if(before===selected&&epoch===micEpoch&&opened)status('No speech recognized. Try again or type.','warn');
       };
-      try{session.start();status('Listening… tap again to stop.','ok');}
-      catch{speech=null;if(epoch===micEpoch&&opened)status('Speech recognition unavailable.','warn');}
+      try{
+        session.start();
+        if(speech!==session)return;
+        nativeSpeechTimer=setTimeout(()=>{
+          if(speech!==session)return;
+          cancelNativeSpeech();
+          if(epoch===micEpoch&&opened&&before===selected)
+            status('Speech timed out after 20 seconds. Try again or type your command.','warn');
+        },20000);
+        status('Listening… tap again to stop.','ok');
+      }catch{
+        if(speech===session)cancelNativeSpeech();
+        if(epoch===micEpoch&&opened)status('Speech recognition unavailable. Type a command or retry.','warn');
+      }
   }
   function setupNativeSpeech(){
     if(speechMode==='native')return;
@@ -353,6 +385,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(pet.style.left)setPosition(pet.offsetLeft,pet.offsetTop);
     else alignPanel();
   });
+  window.addEventListener('blur',cancelMic);
   face.addEventListener('click',()=>{
     opened=!opened;panel.hidden=!opened;
     face.setAttribute('aria-expanded',String(opened));
@@ -380,6 +413,6 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
     cancelMic();selected=null;enabled=false;lifecycle.cancelAll();
     captureBinding?.dispose();captureBinding=null;speechMode=null;
-    try{speech?.abort();}catch{}speech=null;
+    cancelNativeSpeech();
   });
 }
