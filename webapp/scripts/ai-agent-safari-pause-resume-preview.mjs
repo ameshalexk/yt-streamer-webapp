@@ -25,7 +25,8 @@ const ORIGIN="http://"+HOST+":"+PORT;
 const directory=path.dirname(fileURLToPath(import.meta.url));
 const clipPath=path.join(await fs.mkdtemp(path.join(os.tmpdir(),"yt-safari-video-")),"clip.mp4");
 const scriptPath=path.join(directory,"../public/ai-agent-safari-resume-preview.js");
-const controlDir=path.join(os.homedir(),".yt-safari-test");
+const controlDir=process.env.YT_SAFARI_TEST_CONTROL_DIR||
+  path.join(os.homedir(),".yt-safari-test");
 const controlSocket=path.join(controlDir,"bridge.sock");
 const proofPath=path.join(controlDir,"pairing.key");
 // The service's LAN-only tab pairing proof must survive LaunchAgent restarts.
@@ -60,8 +61,29 @@ const registry=new AgentSessionRegistry({
  ttlMs:90000,timeoutMs:6500,maxSessions:1,
  authorizePairing:({principal,pairingProof})=>principal==="owner"&&pairingProof===secret
 });
+// ChatGPT's user-authorized "resume" is a narrow, persistent test setting.
+// If iOS has suspended Safari, deliver ONE resume on the next authenticated
+// reconnect, only for the same pairing secret, within a short bounded window.
+// No network-accessible controls, no URLs, arbitrary JS, or other actions.
+let queuedResume=null;
+const RESUME_QUEUE_MS=120000;
+async function deliverResume(deviceId){
+ return registry.dispatch({principal:"owner",deviceId,action:"resume",args:{}});
+}
 const relay={
  registry,approvals,
+ async previewResume(){
+  const target=registry.list("owner")[0];
+  if(target){
+   queuedResume=null;
+   const outcome=await deliverResume(target.device_id);
+   if(outcome.status!=="offline")return outcome;
+  }
+  const expiresAt=Date.now()+RESUME_QUEUE_MS;
+  queuedResume={expiresAt};
+  return {status:"queued_until_reconnect",expires_at:expiresAt,
+    reason:"safari_tab_disconnected_or_suspended"};
+ },
  remoteHooks:{
   requestBrowserApproval({deviceId,connectionId,requestId,subject,actions}){
    return registry.connectionFor("owner",deviceId)===connectionId&&
@@ -107,8 +129,6 @@ const html=String.raw`<!DOCTYPE html><html lang="en"><head>
 <button id="localPlay">Play locally</button>
 <button id="localPause">Pause locally</button>
 <p id="clock">Waiting for video</p><p role="status" id="status">Pairing...</p>
-<section id="permission" hidden><p id="requester"></p>
-<button id="approve">Allow Mac Control to resume this video</button></section>
 <details><summary>Playback diagnostics</summary><pre id="frame"></pre></details>
 <p class="small">Temporary unencrypted home-Wi-Fi demonstration with synthetic MP4 and audio. Keep Safari open in the foreground.</p>
 <script src="/client.js"></script>
@@ -116,7 +136,6 @@ const html=String.raw`<!DOCTYPE html><html lang="en"><head>
 const css="body{font:17px -apple-system,system-ui;background:#101820;color:white;max-width:640px;margin:12px auto;padding:14px}"+
 "video{width:100%;display:block;background:black;max-height:53vh}"+
 "button{font:inherit;min-height:48px;padding:10px 16px;margin:10px 6px 6px 0;border-radius:9px}"+
-"#permission{border:2px solid #92beef;padding:12px;border-radius:9px;margin:12px 0}"+
 "pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}"+
 ".small{font-size:12px;color:#adbccd}";
 
@@ -249,6 +268,15 @@ try{
      sessions.set(ws,{deviceId,connectionId});
      clearTimeout(login);
      ws.send(JSON.stringify({kind:"registered",...reg}));
+     // The new browser connection is paired with the same strong secret,
+     // so a short-lived queued ChatGPT resume may now be delivered.
+     const job=queuedResume;
+     if(job){
+      queuedResume=null;
+      if(Date.now()<job.expiresAt){
+       setImmediate(()=>{void deliverResume(deviceId).catch(()=>{});});
+      }
+     }
     }catch{ws.close(1008,"pairing_denied");}
     return;
    }
@@ -280,11 +308,17 @@ try{
  console.log(JSON.stringify({
   status:"ready",url:ORIGIN+"/#pair="+secret,
   controller_socket:controlSocket,
-  expires_after_minutes:720,
-  mode:"local test clip, LAN-only HTTP; same Safari element, Mac Control resume",
+  lifetime:"persistent LaunchAgent; explicit stop required",
+  mode:"paired LAN-only test clip, user-authorized single-call Resume, no Safari approval dialog",
   started_at:new Date().toISOString(),pid:process.pid
  }));
- setTimeout(()=>close().then(()=>process.exit(0)),720*60*1000).unref();
+ // Production remains untouched. The user requested this isolated test service
+ // to stay available; the per-connection pairing is still strongly scoped.
+ if(process.env.YT_SAFARI_TEST_LIFETIME_MS){
+  const lifetime=Number(process.env.YT_SAFARI_TEST_LIFETIME_MS);
+  if(Number.isSafeInteger(lifetime)&&lifetime>=1000&&lifetime<=86400000)
+   setTimeout(()=>{void close().then(()=>process.exit(0));},lifetime).unref();
+ }
  for(const signal of ["SIGINT","SIGTERM"]){
   process.on(signal,()=>close().then(()=>process.exit(0)));
  }

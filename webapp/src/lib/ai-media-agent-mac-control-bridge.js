@@ -9,7 +9,7 @@ import path from "node:path";
 import {validateMediaCommand} from "./ai-media-agent-session-registry.js";
 
 const COMMANDS=new Set(["get_player_state","search_media","play_media","pause","resume","stop"]);
-const OPERATIONS=new Set([...COMMANDS,"list_devices",
+const OPERATIONS=new Set([...COMMANDS,"list_devices","resume_paired_preview",
   "request_browser_approval","claim_browser_approval","revoke_browser_approval"]);
 const IDENTITY=Object.freeze({
   issuer:"urn:yt-streamer:mac-control:local-unix-socket",
@@ -22,7 +22,7 @@ const error=status=>Object.assign(Error(status),{code:status});
 
 function valid(action,args){
   if(!OPERATIONS.has(action)||!isObj(args))return false;
-  if(action==="list_devices")return keys(args,[]);
+  if(action==="list_devices"||action==="resume_paired_preview")return keys(args,[]);
   if(action==="request_browser_approval")return keys(args,["device_id","actions"])
     &&uuid(args.device_id)&&Array.isArray(args.actions)
     &&args.actions.length>=1&&args.actions.length<=COMMANDS.size
@@ -79,6 +79,11 @@ export async function startMacControlLocalBridge({relay,socketPath,
   }
   async function dispatch(action,args){
     if(action==="list_devices")return {devices:relay.registry.list("owner")};
+    // Explicit opt-in, preview-only capability. The user already authorized
+    // this narrow action in ChatGPT; the browser still proves pairing through
+    // its strong local secret. This never enables general playback commands.
+    if(action==="resume_paired_preview")return typeof relay.previewResume==="function"
+      ? relay.previewResume():{status:"unsupported"};
     if(action==="request_browser_approval"){
       const connectionId=relay.registry.connectionFor("owner",args.device_id);
       if(!connectionId)return {status:"offline"};

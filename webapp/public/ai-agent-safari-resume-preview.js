@@ -2,8 +2,7 @@
 (()=>{
 "use strict";
 const $=id=>document.getElementById(id);
-const video=$("clip"),status=$("status"),permission=$("permission"),
-  consent=$("approve"),clock=$("clock");
+const video=$("clip"),status=$("status"),clock=$("clock");
 // Persist the pairing proof ONLY within the current Safari tab for recovery
 // when iOS reloads a suspended page. No permanent cookies/localStorage.
 const supplied=new URLSearchParams(location.hash.slice(1)).get("pair");
@@ -15,8 +14,8 @@ if(supplied&&/^[-_a-zA-Z0-9]{30,60}$/.test(supplied)){
 }
 history.replaceState(null,"",location.pathname);
 const uuid=x=>typeof x==="string"&&/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(x);
-let ws=null,device=null,request=null,granted=false,heartbeat=null;
-let retryTimer=null,retryMs=400,retired=false,connectionSerial=0;
+let ws=null,device=null,heartbeat=null;
+let retryTimer=null,retryMs=400,retired=false;
 function state(){
  const active=!video.paused&&!video.ended&&video.readyState>=2;
  return {title:"Safari live resume clip",media_id:"SafariDemo01",
@@ -48,7 +47,7 @@ async function resume(){
  return {status:"failed",error:"timeline_not_advancing"};
 }
 async function onCommand(f){
- if(!uuid(f.command_id)||f.device_id!==device||!granted||
+ if(!uuid(f.command_id)||f.device_id!==device||
    !["resume","get_player_state"].includes(f.action))return;
  let result;
  try{result=f.action==="resume"?await resume():{status:"completed"};}
@@ -68,14 +67,6 @@ $("localPause").addEventListener("click",event=>{
  if(!event.isTrusted)return;
  video.pause();status.textContent="Paused on iPhone at "+video.currentTime.toFixed(2)+"s.";
 });
-consent.addEventListener("click",event=>{
- if(!event.isTrusted ||(navigator.userActivation&&!navigator.userActivation.isActive))return;
- if(!request||!uuid(request.request_id)||!device)return;
- if(send({kind:"approve_remote_request",request_id:request.request_id})){
-  granted=true;request=null;permission.hidden=true;
-  status.textContent="Allowed Mac Control to resume this tab (temporary grant).";
- }
-});
 if(typeof token!=="string"||!/^[-_a-zA-Z0-9]{30,60}$/.test(token)){
  status.textContent="Open the private pairing link supplied by ChatGPT.";return;
 }
@@ -83,7 +74,6 @@ function connect(){
  if(retired||document.visibilityState==="hidden"||
     ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING))return;
  clearTimeout(retryTimer);retryTimer=null;
- const serial=++connectionSerial;
  let socket;
  try{socket=new WebSocket(location.origin.replace(/^http/,"ws")+"/control");}
  catch{scheduleReconnect();return;}
@@ -99,21 +89,11 @@ function connect(){
  if(f.kind==="registered"){
   if(!uuid(f.device_id)){ws.close();return;}
   device=f.device_id;retryMs=400;
-  status.textContent="Paired. Resume control is ready; grant permission when requested.";
+  status.textContent="Paired. Ready for a single ChatGPT Resume command.";
   clearInterval(heartbeat);
   const beat=()=>send({kind:"heartbeat",state:state()});
   beat();heartbeat=setInterval(beat,1000);
- }else if(f.kind==="remote_approval_request"){
-  if(f.device_id!==device||!Array.isArray(f.actions)||
-    f.actions.length===0||f.actions.some(a=>!["resume","get_player_state"].includes(a))){
-    status.textContent="Refused unexpected permissions.";return;
-  }
-  request=f;permission.hidden=false;
-  $("requester").textContent=String(f.subject)+" wants "+f.actions.join(", ");
  }else if(f.kind==="command")void onCommand(f);
- else if(f.kind==="remote_approval_rejected"){
-  granted=false;status.textContent="Server rejected approval.";
- }
  });
  socket.addEventListener("close",()=>{
   if(ws!==socket)return;
@@ -125,8 +105,7 @@ function connect(){
  });
 }
 function disconnect(){
- clearInterval(heartbeat);heartbeat=null;granted=false;request=null;device=null;
- permission.hidden=true;status.textContent="Disconnected; automatically reconnecting when Safari is visible.";
+ clearInterval(heartbeat);heartbeat=null;device=null;status.textContent="Disconnected; automatically reconnecting when Safari is visible.";
 }
 function scheduleReconnect(){
  if(retired||retryTimer||document.visibilityState==="hidden")return;

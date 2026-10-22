@@ -6,14 +6,16 @@ import {promisify} from "node:util";
 import {fileURLToPath} from "node:url";
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs/promises";
 import {chromium} from "playwright-core";
 const exec=promisify(execFile);
 const dir=path.dirname(fileURLToPath(import.meta.url));
-const port="18431";
+const port="18432";
+const directory=await fs.mkdtemp(path.join(os.homedir(),".yt-safari-resume-e2e-"));
 let proc;
 async function launch(){
  proc=spawn(process.execPath,[path.join(dir,"ai-agent-safari-pause-resume-preview.mjs")],{
-  env:{...process.env,YT_SAFARI_TEST_HOST:"192.168.50.211",YT_SAFARI_TEST_PORT:port},
+  env:{...process.env,YT_SAFARI_TEST_HOST:"192.168.50.211",YT_SAFARI_TEST_PORT:port,YT_SAFARI_TEST_CONTROL_DIR:directory},
   cwd:path.dirname(dir),stdio:["ignore","pipe","pipe"]});
  return new Promise((resolve,reject)=>{
   let err="",buf="";
@@ -71,22 +73,10 @@ try{
  assert.equal(listed.ok,true);
  assert.equal(listed.result.devices.length,1);
  const device_id=listed.result.devices[0].device_id;
- const request=await cli(preview.controller_socket,"request_browser_approval",
-  {device_id,actions:["get_player_state","resume"]});
- assert.equal(request.result.status,"pending_browser_approval");
- await page.locator("#approve").waitFor();
- const pending=await cli(preview.controller_socket,"claim_browser_approval",
-  {request_id:request.result.request_id});
- assert.equal(pending.result.status,"pending_browser_approval");
- await page.locator("#approve").click();
- const grant=await cli(preview.controller_socket,"claim_browser_approval",
-  {request_id:request.result.request_id});
- assert.equal(grant.result.status,"approved");
- const scope={device_id,approval_id:grant.result.approval_id};
- const stateBefore=await cli(preview.controller_socket,"get_player_state",scope);
- assert.equal(stateBefore.result.state.paused,true);
+ // ChatGPT authorizes just the Resume action; no Safari DOM approval.
+ assert.equal(await page.locator("#approve").count(),0);
  const sendAt=performance.now();
- const resumed=await cli(preview.controller_socket,"resume",scope);
+ const resumed=await cli(preview.controller_socket,"resume_paired_preview");
  const latencyMs=Math.round(performance.now()-sendAt);
  assert.equal(resumed.ok,true,JSON.stringify(resumed));
  assert.equal(resumed.result.status,"completed");
@@ -97,9 +87,9 @@ try{
  assert.equal(after.source,paused.source,"video source was not replaced");
  assert.ok(after.time>paused.time+0.16,"existing player timeline actually advanced");
  assert.ok(latencyMs<6500,"resume command was synchronous, not a future poll");
- const readback=await cli(preview.controller_socket,"get_player_state",scope);
- assert.equal(readback.result.state.paused,false);
- assert.ok(readback.result.state.position_seconds>=paused.time+0.16);
+ const readback=await cli(preview.controller_socket,"list_devices");
+ assert.equal(readback.result.devices[0].state.paused,false);
+ assert.ok(readback.result.devices[0].state.position_seconds>=paused.time+0.16);
  // Simulate iOS discarding/reloading the same Safari tab. Its fragment is
  // deliberately removed after pairing, so recovery MUST work from tab-scoped
  // sessionStorage without copying the private link into the address bar.
@@ -110,32 +100,17 @@ try{
  assert.equal(relisted.result.devices.length,1);
  const newDevice=relisted.result.devices[0].device_id;
  assert.notEqual(newDevice,device_id,"reloaded Safari tab creates a new scoped connection");
- const revoked=await cli(preview.controller_socket,"resume",scope);
- assert.equal(revoked.result.status,"unauthorized","old connection grant not reused");
- await page.waitForFunction(()=>document.querySelector("#clip").readyState>=1&&
-  document.querySelector("#clip").currentTime>=1.0,null,{timeout:9000});
+ // Reload should auto reconnect with its private paired tab session, and
+ // direct ChatGPT Resume should work again without any browser button.
+ await page.locator("#localPlay").click();
+ await page.waitForFunction(()=>document.querySelector("#clip").currentTime>0.6,
+  null,{timeout:10000});
+ await page.locator("#localPause").click();
  const restored=await page.locator("#clip").evaluate(v=>({
   paused:v.paused,time:v.currentTime,source:v.currentSrc
  }));
  assert.equal(restored.paused,true);
- assert.ok(restored.time>=paused.time-0.4,"paused video playhead recovered after reload");
- const second=await cli(preview.controller_socket,"request_browser_approval",{
-  device_id:newDevice,actions:["get_player_state","resume"]
- });
- assert.equal(second.result.status,"pending_browser_approval");
- const pending2=await cli(preview.controller_socket,"claim_browser_approval",{
-  request_id:second.result.request_id
- });
- assert.equal(pending2.result.status,"pending_browser_approval",
-  "no silent reapproval across reload");
- await page.locator("#approve").click();
- const allowed2=await cli(preview.controller_socket,"claim_browser_approval",{
-  request_id:second.result.request_id
- });
- assert.equal(allowed2.result.status,"approved");
- const again=await cli(preview.controller_socket,"resume",{
-  device_id:newDevice,approval_id:allowed2.result.approval_id
- });
+ const again=await cli(preview.controller_socket,"resume_paired_preview");
  assert.equal(again.result.status,"completed");
  assert.equal(again.result.state.paused,false);
  assert.ok(again.result.state.position_seconds>=restored.time+0.16);
@@ -145,10 +120,10 @@ try{
   remoteResumeAtSeconds:Number(after.time.toFixed(2)),
   resumeCommandRoundtripMs:latencyMs,
   sameSource:true,timelineAdvanced:true,remoteBrowserAcknowledged:true,
-  reloadRecovery:true,oldGrantRevoked:true,reloadRequiresFreshConsent:true,
+  reloadRecovery:true,noBrowserApproval:true,oneToolInvocationPerResume:true,
   restoredAtSeconds:Number(restored.time.toFixed(2)),
   resumedAfterReloadAtSeconds:Number(again.result.state.position_seconds.toFixed(2)),
-  output:"real playable video, no seek reset, reapproval after reconnection"
+  output:"same existing player advances without browser approval or per-device lookup"
  },null,2));
 }finally{
  await browser?.close().catch(()=>{});
@@ -158,4 +133,5 @@ try{
   await Promise.race([done,new Promise(r=>setTimeout(r,4000))]);
   if(proc.exitCode===null)proc.kill("SIGKILL");
  }
+ await fs.rm(directory,{recursive:true,force:true});
 }
