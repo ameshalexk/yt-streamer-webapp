@@ -26,18 +26,19 @@
   const toggle=document.createElement('button');toggle.type='button';toggle.id='aiMediaProductionToggle';
   toggle.textContent=consent?'Disable AI':'Enable AI';
   toggle.style.cssText='min-height:34px;margin-right:8px;font:inherit;padding:4px 10px;border-radius:7px;background:#f1f4fa;color:#182330;border:0';
-  // The site has already passed Cloudflare Access. Reconnect this AI session
-  // locally; do not send the user through a second, fabricated login flow.
-  const retryButton=document.createElement('button');
-  retryButton.type='button';
-  retryButton.id='aiMediaProductionReconnect';
-  retryButton.textContent='Reconnect AI';
-  retryButton.setAttribute('aria-label','Reconnect AI using current Cloudflare Access session');
-  retryButton.style.cssText='display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:4px 9px;background:#2f4159;color:#e4f0ff;border:1px solid #8192ac;border-radius:7px;font:inherit;cursor:pointer';
+  // Cloudflare Access owns the authorization cookie. A site-only refresh
+  // cannot sign out a browser; Cloudflare's real logout route can.
+  // This explicit owner action revokes the Access session across apps.
+  const signIn=document.createElement('a');
+  signIn.id='aiMediaProductionSignIn';
+  signIn.href='/cdn-cgi/access/logout';
+  signIn.textContent='Reset Cloudflare login';
+  signIn.setAttribute('aria-label','Sign out of Cloudflare Access and log in again');
+  signIn.style.cssText='display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:4px 9px;background:#2f4159;color:#e4f0ff;border:1px solid #8192ac;border-radius:7px;font:inherit;text-decoration:underline';
   const actions=document.createElement('div');
   actions.style.cssText='display:flex;gap:6px;flex-wrap:wrap;align-items:center';
   toggle.style.marginRight='0';
-  actions.append(toggle,retryButton);
+  actions.append(toggle,signIn);
   status.style.cssText='display:block;margin-top:5px;overflow-wrap:anywhere';
   box.append(actions,status);
   document.body.append(box);
@@ -107,7 +108,7 @@
       });
       if(!response.ok){
         report(response.status===401||response.status===403
-          ?'AI: current Access session not accepted by AI — tap Reconnect AI'
+          ?'AI: authorization rejected — use Reset Cloudflare login only if you want to sign out'
           :'AI: connection service unavailable ('+response.status+')');
         scheduleRetry(epoch);return;
       }
@@ -117,7 +118,7 @@
       ticket=content.ticket;
     }catch{
       if(epoch===generation&&consent){
-        report('AI: session or network check failed — tap Reconnect AI');
+        report('AI: session or network verification failed');
         scheduleRetry(epoch);
       }
       return;
@@ -156,23 +157,13 @@
       clearInterval(ticker);ticker=null;socket=null;deviceId=null;
       completed.clear();
       if(consent){
-        report(event.code===1008?'AI: pairing rejected ('+(event.reason||'authentication')+') — tap Reconnect AI'
+        report(event.code===1008?'AI: pairing rejected ('+(event.reason||'authentication')+')'
           :'AI: disconnected; reconnecting when browser is active');
         scheduleRetry(epoch);
       }
     });
-    ws.addEventListener('error',()=>{if(socket===ws)report('AI: WebSocket connection rejected — tap Reconnect AI');});
+    ws.addEventListener('error',()=>{if(socket===ws)report('AI: WebSocket connection rejected');});
   }
-  retryButton.addEventListener('click',event=>{
-    if(!event.isTrusted)return;
-    if(!consent){report('AI: choose Enable AI first');return;}
-    // Cancel an obsolete pairing attempt and start a fresh authenticated
-    // request with the existing browser session. No page navigation or OTP.
-    generation++;stopSocket();
-    pairing=false;retryMs=1500;completed.clear();
-    report('AI: reconnecting with existing Cloudflare session…');
-    void connect();
-  });
   toggle.addEventListener('click',event=>{
     if(!event.isTrusted||!navigator.userActivation?.isActive)return;
     if(consent){
