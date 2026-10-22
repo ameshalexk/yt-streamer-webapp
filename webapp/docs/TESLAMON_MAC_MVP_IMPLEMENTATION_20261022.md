@@ -66,6 +66,14 @@ User flow after a later approved release:
 - Original integrated S0–S1 and imported fake-microphone unit suites **114/114 passed** after updating fullscreen expectations; new parser/STT fixture tests **6/6 passed**. The production Access/WSS relay's dedicated local signed-session regression suite also **4/4 passed**, including two simulated signed WebSocket tabs, explicit target selection and no fallback/replay. **124 developer tests passed across these runs; five additional optional-model parser tests passed (129 total).**
 - **These are developer-level static/fixture checks, not the device testing the user deferred.** No user-facing installation, real mic capture, remote playback or production deployment was performed.
 
+### Final full repository regression — 2026-10-22
+
+- `npm ci --ignore-scripts --offline`: installed dependencies in the isolated worktree only.
+- `npm run check`: **passed**.
+- `npm test` (all repository test modules): **609/609 passed**, **0 failed**. This includes the optional model parser, local STT tempfile cleanup, explicit signed-Access/two-WebSocket browser routing, capture lifecycle, player/fullscreen fixture checks and all unrelated YT Streamer tests.
+- `git diff --check`: **passed**. This replaces the earlier partial 129-test count as the final comprehensive local suite.
+- This does **not** establish real physical iPhone/Tesla acceptance, Cloudflare-proxied production login, model API use, browser permission behavior, Mac/HA CI or deployed readiness. Those remain deferred as requested.
+
 ## Rollback
 
 All new code is in this feature branch; no live runtime state was modified. Reverting the branch removes TeslaMon changes. If deployed later, first disable `YT_TESLAMON_ENABLED`, then use the normal shared release process and preserve the owner-only journal as evidence until any uncertain commands are reconciled.
