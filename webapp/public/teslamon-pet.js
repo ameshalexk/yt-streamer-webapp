@@ -201,11 +201,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       getUserMedia:c=>navigator.mediaDevices.getUserMedia(c),
       MediaRecorder:window.MediaRecorder,
       onState:value=>{
-        if(value.state==='recording')status('Listening… release to transcribe.','ok');
-        else if(value.state==='stopping')status('Sending audio to PowerALX for transcription…');
+        if(value.state==='requesting')status('Requesting microphone access…');
+        else if(value.state==='recording')status('Recording audio… release to finish.','ok');
+        else if(value.state==='stopping')status('Finishing recording…');
+        else if(value.state==='empty')status('No audio was captured. Hold the mic a little longer.','warn');
       },
       onAudio:blob=>{
         if(!localPlayer.ready)return;
+        status('Audio captured. Sending to PowerALX…');
         const before=selected,epoch=micEpoch;
         void(async()=>{
           try{
@@ -217,11 +220,25 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           }catch{status('Transcription failed. Type a command.','warn');}
         })();
       },
-      onError:()=>status('Microphone error. Type a command or retry.','warn')
+      onError:error=>{
+        const detail=String(error?.message||'').toLowerCase();
+        const code=String(error?.name||'').toLowerCase();
+        if(code==='notallowederror'||detail.includes('permission')||detail.includes('denied'))
+          status('Microphone permission was denied or interrupted. Check browser permissions.','warn');
+        else if(detail.includes('stop')||detail.includes('recorder'))
+          status('iPhone could not finish the recording. Try holding the mic for 2–3 seconds.','warn');
+        else if(detail.includes('format'))
+          status('This browser cannot record a supported audio format.','warn');
+        else status('Audio capture failed before sending to PowerALX. Try again.','warn');
+      }
     });
     captureBinding?.dispose();
     captureBinding=bindTeslaMonCaptureButton({button:mic,capture,document,window,
-      onError:()=>status('Microphone unavailable.','warn')});
+      onError:error=>{
+        const name=String(error?.name||'').toLowerCase();
+        if(name==='notallowederror')status('Microphone access was blocked by the browser.','warn');
+        else status('Microphone input was interrupted. Try holding to record again.','warn');
+      }});
   }
   function alignPanel(){
     const bounds=pet.getBoundingClientRect();
