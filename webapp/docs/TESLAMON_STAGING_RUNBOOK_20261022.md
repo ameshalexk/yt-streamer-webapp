@@ -14,7 +14,7 @@
 - Stage runtime directory: `~/Library/Application Support/TeslaMonStaging`, privately owned (0700).
 - Isolated paths: `data/`, `library/`, `apne/`, `control/`, `chrome-profile/`; no reads/writes to production YT Streamer library, profile or control socket.
 - Staging launcher: `~/Library/Application Support/TeslaMonStaging/run-stage.py`; launch agent: `~/Library/LaunchAgents/com.amesh.teslamon.staging.plist`. No API secret embedded in repo. Port 8107 loopback-only.
-- The Mac env has `YT_TESLAMON_ENABLED=1` only in staging. `TESLAMON_OPENAI_API_KEY` and `TESLAMON_OPENAI_MODEL` are not supplied, therefore no paid model calls. Staging also has no private Whisper model configured, therefore text controls and browser-native speech support only where the browser provides it.
+- The Mac env has `YT_TESLAMON_ENABLED=1` only in staging. `YT_TESLAMON_STAGING=1` disables the unrelated APNE background scanner, and `YT_TESLAMON_STAGING_SHA` is derived from the exact staging Git HEAD to identify the process without modifying tracked source files. `TESLAMON_OPENAI_API_KEY` and `TESLAMON_OPENAI_MODEL` are not supplied, therefore no paid model calls. Staging also has no private Whisper model configured, therefore text controls and browser-native speech support only where the browser provides it.
 - To inspect locally: `curl http://127.0.0.1:8107/api/health`.
 - To stop without touching production: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.amesh.teslamon.staging.plist`.
 - To restart only staging: `launchctl kickstart -k gui/$(id -u)/com.amesh.teslamon.staging`.
@@ -22,7 +22,7 @@
 
 ## Security verification (actual local endpoints)
 
-- `GET http://127.0.0.1:8107/api/health`: 200, staging process on private port.
+- `GET http://127.0.0.1:8107/api/health`: 200, staging process on private port, with `release.revision` equal to the staging branch's exact Git SHA.
 - `POST /api/teslamon/devices` with matching staged Host, HTTPS forwarded proto, Origin and no signed JWT: **401 signed_access_required**.
 - `POST /api/teslamon/command` with mismatched/cross-site Origin: **403 wrong_origin**.
 - Separate production 8099 still responds normally; process not restarted.

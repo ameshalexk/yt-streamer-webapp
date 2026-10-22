@@ -77,7 +77,10 @@ app.use((req, res, next) => {
 });
 
 const SERVER_STARTED_AT = Date.now();
-const RELEASE_REVISION = await readReleaseRevision().catch((error) => {
+const STAGE_SHA=(process.env.YT_TESLAMON_STAGING==='1'&&
+  /^[a-f0-9]{40}$/i.test(process.env.YT_TESLAMON_STAGING_SHA||''))?
+  process.env.YT_TESLAMON_STAGING_SHA.toLowerCase():null;
+const RELEASE_REVISION = STAGE_SHA || await readReleaseRevision().catch((error) => {
   console.error("[release-info]", error.message);
   return null;
 });
@@ -2360,7 +2363,8 @@ await Promise.all([
 ]);
 
 httpServer = app.listen(config.port, config.host, () => {
-  apneBackgroundCheck.start();
+  // Staging has no need to crawl third-party APNE catalogs in the background.
+  if(process.env.YT_TESLAMON_STAGING!=='1')apneBackgroundCheck.start();
   console.log(`\n  YT Streamer webapp`);
   console.log(`  → http://${config.host}:${config.port}`);
   console.log(`  → library: ${config.libraryDir}`);
