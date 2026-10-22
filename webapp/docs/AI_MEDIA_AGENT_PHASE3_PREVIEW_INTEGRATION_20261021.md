@@ -42,7 +42,9 @@ Local test evidence: npm run check PASS; npm test 478/478 PASS; npm run test:ai-
 
 Account capability gate: Current OpenAI custom MCP documentation (https://help.openai.com/en/articles/12584461-creating-custom-mcp-apps-in-chatgpt) says full custom MCP write tools are in beta for Business, Enterprise and Edu; a Plus chat has NOT been verified eligible for native custom MCP playback. ChatGPT requires a remote HTTPS server or supported Secure MCP Tunnel rather than connecting directly to loopback. No user plugin connection, Cloudflare Access route or Secure MCP Tunnel has been created.
 
-Remaining: a unified signed-relay-to-real-player smoke with media frames/audio (separate halves currently verified), explicit owner-approved actual Access/TLS ingress and CSP/XSS/CSRF review, ChatGPT custom MCP account eligibility or compatible agent fallback, and physical parked Tesla QA. Phase 3 is therefore IN PROGRESS, not completed; production remains untouched.
+Unified signed-relay-to-REAL player check now completed: npm run test:ai-agent-trusted-real-player PASS in real Google Chrome 155 against a temporary local YT Streamer app process and deterministic JPEG + MP3 media. Signed RS256 browser cookie, exact browser Origin, manual trusted click and server claim, then MCP search/play/pause/resume/stop/readback on the actual Phase 1 player renderer. State confirmed real playing frames (5), paused, resumed with increased rendered frames (16), stopped; MP3 fixture was fetched once; unselected tab remained idle; wrong-device grant was refused; disconnected grant revoked. This establishes media frames and audio HTTP fixture request, not physical Tesla speaker audibility.
+
+Remaining: explicit owner-approved actual Access/TLS ingress and CSP/XSS/CSRF review, ChatGPT custom MCP account eligibility or compatible agent fallback, and physical parked Tesla QA. Phase 3 is still IN PROGRESS, not completed; production remains untouched.
 
 ## Known follow-up gates
 
