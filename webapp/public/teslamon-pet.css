@@ -26,6 +26,9 @@
 #teslamonPet button:not(#tmFace):not(#tmHandle){min-height:44px}
 #teslamonPet #tmRefresh,#teslamonPet #tmSend,#teslamonPet .tm-actions button,#teslamonPet .tm-choice{border:1px solid #7891a3;border-radius:8px;background:#294961;color:#f5faff;padding:8px}
 #teslamonPet #tmForm{display:flex;gap:6px;margin-bottom:12px}
+#teslamonPet #tmModelLabel{display:flex;gap:7px;align-items:start;margin:0 0 12px;color:#c7d8e8;font-size:12px;line-height:1.4;user-select:text}
+#teslamonPet #tmModelLabel[hidden]{display:none}
+#teslamonPet #tmModelOptIn{width:18px;height:18px;flex:none;margin:0;accent-color:#6bd3a6}
 #teslamonPet #tmSend{min-width:57px}
 #teslamonPet .tm-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:10px}
 #teslamonPet #tmMic{background:#275e77;border-color:#74bedf;touch-action:none}
