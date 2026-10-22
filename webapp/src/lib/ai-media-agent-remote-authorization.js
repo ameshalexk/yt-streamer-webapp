@@ -18,8 +18,9 @@ export function verifyAccessJwt(token,{jwks,issuer,audience,
   maxTokenLifetimeSeconds=86400,nowSeconds=Math.floor(Date.now()/1000)}={}) {
   if (typeof token !== "string" || token.length > 16000 || token.split(".").length !== 3
       || !nonempty(issuer) || !nonempty(audience)
-      || !Number.isSafeInteger(maxTokenLifetimeSeconds)
-      || maxTokenLifetimeSeconds<3600 || maxTokenLifetimeSeconds>30*86400) reject();
+      || (maxTokenLifetimeSeconds!==null &&
+          (!Number.isSafeInteger(maxTokenLifetimeSeconds)
+          || maxTokenLifetimeSeconds<3600 || maxTokenLifetimeSeconds>30*86400))) reject();
   const [head,claims,sig] = token.split(".");
   const header=decode(head), body=decode(claims);
   if (!header || !body || header.alg !== "RS256" || typeof header.kid !== "string"
@@ -34,7 +35,8 @@ export function verifyAccessJwt(token,{jwks,issuer,audience,
   if (!valid || body.iss!==issuer || !(Array.isArray(body.aud)?body.aud.includes(audience):body.aud===audience)
     || !nonempty(body.sub) || body.sub.length>300
     || !Number.isSafeInteger(body.exp) || nowSeconds>=body.exp
-    || !Number.isSafeInteger(body.iat) || body.iat>nowSeconds+30 || body.exp-body.iat>maxTokenLifetimeSeconds
+    || !Number.isSafeInteger(body.iat) || body.iat>nowSeconds+30 || body.exp<=body.iat
+    || (maxTokenLifetimeSeconds!==null && body.exp-body.iat>maxTokenLifetimeSeconds)
     || (body.nbf!==undefined && (!Number.isSafeInteger(body.nbf) || nowSeconds<body.nbf))) reject();
   return Object.freeze({subject:body.sub,issuer:body.iss,audience});
 }

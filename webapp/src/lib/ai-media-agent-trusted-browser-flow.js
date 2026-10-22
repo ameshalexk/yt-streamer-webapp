@@ -78,10 +78,12 @@ export class TrustedBrowserRegistrationFlow {
       let jwks=await this.#jwks.get();
       const verifyCurrent=keys=>verifyAccessJwt(jwt,{jwks:keys,
         issuer:this.#jwks.issuer,audience:this.#audience,
-        // The Access application can issue valid longer-lived sessions.
-        // Always verify signature, issuer, audience, sub, iat, nbf and exp;
-        // do not reinterpret an Access policy of >24h as a login failure.
-        maxTokenLifetimeSeconds:30*86400,
+        // Respect the actual Cloudflare Access policy's signed expiry.
+        // The owner's session is legitimately longer than 30 days. An
+        // arbitrary shorter maxTTL rejected a valid login (ttl_too_long).
+        // All cryptographic validation, issuer, audience, subject, iat,
+        // nbf and actual expiration checks stay mandatory.
+        maxTokenLifetimeSeconds:null,
         nowSeconds:Math.floor(this.#now()/1000)});
       try{
         identity=verifyCurrent(jwks);
@@ -121,7 +123,6 @@ export class TrustedBrowserRegistrationFlow {
         else if(!body.sub)code='missing_subject';
         else if(!Number.isSafeInteger(body.exp)||body.exp<=current)code='expired';
         else if(!Number.isSafeInteger(body.iat)||body.iat>current+30)code='iat_invalid';
-        else if(body.exp-body.iat>30*86400)code='ttl_too_long';
         else if(body.nbf!=null&&body.nbf>current)code='not_yet_valid';
         else code='verification_failed';
       }catch {code='token_parse_or_jwks';}
