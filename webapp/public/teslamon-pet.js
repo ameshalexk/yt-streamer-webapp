@@ -1,4 +1,5 @@
 import {interpretTeslaMon} from './teslamon-intent.js';
+import {createTeslaMonLocalPlayer} from './teslamon-local-player.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 
@@ -18,10 +19,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     '<section class="tm-panel" id="tmPanel" hidden aria-label="TeslaMon controls">',
       '<div class="tm-head"><strong>TeslaMon</strong>',
         '<button id="tmClose" type="button" aria-label="Close">×</button></div>',
-      '<p id="tmState" role="status" aria-live="polite">Choose a connected player.</p>',
-      '<div class="tm-target"><label for="tmDevices">Playback browser</label>',
-        '<select id="tmDevices"><option value="">Choose connected browser</option></select>',
-        '<button id="tmRefresh" type="button" aria-label="Refresh browsers">↻</button></div>',
+      '<p id="tmState" role="status" aria-live="polite">Connecting to this tab…</p>',
+      '<div class="tm-target tm-self-target" aria-label="Playback target">',
+        '<span>Controls this browser tab only</span></div>',
       '<form id="tmForm"><label class="tm-visually-hidden" for="tmText">Command</label>',
         '<input id="tmText" type="text" autocomplete="off" maxlength="220"',
         ' placeholder="Play a video, pause, resume…" />',
@@ -37,17 +37,18 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<button type="button" data-tm="exit_fullscreen">Exit fullscreen</button>',
       '</div>',
       '<div id="tmChoices" role="group" aria-label="Video results" hidden></div>',
-      '<p id="tmHelp">Enable AI playback in the existing YT Streamer panel',
-        ' on the browser you want to control. TeslaMon uses the same Cloudflare login.</p>',
+      '<p id="tmHelp">TeslaMon controls only this page. No remote tab selection,',
+        ' device pairing, or separate Cloudflare login is required.</p>',
     '</section>'
   ].join('');
   document.body.append(pet);
   const $=id=>pet.querySelector(id);
   const face=$('#tmFace'),handle=$('#tmHandle'),panel=$('#tmPanel'),
-    state=$('#tmState'),devices=$('#tmDevices'),mic=$('#tmMic'),
+    state=$('#tmState'),mic=$('#tmMic'),
     input=$('#tmText'),choices=$('#tmChoices'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
+  const localPlayer=createTeslaMonLocalPlayer();
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0;
 
@@ -75,14 +76,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     const phase=response?.playbackPhase;
     if(response?.status==='observed'){
       if(response.fullscreenMode==='in_page'||response.fullscreenMode==='native'){
-        status('Fullscreen enabled on selected browser.','ok');return;
+        status('Fullscreen enabled in this tab.','ok');return;
       }
-      status(phase==='playing'?'Playing in selected browser':
+      status(phase==='playing'?'Playing in this tab':
         phase==='paused'?'Paused':('Player state: '+(phase||'available')),'ok');
     }else if(response?.status==='accepted')status('Command sent. Confirm playback on the player.');
     else if(response?.status==='uncertain')status('Result uncertain. Check player before retrying.','warn');
-    else if(response?.status==='needs_user_gesture')status('Use the Fullscreen button in the selected browser.','warn');
-    else if(response?.status==='offline')status('Selected browser is offline. Reconnect and reselect it.','warn');
+    else if(response?.status==='needs_user_gesture')status('Tap Fullscreen directly in this tab.','warn');
+    else if(response?.status==='offline')status('This tab player is unavailable. Reload the page.','warn');
     else if(response?.status==='unsupported')status('Not supported by this player.','warn');
     else{
       const reasons={
@@ -117,13 +118,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   }
   async function issue(intent){
     if(busy){status('Wait for the current command.','warn');return;}
-    if(!enabled||!selected){status('Select a connected browser first.','warn');return;}
+    if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn');return;}
     busy=true;const epoch=++generation;
     status('Sending command…');
-    try{const result=await post('/api/teslamon/command',intent);
+    try{const result=await localPlayer.run(intent);
       if(epoch===generation)report(result);
     }catch{
-      if(epoch===generation)status('Network error. Playback outcome is uncertain.','warn');
+      if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
     }finally{busy=false;}
   }
   async function interpret(text){
@@ -150,40 +151,27 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(speech){speech.cancelled=true;try{speech.abort();}catch{}speech=null;}
   }
   async function refresh(){
+    enabled=localPlayer.ready;
+    // The current document's player is the only playback target.
+    selected=enabled?'this_tab':null;
+    if(!enabled){
+      mic.disabled=true;
+      status('This page player is loading. Refresh the page if it stays unavailable.','warn');
+      return;
+    }
+    status('Ready to control this browser tab.','ok');
+    // These are optional signed server capabilities, never remote targeting.
     try{
-      const result=await post('/api/teslamon/devices',{});
-      enabled=result.enabled===true;
-      if(!enabled){
-        selected=null;devices.replaceChildren(new Option('No available players',''));
-        devices.disabled=true;mic.disabled=true;
-        report(result);return;
-      }
-      devices.disabled=false;
-      devices.replaceChildren(new Option('Choose connected browser',''),
-        ...(result.devices||[]).map(v=>new Option(v.label,v.deviceKey)));
-      const target=result.selectedDeviceKey;
-      if((result.devices||[]).some(v=>v.deviceKey===target)){
-        devices.value=target;selected=target;
-      }else{devices.value='';selected=null;}
+      const result=await post('/api/teslamon/capabilities',{});
       modelLabel.hidden=result.modelConfigured!==true;
       if(modelLabel.hidden)modelOptIn.checked=false;
       if(result.localTranscription)setupRecorder();
       else setupNativeSpeech();
-      status(!result.devices?.length?'Enable AI playback on a browser and refresh.':
-        selected?'Ready. Speak or type a playback command.':
-        'Choose which connected browser to control.',selected?'ok':'info');
-    }catch{status('TeslaMon connection unavailable. Check network and sign-in.','warn');}
-  }
-  async function choose(){
-    cancelMic();clearChoices();selected=null;
-    const deviceKey=devices.value;
-    if(!deviceKey){status('Choose a browser.');return;}
-    try{
-      const result=await post('/api/teslamon/select',{deviceKey});
-      if(result.status==='selected'){
-        selected=deviceKey;status('Browser selected. Ready.','ok');
-      }else{report(result);void refresh();}
-    }catch{status('Selection request failed.','warn');}
+    }catch{
+      modelLabel.hidden=true;
+      modelOptIn.checked=false;
+      setupNativeSpeech();
+    }
   }
   function setupRecorder(){
     if(speechMode==='local')return;
@@ -201,7 +189,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         else if(value.state==='stopping')status('Transcribing locally…');
       },
       onAudio:blob=>{
-        if(!selected)return;
+        if(!localPlayer.ready)return;
         const before=selected,epoch=micEpoch;
         void(async()=>{
           try{
@@ -230,7 +218,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     mic.disabled=false;mic.textContent='Tap to speak';
     mic.addEventListener('click',()=>{
-      if(speechMode!=='native'||!selected)return;
+      if(speechMode!=='native'||!localPlayer.ready)return;
       if(speech){try{speech.stop();}catch{}return;}
       let transcript='';
       const before=selected,epoch=micEpoch;
@@ -309,8 +297,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
     cancelMic();face.focus();
   });
-  $('#tmRefresh').addEventListener('click',()=>void refresh());
-  devices.addEventListener('change',()=>void choose());
+  // Only the current document can receive TeslaMon playback commands.
   $('#tmForm').addEventListener('submit',event=>{
     event.preventDefault();interpret(input.value);
   });

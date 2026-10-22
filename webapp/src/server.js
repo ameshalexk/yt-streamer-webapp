@@ -2266,6 +2266,8 @@ app.post('/api/ai-agent/bootstrap',async(req,res)=>{
   catch{return res.status(401).json({error:'signed_access_required'});}
 });
 
+// In same-tab mode the remote-selection/controller HTTP routes are disabled.
+const teslamonSelfTabOnly=process.env.YT_TESLAMON_SELF_TAB_ONLY==='1';
 // TeslaMon: same-site, opt-in signed Access controller. These authenticated
 // endpoints never accept device IDs in command payloads or a second login.
 // Disabled by default; the HA host returns unavailable until a signed Mac
@@ -2277,8 +2279,21 @@ function teslamonFail(res,error){
   return res.status(unavailable?503:401)
     .json({status:'failed',code:unavailable?'teslamon_unavailable':'signed_access_required'});
 }
+app.post('/api/teslamon/capabilities',async(req,res)=>{
+  res.set('Cache-Control','private, no-store');
+  if(!isSameOriginRequest(req))
+    return res.status(403).json({status:'failed',code:'wrong_origin'});
+  if(!productionMediaRelay?.teslamon.enabled)
+    return res.status(503).json({status:'unavailable',code:'teslamon_unavailable'});
+  try{
+    await productionMediaRelay.teslamon.authenticate(req);
+    return res.json({status:'ok',localTranscription:teslamonSTT.available,
+      modelConfigured:teslamonModel.available,selfTabOnly:teslamonSelfTabOnly});
+  }catch(ex){return teslamonFail(res,ex);}
+});
 app.post('/api/teslamon/devices',async(req,res)=>{
   res.set('Cache-Control','private, no-store');
+  if(teslamonSelfTabOnly)return res.status(410).json({status:'failed',code:'remote_targeting_disabled'});
   if(!isSameOriginRequest(req))return res.status(403).json({status:'failed',code:'wrong_origin'});
   if(!productionMediaRelay?.teslamon.enabled)
     return res.status(503).json({status:'unavailable',code:'teslamon_unavailable'});
@@ -2290,6 +2305,7 @@ app.post('/api/teslamon/devices',async(req,res)=>{
 });
 app.post('/api/teslamon/select',async(req,res)=>{
   res.set('Cache-Control','private, no-store');
+  if(teslamonSelfTabOnly)return res.status(410).json({status:'failed',code:'remote_targeting_disabled'});
   if(!isSameOriginRequest(req))return res.status(403).json({status:'failed',code:'wrong_origin'});
   if(!productionMediaRelay?.teslamon.enabled)
     return res.status(503).json({status:'unavailable',code:'teslamon_unavailable'});
@@ -2300,6 +2316,7 @@ app.post('/api/teslamon/select',async(req,res)=>{
 });
 app.post('/api/teslamon/command',async(req,res)=>{
   res.set('Cache-Control','private, no-store');
+  if(teslamonSelfTabOnly)return res.status(410).json({status:'failed',code:'remote_targeting_disabled'});
   if(!isSameOriginRequest(req))return res.status(403).json({status:'failed',code:'wrong_origin'});
   if(!productionMediaRelay?.teslamon.enabled)
     return res.status(503).json({status:'unavailable',code:'teslamon_unavailable'});

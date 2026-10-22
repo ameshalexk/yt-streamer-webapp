@@ -35,3 +35,19 @@
 - Staging public ingress stop: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.amesh.teslamon.staging-tunnel.plist`
 - Stage startup: bootstrap its own private plist only. Never stop the `yt-streamer` production Cloudflare tunnel or production app service.
 - Logs under `~/Library/Application Support/TeslaMonStaging/{server.log,server.err.log,tunnel.log,tunnel.err.log}`. Avoid copying cookies/JWTs, raw audio, API credentials or OAuth client secrets into notes.
+
+## 2026-10-22 self-tab playback correction (staging only)
+
+The owner successfully signed into the staging site with ameshalexusa@gmail.com, but the TeslaMon UI displayed an unselected browser. That picker was inherited from the separate remote AI playback system, which is inappropriate for the owner's clarified requirement: TeslaMon controls ONLY the player in the current browser tab.
+
+Implemented on the staging branch:
+- The TeslaMon pet no longer has a browser picker, remote selection button, or extra pairing requirement. It displays "Controls this browser tab only" and "Ready to control this browser tab".
+- The restricted existing page media facade is now loaded at the fixed staging hostname; TeslaMon uses that facade directly rather than the WebSocket remote pairing registry.
+- New public/teslamon-local-player.js implements six typed playback actions, local search/results with 45-second opaque tokens, same-tab choice consumption, command serialization and playback-state readback. It cannot send commands to another browser and rejects arbitrary URLs/target IDs.
+- Optional authenticated /api/teslamon/capabilities, /interpret and /transcribe remain server-side NON-playback helpers. Cloudflare JWT authentication is still required to use them.
+- Staging private launcher sets YT_TESLAMON_SELF_TAB_ONLY=1; the three former remote TeslaMon HTTP endpoints /devices, /select, /command now return 410. This does not modify the separate legacy AI remote player feature or production.
+- Versioned HTML script/CSS references are updated to avoid stale cached TeslaMon assets.
+- Automated verification: npm test 618/618 pass; npm run check pass. New 9/9 local-player tests assert same-page routing, candidate boundaries, invalid target denial, pause/resume/fullscreen and truthful buffering state. Local headless Chrome staging-host smoke tests 7/7 viewport/UI pairs with NO browser selector, a self-target label and a Status command reading the current page's idle player.
+- Not yet accepted on real iPhone, parked Tesla or signed-in public playback. No production merge or deployment.
+
+Owner acceptance: hard-refresh https://teslamon-stage.ameshalex.com/, open TeslaMon, check the "Controls this browser tab only" label, try Status then Play/Pause/Resume in the same page. No browser registration is required.
