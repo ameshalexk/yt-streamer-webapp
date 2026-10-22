@@ -8,16 +8,24 @@ import { verifyAccessJwt } from "../src/lib/ai-media-agent-remote-authorization.
 const VERSION="2025-11-25";
 const fail=(code,message,id=null)=>({jsonrpc:"2.0",id,error:{code,message}});
 const result=(id,value)=>({jsonrpc:"2.0",id,result:value});
-const output=value=>({isError:false,content:[{type:"text",text:JSON.stringify(value)}],structuredContent:value});
+// MCP clients must not treat an offline/unauthorized/failed dispatch as a
+// successful tool execution. Preserve structured state for recovery and UX.
+const FAILED_STATUSES=new Set(["unauthorized","offline","failed","timeout_uncertain",
+  "rate_limited","unsupported","needs_user_gesture","not_found"]);
+const output=value=>({isError:FAILED_STATUSES.has(value?.status),
+  content:[{type:"text",text:JSON.stringify(value)}],structuredContent:value});
 const errorOutput=message=>({isError:true,content:[{type:"text",text:message}]});
 const has=(obj,key)=>Object.prototype.hasOwnProperty.call(obj,key);
 const uuid=x=>typeof x==="string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(x);
+// Approval limits must track the actual command allowlist. A fixed count can
+// silently reject a valid full-scope request when Phase 1 adds a command.
+const controllableActions=devMcpTools.filter(t=>t.name!=="list_devices");
 const mcpTools=[
   {name:"list_devices",description:"List paired browser tab IDs for explicit authorization requests; listing does not confer control.",
     inputSchema:{type:"object",properties:{},additionalProperties:false},annotations:{readOnlyHint:true}},
   {name:"request_browser_approval",description:"Ask a selected paired browser for an explicit local click approval; no control until claimed.",
     inputSchema:{type:"object",properties:{device_id:{type:"string",format:"uuid"},
-      actions:{type:"array",items:{type:"string",enum:devMcpTools.filter(t=>t.name!=="list_devices").map(t=>t.name)},minItems:1,maxItems:9}},required:["device_id","actions"],additionalProperties:false}},
+      actions:{type:"array",items:{type:"string",enum:controllableActions.map(t=>t.name)},minItems:1,maxItems:controllableActions.length}},required:["device_id","actions"],additionalProperties:false}},
   {name:"claim_browser_approval",description:"Claim an already-approved short-lived grant scoped to your Access identity and exact browser connection.",
     inputSchema:{type:"object",properties:{request_id:{type:"string",format:"uuid"}},required:["request_id"],additionalProperties:false}},
   {name:"revoke_browser_approval",description:"Revoke a short-lived grant; does not interrupt media already playing.",

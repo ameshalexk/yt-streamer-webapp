@@ -52,7 +52,9 @@ test("trusted browser upgrade denies spoofed, expired, wrong scope and unverifie
     request(good,{upgrade:"h2c"}),
     request(good,{connection:"keep-alive"}),
     request(good,{"cf-access-jwt-assertion":undefined}),
-    request(good,{"cf-access-jwt-assertion":good.slice(0,-2)+"xx"}),
+    request(good,{"cf-access-jwt-assertion":good.slice(0,good.lastIndexOf(".")+1)
+      +(good[good.lastIndexOf(".")+1]==="A"?"B":"A")
+      +good.slice(good.lastIndexOf(".")+2)}),
     request(jwt({sub:"other"})),
     request(jwt({audience:"wrong-audience"})),
     request(jwt({iss:"https://another.cloudflareaccess.com"})),

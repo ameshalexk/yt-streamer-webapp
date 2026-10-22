@@ -19,7 +19,8 @@ test("verified RS256 token provides only bounded provider identity",()=>{
 });
 test("rejects forgery, wrong issuer/audience, expiry, future or none algorithm",()=>{
  const good=makeJwt();
- const forged=good.slice(0,-3)+"abc";
+ const tamperAt=good.lastIndexOf(".")+1;
+ const forged=good.slice(0,tamperAt)+(good[tamperAt]==="A"?"B":"A")+good.slice(tamperAt+1);
  for(const token of [forged,makeJwt({iss:"https://evil.invalid"}),makeJwt({aud:"wrong"}),
    makeJwt({exp:now}),makeJwt({iat:now+120}),makeJwt({sub:""}),makeJwt({}, {alg:"none"}),
    "a.b.c","",makeJwt({exp:now+90000})]){

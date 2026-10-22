@@ -14,6 +14,14 @@ This branch selectively carries forward the tested October 11 secure-MCP backend
 - `scripts/ai-agent-trusted-access-relay.mjs`: isolated loopback-only browser WebSocket path with signed Access authentication before upgrade, server-generated identity/registration, bounded connections and revoked grants on disconnect.
 - `scripts/ai-agent-dev-mcp.mjs` and `scripts/ai-agent-local-relay.mjs`: historical **loopback test fixtures only**. Do not forward `/dev/*` or use development bearer secrets as public authentication.
 
+## Phase 2 security follow-up — 2026-10-21
+
+- The remote MCP browser approval tool no longer hardcodes the historical nine-action maximum. The allowed action schema is derived from the exact typed command list, including the newly registered `stop` action; a valid full-scope request is accepted while unknown actions still fail validation.
+- Tool results with `status: unauthorized/offline/failed/timeout_uncertain/rate_limited/unsupported/needs_user_gesture/not_found` now set the MCP standard `isError: true` while **retaining structured state**, so a model does not misinterpret an unsuccessful action as confirmed playback. `pending_browser_approval` and `accepted` remain distinct non-terminal states; **`accepted` does not mean audible playback**.
+- New tests prove a full allowlisted approval request including `stop` is accepted but not automatically granted, unknown scope is rejected, unauthorized action has `isError: true`, and confirmed browser ACK remains `isError: false`.
+- CI for base Phase 2 PR #69 commit `9a15d17`: Shared release workflow 39709929932 **SUCCESS**, verified after initial submission. Follow-up commit's CI must be checked independently.
+
+
 **MVP alignment:** Added `stop` to the shared allowed command name list in the registry, approval scopes, browser registration, MCP tool list and trusted relay. Phase 1 browser agent must implement the matching `stop` adapter; no assumption that playback stops until the browser confirms.
 
 ## Boundaries and integration contract

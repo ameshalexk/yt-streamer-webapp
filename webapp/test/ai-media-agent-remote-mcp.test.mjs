@@ -67,7 +67,12 @@ test("remote MCP enforces signed Access JWT, subject allowlist, no Origin, disti
     assert.equal(denied.code,401);
     assert.equal((await call(x.gateway,jwt("owner-1",{aud:"wrong"}),"list_devices")).code,401);
     assert.equal((await call(x.gateway,jwt("owner-1",{exp:1}),"list_devices")).code,401);
-    assert.equal((await call(x.gateway,jwt().slice(0,-2)+"xx","list_devices")).code,401);
+    const intact=jwt();
+    const tamperAt=intact.lastIndexOf(".")+1;
+    const tampered=intact.slice(0,tamperAt)
+      +(intact[tamperAt]==="A"?"B":"A")+intact.slice(tamperAt+1);
+    assert.notEqual(tampered,intact);
+    assert.equal((await call(x.gateway,tampered,"list_devices")).code,401);
     assert.equal((await call(x.gateway,"none","list_devices")).code,401);
     assert.equal((await call(x.gateway,jwt(),"list_devices",{}, {headers:{origin:"https://untrusted.invalid"}})).code,403);
     const dev=await fetch(x.gateway.origin+"/dev/mcp");assert.equal(dev.status,404);
@@ -91,6 +96,8 @@ test("approval requires exact paired browser, claim by same identity and unique 
     assert.equal(prompt.kind,"remote_approval_request");assert.equal(prompt.device_id,device_id);
     const unapproved=await call(gateway,token,"pause",{device_id,approval_id:randomUUID()});
     assert.equal(unapproved.data.status,"unauthorized");
+    assert.equal(unapproved.body.result.isError,true,
+      "unauthorized tool call must be marked as an MCP error");
     const crossClaim=await call(gateway,jwt("owner-2"),"claim_browser_approval",{request_id:requested.data.request_id});
     assert.equal(crossClaim.data.status,"not_found");
     const notClaimed=await call(gateway,token,"claim_browser_approval",{request_id:requested.data.request_id});
@@ -110,9 +117,12 @@ test("approval requires exact paired browser, claim by same identity and unique 
     }));
     const response=await call(gateway,token,"pause",{device_id,approval_id});
     assert.equal(response.data.status,"completed");
+    assert.equal(response.body.result.isError,false,
+      "confirmed success must remain a successful MCP response");
     assert.equal((await responseFromBrowser).action,"pause");
     const deniedAction=await call(gateway,token,"next",{device_id,approval_id});
     assert.equal(deniedAction.data.status,"unauthorized");
+    assert.equal(deniedAction.body.result.isError,true);
     const idempotencyKey=randomUUID();
     const first=await call(gateway,token,"get_player_state",{device_id,approval_id},{nonce:idempotencyKey});
     assert.ok(first.data.status);
@@ -210,4 +220,39 @@ test("unknown signing-key rollover refreshes pinned JWKS once; invalid tokens fa
     assert.equal((await call(gateway,signedRotated({},"unknown-key"),"list_devices")).code,401);
     assert.equal(refreshCount,1,"unrecognized kid cannot flood pinned JWKS");
   }finally{await gateway.close();await relay.close();}
+});
+
+test("approval schema permits every registered control tool including stop, while rejecting unknown actions",async()=>{
+  const proof=auth();
+  const relay=await startLocalAgentRelay({ownerToken:auth(),pairingToken:proof});
+  const gateway=await startLocalRemoteMcpGateway({relay,audience,allowedSubjects:["owner-1"],
+    jwksProvider:{issuer,get:async()=>jwks}});
+  let socket;
+  try{
+    const p=await pair(relay,proof);
+    socket=p.socket;
+    const listing=await call(gateway,jwt(),"tools/list");
+    const tools=listing.body.result.tools;
+    const approval=tools.find(item=>item.name==="request_browser_approval");
+    const actions=tools.filter(item=>![
+      "list_devices","request_browser_approval","claim_browser_approval",
+      "revoke_browser_approval"
+    ].includes(item.name)).map(item=>item.name);
+    assert.ok(actions.includes("stop"));
+    assert.equal(approval.inputSchema.properties.actions.maxItems,actions.length);
+    assert.deepEqual(new Set(approval.inputSchema.properties.actions.items.enum),new Set(actions));
+    // The browser need not grant the request for the gateway to validate and
+    // deliver the full, bounded list. It must not grant automatically.
+    // The gateway forwards this full-scope request to the exact registered
+    // browser but cannot approve it without an explicit separate gesture.
+    const owner=jwt();
+    const pending=await call(gateway,owner,"request_browser_approval",{
+      device_id:p.device.device_id,actions
+    });
+    assert.equal(pending.data.status,"pending_browser_approval");
+    const rejected=await call(gateway,owner,"request_browser_approval",{
+      device_id:p.device.device_id,actions:[...actions,"shell"]
+    });
+    assert.equal(rejected.body.result.isError,true);
+  }finally{socket?.terminate();await gateway.close();await relay.close();}
 });
