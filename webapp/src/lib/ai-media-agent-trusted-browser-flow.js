@@ -41,7 +41,9 @@ export class TrustedBrowserRegistrationFlow {
     const h=req?.headers;
     if(req?.method!=="POST")deny('method');
     if(!this.#origins.has(h?.origin))deny('origin');
-    if(h?.host!==new URL(h.origin).host)deny('host');
+    // Cloudflare Tunnel can use an internal origin Host/port while keeping
+    // the browser Origin unchanged. Require the pinned public Origin and
+    // Cloudflare-signed app JWT instead of equating these different hosts.
     if(h["sec-fetch-site"] && h["sec-fetch-site"]!=="same-origin")deny('fetch_site');
     const {identity,expiresAt}=await this.#verifyIdentity(h);
     return {subject:identity.subject,issuer:identity.issuer,expires_at:expiresAt};

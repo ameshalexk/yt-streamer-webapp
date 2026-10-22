@@ -54,3 +54,7 @@ Removed the ineffective `/?ai_access_signin=1` **Sign in again** link. A **Recon
 ## 2026-10-22 minimal safe authorization rejection diagnostics
 
 User's authenticated iPhone loads the main website but AI bootstrap returns HTTP 401. Cloudflare app AUD from live login redirect matches the runtime configured AUD, Node JWKS key retrieval works, yet the previous code suppressed all auth diagnostics. This private diagnostic patch records **only coarse rejection category codes** in local server logs (method/origin/host/Fetch-Site/no JWT/issuer/audience/timestamp/signature class). Never logs token, cookies, headers, subject, email or JWT payloads; original response remains generic 401, no authorization bypass. Not a user-facing test. On real user traffic after deployment, find precise category then implement minimal fix and remove temporary instrumentation if appropriate.
+
+## Cloudflare Tunnel Host rewrite compatibility
+
+The prior `authenticateHttp` rejected POSTs whenever Express's origin `Host` differed from the browser `Origin` host. Tunnel origin forwarding may legitimately alter the upstream Host/port. Removed this redundant equality condition; **exact allowlisted browser Origin**, valid POST method, same-origin Fetch-Site when supplied, and **fully signed Access application JWT with pinned team issuer and AUD** remain mandatory. Coarse rejection-only private logs still active for remaining causes. Client must not be routed through a second login just because the separate AI bootstrap failed. No broad allow or JWT bypass.
