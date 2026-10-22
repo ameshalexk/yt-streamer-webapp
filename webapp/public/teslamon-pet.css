@@ -1,0 +1,40 @@
+#teslamonPet{position:fixed;right:max(14px,env(safe-area-inset-right));bottom:calc(74px + env(safe-area-inset-bottom));z-index:999995;color:#f3f7ff;font:14px system-ui,-apple-system,sans-serif;max-width:calc(100vw - 12px);user-select:none;-webkit-user-select:none;touch-action:pan-y}
+#teslamonPet *{box-sizing:border-box}
+#teslamonPet button,#teslamonPet select,#teslamonPet input{font:inherit}
+#teslamonPet button{cursor:pointer;touch-action:manipulation}
+#teslamonPet button:focus-visible,#teslamonPet input:focus-visible,#teslamonPet select:focus-visible{outline:3px solid #a4d5ff;outline-offset:2px}
+#teslamonPet .tm-shell{display:flex;align-items:flex-start;justify-content:flex-end;gap:3px}
+#teslamonPet #tmHandle{touch-action:none;cursor:grab;width:33px;height:43px;border:1px solid #7396ae;border-radius:12px;background:#1a2e3b;color:#d3edff;font-size:24px}
+#teslamonPet #tmFace{width:62px;height:69px;display:flex;align-items:center;justify-content:center;flex-direction:column;border:2px solid #7ac9ff;border-radius:36% 36% 45% 45%;background:linear-gradient(150deg,#326c91,#182d43);box-shadow:0 7px 18px #0008;color:white;transform-origin:center;transition:transform .14s}
+#teslamonPet #tmFace:hover{transform:translateY(-3px)}
+#teslamonPet #tmFace[data-state="ok"]{border-color:#79e0b3}
+#teslamonPet #tmFace[data-state="warn"]{border-color:#ffbb84}
+#teslamonPet .tm-eyes{font-size:11px;letter-spacing:8px;padding-left:8px}
+#teslamonPet .tm-ears{font-size:13px;margin-top:-10px}
+#teslamonPet .tm-mouth{font-size:23px;line-height:1}
+#teslamonPet .tm-panel{position:absolute;right:0;bottom:80px;width:min(336px,calc(100vw - 16px));max-height:min(650px,calc(100dvh - 100px));overflow-y:auto;padding:14px;background:#15232f;border:1px solid #647d92;border-radius:15px;box-shadow:0 16px 40px #000a;color:#f3f7ff;user-select:text;-webkit-user-select:text}
+#teslamonPet .tm-panel[hidden]{display:none}
+#teslamonPet .tm-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:17px}
+#teslamonPet .tm-head button{border:0;color:#fff;background:#30485d;border-radius:8px;width:44px;height:44px;font-size:25px}
+#teslamonPet #tmState{font-size:13px;line-height:1.4;min-height:40px;margin:8px 0 12px;color:#d4e6f5}
+#teslamonPet #tmState[data-kind="warn"]{color:#ffd2ac}
+#teslamonPet #tmState[data-kind="ok"]{color:#8be6bd}
+#teslamonPet .tm-target{display:grid;grid-template-columns:1fr 44px;gap:6px;margin-bottom:12px}
+#teslamonPet .tm-target label{grid-column:1/-1;font-size:12px;color:#c8d9eb}
+#teslamonPet select,#teslamonPet input{min-width:0;width:100%;height:44px;border:1px solid #7891a3;border-radius:8px;color:white;background:#253c4d;padding:7px}
+#teslamonPet select option{background:#162b3c}
+#teslamonPet button:not(#tmFace):not(#tmHandle){min-height:44px}
+#teslamonPet #tmRefresh,#teslamonPet #tmSend,#teslamonPet .tm-actions button,#teslamonPet .tm-choice{border:1px solid #7891a3;border-radius:8px;background:#294961;color:#f5faff;padding:8px}
+#teslamonPet #tmForm{display:flex;gap:6px;margin-bottom:12px}
+#teslamonPet #tmSend{min-width:57px}
+#teslamonPet .tm-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:10px}
+#teslamonPet #tmMic{background:#275e77;border-color:#74bedf;touch-action:none}
+#teslamonPet button:disabled{opacity:.5;cursor:not-allowed}
+#teslamonPet #tmChoices{display:grid;gap:6px;margin:10px 0}
+#teslamonPet #tmChoices[hidden]{display:none}
+#teslamonPet #tmChoices p{margin:0 0 3px}
+#teslamonPet .tm-choice{text-align:left;overflow-wrap:anywhere}
+#teslamonPet #tmHelp{font-size:12px;line-height:1.45;color:#a9c0d0;margin:9px 0 0}
+#teslamonPet .tm-visually-hidden{position:absolute!important;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden}
+@media(max-width:420px){#teslamonPet{bottom:calc(80px + env(safe-area-inset-bottom));right:8px}#teslamonPet .tm-panel{right:0;width:calc(100vw - 16px)}}
+@media(prefers-reduced-motion:reduce){#teslamonPet #tmFace{transition:none}}

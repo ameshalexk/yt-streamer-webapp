@@ -7,7 +7,7 @@ import {TESLAMON_MAC_ORIGIN} from './teslamon-contract.js';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const VIDEO_ID=/^[A-Za-z0-9_-]{11}$/;
 const CONTROL=/[\x00-\x1f\x7f]/;
-const ACTIONS=new Set(['search_media','play_media','pause','resume','get_player_state']);
+const ACTIONS=new Set(['search_media','play_media','pause','resume','get_player_state','request_fullscreen','exit_fullscreen']);
 const isObject=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const validString=(x,max=256)=>typeof x==='string'&&x.length>0&&x.length<=max&&!CONTROL.test(x);
 const outcome=(status,code)=>Object.freeze({status,...(code?{code}:{})});

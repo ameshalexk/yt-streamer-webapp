@@ -4,7 +4,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
-import {randomUUID,randomBytes} from 'node:crypto';
+import {randomUUID,randomBytes,createHash} from 'node:crypto';
+import {AsyncLocalStorage} from 'node:async_hooks';
+import {openTeslaMonCommandLedger} from './teslamon-command-ledger.js';
+import {createTeslaMonPrivateCoordinator} from './teslamon-coordinator.js';
+import {bindTeslaMonCommand,validateTeslaMonIntent} from './teslamon-contract.js';
 import {WebSocketServer} from 'ws';
 import {AgentSessionRegistry} from './ai-media-agent-session-registry.js';
 import {BrowserApprovalRegistry} from './ai-media-agent-remote-authorization.js';
@@ -13,7 +17,7 @@ import {createPinnedCloudflareJwksProvider} from '../../scripts/ai-agent-remote-
 import {startMacControlLocalBridge} from './ai-media-agent-mac-control-bridge.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const CONTROLS = new Set(['get_player_state','search_media','play_media','pause','resume','stop']);
+const CONTROLS = new Set(['get_player_state','search_media','play_media','pause','resume','stop','request_fullscreen','exit_fullscreen']);
 const QUEUE_WINDOW_MS=120000;
 const validKey=x=>typeof x==='string'&&UUID.test(x);
 const safeName=x=>typeof x==='string'&&x.length>0&&x.length<=64&&/^[\p{L}\p{N} ._()-]+$/u.test(x);
@@ -21,7 +25,8 @@ const send=(ws,frame)=>{if(ws.readyState!==ws.OPEN)return false;ws.send(JSON.str
 const reject=(socket)=>{if(!socket.destroyed)socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');};
 
 export async function startProductionMediaRelay({server,controlDir,teamDomain,audience,
-  allowedSubjects=[],origin='https://stream.ameshalex.com',jwksProvider}={}) {
+  allowedSubjects=[],origin='https://stream.ameshalex.com',jwksProvider,
+  enableTeslaMon=false}={}) {
   if(!server||typeof server.on!=='function'||typeof controlDir!=='string'||
      !path.isAbsolute(controlDir)||!/^https:\/\/[a-z0-9.-]+$/.test(origin)||
      typeof audience!=='string'||audience.length<8||
@@ -144,6 +149,110 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
         request_id:requestId,subject,actions}));
     }
   }};
+  // TeslaMon is disabled until explicitly configured. All UI controller requests
+  // must prove the existing signed Access session; no second identity provider.
+  const controllerContext=new AsyncLocalStorage();
+  let teslamonLedger=null;
+  let teslamon=null;
+  const controllerId=subject=>'tm-'+createHash('sha256').update(subject).digest('hex').slice(0,32);
+  if(enableTeslaMon){
+    teslamonLedger=await openTeslaMonCommandLedger({
+      dir:path.join(controlDir,'teslamon-journal')
+    });
+    const byId=id=>eligible().find(c=>c.deviceId===id&&Date.now()<c.expiresAt)||null;
+    const trustedContext=c=>({
+      verified:true,origin,subject:c.subject,
+      controllerId:controllerId(c.subject),authExpiresAt:c.expiresAt
+    });
+    teslamon=createTeslaMonPrivateCoordinator({
+      registry,ledger:teslamonLedger,
+      readController:()=>controllerContext.getStore()||null,
+      readSelection:()=>{
+        if(!selected)return null; // never choose sole online browser
+        const c=eligible().find(c=>c.key===selected.device_key&&
+          c.subject===selected.subject&&Date.now()<c.expiresAt);
+        if(!c)return null;
+        return {
+          ...trustedContext(c),deviceId:c.deviceId,deviceKey:c.key,
+          connectionId:c.connectionId,tabConsent:c.consent,
+          explicitSelection:true
+        };
+      },
+      readBrowser:id=>{
+        const c=byId(id);
+        return c?{
+          verified:true,deviceId:c.deviceId,deviceKey:c.key,
+          connectionId:c.connectionId,subject:c.subject,tabConsent:c.consent
+        }:null;
+      }
+    });
+  }
+  const requireTeslaMonIdentity=async req=>{
+    if(!teslamon)throw Error('teslamon_disabled');
+    if(req.headers.origin!==origin||
+      req.headers['sec-fetch-site']==='cross-site')throw Error('wrong_origin');
+    const identity=await flow.authenticateHttp(req);
+    if(!identity?.subject||identity.expires_at<=Date.now())
+      throw Error('signed_access_required');
+    return {verified:true,origin,subject:identity.subject,
+      controllerId:controllerId(identity.subject),
+      authExpiresAt:identity.expires_at};
+  };
+  const teslamonAccess={
+    enabled:Boolean(teslamon),
+    async devices(req){
+      const owner=await requireTeslaMonIdentity(req);
+      return controllerContext.run(owner,()=>({
+        enabled:true,selectedDeviceKey:selected?.subject===owner.subject?
+          selected.device_key:null,
+        devices:eligible().filter(c=>c.subject===owner.subject&&
+          Date.now()<c.expiresAt).map(c=>({
+          deviceKey:c.key,label:c.label,
+          selected:Boolean(selected?.device_key===c.key&&selected?.subject===c.subject)
+        })),
+        capabilities:{voice:true,fullscreen:false,model:false}
+      }));
+    },
+    async select(req,deviceKey){
+      const owner=await requireTeslaMonIdentity(req);
+      if(!validKey(deviceKey))return {status:'failed',code:'invalid_device_key'};
+      const candidates=eligible().filter(c=>c.key===deviceKey&&
+        c.subject===owner.subject&&Date.now()<c.expiresAt);
+      if(candidates.length!==1)return {status:'offline',code:'device_not_available'};
+      await remember(candidates[0]);queued=null;
+      teslamon.candidates.invalidate();
+      return {status:'selected',deviceKey};
+    },
+    async command(req,input){
+      const owner=await requireTeslaMonIdentity(req);
+      const intent=validateTeslaMonIntent(input);
+      if(!intent.ok)return {status:'failed',code:intent.error};
+      return controllerContext.run(owner,async()=>{
+        const authority=await teslamon.relay.getAuthority();
+        const bound=bindTeslaMonCommand(intent,authority,{
+          commandId:randomUUID(),now:Date.now()
+        });
+        if(!bound.ok)return {status:'offline',code:bound.error};
+        const outcome=await teslamon.executeIntent(bound);
+        // Return only the typed MVP response shape.
+        if(outcome?.status==='needs_selection')
+          return {status:'needs_selection',choices:outcome.choices.map(x=>({
+            candidate_token:x.candidate_token,title:x.title,creator:x.creator
+          }))};
+        const result={
+          status:typeof outcome?.status==='string'?outcome.status:'uncertain'
+        };
+        if(typeof outcome?.code==='string')result.code=outcome.code.slice(0,100);
+        if(typeof outcome?.playbackPhase==='string')
+          result.playbackPhase=outcome.playbackPhase;
+        if(typeof outcome?.fullscreenMode==='string')
+          result.fullscreenMode=outcome.fullscreenMode;
+        return result;
+      });
+    },
+    authenticate:requireTeslaMonIdentity
+  };
+
   const onUpgrade=(req,socket,head)=>{
     // Any upgraded socket remains untrusted and inert until it redeems a
     // one-time ticket from an independently JWT-verified HTTP request.
@@ -219,10 +328,16 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
   sweep.unref?.();
   try{bridge=await startMacControlLocalBridge({relay,
     socketPath,maxRequestsPerMinute:80});}
-  catch(ex){clearInterval(sweep);server.off('upgrade',onUpgrade);await new Promise(r=>wss.close(r));throw ex;}
-  return {socketPath:bridge.socketPath,devices,bootstrap,async close(){
+  catch(ex){
+    clearInterval(sweep);server.off('upgrade',onUpgrade);
+    await new Promise(r=>wss.close(r));
+    await teslamonLedger?.close().catch(()=>{});
+    throw ex;
+  }
+  return {socketPath:bridge.socketPath,devices,bootstrap,teslamon:teslamonAccess,async close(){
     if(closed)return;closed=true;clearInterval(sweep);server.off('upgrade',onUpgrade);
     for(const ws of clients.keys())ws.terminate();
     await bridge.close();await new Promise(r=>wss.close(r));
+    await teslamonLedger?.close();
   }};
 }

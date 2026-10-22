@@ -177,7 +177,7 @@ test('validated play arguments reject any arbitrary media URL or cross-player ac
   for(const [action,args] of [
     ['play_media',{media_id:'https://youtube.com/watch?v=AAAaa00000_'}],
     ['play_media',{media_id:'not-eleven'}],
-    ['request_fullscreen',{}],
+    ['seek',{position_seconds:5}],
     ['stop',{}],
     ['pause',{target:'different-browser'}]
   ]){
