@@ -23,6 +23,7 @@ const fixture=(override={})=>{
   const h=createTeslaMonMcpHandler({
     getAuthority:override.authority??auth,
     dispatch:override.dispatch??(async c=>{count++;return ack(c);}),
+    executeIntent:override.executeIntent,
     clock:()=>NOW+50,
     makeId:()=>String(++id).padStart(8,'0')+'-3333-4333-8333-333333333333'
   });
@@ -197,4 +198,34 @@ test('actual child-process stdio MCP protocol with synthetic target',async()=>{
     await Promise.race([exit,new Promise(resolve=>setTimeout(()=>{child.kill();resolve()},1800))]);
     lines.close();
   }
+});
+
+
+test('coordinator responses cannot spoof playback or expose arbitrary results',async()=>{
+  const replies=[
+    {status:'observed',observed:true,playbackPhase:'speaker_confirmed'},
+    {status:'needs_selection',choices:[{
+      candidate_token:'A'.repeat(32),title:'Ok',creator:'Channel'
+    },{candidate_token:'B'.repeat(32),title:'Bad',creator:'bad\ncreator'}]},
+    {status:'secret_success',privateToken:'DO-NOT-EXPOSE'}
+  ];
+  for(const reply of replies){
+    const f=fixture({executeIntent:async()=>reply});
+    await f.start();
+    const r=await f.h.handle(call(2,'pause'));
+    assert.equal(r.result.structuredContent.status,'uncertain');
+    assert.equal(r.result.isError,true);
+    assert.equal(JSON.stringify(r).includes('DO-NOT-EXPOSE'),false);
+    f.h.close();
+  }
+});
+
+test('unexpected coordinator failure is uncertain, never definitive failed',async()=>{
+  const f=fixture({executeIntent:async()=>{throw Error('private sensitive');}});
+  await f.start();
+  const r=await f.h.handle(call(2,'resume'));
+  assert.equal(r.result.structuredContent.status,'uncertain');
+  assert.equal(r.result.structuredContent.code,'private_dispatch_uncertain');
+  assert.equal(JSON.stringify(r).includes('private sensitive'),false);
+  f.h.close();
 });

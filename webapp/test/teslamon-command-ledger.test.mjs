@@ -225,3 +225,34 @@ test('refuses closing while dispatch is in flight',async()=>{
     assert.equal(ledger.status,'closed');
   });
 });
+
+test('uncertain timeout quarantines subsequent new mutations until reconciliation',async()=>{
+  await withLedger(async ledger=>{
+    const first=await ledger.run(command(),async()=>new Promise(()=>{}));
+    assert.equal(first.status,'uncertain');
+    assert.equal(ledger.quarantined,true);
+    let executed=0;
+    const second=await ledger.run(command(),async()=>{executed++;return {status:'observed'};});
+    assert.equal(second.code,'unreconciled_prior_mutation');
+    assert.equal(executed,0);
+  });
+});
+
+test('reopening a journal with uncertain final outcome stays quarantined',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'teslamon-uncertain-reopen-'));
+  try{
+    const ledger=await openTeslaMonCommandLedger({dir,timeoutMs:50});
+    const c=command();
+    const answer=await ledger.run(c,async()=>new Promise(()=>{}));
+    assert.equal(answer.status,'uncertain');
+    await ledger.close();
+    const again=await openTeslaMonCommandLedger({dir,timeoutMs:50});
+    assert.equal(again.quarantined,true);
+    let effects=0;
+    const blocked=await again.run(command(),async()=>{effects++;return {status:'observed'};});
+    assert.equal(blocked.code,'unreconciled_prior_mutation');
+    assert.equal(effects,0);
+    assert.equal((await again.run(c,async()=>{effects++;})).code,'duplicate_suppressed');
+    await again.close();
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
