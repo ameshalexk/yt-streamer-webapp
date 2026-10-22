@@ -16,9 +16,24 @@
   const clockEvidence = new Map();
   let controlTail = Promise.resolve();
   const number = (value, fallback = 0) => Number.isFinite(value) ? Math.max(0, value) : fallback;
+  function audioObservation(mode, active, audio, video) {
+    if (!active) return "idle";
+    const element = mode === "native_video" ? video
+      : ["mjpeg", "buffered_mjpeg", "webcodecs"].includes(mode) ? audio : null;
+    if (!element) return mode === "webcodecs" ? "unknown" : "element_missing";
+    if (typeof element.paused !== "boolean") return "unknown";
+    if (element.paused === true) return "element_paused";
+    if (typeof element.muted !== "boolean") return "unknown";
+    if (element.muted === true) return "element_muted";
+    if (!Number.isFinite(element.readyState)) return "unknown";
+    if (element.readyState < 2) return "element_buffering";
+    // Media element state cannot prove that sound reached the vehicle speakers.
+    return "element_playing_output_unverified";
+  }
   function stateSnapshot() {
     const screen = document.querySelector("#screen");
     const video = document.querySelector("#video");
+    const audio = document.querySelector("#audio");
     const stats = activeCompat?.bufferedPlayer?.getStats?.();
     const active = Boolean(replayFn && screen?.classList.contains("playing"));
     const mode = screen?.classList.contains("cyberdash-mode") ? "webcodecs"
@@ -72,6 +87,8 @@
       mode, playback_phase, paused: active ? Boolean(playbackPaused) : true,
       position_seconds: active ? number(getStreamCurrentTime?.()) : 0,
       duration_seconds: active ? number(streamSeek?.duration) : 0,
+      audio_observation: audioObservation(mode, active, audio, video),
+      fullscreen_kind: globalThis.YTStreamerTeslaMonFullscreen?.kind?.() || 'none',
       rendered_frames: Number.isFinite(stats?.renderedFrames) ? stats.renderedFrames : null,
       observed_at: new Date().toISOString(),
     };
@@ -95,6 +112,19 @@
         creator: String(item.channelTitle || "").slice(0, 100),
         duration_seconds: Number.isFinite(item.duration) ? item.duration : null,
       })) } };
+    }
+    if (action === 'request_fullscreen' || action === 'exit_fullscreen') {
+      const hooks=globalThis.YTStreamerTeslaMonFullscreen;
+      if(!hooks?.kind)return {status:'unsupported',error:'fullscreen_unavailable'};
+      try{
+        if(action==='request_fullscreen')await hooks.enter();
+        else await hooks.exit();
+      }catch{return {status:'needs_user_gesture',state:stateSnapshot()};}
+      const newState=stateSnapshot();
+      const targetKind=action==='request_fullscreen'?
+        ['native','in_page'].includes(newState.fullscreen_kind):
+        newState.fullscreen_kind==='none';
+      return {status:targetKind?'completed':'needs_user_gesture',state:newState};
     }
     if (action === "play_media") {
       const item = results.get(args.media_id);

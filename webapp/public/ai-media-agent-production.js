@@ -6,7 +6,7 @@
   if (location.protocol !== 'https:' || location.hostname !== 'stream.ameshalex.com') return;
   const ENABLED_KEY='ytStreamerAiMediaOptInV1';
   const TAB_KEY='ytStreamerAiMediaTabV1';
-  const SUPPORTED=new Set(['get_player_state','search_media','play_media','pause','resume','stop']);
+  const SUPPORTED=new Set(['get_player_state','search_media','play_media','pause','resume','stop','request_fullscreen','exit_fullscreen']);
   const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const platform=/Tesla/i.test(navigator.userAgent)?'Tesla':/iPhone/i.test(navigator.userAgent)?'iPhone':/iPad/i.test(navigator.userAgent)?'iPad':'Desktop';
   let consent=false,tabKey=null;

@@ -167,3 +167,87 @@ test('signed HTTP bootstrap is required; tickets are single-use; unauthenticated
  assert.equal(relay.devices().length,1);
  registered.ws.close();
 });
+
+
+test('TeslaMon opt-in uses signed Access + exact registered WS tab, no implicit fallback or replay',async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'tm-access-integration-'));
+ const {server,setRelay}=testServer();
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ const port=server.address().port;
+ let relay;
+ try{
+   relay=await startProductionMediaRelay({
+     server,controlDir:dir,audience,jwksProvider:provider,enableTeslaMon:true
+   });
+   setRelay(relay);
+   const authorized={
+     method:'POST',headers:{
+       host:'stream.ameshalex.com',origin,
+       'sec-fetch-site':'same-origin',
+       'cf-access-jwt-assertion':jwt()
+     }
+   };
+   const invalid={
+     method:'POST',headers:{...authorized.headers,
+       'cf-access-jwt-assertion':jwt({aud:'wrong-audience'})}
+   };
+   await assert.rejects(()=>relay.teslamon.devices(invalid));
+   assert.equal(relay.teslamon.enabled,true);
+   const keyA=randomUUID(),keyB=randomUUID();
+   const a=await openBrowser(port,jwt(),keyA);
+   const b=await openBrowser(port,jwt(),keyB,{label:'Decoy browser'});
+   t.after(()=>{a.ws.terminate();b.ws.terminate();});
+   const sentA=[],sentB=[];
+   a.ws.on('message',raw=>{
+     const event=JSON.parse(String(raw));if(event.kind==='command')sentA.push(event.action);
+   });
+   b.ws.on('message',raw=>{
+     const event=JSON.parse(String(raw));if(event.kind==='command')sentB.push(event.action);
+   });
+   const devices=await relay.teslamon.devices(authorized);
+   assert.equal(devices.devices.length,2);
+   assert.equal(devices.selectedDeviceKey,null);
+   const unselected=await relay.teslamon.command(authorized,{tool:'pause',args:{}});
+   assert.notEqual(unselected.status,'observed');
+   assert.equal(sentA.length+sentB.length,0);
+   assert.equal((await relay.teslamon.select(authorized,keyA)).status,'selected');
+   const cancelled=new AbortController();cancelled.abort();
+   const cancelledResult=await relay.teslamon.command(authorized,
+     {tool:'search_and_play',args:{query:'Cancelled fixture'}},{signal:cancelled.signal});
+   assert.equal(cancelledResult.status,'cancelled');
+   assert.equal(sentA.length+sentB.length,0,'already cancelled HTTP command never reaches either tab');
+
+   const paused=await relay.teslamon.command(authorized,{tool:'pause',args:{}});
+   assert.equal(paused.status,'observed');
+   assert.equal(paused.playbackPhase,'paused');
+   const playing=await relay.teslamon.command(authorized,{tool:'resume',args:{}});
+   assert.equal(playing.status,'observed');
+   assert.equal(playing.playbackPhase,'playing');
+   assert.equal(sentB.length,0);
+   assert.deepEqual(sentA.slice(0,4),[
+     'pause','get_player_state','resume','get_player_state'
+   ]);
+   const selectedB=await relay.teslamon.select(authorized,keyB);
+   assert.equal(selectedB.status,'selected');
+   const bPaused=await relay.teslamon.command(authorized,{tool:'pause',args:{}});
+   assert.equal(bPaused.status,'observed');
+   assert.equal(sentB.length,2);
+   const played=await relay.teslamon.command(authorized,{
+     tool:'search_and_play',args:{query:'Sample video'}
+   });
+   assert.equal(played.status,'accepted');
+   assert.ok(sentB.includes('search_media'));
+   assert.ok(sentB.includes('play_media'));
+   // Revoke explicit browser availability and prove no queue/replay.
+   b.ws.close();
+   await eventually(()=>relay.devices().length===1);
+   const commandCount=sentA.length+sentB.length;
+   const stale=await relay.teslamon.command(authorized,{tool:'resume',args:{}});
+   assert.notEqual(stale.status,'observed');
+   assert.equal(sentA.length+sentB.length,commandCount);
+ }finally{
+   if(relay)await relay.close();
+   await new Promise(resolve=>server.close(resolve));
+   await fs.rm(dir,{recursive:true,force:true});
+ }
+});
