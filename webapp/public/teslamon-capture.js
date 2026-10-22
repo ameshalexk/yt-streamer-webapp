@@ -1,12 +1,16 @@
 const MAX_DURATION_MS = 20_000;
 const MAX_BYTES = 5 * 1024 * 1024;
-const STOP_WATCHDOG_MS = 1_000;
+const STOP_WATCHDOG_MS = 8_000;
 const MIME_TYPES = [
   'audio/webm;codecs=opus',
   'audio/webm',
   'audio/ogg;codecs=opus',
   'audio/mp4',
 ];
+// iOS Safari may append codec parameters to MIME labels or omit the
+// dataavailable chunk MIME. Compare the actual bounded container type.
+const containerType = raw => String(raw || '').split(';')[0].trim().toLowerCase();
+const CONTAINERS = new Set(['audio/webm', 'audio/ogg', 'audio/mp4']);
 
 /**
  * Create an explicitly started, in-memory audio capture lifecycle.
@@ -86,8 +90,10 @@ export function createTeslaMonCapture({
     state(session, 'stopping');
     if (active !== session) return;
     clearTimer(session, 'durationTimer');
-    stopTracks(session.stream);
-    session.stream = null;
+    // CRITICAL: stop the recorder BEFORE microphone tracks. Safari generates
+    // its last dataavailable chunk during recorder.stop(); prematurely ending
+    // tracks loses audio and may fire a MediaRecorder error. finish() owns
+    // track teardown after the recorder has emitted stop or timed out.
     if (session.recorder?.state === 'inactive') {
       finish(session, outcome);
       return;
@@ -112,7 +118,7 @@ export function createTeslaMonCapture({
     if (disposed || active) return false;
     if (!Number.isFinite(maxDurationMs) || maxDurationMs <= 0 || maxDurationMs > MAX_DURATION_MS ||
         !Number.isFinite(maxBytes) || maxBytes <= 0 || maxBytes > MAX_BYTES ||
-        !Number.isFinite(stopWatchdogMs) || stopWatchdogMs <= 0 || stopWatchdogMs > 5_000) {
+        !Number.isFinite(stopWatchdogMs) || stopWatchdogMs <= 0 || stopWatchdogMs > 10_000) {
       safeCallback(onError, new Error('Capture limits are outside the supported bounds'));
       return false;
     }
@@ -157,7 +163,8 @@ export function createTeslaMonCapture({
       session.recorder = new Recorder(stream, { mimeType });
       const recorder = session.recorder;
       const actualMimeType = String(recorder.mimeType || '').trim().toLowerCase();
-      if (!MIME_TYPES.includes(actualMimeType) || actualMimeType !== mimeType.toLowerCase()) {
+      if (actualMimeType && (!CONTAINERS.has(containerType(actualMimeType)) ||
+          containerType(actualMimeType) !== containerType(mimeType))) {
         throw new Error('Recorder selected an unsupported audio format');
       }
       recorder.addEventListener('dataavailable', event => {
@@ -165,7 +172,8 @@ export function createTeslaMonCapture({
         const chunk = event?.data;
         if (!chunk || chunk.size <= 0) return;
         const chunkType = String(chunk.type || '').trim().toLowerCase();
-        if (!chunkType || !MIME_TYPES.includes(chunkType) || chunkType !== session.mimeType.toLowerCase()) {
+        if (chunkType && (!CONTAINERS.has(containerType(chunkType)) ||
+            containerType(chunkType) !== containerType(session.mimeType))) {
           terminate(session, new Error('Recorder produced an unsupported audio format'));
           return;
         }

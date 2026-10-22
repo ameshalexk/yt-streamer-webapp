@@ -1,8 +1,9 @@
 import {interpretTeslaMon} from './teslamon-intent.js';
+import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261022-auto-fullscreen1';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 
-if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
+if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
   const pet=document.createElement('aside');
   pet.id='teslamonPet';
   pet.setAttribute('aria-label','TeslaMon playback assistant');
@@ -18,10 +19,9 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
     '<section class="tm-panel" id="tmPanel" hidden aria-label="TeslaMon controls">',
       '<div class="tm-head"><strong>TeslaMon</strong>',
         '<button id="tmClose" type="button" aria-label="Close">×</button></div>',
-      '<p id="tmState" role="status" aria-live="polite">Choose a connected player.</p>',
-      '<div class="tm-target"><label for="tmDevices">Playback browser</label>',
-        '<select id="tmDevices"><option value="">Choose connected browser</option></select>',
-        '<button id="tmRefresh" type="button" aria-label="Refresh browsers">↻</button></div>',
+      '<p id="tmState" role="status" aria-live="polite">Connecting to this tab…</p>',
+      '<div class="tm-target tm-self-target" aria-label="Playback target">',
+        '<span>Controls this browser tab only</span></div>',
       '<form id="tmForm"><label class="tm-visually-hidden" for="tmText">Command</label>',
         '<input id="tmText" type="text" autocomplete="off" maxlength="220"',
         ' placeholder="Play a video, pause, resume…" />',
@@ -37,17 +37,18 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
         '<button type="button" data-tm="exit_fullscreen">Exit fullscreen</button>',
       '</div>',
       '<div id="tmChoices" role="group" aria-label="Video results" hidden></div>',
-      '<p id="tmHelp">Enable AI playback in the existing YT Streamer panel',
-        ' on the browser you want to control. TeslaMon uses the same Cloudflare login.</p>',
+      '<p id="tmHelp">TeslaMon controls only this page. No remote tab selection,',
+        ' device pairing, or separate Cloudflare login is required.</p>',
     '</section>'
   ].join('');
   document.body.append(pet);
   const $=id=>pet.querySelector(id);
   const face=$('#tmFace'),handle=$('#tmHandle'),panel=$('#tmPanel'),
-    state=$('#tmState'),devices=$('#tmDevices'),mic=$('#tmMic'),
+    state=$('#tmState'),mic=$('#tmMic'),
     input=$('#tmText'),choices=$('#tmChoices'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
+  const localPlayer=createTeslaMonLocalPlayer();
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0;
 
@@ -55,7 +56,7 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
   }
   function clearChoices(){choices.replaceChildren();choices.hidden=true;}
-  function report(response){
+  function report(response,action){
     clearChoices();
     if(response?.status==='needs_selection'){
       const title=document.createElement('p');title.textContent='Choose a video:';
@@ -74,19 +75,32 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
     }
     const phase=response?.playbackPhase;
     if(response?.status==='observed'){
-      if(response.fullscreenMode==='in_page'||response.fullscreenMode==='native'){
-        status('Fullscreen enabled on selected browser.','ok');return;
+      if(action==='request_fullscreen'||action==='exit_fullscreen'){
+        status(response.fullscreenMode==='none'?'Fullscreen exited.':
+          'Fullscreen enabled in this tab.','ok');return;
       }
-      status(phase==='playing'?'Playing in selected browser':
-        phase==='paused'?'Paused':('Player state: '+(phase||'available')),'ok');
-    }else if(response?.status==='accepted')status('Command sent. Confirm playback on the player.');
+      const playback=phase==='playing'?'Playing in this tab':
+        phase==='paused'?'Paused':('Player state: '+(phase||'available'));
+      const fullscreen=response.fullscreenAttempt==='needs_user_gesture'?
+        ' Tap Fullscreen directly in this tab.':
+        response.fullscreenAttempt==='observed'?' Fullscreen enabled.':'';
+      status(playback+fullscreen,'ok');
+    }else if(response?.status==='accepted'){
+      status('Command sent. Confirm playback on the player.'+
+        (response.fullscreenAttempt==='needs_user_gesture'?
+          ' Tap Fullscreen directly in this tab.':''));
+    }
     else if(response?.status==='uncertain')status('Result uncertain. Check player before retrying.','warn');
-    else if(response?.status==='needs_user_gesture')status('Use the Fullscreen button in the selected browser.','warn');
-    else if(response?.status==='offline')status('Selected browser is offline. Reconnect and reselect it.','warn');
+    else if(response?.status==='needs_user_gesture')status('Tap Fullscreen directly in this tab.','warn');
+    else if(response?.status==='offline')status('This tab player is unavailable. Reload the page.','warn');
     else if(response?.status==='unsupported')status('Not supported by this player.','warn');
     else{
       const reasons={
-        local_stt_not_configured:'Local speech transcription is not configured.',
+        poweralx_worker_not_configured:'PowerALX transcription is not configured.',
+        poweralx_worker_unavailable:'PowerALX transcription is unavailable. Use typed commands.',
+        poweralx_transcription_failed:'PowerALX could not transcribe this clip. Try again.',
+        poweralx_timeout_or_cancelled:'PowerALX took too long. Try a shorter voice command.',
+        poweralx_result_incomplete:'The transcript was incomplete. Please try again.',
         signed_access_required:'Open YT Streamer through your Cloudflare sign-in.',
         teslamon_unavailable:'TeslaMon is not enabled on this server.',
         unreconciled_prior_mutation:'An earlier action is uncertain. Reconcile before sending another.',
@@ -117,13 +131,13 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
   }
   async function issue(intent){
     if(busy){status('Wait for the current command.','warn');return;}
-    if(!enabled||!selected){status('Select a connected browser first.','warn');return;}
+    if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn');return;}
     busy=true;const epoch=++generation;
     status('Sending command…');
-    try{const result=await post('/api/teslamon/command',intent);
-      if(epoch===generation)report(result);
+    try{const result=await localPlayer.run(intent);
+      if(epoch===generation)report(result,intent.tool);
     }catch{
-      if(epoch===generation)status('Network error. Playback outcome is uncertain.','warn');
+      if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
     }finally{busy=false;}
   }
   async function interpret(text){
@@ -150,58 +164,51 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
     if(speech){speech.cancelled=true;try{speech.abort();}catch{}speech=null;}
   }
   async function refresh(){
+    enabled=localPlayer.ready;
+    // The current document's player is the only playback target.
+    selected=enabled?'this_tab':null;
+    if(!enabled){
+      mic.disabled=true;
+      status('This page player is loading. Refresh the page if it stays unavailable.','warn');
+      return;
+    }
+    status('Ready to control this browser tab.','ok');
+    // These are optional signed server capabilities, never remote targeting.
     try{
-      const result=await post('/api/teslamon/devices',{});
-      enabled=result.enabled===true;
-      if(!enabled){
-        selected=null;devices.replaceChildren(new Option('No available players',''));
-        devices.disabled=true;mic.disabled=true;
-        report(result);return;
-      }
-      devices.disabled=false;
-      devices.replaceChildren(new Option('Choose connected browser',''),
-        ...(result.devices||[]).map(v=>new Option(v.label,v.deviceKey)));
-      const target=result.selectedDeviceKey;
-      if((result.devices||[]).some(v=>v.deviceKey===target)){
-        devices.value=target;selected=target;
-      }else{devices.value='';selected=null;}
+      const result=await post('/api/teslamon/capabilities',{});
       modelLabel.hidden=result.modelConfigured!==true;
       if(modelLabel.hidden)modelOptIn.checked=false;
       if(result.localTranscription)setupRecorder();
-      else setupNativeSpeech();
-      status(!result.devices?.length?'Enable AI playback on a browser and refresh.':
-        selected?'Ready. Speak or type a playback command.':
-        'Choose which connected browser to control.',selected?'ok':'info');
-    }catch{status('TeslaMon connection unavailable. Check network and sign-in.','warn');}
-  }
-  async function choose(){
-    cancelMic();clearChoices();selected=null;
-    const deviceKey=devices.value;
-    if(!deviceKey){status('Choose a browser.');return;}
-    try{
-      const result=await post('/api/teslamon/select',{deviceKey});
-      if(result.status==='selected'){
-        selected=deviceKey;status('Browser selected. Ready.','ok');
-      }else{report(result);void refresh();}
-    }catch{status('Selection request failed.','warn');}
+      else {mic.disabled=true;mic.textContent='PowerALX unavailable';
+        status('PowerALX transcription is not configured. Use typed commands.','warn');}
+    }catch{
+      modelLabel.hidden=true;
+      modelOptIn.checked=false;
+      mic.disabled=true;mic.textContent='Voice unavailable';
+      status('Could not verify the PowerALX voice service. Use typed commands.','warn');
+    }
   }
   function setupRecorder(){
     if(speechMode==='local')return;
     if(speech){speech.cancelled=true;try{speech.abort();}catch{}speech=null;}
     speechMode='local';
     if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){
-      speechMode=null;setupNativeSpeech();return;
+      speechMode=null;mic.disabled=true;mic.textContent='Voice unavailable';
+      status('Microphone capture is unsupported here. Use typed commands.','warn');return;
     }
     mic.disabled=false;mic.textContent='Hold to talk';
     const capture=createTeslaMonCapture({
       getUserMedia:c=>navigator.mediaDevices.getUserMedia(c),
       MediaRecorder:window.MediaRecorder,
       onState:value=>{
-        if(value.state==='recording')status('Listening… release to transcribe.','ok');
-        else if(value.state==='stopping')status('Transcribing locally…');
+        if(value.state==='requesting')status('Requesting microphone access…');
+        else if(value.state==='recording')status('Recording audio… release to finish.','ok');
+        else if(value.state==='stopping')status('Finishing recording…');
+        else if(value.state==='empty')status('No audio was captured. Hold the mic a little longer.','warn');
       },
       onAudio:blob=>{
-        if(!selected)return;
+        if(!localPlayer.ready)return;
+        status('Audio captured. Sending to PowerALX…');
         const before=selected,epoch=micEpoch;
         void(async()=>{
           try{
@@ -213,46 +220,31 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
           }catch{status('Transcription failed. Type a command.','warn');}
         })();
       },
-      onError:()=>status('Microphone error. Type a command or retry.','warn')
+      onError:error=>{
+        const detail=String(error?.message||'').toLowerCase();
+        const code=String(error?.name||'').toLowerCase();
+        if(code==='notallowederror'||detail.includes('permission')||detail.includes('denied'))
+          status('Microphone permission was denied or interrupted. Check browser permissions.','warn');
+        else if(detail.includes('stop')||detail.includes('recorder'))
+          status('iPhone could not finish the recording. Try holding the mic for 2–3 seconds.','warn');
+        else if(detail.includes('format'))
+          status('This browser cannot record a supported audio format.','warn');
+        else status('Audio capture failed before sending to PowerALX. Try again.','warn');
+      }
     });
     captureBinding?.dispose();
     captureBinding=bindTeslaMonCaptureButton({button:mic,capture,document,window,
-      onError:()=>status('Microphone unavailable.','warn')});
-  }
-  function setupNativeSpeech(){
-    if(speechMode==='native')return;
-    if(captureBinding){captureBinding.dispose();captureBinding=null;}
-    speechMode='native';
-    const Engine=window.SpeechRecognition||window.webkitSpeechRecognition;
-    if(!Engine){
-      mic.disabled=true;mic.title='Speech input unsupported here. Type a command.';
-      return;
-    }
-    mic.disabled=false;mic.textContent='Tap to speak';
-    mic.addEventListener('click',()=>{
-      if(speechMode!=='native'||!selected)return;
-      if(speech){try{speech.stop();}catch{}return;}
-      let transcript='';
-      const before=selected,epoch=micEpoch;
-      const session=new Engine();speech=session;
-      session.lang='en-US';session.continuous=false;session.interimResults=false;
-      session.onresult=event=>{
-        transcript=event.results?.[0]?.[0]?.transcript?.trim()||'';
-      };
-      session.onerror=()=>status('Speech input failed. Type a command or retry.','warn');
-      session.onend=()=>{
-        if(speech===session)speech=null;
-        if(session.cancelled)return;
-        if(transcript&&before===selected&&epoch===micEpoch&&opened)interpret(transcript);
-        else status('No speech recognized. Try again or type.','warn');
-      };
-      try{session.start();status('Listening… tap again to stop.','ok');}
-      catch{speech=null;status('Speech recognition unavailable.','warn');}
-    });
+      onError:error=>{
+        const name=String(error?.name||'').toLowerCase();
+        if(name==='notallowederror')status('Microphone access was blocked by the browser.','warn');
+        else status('Microphone input was interrupted. Try holding to record again.','warn');
+      }});
   }
   function alignPanel(){
     const bounds=pet.getBoundingClientRect();
-    const width=Math.min(336,Math.max(200,innerWidth-16));
+    // Mobile CSS uses a wider panel than desktop. Measure the actual box to
+    // keep it within viewport safe edges after opening, dragging or rotation.
+    const width=panel.getBoundingClientRect().width||Math.min(336,Math.max(200,innerWidth-16));
     const desired=bounds.right-width;
     const left=Math.max(8,Math.min(innerWidth-width-8,desired));
     panel.style.left=(left-bounds.left)+'px';
@@ -307,15 +299,14 @@ if(location.hostname==='stream.ameshalex.com'&&location.protocol==='https:'){
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
     cancelMic();face.focus();
   });
-  $('#tmRefresh').addEventListener('click',()=>void refresh());
-  devices.addEventListener('change',()=>void choose());
+  // Only the current document can receive TeslaMon playback commands.
   $('#tmForm').addEventListener('submit',event=>{
-    event.preventDefault();interpret(input.value);
+    event.preventDefault();cancelMic();interpret(input.value);
   });
   pet.querySelectorAll('[data-tm]').forEach(button=>
-    button.addEventListener('click',()=>void issue({
+    button.addEventListener('click',()=>{cancelMic();return void issue({
       tool:button.dataset.tm,args:{}
-    })));
+    });}));
   document.addEventListener('visibilitychange',()=>{
     if(document.hidden)cancelMic();
     else if(opened)void refresh();

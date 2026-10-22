@@ -6,7 +6,9 @@ const plain=x=>x!==null&&typeof x==='object'&&!Array.isArray(x)&&
 const keys=(obj,accepted)=>Object.keys(obj).every(x=>accepted.includes(x));
 const name=(v,n=128)=>typeof v==='string'&&v.length>0&&v.length<=n&&!CONTROL.test(v);
 const deny=code=>Object.freeze({ok:false,error:code});
-export const TESLAMON_MAC_ORIGIN='https://stream.ameshalex.com';
+// Stage is a fixed, explicit alternate origin; never trust an arbitrary request Host.
+export const TESLAMON_MAC_ORIGIN=process.env.YT_TESLAMON_PUBLIC_ORIGIN==='https://teslamon-stage.ameshalex.com'?
+  'https://teslamon-stage.ameshalex.com':'https://stream.ameshalex.com';
 export const TESLAMON_TOOLS=Object.freeze([
   'search_and_play','pause','resume','get_playback_state','request_fullscreen','exit_fullscreen'
 ]);

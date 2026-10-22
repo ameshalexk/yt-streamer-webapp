@@ -41,3 +41,5 @@
 #teslamonPet .tm-visually-hidden{position:absolute!important;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden}
 @media(max-width:420px){#teslamonPet{bottom:calc(80px + env(safe-area-inset-bottom));right:8px}#teslamonPet .tm-panel{right:0;width:calc(100vw - 16px)}}
 @media(prefers-reduced-motion:reduce){#teslamonPet #tmFace{transition:none}}
+/* Local-only TeslaMon has one immutable target: the current page. */
+#teslamonPet .tm-self-target{display:block;border:1px solid #52768b;border-radius:8px;padding:9px 11px;margin-bottom:12px;background:#203b4a;color:#bfe9d7;font-weight:600}

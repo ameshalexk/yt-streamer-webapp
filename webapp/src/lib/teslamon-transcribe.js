@@ -1,78 +1,98 @@
-// Local speech-to-text adapter: no cloud transcription provider or retained audio.
-// Disabled until TESLAMON_WHISPER_MODEL points to an existing local GGML model.
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
+// Lightweight Mac -> existing PowerALX Life Recorder worker transport.
+// NEVER loads/downloads a speech model or runs Whisper/ffmpeg transcription on
+// the Mac. Existing release phase1-20260912-b runs only on the Windows GPU PC.
 import {spawn} from 'node:child_process';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 const MAX_BYTES=5*1024*1024;
-const MIME=new Map([
-  ['audio/webm','.webm'],['audio/ogg','.ogg'],['audio/mp4','.m4a']
-]);
-const abortable=(bin,args,{signal,timeoutMs=25000}={})=>
-  new Promise((resolve,reject)=>{
+const TYPES=new Set(['audio/webm','audio/mp4','audio/ogg']);
+const helper=fileURLToPath(new URL('./teslamon-poweralx-bridge.py',import.meta.url));
+const failed=(code,status='failed')=>({status,code});
+const BINARY=/^(\/[A-Za-z0-9_.@+-]+)+$/;
+const ALIAS=/^[A-Za-z0-9][A-Za-z0-9_.-]{0,59}$/;
+const RELEASE=/^[A-Za-z0-9][A-Za-z0-9_.-]{0,75}$/;
+export function createTeslaMonTranscriber({
+  workerRoot=process.env.TESLAMON_POWERALX_WORKER_ROOT,
+  release=process.env.TESLAMON_POWERALX_WORKER_RELEASE,
+  host=process.env.TESLAMON_POWERALX_SSH_ALIAS||'poweralx',
+  python=process.env.TESLAMON_POWERALX_PYTHON||'/usr/bin/python3',
+  timeoutMs=125000,runner
+}={}){
+  // Disabled in staging unless existing worker explicitly configured.
+  // Never fall back to Mac models or to any cloud ASR.
+  const available=typeof workerRoot==='string'&&workerRoot.startsWith('C:\\')&&
+    /^C:\\[A-Za-z0-9_ .\\-]+$/i.test(workerRoot)&&
+    RELEASE.test(release||'')&&ALIAS.test(host)&&BINARY.test(python)&&
+    Number.isSafeInteger(timeoutMs)&&timeoutMs>=1000&&timeoutMs<=180000;
+  let busy=false;
+  const doRun=runner||((bytes,mime,{signal}={})=>new Promise(resolve=>{
     const controller=new AbortController();
-    let timed=false;
-    const timer=setTimeout(()=>{timed=true;controller.abort();},timeoutMs);
-    let finished=false;
-    const proc=spawn(bin,args,{signal:controller.signal,
-      stdio:['ignore','ignore','pipe'],env:{...process.env}});
-    let stderr='';
     const abort=()=>controller.abort();
     signal?.addEventListener('abort',abort,{once:true});
-    proc.stderr.on('data',b=>{if(stderr.length<1000)stderr+=String(b).slice(0,200);});
-    const done=err=>{
-      if(finished)return;finished=true;clearTimeout(timer);
+    const timer=setTimeout(abort,timeoutMs);
+    let settled=false;
+    let output='',stderrBytes=0;
+    const done=result=>{
+      if(settled)return;settled=true;clearTimeout(timer);
       signal?.removeEventListener('abort',abort);
-      if(err)reject(err);else resolve();
+      resolve(result);
     };
-    proc.on('error',ex=>done(ex));
-    proc.on('exit',code=>done(code===0?null:
-      Error(timed?'transcription_timeout':'transcription_command_failed')));
-  });
-export function createTeslaMonTranscriber({
-  model=process.env.TESLAMON_WHISPER_MODEL,
-  ffmpeg=process.env.TESLAMON_FFMPEG||'ffmpeg',
-  whisper=process.env.TESLAMON_WHISPER_BINARY||'whisper-cli',
-  run=abortable
-}={}){
-  let busy=false;
-  const available=typeof model==='string'&&path.isAbsolute(model);
+    let child;
+    try{
+      child=spawn(python,[helper,'--mime',mime,'--worker-root',workerRoot,
+        '--release',release,'--ssh-host',host],
+        {stdio:['pipe','pipe','pipe'],signal:controller.signal,
+          env:{PATH:process.env.PATH||'/usr/bin:/bin:/opt/homebrew/bin',
+            HOME:process.env.HOME||'',PYTHONUTF8:'1'}});
+    }catch{
+      done(failed('poweralx_worker_unavailable'));return;
+    }
+    child.stdout.on('data',d=>{
+      output+=String(d);
+      if(output.length>3000)abort();
+    });
+    child.stderr.on('data',d=>{stderrBytes+=d.length;if(stderrBytes>2048)abort();});
+    child.on('error',()=>done(failed('poweralx_worker_unavailable','unavailable')));
+    child.on('exit',code=>{
+      if(settled)return;
+      if(controller.signal.aborted)
+        return done(failed('poweralx_timeout_or_cancelled','unavailable'));
+      if(code!==0)return done(failed('poweralx_transcription_failed'));
+      try{
+        const reply=JSON.parse(output);
+        if(reply?.status==='ok'&&typeof reply.text==='string'&&
+          reply.text.length>0&&reply.text.length<=220)
+          return done({status:'ok',text:reply.text});
+        const code=typeof reply?.code==='string'&&
+          /^[a-z_]{1,55}$/.test(reply.code)?reply.code:'poweralx_transcription_failed';
+        return done(failed(code,reply?.status==='unavailable'?'unavailable':'failed'));
+      }catch{return done(failed('invalid_poweralx_response'));}
+    });
+    // Do not buffer media into shell arguments, log files, or environment.
+    child.stdin.on('error',()=>{});
+    child.stdin.end(bytes);
+  }));
   return Object.freeze({
     available,
+    engine:available?'existing_poweralx_worker':'disabled',
     async transcribe(data,contentType,{signal}={}){
-      if(!available)return {status:'unavailable',code:'local_stt_not_configured'};
+      if(!available)return failed('poweralx_worker_not_configured','unavailable');
       const mime=String(contentType||'').split(';')[0].trim().toLowerCase();
-      const ext=MIME.get(mime);
-      if(!ext||!Buffer.isBuffer(data)||data.length<128||data.length>MAX_BYTES)
-        return {status:'failed',code:'invalid_audio'};
-      if(busy)return {status:'failed',code:'speech_transcriber_busy'};
+      if(!TYPES.has(mime)||!Buffer.isBuffer(data)||data.length<128||
+        data.length>MAX_BYTES)return failed('invalid_audio');
+      if(signal?.aborted)return failed('request_cancelled');
+      if(busy)return failed('speech_transcriber_busy');
       busy=true;
-      let dir=null;
       try{
-        const stat=await fs.stat(model);
-        if(!stat.isFile()||stat.size<100000)return {status:'unavailable',code:'whisper_model_unavailable'};
-        dir=await fs.mkdtemp(path.join(os.tmpdir(),'teslamon-stt-'));
-        await fs.chmod(dir,0o700);
-        const input=path.join(dir,'recording'+ext);
-        const wav=path.join(dir,'converted.wav');
-        const output=path.join(dir,'result');
-        await fs.writeFile(input,data,{mode:0o600,flag:'wx'});
-        await run(ffmpeg,['-nostdin','-hide_banner','-loglevel','error',
-          '-y','-i',input,'-vn','-ac','1','-ar','16000','-t','21',wav],
-          {signal,timeoutMs:15000});
-        await run(whisper,['-m',model,'-f',wav,'-nt','-otxt','-of',output],
-          {signal,timeoutMs:40000});
-        const transcript=(await fs.readFile(output+'.txt','utf8'))
-          .replace(/\[[^\]]{1,80}\]/g,' ').replace(/\s+/g,' ').trim().slice(0,220);
-        if(!transcript)return {status:'failed',code:'no_speech_detected'};
-        return {status:'ok',text:transcript};
-      }catch{
-        return {status:'failed',code:signal?.aborted?
-          'transcription_cancelled':'transcription_unavailable'};
-      }finally{
-        if(dir)await fs.rm(dir,{recursive:true,force:true}).catch(()=>{});
-        busy=false;
-      }
+        const reply=await doRun(data,mime,{signal});
+        if(reply?.status==='ok'&&typeof reply.text==='string'&&reply.text.length<=220)
+          return {status:'ok',text:reply.text};
+        return {status:['failed','unavailable'].includes(reply?.status)?
+          reply.status:'failed',
+          code:/^[a-z_]{1,55}$/.test(reply?.code||'')?
+            reply.code:'poweralx_transcription_failed'};
+      }catch{return failed('poweralx_transcription_failed');}
+      finally{busy=false;}
     }
   });
 }

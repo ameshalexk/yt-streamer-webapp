@@ -5,7 +5,7 @@
   "use strict";
   const params = new URLSearchParams(location.search);
   // Both clients remain localhost-only. Neither mode is enabled by default.
-  if (location.hostname !== "stream.ameshalex.com" &&
+  if (!["stream.ameshalex.com","teslamon-stage.ameshalex.com"].includes(location.hostname) &&
       (!(params.has("ai_agent_dev") || params.has("ai_agent_trusted_dev")) ||
       !["127.0.0.1", "localhost"].includes(location.hostname))) return;
 

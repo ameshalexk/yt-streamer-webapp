@@ -119,6 +119,13 @@ export function bindTeslaMonCaptureButton({ button, capture, document, window, o
     invoke('cancel');
   }
 
+  // Safari may blur the *button* immediately after lifting a finger while
+  // MediaRecorder.stop() is flushing its last chunk. That blur must NOT
+  // discard the just-released recording. Window blur/page hide still cancel.
+  function onButtonBlur() {
+    if (held) cancelHeld();
+  }
+
   const listeners = [
     [button, 'pointerdown', onPointerDown],
     [button, 'pointerup', onPointerUp],
@@ -126,7 +133,7 @@ export function bindTeslaMonCaptureButton({ button, capture, document, window, o
     [button, 'lostpointercapture', onLostPointerCapture],
     [button, 'keydown', onKeyDown],
     [button, 'keyup', onKeyUp],
-    [button, 'blur', onBlur],
+    [button, 'blur', onButtonBlur],
     [document, 'visibilitychange', onVisibilityChange],
     [window, 'blur', onBlur],
     [window, 'pagehide', onBlur],

@@ -77,7 +77,10 @@ app.use((req, res, next) => {
 });
 
 const SERVER_STARTED_AT = Date.now();
-const RELEASE_REVISION = await readReleaseRevision().catch((error) => {
+const STAGE_SHA=(process.env.YT_TESLAMON_STAGING==='1'&&
+  /^[a-f0-9]{40}$/i.test(process.env.YT_TESLAMON_STAGING_SHA||''))?
+  process.env.YT_TESLAMON_STAGING_SHA.toLowerCase():null;
+const RELEASE_REVISION = STAGE_SHA || await readReleaseRevision().catch((error) => {
   console.error("[release-info]", error.message);
   return null;
 });
@@ -2263,19 +2266,36 @@ app.post('/api/ai-agent/bootstrap',async(req,res)=>{
   catch{return res.status(401).json({error:'signed_access_required'});}
 });
 
+// In same-tab mode the remote-selection/controller HTTP routes are disabled.
+const teslamonSelfTabOnly=process.env.YT_TESLAMON_SELF_TAB_ONLY==='1';
 // TeslaMon: same-site, opt-in signed Access controller. These authenticated
 // endpoints never accept device IDs in command payloads or a second login.
 // Disabled by default; the HA host returns unavailable until a signed Mac
 // coordinator is explicitly deployed and reviewed.
 const teslamonSTT=createTeslaMonTranscriber();
-const teslamonModel=createTeslaMonModelPlanner();
+const teslamonModel=process.env.YT_TESLAMON_DISABLE_MODEL==='1'?
+  Object.freeze({available:false,async interpret(){return {status:'unavailable',code:'model_disabled'};}}):
+  createTeslaMonModelPlanner();
 function teslamonFail(res,error){
   const unavailable=String(error?.message||'').includes('teslamon_disabled');
   return res.status(unavailable?503:401)
     .json({status:'failed',code:unavailable?'teslamon_unavailable':'signed_access_required'});
 }
+app.post('/api/teslamon/capabilities',async(req,res)=>{
+  res.set('Cache-Control','private, no-store');
+  if(!isSameOriginRequest(req))
+    return res.status(403).json({status:'failed',code:'wrong_origin'});
+  if(!productionMediaRelay?.teslamon.enabled)
+    return res.status(503).json({status:'unavailable',code:'teslamon_unavailable'});
+  try{
+    await productionMediaRelay.teslamon.authenticate(req);
+    return res.json({status:'ok',localTranscription:teslamonSTT.available,
+      modelConfigured:teslamonModel.available,selfTabOnly:teslamonSelfTabOnly});
+  }catch(ex){return teslamonFail(res,ex);}
+});
 app.post('/api/teslamon/devices',async(req,res)=>{
   res.set('Cache-Control','private, no-store');
+  if(teslamonSelfTabOnly)return res.status(410).json({status:'failed',code:'remote_targeting_disabled'});
   if(!isSameOriginRequest(req))return res.status(403).json({status:'failed',code:'wrong_origin'});
   if(!productionMediaRelay?.teslamon.enabled)
     return res.status(503).json({status:'unavailable',code:'teslamon_unavailable'});
@@ -2287,6 +2307,7 @@ app.post('/api/teslamon/devices',async(req,res)=>{
 });
 app.post('/api/teslamon/select',async(req,res)=>{
   res.set('Cache-Control','private, no-store');
+  if(teslamonSelfTabOnly)return res.status(410).json({status:'failed',code:'remote_targeting_disabled'});
   if(!isSameOriginRequest(req))return res.status(403).json({status:'failed',code:'wrong_origin'});
   if(!productionMediaRelay?.teslamon.enabled)
     return res.status(503).json({status:'unavailable',code:'teslamon_unavailable'});
@@ -2297,6 +2318,7 @@ app.post('/api/teslamon/select',async(req,res)=>{
 });
 app.post('/api/teslamon/command',async(req,res)=>{
   res.set('Cache-Control','private, no-store');
+  if(teslamonSelfTabOnly)return res.status(410).json({status:'failed',code:'remote_targeting_disabled'});
   if(!isSameOriginRequest(req))return res.status(403).json({status:'failed',code:'wrong_origin'});
   if(!productionMediaRelay?.teslamon.enabled)
     return res.status(503).json({status:'unavailable',code:'teslamon_unavailable'});
@@ -2360,7 +2382,8 @@ await Promise.all([
 ]);
 
 httpServer = app.listen(config.port, config.host, () => {
-  apneBackgroundCheck.start();
+  // Staging has no need to crawl third-party APNE catalogs in the background.
+  if(process.env.YT_TESLAMON_STAGING!=='1')apneBackgroundCheck.start();
   console.log(`\n  YT Streamer webapp`);
   console.log(`  → http://${config.host}:${config.port}`);
   console.log(`  → library: ${config.libraryDir}`);
@@ -2377,6 +2400,8 @@ if(process.env.YT_AI_AGENT_ACCESS_AUDIENCE && process.env.YT_AI_AGENT_CONTROL_DI
       audience:process.env.YT_AI_AGENT_ACCESS_AUDIENCE,
       allowedSubjects:(process.env.YT_AI_AGENT_ALLOWED_SUBJECTS || '').split(',').map(x=>x.trim()).filter(Boolean),
       enableTeslaMon:process.env.YT_TESLAMON_ENABLED === '1',
+      origin:process.env.YT_TESLAMON_PUBLIC_ORIGIN==='https://teslamon-stage.ameshalex.com'?
+        'https://teslamon-stage.ameshalex.com':'https://stream.ameshalex.com',
     });
     console.log('[ai-media] private Mac Control bridge enabled');
     for (const signal of ['SIGTERM','SIGINT']) process.once(signal,()=>{
