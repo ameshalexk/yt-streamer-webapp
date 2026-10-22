@@ -42,3 +42,17 @@ Automated safety coverage: signed bootstrap, wrong audience/origin, tokenless WS
 ## 2026-10-22 Cloudflare reauthentication UI hotfix
 
 The existing AI panel has a visible **Sign in again** link even when AI is off, connecting, or repeatedly reconnecting. It navigates the current tab to the same **Access-protected** YT Streamer root at `/?ai_access_signin=1`; Cloudflare displays OTP when a new session is needed and otherwise reuses the valid session. This does **not** log out other Access applications or invent/bypass a Cloudflare login endpoint. Browser AJAX bootstrap now sets `X-Requested-With: XMLHttpRequest` (per Cloudflare's documented 401 response guidance), rejects invisible cross-origin redirects and shows direct sign-in instructions for authentication, redirect and WS errors. The script cache-bust changes to `20261022-ai-reauth-ui1`. No Cloudflare DNS, tunnel, Access policy or backend auth settings change.
+
+## 2026-10-22: Single existing Cloudflare Access session hotfix (operator declined testing)
+
+User reports that signing in to YT Streamer still triggered a second Cloudflare OTP, and the former **Sign in again** link merely refreshed the page. Inspecting the existing implementation revealed that the private AI bootstrap rejected signed requests if Cloudflare's edge-injected Access assertion and HttpOnly app cookie were not byte-identical. Cloudflare may legitimately refresh either JWT independently. The AI flow now trusts the **cryptographically verified edge-injected Access assertion** (with a signed cookie fallback only when the assertion is absent) without comparing token strings. It also accepts a signed provider-issued session with up to 30-day JWT validity while still enforcing pinned issuer, exact audience, subject, signature and current expiry; unrelated remote authorizers retain the original 24-hour maximum.
+
+Removed the ineffective `/?ai_access_signin=1` **Sign in again** link. A **Reconnect AI** button now cancels its in-page socket/pairing attempt and retries using the already-authenticated browser session, without navigating the webpage or displaying a new OTP. Authentication failures no longer instruct the owner to log in a second time. New cache-busted script version `20261022-reuse-existing-access1`. Existing permission/opt-in still required, no Cloudflare protection changes, no new login or public control endpoint.
+
+**Do not claim the real-browser issue verified resolved.** The user explicitly requested no tests; this release was statically reviewed and deployed without executing test suites, browser checks or live request probes. Previous known-good Mac runtime remains backed up for rollback.
+
+## 2026-10-22: Restore the existing one-login Cloudflare reauthentication path
+
+After the owner reported that **Reconnect AI** only retried the rejected bootstrap, restore the existing **Sign in again** link from the prior UI. It performs a top-level request to the same Access-protected site (`/?ai_access_signin=1`); Cloudflare reuses a valid session and prompts once only when it needs a fresh login. The stored AI opt-in survives the page reload, so the normal client reconnects through that same site session. No AI-specific login, Cloudflare policy change, or new authentication endpoint is introduced. The client asset query version is `20261022-access-reauth-restore1`.
+
+This is a source/PR update only. Tests and real-browser verification were not run. Production deployment and iPhone acceptance remain pending.

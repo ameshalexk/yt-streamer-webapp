@@ -60,7 +60,10 @@ export class TrustedBrowserRegistrationFlow {
     const header=h["cf-access-jwt-assertion"];
     const cookie=cookieJwt(h.cookie);
     if(header!=null&&(typeof header!=="string"||!header))deny();
-    if(header&&cookie&&header!==cookie)deny();
+    // Cloudflare may rotate/refresh its edge assertion independently of the
+    // browser's HttpOnly application cookie. They are not byte-identical by
+    // contract. Prefer the edge's assertion when available; never downgrade
+    // a present but invalid assertion to a cookie supplied by the browser.
     const jwt=header||cookie;
     if(!jwt)deny();
     let identity,expiresAt;
@@ -68,6 +71,10 @@ export class TrustedBrowserRegistrationFlow {
       let jwks=await this.#jwks.get();
       const verifyCurrent=keys=>verifyAccessJwt(jwt,{jwks:keys,
         issuer:this.#jwks.issuer,audience:this.#audience,
+        // The Access application can issue valid longer-lived sessions.
+        // Always verify signature, issuer, audience, sub, iat, nbf and exp;
+        // do not reinterpret an Access policy of >24h as a login failure.
+        maxTokenLifetimeSeconds:30*86400,
         nowSeconds:Math.floor(this.#now()/1000)});
       try{
         identity=verifyCurrent(jwks);
