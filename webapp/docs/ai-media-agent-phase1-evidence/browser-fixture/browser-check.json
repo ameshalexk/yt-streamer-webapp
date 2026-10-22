@@ -1,0 +1,830 @@
+{
+  "tested_at": "2026-10-22T02:31:51.815Z",
+  "browser": "Google Chrome 155.0.8059.85",
+  "browser_mode": "headless real Chrome via Playwright; synthetic local media fixture; no real iPhone Safari",
+  "player": "existing YT Streamer buffered MJPEG player",
+  "selected_targets": {
+    "classic": "2998fa1c-f91c-4b82-9380-abf6c26b3cc2",
+    "experimental": "47032a91-2412-41fb-8d62-f73ada50ce27",
+    "legacy_mjpeg": "4bfdb807-1e38-4849-adaa-8e075d4d0a7f",
+    "unselected_decoy": "8f7371cf-e9bf-4657-83d2-ba278f6caa93"
+  },
+  "flows": {
+    "classic": {
+      "resultCount": 1,
+      "play": "observed playing",
+      "pause": "observed paused",
+      "resume": "observed playing with frame progression",
+      "stop": "observed idle"
+    },
+    "experimental": {
+      "resultCount": 1,
+      "play": "observed playing",
+      "pause": "observed paused",
+      "resume": "observed playing with frame progression",
+      "stop": "observed idle"
+    },
+    "legacy_mjpeg": {
+      "mode": "legacy MJPEG",
+      "play": "observed displayed frame",
+      "pause": "observed paused",
+      "resume": "observed displayed frame",
+      "stop": "observed idle"
+    },
+    "unselected_decoy": "remained idle"
+  },
+  "responsive": [
+    {
+      "mode": "classic",
+      "size": "320x740",
+      "viewport": 320,
+      "document": 320,
+      "body": 320,
+      "panel": {
+        "left": 12,
+        "right": 308,
+        "top": 70,
+        "bottom": 728,
+        "width": 296,
+        "height": 658
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "classic",
+      "size": "375x812",
+      "viewport": 375,
+      "document": 375,
+      "body": 375,
+      "panel": {
+        "left": 12,
+        "right": 363,
+        "top": 142,
+        "bottom": 800,
+        "width": 351,
+        "height": 658
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "classic",
+      "size": "390x844",
+      "viewport": 390,
+      "document": 390,
+      "body": 390,
+      "panel": {
+        "left": 18,
+        "right": 378,
+        "top": 174,
+        "bottom": 832,
+        "width": 360,
+        "height": 658
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "classic",
+      "size": "430x932",
+      "viewport": 430,
+      "document": 430,
+      "body": 430,
+      "panel": {
+        "left": 58,
+        "right": 418,
+        "top": 262,
+        "bottom": 920,
+        "width": 360,
+        "height": 658
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "classic",
+      "size": "iPad 1024x768",
+      "viewport": 1024,
+      "document": 1024,
+      "body": 1024,
+      "panel": {
+        "left": 652,
+        "right": 1012,
+        "top": 98,
+        "bottom": 756,
+        "width": 360,
+        "height": 658
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "classic",
+      "size": "mobile landscape 844x390",
+      "viewport": 844,
+      "document": 844,
+      "body": 844,
+      "panel": {
+        "left": 472,
+        "right": 832,
+        "top": 12,
+        "bottom": 378,
+        "width": 360,
+        "height": 366
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "experimental",
+      "size": "320x740",
+      "viewport": 320,
+      "document": 320,
+      "body": 320,
+      "panel": {
+        "left": 12,
+        "right": 308,
+        "top": 70,
+        "bottom": 728,
+        "width": 296,
+        "height": 658
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "experimental",
+      "size": "375x812",
+      "viewport": 375,
+      "document": 375,
+      "body": 375,
+      "panel": {
+        "left": 12,
+        "right": 363,
+        "top": 142,
+        "bottom": 800,
+        "width": 351,
+        "height": 658
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "experimental",
+      "size": "390x844",
+      "viewport": 390,
+      "document": 390,
+      "body": 390,
+      "panel": {
+        "left": 18,
+        "right": 378,
+        "top": 174,
+        "bottom": 832,
+        "width": 360,
+        "height": 658
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "experimental",
+      "size": "430x932",
+      "viewport": 430,
+      "document": 430,
+      "body": 430,
+      "panel": {
+        "left": 58,
+        "right": 418,
+        "top": 262,
+        "bottom": 920,
+        "width": 360,
+        "height": 658
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "experimental",
+      "size": "iPad 1024x768",
+      "viewport": 1024,
+      "document": 1024,
+      "body": 1024,
+      "panel": {
+        "left": 652,
+        "right": 1012,
+        "top": 98,
+        "bottom": 756,
+        "width": 360,
+        "height": 658
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    },
+    {
+      "mode": "experimental",
+      "size": "mobile landscape 844x390",
+      "viewport": 844,
+      "document": 844,
+      "body": 844,
+      "panel": {
+        "left": 472,
+        "right": 832,
+        "top": 12,
+        "bottom": 378,
+        "width": 360,
+        "height": 366
+      },
+      "touchTargets": [
+        {
+          "id": "",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRelay",
+          "height": 44
+        },
+        {
+          "id": "aiAgentPairing",
+          "height": 44
+        },
+        {
+          "id": "aiAgentLabel",
+          "height": 44
+        },
+        {
+          "id": "aiAgentConnect",
+          "height": 44
+        },
+        {
+          "id": "aiAgentOwner",
+          "height": 44
+        },
+        {
+          "id": "aiAgentRefresh",
+          "height": 44
+        },
+        {
+          "id": "aiAgentTarget",
+          "height": 44
+        },
+        {
+          "id": "aiAgentAction",
+          "height": 44
+        },
+        {
+          "id": "aiAgentArg",
+          "height": 44
+        },
+        {
+          "id": "aiAgentMedia",
+          "height": 44
+        },
+        {
+          "id": "aiAgentSend",
+          "height": 44
+        }
+      ],
+      "touchTargetMinimum": 44
+    }
+  ]
+}
