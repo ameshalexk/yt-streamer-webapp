@@ -25,6 +25,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       '<div class="tm-target"><label for="tmDevices">Playback browser</label>',
         '<select id="tmDevices"><option value="">Choose connected browser</option></select>',
         '<button id="tmRefresh" type="button" aria-label="Refresh browsers">↻</button></div>',
+      '<div id="tmTranscriptRow" hidden><p id="tmTranscript" aria-live="polite"></p>',
+        '<button id="tmEditTranscript" class="tm-choice" type="button">Edit transcript</button></div>',
       '<form id="tmForm"><label class="tm-visually-hidden" for="tmText">Command</label>',
         '<input id="tmText" type="text" autocomplete="off" maxlength="220"',
         ' placeholder="Play a video, pause, resume…" />',
@@ -58,13 +60,23 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     selectionBusy=false,selectionVersion=0,selectionQueue=Promise.resolve(),
     nativeSpeechEngine=null,nativeSpeechTimer=null,selectionInFlight=0,selectionDesired=null,
     selectionCleared=false;
-  let activeCapture=null;
+  let activeCapture=null,lastTranscript='';
   const pendingInputs=new Set();
   const lifecycle=createTeslaMonPetLifecycle();
 
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
   }
+  function rememberTranscript(text){
+    lastTranscript=String(text).slice(0,220);
+    $('#tmTranscript').textContent='Heard: '+lastTranscript;
+    $('#tmTranscriptRow').hidden=false;
+  }
+  $('#tmEditTranscript').addEventListener('click',()=>{
+    if(!lastTranscript)return;
+    input.value=lastTranscript;input.focus();
+    status('Edit the transcript, then press Send to issue a new command.');
+  });
   function syncCancel(){cancelButton.disabled=!pendingInputs.size&&!busy&&!modelBusy;}
   function clearChoices(){choices.replaceChildren();choices.hidden=true;}
   function report(response,tool){
@@ -283,7 +295,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         if(!opened)return;
         if(['requesting','recording','stopping'].includes(value.state))pendingInputs.add(capture);
         else pendingInputs.delete(capture);syncCancel();
-        if(value.state==='recording')status('Listening… release to transcribe.','ok');
+        if(value.state==='requesting')status('Waiting for microphone permission…');
+        else if(value.state==='recording')status('Listening… release to transcribe.','ok');
         else if(value.state==='stopping')status('Transcribing locally…');
       },
       onAudio:blob=>{
@@ -295,7 +308,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
             const reply=await post('/api/teslamon/transcribe',blob,blob.type,request.signal);
             if(!request.current()||before!==selected||epoch!==micEpoch||!opened)return;
             if(reply.status==='ok'&&typeof reply.text==='string'){
-              input.value=reply.text;interpret(reply.text);
+              rememberTranscript(reply.text);input.value=reply.text;interpret(reply.text);
             }else report(reply);
           }catch{if(request.current()&&before===selected&&epoch===micEpoch&&opened)
             status('Transcription failed. Type a command.','warn');}
@@ -336,7 +349,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         speech=null;
         if(nativeSpeechTimer!==null){clearTimeout(nativeSpeechTimer);nativeSpeechTimer=null;}
         pendingInputs.delete(session);syncCancel();
-        if(transcript&&before===selected&&epoch===micEpoch&&opened)interpret(transcript);
+        if(transcript&&before===selected&&epoch===micEpoch&&opened){rememberTranscript(transcript);interpret(transcript);}
         else if(before===selected&&epoch===micEpoch&&opened)status('No speech recognized. Try again or type.','warn');
       };
       try{
@@ -471,6 +484,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   window.addEventListener('pagehide',()=>{
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
     cancelMic();selected=null;enabled=false;lifecycle.cancelAll();
+    lastTranscript='';$('#tmTranscript').textContent='';$('#tmTranscriptRow').hidden=true;
     captureBinding?.dispose();captureBinding=null;speechMode=null;
     cancelNativeSpeech();
   });

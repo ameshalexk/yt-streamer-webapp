@@ -13,8 +13,12 @@ function jpegFixture() {
   return new Promise((resolve, reject) => {
     const child = spawn("ffmpeg", [
       "-hide_banner", "-loglevel", "error",
+      // Keep this tiny synthetic fixture from fanning out across every runner
+      // core while the full Node test suite is running in parallel.
+      "-filter_threads", "1",
       "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=1",
       "-frames:v", "1",
+      "-threads:v", "1",
       "-q:v", "7",
       "-f", "image2pipe",
       "-vcodec", "mjpeg",
@@ -22,12 +26,28 @@ function jpegFixture() {
     ], { stdio: ["ignore", "pipe", "pipe"] });
     const chunks = [];
     let stderr = "";
+    let settled = false;
+    const fixtureDeadline = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      reject(new Error("ffmpeg JPEG fixture did not finish within 10000 ms"));
+    }, 10_000);
     child.stdout.on("data", (chunk) => chunks.push(chunk));
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (code) => code === 0
-      ? resolve(Buffer.concat(chunks))
-      : reject(new Error(stderr || `ffmpeg exited ${code}`)));
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(fixtureDeadline);
+      reject(new Error(`ffmpeg JPEG fixture failed to start: ${error.message}`, { cause: error }));
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(fixtureDeadline);
+      if (code === 0) resolve(Buffer.concat(chunks));
+      else reject(new Error(`ffmpeg JPEG fixture exited ${code}: ${stderr || "no diagnostic output"}`));
+    });
   });
 }
 
@@ -37,7 +57,27 @@ function writePart(res, jpeg) {
   res.write("\r\n");
 }
 
-test("headless Chrome re-buffers after uneven delivery and remains bounded", { timeout: 30_000 }, async () => {
+async function closeWithin(label, operation, onTimeout) {
+  let timer;
+  const finished = await Promise.race([
+    Promise.resolve().then(operation).then(() => true, (error) => {
+      console.warn(`${label} cleanup failed: ${error.message}`);
+      return true;
+    }),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), 5_000);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (!finished) {
+    console.warn(`${label} cleanup exceeded 5000 ms; forcing it closed`);
+    void Promise.resolve().then(onTimeout).catch((error) => {
+      console.warn(`${label} forced cleanup failed: ${error.message}`);
+    });
+  }
+}
+
+test("headless Chrome re-buffers after uneven delivery and remains bounded", { timeout: 70_000 }, async () => {
   const [script, jpeg] = await Promise.all([
     readFile(new URL("../public/buffered-mjpeg.js", import.meta.url), "utf8"),
     jpegFixture(),
@@ -113,17 +153,34 @@ test("headless Chrome re-buffers after uneven delivery and remains bounded", { t
     </script>`);
   });
 
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
   let browser;
+  let browserServer;
   try {
-    browser = await chromium.launch({
-      executablePath: chrome,
-      headless: true,
-      args: ["--disable-gpu", "--autoplay-policy=no-user-gesture-required"],
+    await new Promise((resolve, reject) => {
+      const listenDeadline = setTimeout(() => reject(new Error("buffered MJPEG fixture server did not start within 5000 ms")), 5_000);
+      server.once("error", (error) => {
+        clearTimeout(listenDeadline);
+        reject(new Error(`buffered MJPEG fixture server failed to start: ${error.message}`, { cause: error }));
+      });
+      server.listen(0, "127.0.0.1", () => {
+        clearTimeout(listenDeadline);
+        resolve();
+      });
     });
+    const { port } = server.address();
+    try {
+      browserServer = await chromium.launchServer({
+        executablePath: chrome,
+        headless: true,
+        timeout: 20_000,
+        args: ["--disable-gpu", "--autoplay-policy=no-user-gesture-required"],
+      });
+    } catch (error) {
+      throw new Error(`headless Chrome launch failed: ${error.message}`, { cause: error });
+    }
+    browser = await chromium.connect(browserServer.wsEndpoint(), { timeout: 5_000 });
     const page = await browser.newPage();
-    await page.goto(`http://127.0.0.1:${port}/`);
+    await page.goto(`http://127.0.0.1:${port}/`, { timeout: 5_000 });
     await page.waitForFunction(() => window.done === true, null, { timeout: 20_000 });
     const result = await page.evaluate(() => ({
       states: window.states.map((item) => item.state),
@@ -142,7 +199,11 @@ test("headless Chrome re-buffers after uneven delivery and remains bounded", { t
     assert.equal(streamClosed, true);
   } finally {
     for (const timer of timers) clearTimeout(timer);
-    await browser?.close().catch(() => {});
-    await new Promise((resolve) => server.close(resolve));
+    if (browserServer) {
+      await closeWithin("Chrome", () => browserServer.close(), () => browserServer.kill());
+    }
+    const serverClosed = new Promise((resolve) => server.close(resolve));
+    server.closeAllConnections?.();
+    await closeWithin("buffered MJPEG fixture server", () => serverClosed, () => server.closeAllConnections?.());
   }
 });

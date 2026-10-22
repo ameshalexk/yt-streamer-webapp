@@ -43,3 +43,7 @@
 #teslamonPet .tm-visually-hidden{position:absolute!important;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden}
 @media(max-width:420px){#teslamonPet{bottom:calc(80px + var(--tm-safe-bottom));right:8px}#teslamonPet .tm-panel{right:0;width:calc(100vw - 16px)}}
 @media(prefers-reduced-motion:reduce){#teslamonPet #tmFace{transition:none}}
+
+#teslamonPet #tmTranscript{overflow-wrap:anywhere;line-height:1.4;margin:8px 0}
+#teslamonPet #tmEditTranscript{min-width:44px;min-height:44px;margin-bottom:10px}
+#teslamonPet input[type="text"],#teslamonPet select{font-size:16px}

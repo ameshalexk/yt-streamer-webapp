@@ -73,7 +73,7 @@ async function launchPet(fetchImpl,{local=false,speechBehavior={},interpretImpl=
   }
   const ids=['#tmFace','#tmHandle','#tmPanel','#tmState','#tmDevices','#tmMic',
     '#tmText','#tmChoices','#tmModelLabel','#tmModelOptIn','#tmClose','#tmRefresh','#tmForm',
-    '#tmCancel','#tmResetPosition'];
+    '#tmCancel','#tmResetPosition','#tmTranscript','#tmTranscriptRow','#tmEditTranscript'];
   for(const id of ids)elements.set(id,new Element(id));
   const actions=['pause','resume','get_playback_state','request_fullscreen','exit_fullscreen']
     .map(key=>{const e=new Element();e.dataset.tm=key;return e;});
@@ -501,4 +501,21 @@ test('status reports media and playback while fullscreen already active',async()
  h.elements.get('#tmFace').fire('click');await tick();
  h.actions.find(x=>x.dataset.tm==='get_playback_state').fire('click');await tick();
  assert.equal(h.elements.get('#tmState').textContent,'Paused · Fixture title');
+});
+
+
+test('successful speech keeps one editable transcript without automatically replaying it',async()=>{
+ let commands=0;
+ const h=await launchPet(url=>{
+  if(url.endsWith('/devices'))return Promise.resolve(answer({enabled:true,devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A'}));
+  if(url.endsWith('/command')){commands++;return Promise.resolve(answer({status:'observed',playbackPhase:'paused'}));}
+  throw Error('unexpected');
+ },{interpretImpl:()=>({tool:'pause',args:{}})});
+ h.elements.get('#tmFace').fire('click');await tick();
+ h.elements.get('#tmMic').fire('click');const session=h.speechSessions[0];
+ session.onresult({results:[[{transcript:'please pause'}]]});session.onend();await tick();
+ assert.equal(h.elements.get('#tmTranscript').textContent,'Heard: please pause');
+ assert.equal(h.elements.get('#tmTranscriptRow').hidden,false);
+ assert.equal(commands,1);h.elements.get('#tmEditTranscript').fire('click');await tick();
+ assert.equal(h.elements.get('#tmText').value,'please pause');assert.equal(commands,1);
 });

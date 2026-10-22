@@ -40,7 +40,7 @@ Continuation based on PR #88 (`0b15360`). The earlier 55% estimate is historical
 
 ## Browser evidence and limits
 
-The AMESH Chrome profile was discovered through the browser extension. Native profile-picture/account verification was unavailable while the Mac was locked. Chrome refused the isolated loopback fixture with `ERR_BLOCKED_BY_CLIENT`. No workaround or replacement browser/profile was used. The required 320/375/390/430, iPad and 844x390 landscape matrix in Classic/New is therefore **not passed**. `npm run preview:teslamon` starts only a loopback synthetic-data fixture for that next check; it never authenticates or controls production.
+The AMESH Chrome profile was discovered through the browser extension. Native profile-picture/account verification was unavailable while the Mac was locked. Chrome refused the isolated loopback fixture with `ERR_BLOCKED_BY_CLIENT`. No workaround or replacement profile was used to claim the requested responsive acceptance. The repository suite separately retains its existing isolated headless-browser fixtures. The required 320/375/390/430, iPad and 844x390 landscape matrix in Classic/New is therefore **not passed**. `npm run preview:teslamon` starts only a loopback synthetic-data fixture for that next check; it never authenticates or controls production.
 
 ## Rollback
 
@@ -55,3 +55,16 @@ Revert this continuation's commits; TeslaMon stays default-off. No real micropho
 - The required `mobile-player-browser-check.mjs` was not launched with its default fresh profile because the owner requires the existing signed-in Chrome profile. That profile's extension navigation to loopback was blocked. No phone/browser success is inferred.
 - Product Codex activation stays disabled with `runtime_confinement_unverified`; the injected driver does not spawn a model/process. Owner decision about an explicitly different closed-allowlist API runtime is pending.
 - Previous PR #88 passed both OS regressions, both container architectures, bundles and Both platforms passed at `0b15360`; this does not validate the new continuation.
+
+## Exact-head CI failure and follow-up
+
+At `9cd2011`, macOS passed every regression/browser/package/audio-helper step. Ubuntu failed solely because the existing buffered-MJPEG browser harness hit its 30-second total test timeout. The log does not identify a failed playback assertion or prove the underlying scheduling cause. A test-only harness repair keeps the player's 20-second completion threshold and all 48-frame/rebuffer/queue assertions unchanged while bounding fixture generation/cleanup and allowing startup time. New exact-head CI is required; earlier packages remain unpromoted.
+
+The safe deterministic parser now includes a 20-positive / 20-negative typed phrase matrix, conservative polite framing, explicit target/multi-action rejection, and title-tail preservation. This is safe fallback coverage, not actual Codex or voice acceptance.
+
+## CI/browser follow-up candidate
+
+- Local full suite after parser/transcript/harness changes: **692/692 passed**. Latest speech transcript is transient page state with an explicit edit action; edit never automatically replays a command. iOS text inputs use 16px text.
+- Added required existing player-layout smoke plus a new CI-only TeslaMon responsive matrix to shared release CI. The new fixture covers 12 Classic/New scenarios across 320/375/390/430, 768x1024 and 844x390; artifacts include screenshots and measurements. It measures 44px controls, safe panel geometry, keyboard/reset, selected fixture/decoy and pause, player reveal and Quality after one-tap panel dismissal. No actual microphone/model/media jobs or credentials.
+- The CI-only matrix refuses to launch outside `CI=true` and requires workflow `CHROME_PATH`. It supplements, rather than replaces, the blocked owner-profile local check and real iPhone Safari. New matrix is **pending CI execution**, not passed at commit time.
+- Harness-only repair preserves the 20-second player completion deadline and all media assertions. Its isolated fixture passed twice locally; Linux CI still must verify it.

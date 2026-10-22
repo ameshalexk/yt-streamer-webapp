@@ -60,6 +60,21 @@ jobs:
       - name: AI Access sign-in UI browser smoke
         run: npm run test:ai-agent-access-ui
         working-directory: webapp
+      - name: iPhone-first player layout browser smoke
+        run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
+        working-directory: webapp
+      - name: TeslaMon Classic and New mobile layout matrix
+        run: node scripts/teslamon-mobile-browser-check.mjs
+        working-directory: webapp
+        env:
+          TESLAMON_MOBILE_OUTPUT_DIR: ${{ runner.temp }}/teslamon-mobile-${{ runner.os }}
+      - name: Upload synthetic TeslaMon mobile layout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: teslamon-mobile-${{ runner.os }}
+          path: ${{ runner.temp }}/teslamon-mobile-${{ runner.os }}
+          if-no-files-found: ignore
       - name: Isolated JXL WebAssembly browser smoke (experimental)
         run: npm run test:jxl-wasm
         working-directory: webapp
