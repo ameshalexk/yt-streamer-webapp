@@ -30,7 +30,8 @@ test('single search plays through this page facade only',async()=>{
   assert.equal(x.player.ready,true);
   const result=await x.player.run({tool:'search_and_play',args:{query:'test movie'}});
   assert.equal(result.status,'observed');
-  assert.deepEqual(x.calls.map(x=>x.action),['search_media','play_media','get_player_state']);
+  assert.equal(result.fullscreenAttempt,'observed');
+  assert.deepEqual(x.calls.map(x=>x.action),['search_media','play_media','request_fullscreen','get_player_state']);
   assert.equal(x.calls[1].args.media_id,A);
 });
 test('ambiguous search returns opaque tokens and consumes chosen result once',async()=>{
@@ -113,4 +114,42 @@ test('mutations are serialized; overlapping same-tab commands rejected',async()=
   assert.equal(second.code,'target_busy');
   release();assert.equal((await first).status,'observed');
   assert.deepEqual(calls,['pause','get_player_state']);
+});
+
+test('fullscreen gesture denial does not erase accepted successful playback',async()=>{
+  const calls=[];
+  let media='';
+  const p=createTeslaMonLocalPlayer({getPlayer:()=>({
+    get_player_state:()=>({media_id:media,playback_phase:'playing',fullscreen_kind:'none'}),
+    execute:async(action,args)=>{
+      calls.push(action);
+      if(action==='search_media')return {status:'completed',result:{results:[
+        {media_id:A,title:'One'}]}};
+      if(action==='play_media'){media=args.media_id;return {status:'accepted'};}
+      if(action==='request_fullscreen')return {status:'needs_user_gesture'};
+      if(action==='get_player_state')return {status:'completed',state:{
+        media_id:media,playback_phase:'playing',fullscreen_kind:'none'}};
+    }
+  })});
+  const result=await p.run({tool:'search_and_play',args:{query:'something'}});
+  assert.equal(result.status,'observed');
+  assert.equal(result.fullscreenAttempt,'needs_user_gesture');
+  assert.deepEqual(calls,['search_media','play_media','request_fullscreen','get_player_state']);
+});
+test('fullscreen transport exceptions do not turn playback into a failure',async()=>{
+  let media='';
+  const p=createTeslaMonLocalPlayer({getPlayer:()=>({
+    get_player_state:()=>({media_id:media,playback_phase:'playing',fullscreen_kind:'none'}),
+    execute:async(action,args)=>{
+      if(action==='search_media')return {status:'completed',result:{results:[
+        {media_id:A,title:'One'}]}};
+      if(action==='play_media'){media=args.media_id;return {status:'accepted'};}
+      if(action==='request_fullscreen')throw Error('native fullscreen rejected');
+      if(action==='get_player_state')return {status:'completed',state:{
+        media_id:media,playback_phase:'playing',fullscreen_kind:'none'}};
+    }
+  })});
+  const result=await p.run({tool:'search_and_play',args:{query:'something'}});
+  assert.equal(result.status,'observed');
+  assert.equal(result.fullscreenAttempt,'unconfirmed');
 });

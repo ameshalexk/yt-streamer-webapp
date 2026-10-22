@@ -51,3 +51,10 @@ Implemented on the staging branch:
 - Not yet accepted on real iPhone, parked Tesla or signed-in public playback. No production merge or deployment.
 
 Owner acceptance: hard-refresh https://teslamon-stage.ameshalex.com/, open TeslaMon, check the "Controls this browser tab only" label, try Status then Play/Pause/Resume in the same page. No browser registration is required.
+
+## 2026-10-22 post-selection fullscreen improvement
+
+- Selecting a new YouTube search candidate now automatically attempts fullscreen **once in the same browser tab** after playback is accepted. There is no remote tab or device selection.
+- Fullscreen activation may be denied because the browser lost the initiating gesture. This is reported as a separate `needs_user_gesture` outcome; successful playback remains successful, with a direct fullscreen button still available. Native and in-page fullscreen are reported only from player readback.
+- Pet status continues to distinguish playback phase from fullscreen status; a fullscreen state does not mask Playing/Paused when requesting status.
+- Local same-tab tests cover fullscreen success, gesture rejection, unexpected exception and buffering. Production is unchanged, and no actual owner device, microphone, speaker or parked Tesla acceptance is claimed.

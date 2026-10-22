@@ -1,5 +1,5 @@
 import {interpretTeslaMon} from './teslamon-intent.js';
-import {createTeslaMonLocalPlayer} from './teslamon-local-player.js';
+import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261022-auto-fullscreen1';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 
@@ -56,7 +56,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
   }
   function clearChoices(){choices.replaceChildren();choices.hidden=true;}
-  function report(response){
+  function report(response,action){
     clearChoices();
     if(response?.status==='needs_selection'){
       const title=document.createElement('p');title.textContent='Choose a video:';
@@ -75,12 +75,21 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     const phase=response?.playbackPhase;
     if(response?.status==='observed'){
-      if(response.fullscreenMode==='in_page'||response.fullscreenMode==='native'){
-        status('Fullscreen enabled in this tab.','ok');return;
+      if(action==='request_fullscreen'||action==='exit_fullscreen'){
+        status(response.fullscreenMode==='none'?'Fullscreen exited.':
+          'Fullscreen enabled in this tab.','ok');return;
       }
-      status(phase==='playing'?'Playing in this tab':
-        phase==='paused'?'Paused':('Player state: '+(phase||'available')),'ok');
-    }else if(response?.status==='accepted')status('Command sent. Confirm playback on the player.');
+      const playback=phase==='playing'?'Playing in this tab':
+        phase==='paused'?'Paused':('Player state: '+(phase||'available'));
+      const fullscreen=response.fullscreenAttempt==='needs_user_gesture'?
+        ' Tap Fullscreen directly in this tab.':
+        response.fullscreenAttempt==='observed'?' Fullscreen enabled.':'';
+      status(playback+fullscreen,'ok');
+    }else if(response?.status==='accepted'){
+      status('Command sent. Confirm playback on the player.'+
+        (response.fullscreenAttempt==='needs_user_gesture'?
+          ' Tap Fullscreen directly in this tab.':''));
+    }
     else if(response?.status==='uncertain')status('Result uncertain. Check player before retrying.','warn');
     else if(response?.status==='needs_user_gesture')status('Tap Fullscreen directly in this tab.','warn');
     else if(response?.status==='offline')status('This tab player is unavailable. Reload the page.','warn');
@@ -122,7 +131,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     busy=true;const epoch=++generation;
     status('Sending command…');
     try{const result=await localPlayer.run(intent);
-      if(epoch===generation)report(result);
+      if(epoch===generation)report(result,intent.tool);
     }catch{
       if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
     }finally{busy=false;}

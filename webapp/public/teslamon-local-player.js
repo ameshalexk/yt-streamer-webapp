@@ -121,13 +121,25 @@ export function createTeslaMonLocalPlayer({
         if(result?.status==='needs_user_gesture')return fail('needs_user_gesture','needs_user_gesture');
         if(!['completed','accepted','playing','buffering'].includes(result?.status))
           return fail('playback_command_failed',result?.status==='unsupported'?'unsupported':'failed');
+        // A new selection makes one fullscreen attempt in this same document.
+        // Fullscreen is separate from playback: a browser gesture denial must
+        // never turn an accepted play into a failed playback command.
+        let fullscreenAttempt='unconfirmed';
+        try{
+          const fullscreen=await player.execute('request_fullscreen',{});
+          if(fullscreen?.status==='needs_user_gesture')fullscreenAttempt='needs_user_gesture';
+          else if(fullscreen?.status==='unsupported')fullscreenAttempt='unsupported';
+        }catch{/* Fullscreen can fail while playback continues. */}
         const read=await snapshot(player);
-        if(read.status!=='observed')return read;
+        if(read.status!=='observed')return {...read,fullscreenAttempt};
+        if(['native','in_page'].includes(read.fullscreenMode))fullscreenAttempt='observed';
         const direct=player.get_player_state?.();
-        if(direct?.media_id===mediaId&&direct.playback_phase==='playing')return read;
+        if(direct?.media_id===mediaId&&direct.playback_phase==='playing')
+          return {...read,fullscreenAttempt};
         // Streaming startup may be buffering. Never claim sound/video output.
         return {status:'accepted',code:'state_not_yet_confirmed',
-          playbackPhase:read.playbackPhase,fullscreenMode:read.fullscreenMode};
+          playbackPhase:read.playbackPhase,fullscreenMode:read.fullscreenMode,
+          fullscreenAttempt};
       }
       const result=await player.execute(intent.tool,{});
       if(result?.status==='needs_user_gesture')return fail('needs_user_gesture','needs_user_gesture');
