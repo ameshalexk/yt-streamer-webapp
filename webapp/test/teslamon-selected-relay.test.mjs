@@ -121,9 +121,9 @@ test('real registry dispatches only to exact selected tab, never decoy',async()=
   const f=fixture();
   const result=await f.service.searchAndPlay(getRequest());
   assert.equal(result.status,'observed');
-  assert.deepEqual(f.sent.map(x=>x.index),[0,0,0]);
+  assert.deepEqual(f.sent.map(x=>x.index),[0,0,0,0,0]);
   assert.deepEqual(f.sent.map(x=>x.frame.action),
-    ['search_media','play_media','get_player_state']);
+    ['search_media','play_media','get_player_state','request_fullscreen','get_player_state']);
   assert.equal(f.sent[1].frame.args.media_id,VIDEO_A);
   assert.equal(f.sent.some(x=>x.index===1),false);
 });
@@ -132,7 +132,7 @@ test('selected second tab also routes solely to second device',async()=>{
   const f=fixture({selectedIndex:1});
   const result=await f.service.searchAndPlay(getRequest());
   assert.equal(result.status,'observed');
-  assert.deepEqual(f.sent.map(x=>x.index),[1,1,1]);
+  assert.deepEqual(f.sent.map(x=>x.index),[1,1,1,1,1]);
 });
 
 test('sole online tab cannot be inferred without explicit selected identity',async()=>{

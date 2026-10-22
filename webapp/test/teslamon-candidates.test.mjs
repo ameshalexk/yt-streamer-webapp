@@ -6,7 +6,8 @@ const START=Date.parse('2026-10-22T16:00:00Z');
 const A='AAAaa00000_',B='BBBbb11111_',C='CCCcc22222_';
 const video=(media_id,title='Video title',creator='Channel')=>({media_id,title,creator});
 const make=({rows=[video(A)],phase='playing',ackPatch={},readbackPatch={},
-  searchPatch={},beforeDispatch}={})=>{
+  searchPatch={},fullscreenAck='accepted',fullscreenMode='in_page',
+  beforeDispatch}={})=>{
   let now=START;
   let authority={
     origin:'https://stream.ameshalex.com',subject:'owner-verified',
@@ -35,7 +36,10 @@ const make=({rows=[video(A)],phase='playing',ackPatch={},readbackPatch={},
         return {...envelope,status:'completed',
           state:{media_id:calls.findLast(c=>c.action==='play_media')?.args.media_id,
             playback_phase:phase,observed_at:new Date(now).toISOString(),
+            fullscreen_kind:fullscreenMode,
             ...readbackPatch}};
+      if(command.action==='request_fullscreen')
+        return {...envelope,status:fullscreenAck};
       throw new Error('unexpected_action');
     }
   });
@@ -49,10 +53,13 @@ test('one exact search result plays and confirms matching observed media',async(
   const f=make();
   const r=await f.service.searchAndPlay(query('Trailer 2026'));
   assert.deepEqual(f.calls.map(c=>c.action),[
-    'search_media','play_media','get_player_state']);
+    'search_media','play_media','get_player_state','request_fullscreen',
+    'get_player_state']);
   assert.equal(r.status,'observed');
   assert.equal(r.observed,true);
   assert.equal(r.mediaId,A);
+  assert.equal(r.fullscreenMode,'in_page');
+  assert.equal(r.fullscreenStatus,'observed');
   for(const c of f.calls){
     assert.equal(c.binding.subject,'owner-verified');
     assert.equal(c.binding.controllerId,'controller-verified');
@@ -60,6 +67,23 @@ test('one exact search result plays and confirms matching observed media',async(
     assert.equal(c.binding.connectionId,'22222222-2222-4222-8222-222222222222');
   }
   assert.equal(f.service.pendingCandidates,0);
+});
+
+test('candidate playback returns bounded trusted title and observation metadata only',async()=>{
+  const f=make({
+    rows:[video(A,'<script>alert(1)</script>Trusted title')],
+    readbackPatch:{audio_observation:'element_playing_output_unverified',secret:'DROP',
+      injected:'<img src=x onerror=alert(1)>'}
+  });
+  const result=await f.service.searchAndPlay(query('Metadata check'));
+  assert.equal(result.status,'observed');
+  assert.equal(result.mediaId,A);
+  assert.equal(result.title,'scriptalert(1)/scriptTrusted title');
+  assert.ok(Number.isFinite(Date.parse(result.observedAt)));
+  assert.equal(result.audioObservation,'element_playing_output_unverified');
+  assert.equal('secret' in result,false);
+  assert.equal('injected' in result,false);
+  assert.doesNotMatch(result.title,/[<>]/);
 });
 
 test('ambiguous results require private candidate selection, no blind first hit',async()=>{
@@ -74,10 +98,13 @@ test('ambiguous results require private candidate selection, no blind first hit'
   const played=await f.service.searchAndPlay(select(found.choices[1].candidate_token));
   assert.equal(played.status,'observed');
   assert.equal(played.mediaId,B);
-  assert.deepEqual(f.calls.map(c=>c.action),['search_media','play_media','get_player_state']);
+  assert.equal(played.fullscreenMode,'in_page');
+  assert.deepEqual(f.calls.map(c=>c.action),[
+    'search_media','play_media','get_player_state','request_fullscreen',
+    'get_player_state']);
   assert.equal((await f.service.searchAndPlay(select(found.choices[1].candidate_token))).code,
     'stale_or_unknown_candidate');
-  assert.equal(f.calls.length,3);
+  assert.equal(f.calls.length,5);
 });
 
 test('new search invalidates previous candidate tokens',async()=>{
@@ -178,6 +205,60 @@ test('stale or mismatched player observation cannot report playback success',asy
   }
 });
 
+test('fullscreen failure preserves observed playback and reports unknown mode',async()=>{
+  for(const [fullscreenAck,fullscreenStatus] of [
+    ['unsupported','unsupported'],['failed','failed'],
+    ['uncertain','uncertain'],['offline','uncertain']
+  ]){
+    const f=make({fullscreenAck});
+    const result=await f.service.searchAndPlay(query('Play despite fullscreen'));
+    assert.equal(result.status,'observed',fullscreenAck);
+    assert.equal(result.mediaId,A);
+    assert.equal(result.fullscreenMode,'unknown');
+    assert.equal(result.fullscreenStatus,fullscreenStatus);
+    assert.deepEqual(f.calls.map(c=>c.action),[
+      'search_media','play_media','get_player_state','request_fullscreen'
+    ]);
+  }
+});
+
+test('fullscreen reports user gesture requirement without downgrading playback',async()=>{
+  const f=make({fullscreenAck:'needs_user_gesture'});
+  const result=await f.service.searchAndPlay(query('Gesture required'));
+  assert.equal(result.status,'observed');
+  assert.equal(result.fullscreenMode,'unknown');
+  assert.equal(result.fullscreenStatus,'needs_user_gesture');
+  assert.deepEqual(f.calls.map(c=>c.action),[
+    'search_media','play_media','get_player_state','request_fullscreen'
+  ]);
+});
+
+test('playback that needs a user gesture never attempts fullscreen',async()=>{
+  const f=make({phase:'needs_user_gesture'});
+  const result=await f.service.searchAndPlay(query('Playback gesture'));
+  assert.equal(result.status,'accepted');
+  assert.equal(result.playbackPhase,'needs_user_gesture');
+  assert.equal('fullscreenMode' in result,false);
+  assert.deepEqual(f.calls.map(c=>c.action),[
+    'search_media','play_media','get_player_state'
+  ]);
+});
+
+test('cancellation during playback readback prevents fullscreen attempt',async()=>{
+  const controller=new AbortController();
+  let reads=0;
+  const f=make({beforeDispatch:async command=>{
+    if(command.action==='get_player_state'&&++reads===1)controller.abort();
+  }});
+  const result=await f.service.searchAndPlay(query('Cancel before fullscreen'),{
+    signal:controller.signal
+  });
+  assert.equal(result.status,'uncertain');
+  assert.deepEqual(f.calls.map(c=>c.action),[
+    'search_media','play_media','get_player_state'
+  ]);
+});
+
 test('failed, malformed, duplicated or empty search response never triggers play',async()=>{
   for(const rows of [
     [],[video('INVALID','Bad')],[video(A,'')],[{media_id:A,title:'X'.repeat(161)}]
@@ -191,7 +272,8 @@ test('failed, malformed, duplicated or empty search response never triggers play
   const r=await dupe.service.searchAndPlay(query('dupes'));
   assert.equal(r.status,'observed');
   assert.deepEqual(dupe.calls.map(c=>c.action),
-    ['search_media','play_media','get_player_state']);
+    ['search_media','play_media','get_player_state','request_fullscreen',
+      'get_player_state']);
   const pending=make({searchPatch:{status:'accepted'}});
   assert.equal((await pending.service.searchAndPlay(query('pending'))).status,'failed');
   assert.equal(pending.calls.length,1);
@@ -257,7 +339,9 @@ test('model cannot select arbitrary URL, media ID, owner or invoke unrelated too
     if(intent.args.query?.startsWith('https://'))assert.ok(r.status!=='failed');
     else assert.equal(r.code,'invalid_intent');
   }
-  assert.deepEqual(f.calls.map(c=>c.action),['search_media','play_media','get_player_state']);
+  assert.deepEqual(f.calls.map(c=>c.action),[
+    'search_media','play_media','get_player_state','request_fullscreen',
+    'get_player_state']);
 });
 
 test('overlong 160-char tool query is rejected before older 120-char relay',async()=>{
@@ -278,4 +362,40 @@ test('parallel search calls do not overlap same target mutation stream',async()=
   assert.equal(concurrent.code,'target_busy');
   unblock();
   assert.equal((await first).status,'observed');
+});
+
+test('already-cancelled search never dispatches',async()=>{
+  const f=make();
+  const controller=new AbortController();
+  controller.abort();
+  const result=await f.service.searchAndPlay(query('Do not search'),{
+    signal:controller.signal
+  });
+  assert.equal(result.status,'cancelled');
+  assert.equal(f.calls.length,0);
+});
+
+test('cancellation after search dispatch prevents implicit single-result play',async()=>{
+  const controller=new AbortController();
+  const f=make({beforeDispatch:async command=>{
+    if(command.action==='search_media')controller.abort();
+  }});
+  const result=await f.service.searchAndPlay(query('Search only'),{
+    signal:controller.signal
+  });
+  assert.equal(result.status,'cancelled');
+  assert.deepEqual(f.calls.map(c=>c.action),['search_media']);
+});
+
+test('cancellation after play dispatch is uncertain and stops before readback',async()=>{
+  const controller=new AbortController();
+  const f=make({beforeDispatch:async command=>{
+    if(command.action==='play_media')controller.abort();
+  }});
+  const result=await f.service.searchAndPlay(query('Play once'),{
+    signal:controller.signal
+  });
+  assert.equal(result.status,'uncertain');
+  assert.equal(result.code,'cancelled_after_dispatch');
+  assert.deepEqual(f.calls.map(c=>c.action),['search_media','play_media']);
 });

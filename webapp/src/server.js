@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
 import {startProductionMediaRelay} from "./lib/ai-media-agent-production-relay.js";
+import {createTeslaMonRequestLifecycle} from "./lib/teslamon-request-lifecycle.js";
 import {createTeslaMonTranscriber} from "./lib/teslamon-transcribe.js";
 import {createTeslaMonModelPlanner} from "./lib/teslamon-model-planner.js";
 import * as store from "./lib/store.js";
@@ -2270,6 +2271,7 @@ app.post('/api/ai-agent/bootstrap',async(req,res)=>{
 const teslamonSTT=createTeslaMonTranscriber();
 const teslamonModel=createTeslaMonModelPlanner();
 function teslamonFail(res,error){
+  if(error?.code==='teslamon_rate_limited')return res.status(429).json({status:'failed',code:'rate_limited'});
   const unavailable=String(error?.message||'').includes('teslamon_disabled');
   return res.status(unavailable?503:401)
     .json({status:'failed',code:unavailable?'teslamon_unavailable':'signed_access_required'});
@@ -2302,8 +2304,10 @@ app.post('/api/teslamon/command',async(req,res)=>{
     return res.status(503).json({status:'unavailable',code:'teslamon_unavailable'});
   if(!req.body||Object.keys(req.body).some(x=>!['tool','args'].includes(x)))
     return res.status(400).json({status:'failed',code:'invalid_command'});
-  try{return res.json(await productionMediaRelay.teslamon.command(req,req.body));}
+  const request=createTeslaMonRequestLifecycle(req,res,{timeoutMs:30000});
+  try{return res.json(await productionMediaRelay.teslamon.command(req,req.body,{signal:request.signal}));}
   catch(ex){return teslamonFail(res,ex);}
+  finally{request.dispose();}
 });
 // Optional paid model interpretation is opt-in per request. Model output is
 // revalidated against the same six-tool command allowlist before dispatch.
@@ -2316,24 +2320,32 @@ app.post('/api/teslamon/interpret',async(req,res)=>{
   if(!req.body||Object.keys(req.body).length!==2||
     req.body.optIn!==true||typeof req.body.text!=='string')
     return res.status(400).json({status:'failed',code:'model_opt_in_required'});
+  const request=createTeslaMonRequestLifecycle(req,res,{timeoutMs:12000});
   try{
     await productionMediaRelay.teslamon.authenticate(req);
-    const outcome=await teslamonModel.interpret(req.body.text);
+    const outcome=await teslamonModel.interpret(req.body.text,{signal:request.signal});
     return res.json(outcome);
   }catch(ex){return teslamonFail(res,ex);}
+  finally{request.dispose();}
 });
 app.post('/api/teslamon/transcribe',
-  express.raw({type:['audio/webm','audio/ogg','audio/mp4'],limit:'5mb'}),
-  async(req,res)=>{
+  async(req,res,next)=>{
     res.set('Cache-Control','private, no-store');
     if(!isSameOriginRequest(req))return res.status(403).json({status:'failed',code:'wrong_origin'});
     if(!productionMediaRelay?.teslamon.enabled)
       return res.status(503).json({status:'unavailable',code:'teslamon_unavailable'});
+    // Authenticate and rate-limit before buffering any uploaded recording.
+    try{await productionMediaRelay.teslamon.authenticate(req);next();}
+    catch(ex){return teslamonFail(res,ex);}
+  },
+  express.raw({type:['audio/webm','audio/ogg','audio/mp4'],limit:'5mb'}),
+  async(req,res)=>{
+    const request=createTeslaMonRequestLifecycle(req,res);
     try{
-      await productionMediaRelay.teslamon.authenticate(req);
-      const result=await teslamonSTT.transcribe(req.body,req.headers['content-type']);
+      const result=await teslamonSTT.transcribe(req.body,req.headers['content-type'],{signal:request.signal});
       return res.status(result.status==='unavailable'?503:200).json(result);
     }catch(ex){return teslamonFail(res,ex);}
+    finally{request.dispose();}
   }
 );
 

@@ -220,6 +220,51 @@ test('coordinator responses cannot spoof playback or expose arbitrary results',a
   }
 });
 
+test('coordinator exposes bounded fullscreen status while playback remains observed',async()=>{
+  for(const fullscreenStatus of [
+    'observed','needs_user_gesture','unsupported','uncertain','failed','cancelled'
+  ]){
+    const f=fixture({executeIntent:async()=>({
+      status:'observed',observed:true,playbackPhase:'playing',
+      fullscreenMode:'unknown',fullscreenStatus,
+      mediaId:'AAAaa00000_',title:'Trusted title',
+      observedAt:new Date(NOW).toISOString(),
+      audioObservation:'element_playing_output_unverified',privateField:'DROP'
+    })});
+    await f.start();
+    const result=await f.h.handle(call(2,'search_and_play',{query:'play this'}));
+    assert.deepEqual(result.result.structuredContent,{
+      status:'observed',observed:true,playbackPhase:'playing',
+      fullscreenMode:'unknown',fullscreenStatus,mediaId:'AAAaa00000_',
+      title:'Trusted title',observedAt:new Date(NOW).toISOString(),
+      audioObservation:'element_playing_output_unverified'
+    });
+    assert.equal(result.result.isError,undefined);
+    f.h.close();
+  }
+});
+
+test('coordinator metadata sanitizer bounds and drops executable or arbitrary fields',async()=>{
+  const f=fixture({executeIntent:async()=>({
+    status:'observed',observed:true,playbackPhase:'playing',fullscreenMode:'native',
+    mediaId:'bad<script>',title:'<script>alert(1)</script>'+'T'.repeat(300),
+    observedAt:'not-a-time',audioObservation:'javascript:alert(1)',privateField:'DROP'
+  })});
+  await f.start();
+  const result=await f.h.handle(call(2,'search_and_play',{query:'metadata'}));
+  const value=result.result.structuredContent;
+  assert.equal(value.status,'observed');
+  assert.equal(value.mediaId,undefined);
+  assert.equal(value.title,'scriptalert(1)/script'+'T'.repeat(139));
+  assert.equal(value.title.length,160);
+  assert.doesNotMatch(value.title,/[<>]/);
+  assert.equal(value.observedAt,undefined);
+  assert.equal(value.audioObservation,undefined);
+  assert.equal(value.privateField,undefined);
+  assert.equal(JSON.stringify(result).includes('DROP'),false);
+  f.h.close();
+});
+
 test('unexpected coordinator failure is uncertain, never definitive failed',async()=>{
   const f=fixture({executeIntent:async()=>{throw Error('private sensitive');}});
   await f.start();

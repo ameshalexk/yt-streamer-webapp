@@ -15,7 +15,9 @@ const V=['AAAaa00000_','BBBbb11111_'];
 const command=(id,name,args={})=>({
   jsonrpc:'2.0',id,method:'tools/call',params:{name,arguments:args}
 });
-async function demo(fn,{results=1,autoAck=true,timeoutMs=100}={}){
+async function demo(fn,{results=1,autoAck=true,timeoutMs=100,onSend,
+  fullscreenAck='completed',stateTitle='Current media',
+  audioObservation='element_playing_output_unverified'}={}){
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'teslamon-compose-'));
   let ledger;
   try{
@@ -30,24 +32,29 @@ async function demo(fn,{results=1,autoAck=true,timeoutMs=100}={}){
     const peers=[];
     const subject='fixture-signed-user',controllerId='verified-controller';
     for(let i=0;i<2;i++){
-      const state={media_id:V[0],playback_phase:'playing',fullscreen_kind:'none'};
+      const state={media_id:V[0],title:stateTitle,playback_phase:'playing',
+        fullscreen_kind:'none',audio_observation:audioObservation,secret:'DROP'};
       active.set(i,state);
       const connectionId=C[i];
       const device=registry.register({
         principal:'owner',pairingProof:proof,label:i===0?'selected':'decoy',
         connectionId,send:frame=>{
           sent.push({index:i,frame});
+          onSend?.(frame);
           if(autoAck)queueMicrotask(()=>{
             if(frame.action==='play_media'){
               state.media_id=frame.args.media_id;state.playback_phase='playing';
             }else if(frame.action==='pause')state.playback_phase='paused';
             else if(frame.action==='resume')state.playback_phase='playing';
-            else if(frame.action==='request_fullscreen')state.fullscreen_kind='in_page';
+            else if(frame.action==='request_fullscreen'&&
+              ['completed','accepted'].includes(fullscreenAck))
+              state.fullscreen_kind='in_page';
             else if(frame.action==='exit_fullscreen')state.fullscreen_kind='none';
             registry.acknowledge({
               principal:'owner',deviceId:device.device_id,
               connectionId,commandId:frame.command_id,
-              status:frame.action==='play_media'?'accepted':'completed',
+              status:frame.action==='play_media'?'accepted':
+                frame.action==='request_fullscreen'?fullscreenAck:'completed',
               state:{...state},
               result:frame.action==='search_media'?{
                 results:V.slice(0,results).map((v,j)=>({
@@ -115,9 +122,11 @@ test('private MCP lists six tools and composes selected search/play with journal
     const result=await x.call(3,'search_and_play',{query:'one official trailer'});
     assert.equal(result.status,'observed');
     assert.equal(result.playbackPhase,'playing');
-    assert.equal(x.ledger.size,1);
+    assert.equal(result.fullscreenMode,'in_page');
+    assert.equal(x.ledger.size,2);
     assert.deepEqual(x.sent.map(y=>y.frame.action),
-      ['search_media','play_media','get_player_state']);
+      ['search_media','play_media','get_player_state','request_fullscreen',
+        'get_player_state']);
     assert.ok(x.sent.every(y=>y.index===0));
   });
 });
@@ -134,13 +143,44 @@ test('ambiguous result goes back through MCP and a token plays one selected resu
     });
     assert.equal(chosen.status,'observed');
     assert.equal(chosen.playbackPhase,'playing');
+    assert.equal(chosen.fullscreenMode,'in_page');
     assert.equal(x.sent[1].frame.args.media_id,V[1]);
-    assert.equal(x.ledger.size,1);
+    assert.equal(x.ledger.size,2);
     assert.equal((await x.call(5,'search_and_play',{
       candidate_token:found.choices[1].candidate_token
     })).status,'failed');
-    assert.equal(x.ledger.size,1);
+    assert.equal(x.ledger.size,2);
   },{results:2});
+});
+
+test('fullscreen user gesture outcome is journaled without downgrading playback',async()=>{
+  await demo(async x=>{
+    const result=await x.coordinator.executeIntent({
+      ok:true,tool:'search_and_play',args:{query:'gesture trailer'},
+      binding:x.peers[0],expiresAt:Date.now()+30000
+    });
+    assert.equal(result.status,'observed');
+    assert.equal(result.playbackPhase,'playing');
+    assert.equal(result.fullscreenMode,'unknown');
+    assert.equal(result.fullscreenStatus,'needs_user_gesture');
+    assert.equal(x.ledger.size,2);
+    assert.deepEqual(x.sent.map(y=>y.frame.action),[
+      'search_media','play_media','get_player_state','request_fullscreen'
+    ]);
+  },{fullscreenAck:'needs_user_gesture'});
+});
+
+test('playback state exposes only bounded snapshot metadata',async()=>{
+  await demo(async x=>{
+    const state=await x.call(3,'get_playback_state');
+    assert.equal(state.status,'observed');
+    assert.equal(state.mediaId,V[0]);
+    assert.equal(state.title,'scriptalert(1)/script'+'T'.repeat(139));
+    assert.equal(state.title.length,160);
+    assert.ok(Number.isFinite(Date.parse(state.observedAt)));
+    assert.equal(state.audioObservation,'element_playing_output_unverified');
+    assert.equal('secret' in state,false);
+  },{stateTitle:'<script>alert(1)</script>'+'T'.repeat(300)});
 });
 
 test('pause and resume prove state with readback; only mutations hit journal',async()=>{
@@ -228,4 +268,37 @@ test('timed-out mutation remains uncertain and blocks later different mutation I
     assert.equal(second.code,'unreconciled_prior_mutation');
     assert.equal(x.sent.length,1);
   },{autoAck:false,timeoutMs:150});
+});
+
+test('coordinator forwards cancellation after search and never starts play',async()=>{
+  const controller=new AbortController();
+  await demo(async x=>{
+    const peer=x.peers[0];
+    const result=await x.coordinator.executeIntent({
+      ok:true,tool:'search_and_play',args:{query:'search only'},
+      binding:peer,expiresAt:Date.now()+30000
+    },{signal:controller.signal});
+    assert.equal(result.status,'cancelled');
+    assert.deepEqual(x.sent.map(y=>y.frame.action),['search_media']);
+    assert.equal(x.ledger.size,0);
+  },{onSend:frame=>{
+    if(frame.action==='search_media')controller.abort();
+  }});
+});
+
+test('coordinator journals cancelled dispatched play as uncertain and never replays',async()=>{
+  const controller=new AbortController();
+  await demo(async x=>{
+    const peer=x.peers[0];
+    const result=await x.coordinator.executeIntent({
+      ok:true,tool:'search_and_play',args:{query:'play once'},
+      binding:peer,expiresAt:Date.now()+30000
+    },{signal:controller.signal});
+    assert.equal(result.status,'uncertain');
+    assert.equal(x.ledger.quarantined,true);
+    assert.equal(x.ledger.size,1);
+    assert.deepEqual(x.sent.map(y=>y.frame.action),['search_media','play_media']);
+  },{onSend:frame=>{
+    if(frame.action==='play_media')controller.abort();
+  }});
 });

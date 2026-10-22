@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {createTeslaMonTranscriber} from '../src/lib/teslamon-transcribe.js';
+import {createTeslaMonTranscriber,runTeslaMonSpeechCommand} from '../src/lib/teslamon-transcribe.js';
 
 test('unconfigured local STT is unavailable without touching audio',async()=>{
   const stt=createTeslaMonTranscriber({model:undefined});
@@ -59,4 +59,40 @@ test('conversion/transcription uses private temporary files and removes recordin
     for(const directory of directories)
       await assert.rejects(fs.stat(directory),ex=>ex.code==='ENOENT');
   }finally{await fs.rm(modelDir,{recursive:true,force:true});}
+});
+
+test('already cancelled audio never runs conversion',async()=>{
+ const controller=new AbortController();controller.abort();let ran=0;
+ const stt=createTeslaMonTranscriber({model:'/fixture/model',run:async()=>{ran++;}});
+ assert.equal((await stt.transcribe(Buffer.alloc(1000),'audio/webm',{signal:controller.signal})).code,'transcription_cancelled');
+ assert.equal(ran,0);
+});
+test('cancellation during conversion prevents whisper and deletes temporary recordings',async()=>{
+ const modelDir=await fs.mkdtemp(path.join(os.tmpdir(),'tm-cancel-model-'));
+ const model=path.join(modelDir,'model.bin');await fs.writeFile(model,Buffer.alloc(100001));
+ let calls=0,input;const controller=new AbortController();
+ try{
+  const stt=createTeslaMonTranscriber({model,run:async(bin,args)=>{
+   calls++;input=args[args.indexOf('-i')+1];controller.abort();
+  }});
+  const result=await stt.transcribe(Buffer.alloc(1000),'audio/webm',{signal:controller.signal});
+  assert.equal(result.code,'transcription_cancelled');assert.equal(calls,1);
+  await assert.rejects(fs.stat(path.dirname(input)),e=>e.code==='ENOENT');
+ }finally{await fs.rm(modelDir,{recursive:true,force:true});}
+});
+
+
+test('speech command cancellation waits for child exit before caller cleanup',async()=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'tm-child-close-'));
+ const marker=path.join(dir,'exited');const controller=new AbortController();
+ // Synthetic local Node process writes a marker while handling SIGTERM, then
+ // exits. No microphone, media binary, model or external service is involved.
+ const script=`const fs=require('node:fs');process.on('SIGTERM',()=>{setTimeout(()=>{fs.writeFileSync(process.argv[1],'done');process.exit(0);},30)});fs.writeFileSync(process.argv[1]+'.ready','ready');setInterval(()=>{},1000);`;
+ try{
+  const pending=runTeslaMonSpeechCommand(process.execPath,['-e',script,marker],{signal:controller.signal});
+  const rejection=assert.rejects(pending,/transcription_cancelled/);
+  for(let i=0;i<100;i++){try{await fs.stat(marker+'.ready');break;}catch{await new Promise(r=>setTimeout(r,10));}}
+  controller.abort();await rejection;
+  assert.equal(await fs.readFile(marker,'utf8'),'done');
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
 });

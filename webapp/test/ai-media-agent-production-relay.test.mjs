@@ -211,6 +211,12 @@ test('TeslaMon opt-in uses signed Access + exact registered WS tab, no implicit 
    assert.notEqual(unselected.status,'observed');
    assert.equal(sentA.length+sentB.length,0);
    assert.equal((await relay.teslamon.select(authorized,keyA)).status,'selected');
+   const cancelled=new AbortController();cancelled.abort();
+   const cancelledResult=await relay.teslamon.command(authorized,
+     {tool:'search_and_play',args:{query:'Cancelled fixture'}},{signal:cancelled.signal});
+   assert.equal(cancelledResult.status,'cancelled');
+   assert.equal(sentA.length+sentB.length,0,'already cancelled HTTP command never reaches either tab');
+
    const paused=await relay.teslamon.command(authorized,{tool:'pause',args:{}});
    assert.equal(paused.status,'observed');
    assert.equal(paused.playbackPhase,'paused');

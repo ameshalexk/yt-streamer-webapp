@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {createTeslaMonPetLifecycle} from '../public/teslamon-pet-lifecycle.js';
+import {calculateTeslaMonPetPosition} from '../public/teslamon-pet-position.js';
 
 const deferred=()=>{
   let resolve;
@@ -11,6 +12,29 @@ const deferred=()=>{
 };
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const answer=value=>({status:200,json:async()=>value});
+
+test('pet position clamps the pet and panel to safe visual viewport bounds',()=>{
+  const p=calculateTeslaMonPetPosition({
+    viewport:{width:320,height:260,offsetLeft:12,offsetTop:180},
+    safeArea:{left:4,right:8,top:12,bottom:20},
+    pet:{width:128,height:72},panel:{width:300,height:400},
+    saved:{x:-90,y:900},
+  });
+  assert.equal(p.petLeft,16);
+  assert.equal(p.petTop,348);
+  assert.equal(p.panelLeft,24);
+  assert.equal(p.panelTop,200);
+  assert.equal(p.panelMaxHeight,212);
+  assert.ok(p.panelTop>=200&&p.panelTop+p.panelMaxHeight<=412);
+});
+
+test('reset position returns to the safe lower-right corner regardless of saved location',()=>{
+  const p=calculateTeslaMonPetPosition({viewport:{width:390,height:844},
+    safeArea:{right:8,bottom:20},pet:{width:128,height:72},
+    panel:{width:336,height:420},saved:{x:10,y:10},reset:true});
+  assert.equal(p.petLeft,254);
+  assert.equal(p.petTop,752);
+});
 
 test('superseded pre-dispatch requests are aborted and cannot remain current',()=>{
   const lifecycle=createTeslaMonPetLifecycle();
@@ -25,7 +49,7 @@ test('superseded pre-dispatch requests are aborted and cannot remain current',()
 });
 
 async function launchPet(fetchImpl,{local=false,speechBehavior={},interpretImpl=()=>({error:'Use optional AI'})}={}){
-  let captureOptions;
+  let captureOptions,captureCancelCount=0;
   const speechSessions=[],timers=new Map();let nextTimer=0;
   const elements=new Map();
   class Element{
@@ -37,13 +61,19 @@ async function launchPet(fetchImpl,{local=false,speechBehavior={},interpretImpl=
     focus(){}
     replaceChildren(...nodes){this.children=nodes;}
     append(node){this.children.push(node);}
-    getBoundingClientRect(){return {left:0,top:0,right:300,bottom:300};}
+    get offsetLeft(){return parseFloat(this.style.left)||0;}
+    get offsetTop(){return parseFloat(this.style.top)||0;}
+    get offsetWidth(){return this.id==='#teslamonPet'?128:0;}
+    get offsetHeight(){return this.id==='#teslamonPet'?72:0;}
+    get scrollHeight(){return 420;}
+    getBoundingClientRect(){const left=this.offsetLeft,top=this.offsetTop;return {left,top,right:left+this.offsetWidth,bottom:top+this.offsetHeight,width:this.offsetWidth,height:this.offsetHeight};}
     setPointerCapture(){}
     querySelector(selector){return elements.get(selector)||new Element(selector);}
     querySelectorAll(){return actions;}
   }
   const ids=['#tmFace','#tmHandle','#tmPanel','#tmState','#tmDevices','#tmMic',
-    '#tmText','#tmChoices','#tmModelLabel','#tmModelOptIn','#tmClose','#tmRefresh','#tmForm'];
+    '#tmText','#tmChoices','#tmModelLabel','#tmModelOptIn','#tmClose','#tmRefresh','#tmForm',
+    '#tmCancel','#tmResetPosition'];
   for(const id of ids)elements.set(id,new Element(id));
   const actions=['pause','resume','get_playback_state','request_fullscreen','exit_fullscreen']
     .map(key=>{const e=new Element();e.dataset.tm=key;return e;});
@@ -64,15 +94,17 @@ async function launchPet(fetchImpl,{local=false,speechBehavior={},interpretImpl=
     navigator:local?{mediaDevices:{getUserMedia:()=>Promise.resolve({})}}:{},innerWidth:390,innerHeight:844,localStorage:{getItem(){return null;},setItem(){}},
     Option:class{constructor(text,value){this.text=text;this.value=value;}},fetch:fetchImpl,
     interpretTeslaMon:interpretImpl,
-    createTeslaMonCapture:options=>{captureOptions=options;return {};},bindTeslaMonCaptureButton:()=>({dispose(){},targetChanged(){}}),
-    createTeslaMonPetLifecycle,AbortController,console,
+    createTeslaMonCapture:options=>{captureOptions=options;return {cancel(){captureCancelCount++;}};},bindTeslaMonCaptureButton:()=>({dispose(){},targetChanged(){}}),
+    createTeslaMonPetLifecycle,calculateTeslaMonPetPosition,AbortController,console,
+    getComputedStyle:()=>({getPropertyValue:()=> '0px'}),
     setTimeout(fn,ms){const id=++nextTimer;timers.set(id,{fn,ms});return id;},
     clearTimeout(id){timers.delete(id);}};
   const source=(await readFile(new URL('../public/teslamon-pet.js',import.meta.url),'utf8'))
     .replace(/^import .*;\n/gm,'');
   vm.runInNewContext(source,context);
-  return {elements,window,document,actions,speechSessions,timers,
+  return {elements,pet,window,document,actions,speechSessions,timers,
     fireTimers(){for(const [id,timer] of [...timers]){timers.delete(id);timer.fn();}},
+    get captureCancelCount(){return captureCancelCount;},
     get captureOptions(){return captureOptions;}};
 }
 
@@ -126,6 +158,97 @@ test('closing TeslaMon aborts stale AI interpretation and it cannot dispatch a c
   assert.equal(interpretation.options.signal.aborted,true);
   interpretation.d.resolve(answer({status:'ok',tool:'pause',args:{}}));await tick();await tick();
   assert.equal(calls.filter(c=>c.url.endsWith('/command')).length,0);
+});
+
+test('Cancel aborts pending model interpretation before it can dispatch a tool',async()=>{
+  const calls=[];let interpretation;
+  const {elements}=await launchPet((url,options={})=>{
+    calls.push({url,options});
+    if(url.endsWith('/devices'))return Promise.resolve(answer({enabled:true,
+      devices:[{deviceKey:'A',label:'Browser A'}],selectedDeviceKey:'A',modelConfigured:true}));
+    if(url.endsWith('/interpret')){interpretation={d:deferred(),options};return interpretation.d.promise;}
+    if(url.endsWith('/command'))return Promise.resolve(answer({status:'accepted'}));
+    throw Error(`unexpected request ${url}`);
+  });
+  elements.get('#tmFace').fire('click');await tick();
+  elements.get('#tmModelOptIn').checked=true;elements.get('#tmText').value='do something';
+  elements.get('#tmForm').fire('submit');await tick();
+  elements.get('#tmCancel').fire('click');
+  assert.equal(interpretation.options.signal.aborted,true);
+  interpretation.d.resolve(answer({status:'ok',tool:'pause',args:{}}));await tick();await tick();
+  assert.equal(calls.filter(c=>c.url.endsWith('/command')).length,0);
+  assert.match(elements.get('#tmState').textContent,/canceled.*no playback command was sent/i);
+});
+
+test('Cancel aborts pending transcription and never submits its late transcript',async()=>{
+  const calls=[];let transcription;
+  const harness=await launchPet((url,options={})=>{
+    calls.push({url,options});
+    if(url.endsWith('/devices'))return Promise.resolve(answer({enabled:true,
+      devices:[{deviceKey:'A',label:'Browser A'}],selectedDeviceKey:'A',localTranscription:true}));
+    if(url.endsWith('/transcribe')){transcription={d:deferred(),options};return transcription.d.promise;}
+    throw Error(`unexpected request ${url}`);
+  },{local:true});
+  const {elements}=harness;
+  elements.get('#tmFace').fire('click');await tick();
+  harness.captureOptions.onAudio({type:'audio/webm'});await tick();
+  elements.get('#tmCancel').fire('click');
+  assert.equal(transcription.options.signal.aborted,true);
+  transcription.d.resolve(answer({status:'ok',text:'pause'}));await tick();await tick();
+  assert.equal(calls.some(c=>c.url.endsWith('/interpret')||c.url.endsWith('/command')),false);
+});
+
+test('Cancel stops an active recording and aborts native speech input',async()=>{
+  const localHarness=await launchPet(url=>url.endsWith('/devices')?Promise.resolve(answer({enabled:true,
+    devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A',localTranscription:true})):Promise.resolve(answer({status:'accepted'})),{local:true});
+  localHarness.elements.get('#tmFace').fire('click');await tick();
+  localHarness.captureOptions.onState({state:'recording'});
+  localHarness.elements.get('#tmCancel').fire('click');
+  assert.equal(localHarness.captureCancelCount,1);
+
+  const nativeHarness=await launchPet(url=>url.endsWith('/devices')?Promise.resolve(answer({enabled:true,
+    devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A'})):Promise.resolve(answer({status:'accepted'})));
+  nativeHarness.elements.get('#tmFace').fire('click');await tick();
+  nativeHarness.elements.get('#tmMic').fire('click');
+  const session=nativeHarness.speechSessions[0];
+  nativeHarness.elements.get('#tmCancel').fire('click');
+  assert.equal(session.aborted,true);
+  assert.equal(nativeHarness.timers.size,0);
+});
+
+test('Cancel never aborts or replays an already dispatched playback command',async()=>{
+  const calls=[],command=deferred();
+  const {elements,actions}=await launchPet((url,options={})=>{
+    calls.push({url,options});
+    if(url.endsWith('/devices'))return Promise.resolve(answer({enabled:true,
+      devices:[{deviceKey:'A',label:'Browser A'}],selectedDeviceKey:'A',modelConfigured:false}));
+    if(url.endsWith('/command'))return command.promise;
+    throw Error(`unexpected request ${url}`);
+  });
+  elements.get('#tmFace').fire('click');await tick();
+  actions[0].fire('click');
+  assert.equal(calls.filter(c=>c.url.endsWith('/command')).length,1);
+  elements.get('#tmCancel').fire('click');
+  assert.match(elements.get('#tmState').textContent,/already sent.*uncertain/i);
+  assert.equal(calls.filter(c=>c.url.endsWith('/command')).length,1);
+  command.resolve(answer({status:'accepted'}));await tick();
+  assert.equal(calls.filter(c=>c.url.endsWith('/command')).length,1);
+});
+
+test('keyboard arrows move TeslaMon and keyboard reset restores its default position',async()=>{
+  const {elements,pet}=await launchPet(url=>url.endsWith('/devices')?Promise.resolve(answer({enabled:true,
+    devices:[],selectedDeviceKey:''})):Promise.resolve(answer({status:'accepted'})));
+  const handle=elements.get('#tmHandle');
+  handle.fire('keydown',{key:'ArrowLeft'});
+  assert.equal(handle.attributes['aria-keyshortcuts'],'ArrowUp ArrowDown ArrowLeft ArrowRight');
+  assert.equal(pet.style.left,'246px');
+  handle.fire('keydown',{key:'ArrowRight',shiftKey:true});
+  assert.equal(pet.style.left,'247px','Shift+Arrow adjusts by one CSS pixel');
+  handle.fire('keydown',{key:'Home'});
+  assert.equal(pet.style.left,'262px');
+  elements.get('#tmHandle').fire('keydown',{key:'ArrowUp'});
+  elements.get('#tmResetPosition').fire('click');
+  assert.equal(pet.style.top,'772px');
 });
 
 test('pagehide resets speech bindings so a restored page can open TeslaMon again',async()=>{
@@ -318,4 +441,64 @@ test('native speech construction failure preserves typed fallback without a time
   assert.doesNotThrow(()=>harness.elements.get('#tmMic').fire('click'));
   assert.equal(harness.timers.size,0);
   assert.match(harness.elements.get('#tmState').textContent,/unavailable.*Type a command or retry/i);
+});
+
+test('idle local capture does not claim there was active input to cancel',async()=>{
+ const h=await launchPet(()=>Promise.resolve(answer({enabled:true,localTranscription:true,
+  devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A'})),{local:true});
+ h.elements.get('#tmFace').fire('click');await tick();
+ h.elements.get('#tmCancel').fire('click');
+ assert.equal(h.elements.get('#tmState').textContent,'No input is in progress.');
+});
+test('Cancel stops concurrent speech while preserving an already sent playback command',async()=>{
+ const command=deferred();let count=0;
+ const h=await launchPet(url=>{
+  if(url.endsWith('/devices'))return Promise.resolve(answer({enabled:true,
+   devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A'}));
+  if(url.endsWith('/command')){count++;return command.promise;}
+  throw Error('unexpected');
+ });
+ h.elements.get('#tmFace').fire('click');await tick();
+ h.actions[0].fire('click');h.elements.get('#tmMic').fire('click');
+ h.elements.get('#tmCancel').fire('click');
+ assert.equal(h.speechSessions[0].aborted,true);assert.equal(count,1);
+ command.resolve(answer({status:'accepted'}));await tick();assert.equal(count,1);
+});
+test('late cancelled interpretation cannot disable Cancel for a newer transcription',async()=>{
+ const old=deferred(),next=deferred();
+ const h=await launchPet(url=>{
+  if(url.endsWith('/devices'))return Promise.resolve(answer({enabled:true,localTranscription:true,modelConfigured:true,
+   devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A'}));
+  if(url.endsWith('/interpret'))return old.promise;
+  if(url.endsWith('/transcribe'))return next.promise;
+  throw Error('unexpected');
+ },{local:true});
+ h.elements.get('#tmFace').fire('click');await tick();
+ h.elements.get('#tmModelOptIn').checked=true;h.elements.get('#tmText').value='unmatched request';
+ h.elements.get('#tmForm').fire('submit');await tick();h.elements.get('#tmCancel').fire('click');
+ h.captureOptions.onAudio({type:'audio/webm'});await tick();
+ old.resolve(answer({status:'ok',tool:'pause',args:{}}));await tick();
+ assert.equal(h.elements.get('#tmCancel').disabled,false);
+ h.elements.get('#tmCancel').fire('click');
+ next.resolve(answer({status:'failed',code:'transcription_cancelled'}));await tick();
+});
+
+
+test('pet follows a native fullscreen container and returns to the document on exit',async()=>{
+ const h=await launchPet(()=>Promise.resolve(answer({enabled:true,devices:[]})));
+ const host={tagName:'DIV',children:[],append(node){this.children.push(node);}};
+ h.document.fullscreenElement=host;
+ for(const listener of h.document.listeners.fullscreenchange)listener();
+ assert.equal(host.children.length,1);
+ h.document.fullscreenElement=null;
+ for(const listener of h.document.listeners.fullscreenchange)assert.doesNotThrow(()=>listener());
+});
+
+test('status reports media and playback while fullscreen already active',async()=>{
+ const h=await launchPet(url=>Promise.resolve(answer(url.endsWith('/devices')?{enabled:true,
+  devices:[{deviceKey:'A',label:'A'}],selectedDeviceKey:'A'}:
+  {status:'observed',playbackPhase:'paused',title:'Fixture title',fullscreenMode:'native'})));
+ h.elements.get('#tmFace').fire('click');await tick();
+ h.actions.find(x=>x.dataset.tm==='get_playback_state').fire('click');await tick();
+ assert.equal(h.elements.get('#tmState').textContent,'Paused · Fixture title');
 });

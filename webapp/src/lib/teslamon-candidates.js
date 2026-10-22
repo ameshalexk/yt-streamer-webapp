@@ -6,6 +6,10 @@ import {
 } from './teslamon-contract.js';
 
 const VIDEO_ID=/^[A-Za-z0-9_-]{11}$/;
+const AUDIO_OBSERVATIONS=new Set([
+  'idle','unknown','element_missing','element_paused','element_muted',
+  'element_buffering','element_playing_output_unverified'
+]);
 const validObject=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const validText=(x,max)=>typeof x==='string'&&x.length>0&&x.length<=max&&
   !/[\x00-\x1f\x7f]/.test(x);
@@ -20,9 +24,10 @@ function sameTarget(a,b,now){
     a.subject===b.subject&&a.controllerId===b.controllerId&&
     a.deviceKey===b.deviceKey&&a.connectionId===b.connectionId;
 }
+const safeTitle=x=>String(x||'').replace(/[\x00-\x1f\x7f<>&]/g,'').slice(0,160);
 const copyResult=x=>({
   media_id:x.media_id,
-  title:String(x.title||'').slice(0,160),
+  title:safeTitle(x.title),
   creator:String(x.creator||'').slice(0,100)
 });
 
@@ -57,8 +62,12 @@ export function createTeslaMonCandidateService({
     return sameTarget(original,fresh,clock())?fresh:null;
   }
 
-  async function send(action,args,authority){
+  async function send(action,args,authority,{signal}={}){
+    if(signal?.aborted)return out('cancelled',{code:'request_cancelled'});
     if(!await verifyFresh(authority))return out('offline',{code:'target_changed'});
+    // Authority lookup is asynchronous. Recheck before entering the dispatch
+    // boundary so a cancelled request cannot start a new player action.
+    if(signal?.aborted)return out('cancelled',{code:'request_cancelled'});
     // The dispatch interface requires an immutable session/generation context.
     // The existing AgentSessionRegistry accepts commandId but production wiring
     // must still bind the selected *connection*, not its sole-online fallback.
@@ -74,7 +83,14 @@ export function createTeslaMonCandidateService({
           connectionId:authority.connectionId
         }),
         expiresAt:Math.min(clock()+30000,authority.authExpiresAt)
-      }));
+      }),{signal});
+      // Once a mutation has crossed dispatch, cancellation is an unknown
+      // outcome. Never retry it or proceed as if it were success.
+      if(signal?.aborted)return out(
+        action==='play_media'||action==='request_fullscreen'?'uncertain':'cancelled',
+        {code:action==='play_media'||action==='request_fullscreen'?
+          'cancelled_after_dispatch':'request_cancelled'}
+      );
       if(!await verifyFresh(authority))return out('uncertain',{code:'target_changed_after_dispatch'});
       if(!validObject(result))return out('uncertain',{code:'missing_ack'});
       if(result.commandId!==id||result.subject!==authority.subject||
@@ -124,14 +140,19 @@ export function createTeslaMonCandidateService({
     });
   }
 
-  async function play(row,authority){
+  async function play(row,authority,{signal}={}){
+    if(signal?.aborted)return out('cancelled',{code:'request_cancelled'});
     if(!await verifyFresh(authority))
       return out('offline',{code:'target_changed'});
-    const ack=await send('play_media',{media_id:row.media_id},authority);
+    if(signal?.aborted)return out('cancelled',{code:'request_cancelled'});
+    const ack=await send('play_media',{media_id:row.media_id},authority,{signal});
     if(['offline','uncertain','failed','unsupported'].includes(ack.status))
       return out(ack.status,{code:ack.code||ack.error||'play_not_confirmed'});
+    if(ack.status==='cancelled'||signal?.aborted)
+      return out('uncertain',{code:'cancelled_after_dispatch'});
     // "accepted" or "completed" is only an ACK. Read the *same target* back.
-    const state=await send('get_player_state',{},authority);
+    const state=await send('get_player_state',{},authority,{signal});
+    if(signal?.aborted)return out('uncertain',{code:'cancelled_during_readback'});
     if(!validObject(state)||state.status!=='completed'||!validObject(state.state))
       return out('uncertain',{code:'playback_readback_unavailable'});
     if(state.state.media_id!==row.media_id)
@@ -142,20 +163,66 @@ export function createTeslaMonCandidateService({
       clock()-observedAt>10000)
       return out('uncertain',{code:'missing_or_stale_observation'});
     const phase=state.state.playback_phase;
-    if(phase==='playing')return out('observed',{
-      observed:true,playbackPhase:'playing',mediaId:row.media_id
-    });
+    const stampValue=new Date(observedAt).toISOString();
+    const metadata={
+      mediaId:row.media_id,title:row.title,observedAt:stampValue,
+      ...(AUDIO_OBSERVATIONS.has(state.state.audio_observation)?
+        {audioObservation:state.state.audio_observation}:{})
+    };
+    if(phase==='playing'){
+      const playback=out('observed',{
+        observed:true,playbackPhase:'playing',...metadata
+      });
+      return attemptFullscreen(playback,authority,{signal});
+    }
     if(phase==='buffering'||phase==='paused'||phase==='needs_user_gesture')
       return out('accepted',{
-        observed:false,playbackPhase:phase,mediaId:row.media_id
+        observed:false,playbackPhase:phase,...metadata
       });
     return out('uncertain',{code:'no_verified_playback'});
   }
 
-  async function searchAndPlay(intent){
+  async function attemptFullscreen(playback,authority,{signal}={}){
+    const withFullscreen=(fullscreenMode,fullscreenStatus)=>out(playback.status,{
+      ...playback,fullscreenMode,fullscreenStatus
+    });
+    // Fullscreen is a best-effort enhancement to playback. A cancelled
+    // request must not start it, and its outcome never changes playback status.
+    if(signal?.aborted)return withFullscreen('unknown','cancelled');
+    const ack=await send('request_fullscreen',{},authority,{signal});
+    if(ack.status==='cancelled')return withFullscreen('unknown','cancelled');
+    if(signal?.aborted)return withFullscreen('unknown','uncertain');
+    if(ack.status==='needs_user_gesture')
+      return withFullscreen('unknown','needs_user_gesture');
+    if(!['accepted','completed'].includes(ack.status))
+      return withFullscreen('unknown',[
+        'unsupported','failed','uncertain','cancelled'
+      ].includes(ack.status)?ack.status:'uncertain');
+    if(signal?.aborted)return withFullscreen('unknown','cancelled');
+    const state=await send('get_player_state',{},authority,{signal});
+    if(signal?.aborted)return withFullscreen('unknown','uncertain');
+    if(!validObject(state)||state.status!=='completed'||!validObject(state.state))
+      return withFullscreen('unknown','uncertain');
+    const stamp=state.state.observed_at;
+    const observedAt=typeof stamp==='string'?Date.parse(stamp):NaN;
+    if(!Number.isFinite(observedAt)||observedAt>clock()+1000||
+      clock()-observedAt>10000)
+      return withFullscreen('unknown','uncertain');
+    if(state.state.media_id!==playback.mediaId)
+      return withFullscreen('unknown','uncertain');
+    if(state.state.playback_phase==='needs_user_gesture')
+      return withFullscreen('unknown','needs_user_gesture');
+    const mode=state.state.fullscreen_kind;
+    if(['native','in_page','none'].includes(mode))
+      return withFullscreen(mode,'observed');
+    return withFullscreen('unknown','uncertain');
+  }
+
+  async function searchAndPlay(intent,{signal}={}){
     if(active)return out('failed',{code:'target_busy'});
     active=true;
     try{
+      if(signal?.aborted)return out('cancelled',{code:'request_cancelled'});
       purge();
       // No authorization information may be taken from model-facing arguments.
       const valid=validateTeslaMonIntent({
@@ -164,6 +231,7 @@ export function createTeslaMonCandidateService({
       if(!valid.ok||valid.tool!=='search_and_play')
         return out('failed',{code:'invalid_intent'});
       const authority=await getAuthority();
+      if(signal?.aborted)return out('cancelled',{code:'request_cancelled'});
       const bound=bindTeslaMonCommand(valid,authority,{
         commandId:makeId(),now:clock()
       });
@@ -177,7 +245,10 @@ export function createTeslaMonCandidateService({
           return out('failed',{code:'query_exceeds_player_limit'});
         const response=await send('search_media',{
           query:valid.args.query,limit:maxCandidates
-        },authority);
+        },authority,{signal});
+        // A completed search may still produce choices after its caller has
+        // gone away, but it must never trigger the implicit single-result play.
+        if(signal?.aborted)return out('cancelled',{code:'request_cancelled'});
         if(!await verifyFresh(authority))
           return out('offline',{code:'target_changed'});
         const result=loadResults(response,authority);
@@ -186,7 +257,7 @@ export function createTeslaMonCandidateService({
         const single=result.choices[0];
         const entry=candidates.get(single.candidate_token);
         candidates.delete(single.candidate_token);
-        return play(entry.row,authority);
+        return play(entry.row,authority,{signal});
       }
       const token=valid.args.candidate_token;
       const entry=candidates.get(token);
@@ -196,7 +267,8 @@ export function createTeslaMonCandidateService({
       if(clock()>=entry.expiresAt||entry.batch!==batch||
         !sameTarget(entry.authority,authority,clock()))
         return out('failed',{code:'stale_or_wrong_target_candidate'});
-      return play(entry.row,authority);
+      if(signal?.aborted)return out('cancelled',{code:'request_cancelled'});
+      return play(entry.row,authority,{signal});
     }catch{
       return out('failed',{code:'candidate_service_failed'});
     }finally{active=false;}

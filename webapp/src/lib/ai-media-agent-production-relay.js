@@ -6,6 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import {randomUUID,randomBytes,createHash} from 'node:crypto';
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {createTeslaMonRateLimit} from './teslamon-rate-limit.js';
 import {openTeslaMonCommandLedger} from './teslamon-command-ledger.js';
 import {createTeslaMonPrivateCoordinator} from './teslamon-coordinator.js';
 import {bindTeslaMonCommand,validateTeslaMonIntent} from './teslamon-contract.js';
@@ -187,6 +188,7 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
       }
     });
   }
+  const teslamonRateLimit=createTeslaMonRateLimit();
   const requireTeslaMonIdentity=async req=>{
     if(!teslamon)throw Error('teslamon_disabled');
     if(req.headers.origin!==origin||
@@ -194,6 +196,9 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
     const identity=await flow.authenticateHttp(req);
     if(!identity?.subject||identity.expires_at<=Date.now())
       throw Error('signed_access_required');
+    if(!teslamonRateLimit.consume(controllerId(identity.subject))){
+      const error=Error('teslamon_rate_limited');error.code='teslamon_rate_limited';throw error;
+    }
     return {verified:true,origin,subject:identity.subject,
       controllerId:controllerId(identity.subject),
       authExpiresAt:identity.expires_at};
@@ -223,7 +228,7 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
       teslamon.candidates.invalidate();
       return {status:'selected',deviceKey};
     },
-    async command(req,input){
+    async command(req,input,{signal}={}){
       const owner=await requireTeslaMonIdentity(req);
       const intent=validateTeslaMonIntent(input);
       if(!intent.ok)return {status:'failed',code:intent.error};
@@ -233,7 +238,7 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
           commandId:randomUUID(),now:Date.now()
         });
         if(!bound.ok)return {status:'offline',code:bound.error};
-        const outcome=await teslamon.executeIntent(bound);
+        const outcome=await teslamon.executeIntent(bound,{signal});
         // Return only the typed MVP response shape.
         if(outcome?.status==='needs_selection')
           return {status:'needs_selection',choices:outcome.choices.map(x=>({
@@ -247,6 +252,11 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
           result.playbackPhase=outcome.playbackPhase;
         if(typeof outcome?.fullscreenMode==='string')
           result.fullscreenMode=outcome.fullscreenMode;
+        if(typeof outcome?.fullscreenStatus==='string')
+          result.fullscreenStatus=outcome.fullscreenStatus;
+        for(const field of ['mediaId','title','observedAt','audioObservation']){
+          if(typeof outcome?.[field]==='string')result[field]=outcome[field].slice(0,180);
+        }
         return result;
       });
     },

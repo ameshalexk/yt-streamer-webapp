@@ -46,6 +46,16 @@ const SAFE_STATUSES=new Set([
   'observed','accepted','failed','offline','uncertain','unsupported',
   'cancelled','needs_user_gesture'
 ]);
+const SAFE_FULLSCREEN_STATUSES=new Set([
+  'observed','needs_user_gesture','unsupported','uncertain','failed','cancelled'
+]);
+const VIDEO_ID=/^[A-Za-z0-9_-]{11}$/;
+const SAFE_AUDIO_OBSERVATIONS=new Set([
+  'idle','unknown','element_missing','element_paused','element_muted',
+  'element_buffering','element_playing_output_unverified'
+]);
+const safeTitle=value=>typeof value==='string'&&value.length>0?
+  value.replace(/[\x00-\x1f\x7f<>&]/g,'').slice(0,160):'';
 // Only the private coordinator may supply a custom outcome. Validate every
 // returned field before exposing it to MCP; never echo arbitrary relay content.
 function boundedCoordinatorOutcome(reply){
@@ -78,6 +88,17 @@ function boundedCoordinatorOutcome(reply){
     result.playbackPhase=reply.playbackPhase;
     result.fullscreenMode=['native','in_page','none','unknown'].includes(reply.fullscreenMode)?
       reply.fullscreenMode:'unknown';
+    result.fullscreenStatus=SAFE_FULLSCREEN_STATUSES.has(reply.fullscreenStatus)?
+      reply.fullscreenStatus:'uncertain';
+    if(VIDEO_ID.test(reply.mediaId||''))result.mediaId=reply.mediaId;
+    const title=safeTitle(reply.title);
+    if(title)result.title=title;
+    const observedAt=typeof reply.observedAt==='string'?
+      Date.parse(reply.observedAt):NaN;
+    if(Number.isFinite(observedAt)&&new Date(observedAt).toISOString()===reply.observedAt)
+      result.observedAt=reply.observedAt;
+    if(SAFE_AUDIO_OBSERVATIONS.has(reply.audioObservation))
+      result.audioObservation=reply.audioObservation;
   }
   if(typeof reply.code==='string'&&/^[a-z0-9_]{1,100}$/.test(reply.code))
     result.code=reply.code;
