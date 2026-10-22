@@ -41,12 +41,55 @@ export const TESLAMON_MCP_TOOLS=Object.freeze(TESLAMON_TOOLS.map(name=>Object.fr
   inputSchema:name==='search_and_play'?SEARCH_ARGS:NO_ARGS
 })));
 const serializeId=id=>JSON.stringify(id);
+const SAFE_PHASES=new Set(['idle','searching','buffering','playing','paused','ended','error','unknown']);
+const SAFE_STATUSES=new Set([
+  'observed','accepted','failed','offline','uncertain','unsupported',
+  'cancelled','needs_user_gesture'
+]);
+// Only the private coordinator may supply a custom outcome. Validate every
+// returned field before exposing it to MCP; never echo arbitrary relay content.
+function boundedCoordinatorOutcome(reply){
+  if(!PLAIN(reply)||typeof reply.status!=='string')
+    return {status:'uncertain',code:'invalid_coordinator_response'};
+  if(reply.status==='needs_selection'){
+    if(!Array.isArray(reply.choices)||reply.choices.length<2||
+      reply.choices.length>10)return {status:'uncertain',code:'invalid_choices'};
+    const choices=[];
+    for(const c of reply.choices){
+      if(!PLAIN(c)||typeof c.candidate_token!=='string'||
+        !/^[A-Za-z0-9_-]{16,96}$/.test(c.candidate_token)||
+        typeof c.title!=='string'||c.title.length<1||c.title.length>160||
+        /[\x00-\x1f\x7f]/.test(c.title)||
+        typeof c.creator!=='string'||c.creator.length>100||
+        /[\x00-\x1f\x7f]/.test(c.creator))
+        return {status:'uncertain',code:'invalid_choices'};
+      choices.push({
+        candidate_token:c.candidate_token,title:c.title,creator:c.creator
+      });
+    }
+    return {status:'needs_selection',choices};
+  }
+  if(!SAFE_STATUSES.has(reply.status))
+    return {status:'uncertain',code:'invalid_coordinator_status'};
+  const result={status:reply.status,observed:reply.status==='observed'};
+  if(reply.status==='observed'){
+    if(reply.observed!==true||!SAFE_PHASES.has(reply.playbackPhase))
+      return {status:'uncertain',code:'missing_verified_state'};
+    result.playbackPhase=reply.playbackPhase;
+    result.fullscreenMode=['native','in_page','none','unknown'].includes(reply.fullscreenMode)?
+      reply.fullscreenMode:'unknown';
+  }
+  if(typeof reply.code==='string'&&/^[a-z0-9_]{1,100}$/.test(reply.code))
+    result.code=reply.code;
+  return result;
+}
 
 export function createTeslaMonMcpHandler({
-  getAuthority, dispatch, clock=Date.now, makeId=randomUUID,
+  getAuthority, dispatch, executeIntent, clock=Date.now, makeId=randomUUID,
   responseTtlMs=60000,maxCompleted=128
 }={}){
   if(typeof getAuthority!=='function'||typeof dispatch!=='function'||
+    (executeIntent!==undefined&&typeof executeIntent!=='function')||
     typeof clock!=='function'||typeof makeId!=='function')
     throw new TypeError('private_authority_and_dispatch_required');
   let initialized=false,acknowledged=false,closed=false;
@@ -75,6 +118,15 @@ export function createTeslaMonMcpHandler({
         commandId:makeId(),now:clock()
       });
       if(!command.ok)return rpcResult(rpcId,asContent({status:'failed',code:command.error},true));
+      if(executeIntent){
+        const reply=await executeIntent(command,{signal:controller.signal});
+        if(controller.signal.aborted)return rpcResult(rpcId,
+          asContent({status:'uncertain',code:'cancelled_after_dispatch'},true));
+        const result=boundedCoordinatorOutcome(reply);
+        return rpcResult(rpcId,asContent(result,
+          ['failed','offline','uncertain','cancelled','unsupported','needs_user_gesture']
+            .includes(result.status)));
+      }
       const reply=await dispatch(command,{signal:controller.signal});
       if(controller.signal.aborted)
         return rpcResult(rpcId,asContent({status:'uncertain',code:'cancelled_after_dispatch'},true));
@@ -92,7 +144,7 @@ export function createTeslaMonMcpHandler({
       },['failed','offline','cancelled','uncertain'].includes(observed.status)));
     }catch{
       // Do not print exception detail: errors can contain private model/target data.
-      return rpcResult(rpcId,asContent({status:'failed',code:'private_dispatch_failed'},true));
+      return rpcResult(rpcId,asContent({status:'uncertain',code:'private_dispatch_uncertain'},true));
     }finally{
       if(active?.controller===controller)active=null;
     }

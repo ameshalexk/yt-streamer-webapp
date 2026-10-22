@@ -50,6 +50,7 @@ export async function openTeslaMonCommandLedger({
   const journalPath=path.join(dir,'teslamon-commands.jsonl');
   let lock,file,locked=false,closed=false;
   const commands=new Map(),activeTargets=new Set();
+  let quarantined=false;
   let pending=0,writeTail=Promise.resolve(),reservationTail=Promise.resolve();
   try{
     // Deliberate fail-closed behavior after a process crash. An operator
@@ -80,6 +81,9 @@ export async function openTeslaMonCommandLedger({
         commands.set(record.id,{...existing,status:record.status,finished:true});
       }
     }
+    // An interrupted start, or a recorded uncertain final outcome, must be
+    // reconciled before the process can safely send another mutation.
+    quarantined=[...commands.values()].some(entry=>entry.status==='uncertain');
   }catch(ex){
     await file?.close().catch(()=>{});
     if(locked){
@@ -138,6 +142,12 @@ export async function openTeslaMonCommandLedger({
     let fp;
     try{fp=fingerprint(command);}catch{return denied('invalid_mutation');}
     if(command.expiresAt<=now())return denied('expired_command');
+    if(quarantined){
+      const previous=commands.get(command.commandId);
+      if(previous)return previous.fp===fp?
+        uncertain('duplicate_suppressed'):denied('reused_id_with_different_command');
+      return uncertain('unreconciled_prior_mutation');
+    }
     if(signal?.aborted)return Object.freeze({status:'cancelled',code:'cancelled_before_reserve'});
     // Serialize per selected owner+tab+generation, independent of command UUID.
     const target=hash([command.binding.subject,command.binding.deviceKey,
@@ -164,8 +174,11 @@ export async function openTeslaMonCommandLedger({
       finally{clearTimeout(timer);}
       if(signal?.aborted)response=uncertain('cancelled_after_dispatch');
       const safeStatus=OUTCOMES.has(response?.status)?response.status:'uncertain';
-      if(!await finish(command,safeStatus))
+      if(!await finish(command,safeStatus)){
+        quarantined=true;
         return uncertain('journal_finalization_failed');
+      }
+      if(safeStatus==='uncertain')quarantined=true;
       return Object.freeze({
         status:safeStatus,
         ...(response?.code&&typeof response.code==='string'?
@@ -174,6 +187,8 @@ export async function openTeslaMonCommandLedger({
     }catch{
       // If reservation write fails, execute was never called. If finalization
       // failed, never claim rollback or retry; err toward uncertain.
+      // Journal integrity becomes uncertain even if the write failed early.
+      quarantined=true;
       return uncertain('journal_io_error');
     }finally{
       activeTargets.delete(target);
@@ -195,6 +210,7 @@ export async function openTeslaMonCommandLedger({
   return Object.freeze({
     run,close,get size(){return commands.size;},
     get pending(){return pending;},
+    get quarantined(){return quarantined;},
     get status(){return closed?'closed':'open';}
   });
 }
