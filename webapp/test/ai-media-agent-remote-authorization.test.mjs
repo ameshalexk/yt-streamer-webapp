@@ -28,6 +28,16 @@ test("rejects forgery, wrong issuer/audience, expiry, future or none algorithm",
  }
  assert.throws(()=>verifyAccessJwt(good,{...opts,jwks:{keys:[]}}),/unauthorized/);
 });
+test("signed Cloudflare app lifetime is accepted by trusted browser override only",()=>{
+ const longSession=makeJwt({exp:now+45*86400});
+ assert.throws(()=>verifyAccessJwt(longSession,opts),/unauthorized/);
+ assert.deepEqual(verifyAccessJwt(longSession,{...opts,maxTokenLifetimeSeconds:null}),
+   {subject:"owner-1",issuer,audience});
+ for(const claims of [{exp:now-1},{iat:now+200},{exp:now-100,iat:now-200},
+   {aud:"wrong"},{sub:""},{exp:now-1,nbf:now-10}]){
+   assert.throws(()=>verifyAccessJwt(makeJwt(claims),{...opts,maxTokenLifetimeSeconds:null}),/unauthorized/);
+ }
+});
 test("approvals scoped to verified principal, exact browser connection, action, expiry",()=>{
  let clock=1000;
  const registry=new BrowserApprovalRegistry({now:()=>clock});

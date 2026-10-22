@@ -42,3 +42,16 @@ Automated safety coverage: signed bootstrap, wrong audience/origin, tokenless WS
 ## 2026-10-22 Cloudflare reauthentication UI hotfix
 
 The existing AI panel has a visible **Sign in again** link even when AI is off, connecting, or repeatedly reconnecting. It navigates the current tab to the same **Access-protected** YT Streamer root at `/?ai_access_signin=1`; Cloudflare displays OTP when a new session is needed and otherwise reuses the valid session. This does **not** log out other Access applications or invent/bypass a Cloudflare login endpoint. Browser AJAX bootstrap now sets `X-Requested-With: XMLHttpRequest` (per Cloudflare's documented 401 response guidance), rejects invisible cross-origin redirects and shows direct sign-in instructions for authentication, redirect and WS errors. The script cache-bust changes to `20261022-ai-reauth-ui1`. No Cloudflare DNS, tunnel, Access policy or backend auth settings change.
+
+
+## 2026-10-22 production sign-in correction
+
+The prior Sign in again link navigated to the same YT Streamer root with an irrelevant querystring, which reloads the site when Cloudflare has already approved the session. A valid browser login can coexist with failing AI bootstrap: the prior TeslaMon production release restored obsolete Host equality and 24h JWT lifetime checks in the AI backend.
+
+Changes:
+- Restores previously deployed signed Cloudflare JWT behavior (pinned RS256/issuer/audience/subject/iat/nbf/exp) with actual policy session length accepted for the trusted browser path. Generic remote verifier keeps its stricter default.
+- Accepts valid signed edge assertions even when the independent browser cookie was rotated; never downgrades an invalid edge assertion to a cookie.
+- Uses exact trusted public Origin, request metadata, signed app JWT but does not require the Cloudflare tunnel's internal Host to match browser Origin.
+- Explicit Sign out & sign in now uses Cloudflare's documented /cdn-cgi/access/logout endpoint, not a same-site reload; this logs the user out across Access apps. No automatic logout or new AI account.
+- Preserves TeslaMon local player and streaming transport. Cache-busts the browser client.
+- Adds long-session, Host rewrite, cookie rotation, bad signature, logout route and responsive UI regression tests. Both platforms CI and owner device acceptance remain separate.

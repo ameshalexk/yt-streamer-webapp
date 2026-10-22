@@ -24,8 +24,8 @@ try{
     else await route.fulfill({status:401,contentType:'application/json',body:'{"error":"signed_access_required"}'});
    }else if(url.pathname==='/ai-media-agent-production.js'){
     await route.fulfill({status:200,contentType:'application/javascript',body:client});
-   }else if(url.searchParams.get('ai_access_signin')==='1'){
-    await route.fulfill({status:200,contentType:'text/html',body:'<html><title>Cloudflare reauth navigation fixture</title><h1>Access check navigation reached</h1></html>'});
+   }else if(url.pathname==='/cdn-cgi/access/logout'){
+    await route.fulfill({status:200,contentType:'text/html',body:'<html><title>Cloudflare Access logout fixture</title><h1>Cloudflare session ended</h1><a href="/">Sign in again</a></html>'});
    }else if(url.pathname==='/'){
     await route.fulfill({status:200,contentType:'text/html',body:'<html><body><main>YT Streamer</main><script src="/ai-media-agent-production.js"></script></body></html>'});
    }else await route.fulfill({status:404,body:'not found'});
@@ -34,20 +34,19 @@ try{
   await page.goto('https://stream.ameshalex.com/');
   const signIn=page.locator('#aiMediaProductionSignIn');
   await signIn.waitFor({state:'visible',timeout:5000});
-  assert.equal(await signIn.innerText(),'Sign in again');
-  assert.equal(new URL(await signIn.getAttribute('href'),'https://stream.ameshalex.com/').pathname,'/');
-  assert.equal(new URL(await signIn.getAttribute('href'),'https://stream.ameshalex.com/').searchParams.get('ai_access_signin'),'1');
+  assert.equal(await signIn.innerText(),'Sign out & sign in');
+  assert.equal(new URL(await signIn.getAttribute('href'),'https://stream.ameshalex.com/').pathname,'/cdn-cgi/access/logout');
   if(optIn){
-   await page.waitForFunction(()=>/sign-in required|login or network check failed/.test(document.querySelector('#aiMediaProductionStatus')?.textContent||''));
+   await page.waitForFunction(()=>/authorization rejected|session or network verification failed/.test(document.querySelector('#aiMediaProductionStatus')?.textContent||''));
    assert.equal(header,'XMLHttpRequest','Cloudflare AJAX 401 hint must be set');
    assert.ok(bootstraps>=1,'signed bootstrap should be attempted');
   }else assert.equal(bootstraps,0,'disabled AI must not attempt authentication');
   const overflows=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
   assert.equal(overflows,false,'auth controls must not overflow small phone screens');
   await signIn.click();
-  await page.waitForURL(u=>new URL(u).searchParams.get('ai_access_signin')==='1',{timeout:5000});
-  assert.match(await page.locator('h1').innerText(),/Access check navigation reached/);
-  console.log('PASS '+name+': persistent Sign in again link, full-page navigation, auth handling, responsive');
+  await page.waitForURL(u=>new URL(u).pathname==='/cdn-cgi/access/logout',{timeout:5000});
+  assert.match(await page.locator('h1').innerText(),/Cloudflare session ended/);
+  console.log('PASS '+name+': real Cloudflare logout navigation, full-page navigation, auth handling, responsive');
   await context.close();
  }
 }finally{await browser.close();}
