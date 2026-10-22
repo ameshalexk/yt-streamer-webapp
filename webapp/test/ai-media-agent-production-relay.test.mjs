@@ -155,6 +155,21 @@ test('signed HTTP bootstrap is required; tickets are single-use; unauthenticated
  setRelay(relay);
  t.after(async()=>{await relay.close();await new Promise(r=>server.close(r));await fs.rm(dir,{recursive:true,force:true});});
  const port=server.address().port;
+ // Same-tab voice identity uses the existing signed Access seam. It must not
+ // require matching the tunneled internal Host and does not mint a WSS ticket.
+ const voiceRequest=token=>({method:'POST',headers:{
+   origin,host:'127.0.0.1:8099','sec-fetch-site':'same-origin',
+   'cf-access-jwt-assertion':token}});
+ const voiceOwner=await relay.authenticateTeslaMonVoice(voiceRequest(jwt()));
+ assert.equal(voiceOwner.subject,'browser-user');
+ assert.equal(relay.devices().length,0);
+ for(const denied of [voiceRequest('unsigned'),
+   {...voiceRequest(jwt()),headers:{...voiceRequest(jwt()).headers,
+     origin:'https://foreign.test'}},
+   voiceRequest(jwt({aud:'wrong-app'}))]){
+   await assert.rejects(()=>relay.authenticateTeslaMonVoice(denied),
+     /trusted_browser_denied/);
+ }
  assert.equal((await bootstrap(port,'not-a-jwt')).status,401);
  assert.equal((await bootstrap(port,jwt(),'https://attacker.test')).status,401);
  const claim=await bootstrap(port,jwt());
