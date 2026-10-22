@@ -142,7 +142,10 @@ export function streamJxl(req, res, options, buildBaseArgs, onCleanup = () => {}
     res.status(503).json({ error: status.reason, fallback: "mjpeg" });
     return false;
   }
-  const params = { ...options.params, fps: Math.min(12, options.params.fps) };
+  // Standard native JXL stays at 12 FPS. Only explicit WASM opt-in may
+  // request the tested higher ceiling; the client probes decoder speed first.
+  const wasmOptIn = req.query?.wasm === "1";
+  const params = { ...options.params, fps: Math.min(wasmOptIn ? 15 : 12, options.params.fps) };
   const args = buildJxlArgs(buildBaseArgs({ ...options, params, framed: false }), params.quality);
   const ffmpegPath = jxlFfmpegPath();
   const ff = spawn(ffmpegPath, args, { stdio: ["ignore", "pipe", "pipe", "pipe"] });

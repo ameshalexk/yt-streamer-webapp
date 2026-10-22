@@ -22,9 +22,11 @@ const routes=[];
 const server=http.createServer((req,res)=>{
   if(req.url.startsWith("/stream")){
     routes.push(req.url);
-    const seek=Number(new URL(req.url,"http://localhost").searchParams.get("seek")||0);
+    const query=new URL(req.url,"http://localhost").searchParams;
+    const seek=Number(query.get("seek")||0);
+    const fps=Number(query.get("fps")||6);
     streamJxl(req,res,{
-      input:mp4,params:{height:180,fps:6,quality:7},isLive:false,
+      input:mp4,params:{height:180,fps,quality:7},isLive:false,
       startAt:seek,allowBurst:true
     },buildMjpegArgs);
     return;
@@ -37,8 +39,8 @@ try{
  const page=await browser.newPage();
  await page.goto("http://127.0.0.1:"+server.address().port+"/");
  await page.addScriptTag({path:"public/buffered-mjpeg.js"});
- for(const seek of [0,1]){
-   const outcome=await page.evaluate(seek=>new Promise(resolve=>{
+ for(const {seek,fps,wasm} of [{seek:0,fps:6,wasm:false},{seek:1,fps:6,wasm:false},{seek:2,fps:15,wasm:true}]){
+   const outcome=await page.evaluate(({seek,fps,wasm})=>new Promise(resolve=>{
      const canvas=document.createElement("canvas"); canvas.width=320;canvas.height=180;document.body.append(canvas);
      let done=false;
      const finish=(which,error)=>{
@@ -48,17 +50,17 @@ try{
        resolve({which,received:stats.receivedFrames,rendered:stats.renderedFrames,error:error?String(error):null});
      };
      const player=new window.BufferedMjpeg.BufferedMjpegPlayer({
-       url:"/stream?seek="+seek,canvas,fps:6,frameFormat:"jxl",startupSeconds:.3,rebufferSeconds:.3,
+       url:"/stream?seek="+seek+"&fps="+fps+(wasm?"&wasm=1":""),canvas,fps,frameFormat:"jxl",startupSeconds:.3,rebufferSeconds:.3,
        audioEnabled:()=>false,onError:e=>finish("error",e),onEnded:()=>finish("ended")
      });
      player.start();setTimeout(()=>finish("timeout"),10000);
-   }),seek);
-   console.log("seek",seek,outcome);
+   }),{seek,fps,wasm});
+   console.log("seek",seek,"fps",fps,"wasm",wasm,outcome);
    assert.equal(outcome.which,"ended","Real stream should end normally");
    assert.ok(outcome.received>=10 && outcome.rendered>0,"JXL frames must reach canvas");
  }
- assert.equal(routes.length,2);
- console.log("PASS real source+audio-track input, real MJPEG builder, JXL encode+HTTP+Chrome canvas, seek=0/1.");
+ assert.equal(routes.length,3);
+ console.log("PASS real source+audio-track input, real MJPEG builder, JXL encode+HTTP+Chrome canvas, seek=0/1 and WASM-opt-in 15fps seek=2.");
 }finally{
  await browser.close();await new Promise(ok=>server.close(ok));fs.rmSync(folder,{recursive:true,force:true});
 }

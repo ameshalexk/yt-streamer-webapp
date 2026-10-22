@@ -54,6 +54,9 @@ jobs:
         working-directory: webapp
       - run: npm test
         working-directory: webapp
+      - name: Isolated JXL WebAssembly browser smoke (experimental)
+        run: npm run test:jxl-wasm
+        working-directory: webapp
       - name: Packaging and release regression tests
         run: |
           python3 -m unittest discover -s ha-addon/tests -v
