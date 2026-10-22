@@ -1,43 +1,37 @@
 # TeslaMon isolated Mac staging — 2026-10-22
 
-## Status
+**Latest status:** Mac staging is running; the separate public HTTPS hostname is DNS-routed and protected by Cloudflare Access. Google is configured as a Cloudflare identity provider, but **a successful Google login by ameshalexusa@gmail.com has NOT yet been verified**. The Google OAuth project is in *Testing* mode; its Audience page still visibly listed only `ameshalex@gmail.com` as a tester after attempts to add `ameshalexusa@gmail.com`. Treat owner Google login as a release **blocker**, not a completed test. Do not merge or deploy production.
 
-- A private Mac staging process is installed as user LaunchAgent `com.amesh.teslamon.staging` on **127.0.0.1:8107**, **not exposed on the internet or LAN**.
-- Existing production YT Streamer remains on **127.0.0.1:8099** and is not modified or restarted. Existing prod Cloudflare tunnel `yt-streamer` is also unchanged.
-- Source worktree: `/Users/amesh/Developer/ytstreamer-teslamon-staging-20261022`, branch `feature/teslamon-staging-20261022`, forked from immutable Mac MVP review commit `f4412102b571e89a306616595aa3857e07f0e218` (draft PR #85).
-- Staging hostname reserved in the source/config: `https://teslamon-stage.ameshalex.com`. **Not currently DNS-routed or publicly accessible. Do NOT label it live until an Access policy is installed and end-to-end verified.**
-- Separate named Cloudflare tunnel `teslamon-stage` (UUID `4d562ecd-93f5-4179-9802-f6c68a981edf`) has a private credential file and an ingress config `~/.cloudflared/teslamon-stage.yml` mapping this hostname to localhost:8107. Ingress config validated. **Tunnel intentionally stopped; no DNS route published.** No public staging traffic can reach it at this point.
-- The existing Cloudflare Access audience and team domain are read at startup from the production launch-agent plist **without copying tokens**, but stage uses isolated `YT_AI_AGENT_CONTROL_DIR`. If Cloudflare protects staging as a *separate* Access application, the staging `YT_AI_AGENT_ACCESS_AUDIENCE` must be changed to the new application AUD before browser sign-in tests; never loosen JWT verification.
+## Staging vs production
 
-## Isolation / service controls
+- Staging source branch: `feature/teslamon-staging-20261022`, latest running code `3583ee85264ad7c485c50c99b430fb617db9b79e`; draft PR #87 stacked on Mac MVP draft PR #85.
+- Mac staging service: `com.amesh.teslamon.staging`, `127.0.0.1:8107`, private separate data/control/library/chrome-profile dirs beneath `~/Library/Application Support/TeslaMonStaging/`. Stage launcher `run-stage.py` enables `YT_TESLAMON_ENABLED=1`, `YT_TESLAMON_STAGING=1`; the unrelated APNE background scanner is disabled.
+- Mac production: separate `127.0.0.1:8099`, health passing at revision `4a846e53759969ac1076d69c2ef86dc5acd9a1a5`. Production process and source were neither restarted nor modified. **Caveat:** adding a new Google identity provider is a Cloudflare *account-wide* integration and could change login provider options for other Access applications that permit all IdPs; existing app allow/deny policies were not edited.
+- Staging HTTPS: `https://teslamon-stage.ameshalex.com/`, attached only to separate named Cloudflare Tunnel `teslamon-stage` ID `4d562ecd-93f5-4179-9802-f6c68a981edf`. Dedicated tunnel LaunchAgent `com.amesh.teslamon.staging-tunnel` runs `cloudflared --config ~/.cloudflared/teslamon-stage.yml tunnel run teslamon-stage`; ingress proxies only the stage hostname to `http://127.0.0.1:8107`, otherwise 404. DNS route for the hostname was created 2026-10-22.
+- Cloudflare Access self-hosted application **TeslaMon Staging**, ID `b6243c32-f277-4340-ab47-d34a1bcb0da4`, exact destination `teslamon-stage.ameshalex.com`.
+- Access policy **TeslaMon staging Google owner**, ID `3bf80b93-75a6-4053-b12d-b53c4895237d`, Allow *Emails* selector set only to `ameshalexusa@gmail.com`; no Everyone rule or Bypass rule created.
+- Stage Access audience tag `225020893dd2bde3e47990bac07f13352b9f954a40376120fe46e3e5d8fcefe8`, verified from the Cloudflare Access unauthenticated redirect's metadata and configured as stage-only `YT_AI_AGENT_ACCESS_AUDIENCE` in private stage launcher. Production Access audience was not changed.
+- Google Cloud project **YT Streamer OAuth**, OAuth client **Cloudflare TeslaMon Google Sign-In**, type Web application; authorized origin `https://ameshalex.cloudflareaccess.com` and redirect `https://ameshalex.cloudflareaccess.com/cdn-cgi/access/callback`. The created client ID/secret were entered into a **Google TeslaMon Owner** Cloudflare identity provider. Keep client secret in Cloudflare/Google Cloud only; do not copy it to GitHub or Obsidian. Google Workspace is NOT required.
 
-- Stage runtime directory: `~/Library/Application Support/TeslaMonStaging`, privately owned (0700).
-- Isolated paths: `data/`, `library/`, `apne/`, `control/`, `chrome-profile/`; no reads/writes to production YT Streamer library, profile or control socket.
-- Staging launcher: `~/Library/Application Support/TeslaMonStaging/run-stage.py`; launch agent: `~/Library/LaunchAgents/com.amesh.teslamon.staging.plist`. No API secret embedded in repo. Port 8107 loopback-only.
-- The Mac env has `YT_TESLAMON_ENABLED=1` only in staging. `YT_TESLAMON_STAGING=1` disables the unrelated APNE background scanner, and `YT_TESLAMON_STAGING_SHA` is derived from the exact staging Git HEAD to identify the process without modifying tracked source files. `TESLAMON_OPENAI_API_KEY` and `TESLAMON_OPENAI_MODEL` are not supplied, therefore no paid model calls. Staging also has no private Whisper model configured, therefore text controls and browser-native speech support only where the browser provides it.
-- To inspect locally: `curl http://127.0.0.1:8107/api/health`.
-- To stop without touching production: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.amesh.teslamon.staging.plist`.
-- To restart only staging: `launchctl kickstart -k gui/$(id -u)/com.amesh.teslamon.staging`.
-- To stop external tunnel later if enabled, use its separate launch agent or `cloudflared tunnel cleanup teslamon-stage` **only after verifying tunnels**; never stop or edit existing `yt-streamer` tunnel.
+## Current verification and unresolved OAuth gate
 
-## Security verification (actual local endpoints)
+- `GET http://127.0.0.1:8107/api/health`: 200; reports exact stage revision.
+- `GET https://teslamon-stage.ameshalex.com/` without a login: **HTTP 302** to `https://ameshalex.cloudflareaccess.com/cdn-cgi/access/login/...` **before origin content**. HTML on the Access login page identifies **Google TeslaMon Owner** as an available login method.
+- Staging endpoint without signed Access JWT: **401 signed_access_required**. Cross-origin POST: **403 wrong_origin** (previous private tests). Existing production 8099 remains healthy.
+- Stage source: `npm --prefix webapp test` **609/609 pass**; `npm run check` passed. Isolated local headless Chrome pet overlay smoke: **7/7** viewport combinations Classic/New, including 320/375/390/430 width and 844x390 landscape. The 390px overflow issue was fixed.
+- **Unverified:** Google OAuth authorization as the requested owner email. The OAuth Audience was *Testing* and displayed one registered tester `ameshalex@gmail.com`. Browser attempts to add `ameshalexusa@gmail.com` did not persist; Google login can therefore fail with `403 access_denied` / unapproved test-user error. A successful Cloudflare redirect and a visible Google provider DO NOT establish successful sign-in. Before inviting the user to test, add the owner account to Google Cloud project's OAuth Audience > Test users (or properly publish a minimal-scopes OAuth app) and verify a complete Google sign-in, signed staging JWT, exact-browser pairing and command.
+- No physical iPhone/Tesla, live microphone, paid model inference or real personal playback accepted. Optional Whisper model is not configured. Default typed commands remain available only after authenticated owner login.
 
-- `GET http://127.0.0.1:8107/api/health`: 200, staging process on private port, with `release.revision` equal to the staging branch's exact Git SHA.
-- `POST /api/teslamon/devices` with matching staged Host, HTTPS forwarded proto, Origin and no signed JWT: **401 signed_access_required**.
-- `POST /api/teslamon/command` with mismatched/cross-site Origin: **403 wrong_origin**.
-- Separate production 8099 still responds normally; process not restarted.
-- Full Node unit and signed two-WebSocket relay fixture suite passed in source PR #85 (609/609). Stage-specific origin override static check returned exact `https://teslamon-stage.ameshalex.com`.
-- Isolated local headless Chrome UI smoke via `~/Library/Application Support/TeslaMonStaging/browser-smoke.mjs`: routes the not-yet-published HTTPS staging hostname to the loopback instance without touching external users or credentials. The pet overlay opens and stays within viewport at **320x568, 375x667, 390x844, 430x932, 768x1024, 1024x768 and 844x390**, Classic/New selections, and mic button reaches 44px. An initial 390px panel overflow was fixed by measuring actual CSS panel width.
-- These are local developer and unauthenticated security tests, NOT public Cloudflare, real microphone, iPhone or parked Tesla acceptance.
+## Safe next steps
 
-## Required single external setup step before user device testing
+1. Open the OAuth Audience for project `yt-streamer-oauth` under the Google Cloud account with project permission; **add `ameshalexusa@gmail.com` as a TEST USER and confirm the list contains it** (or publish after Branding completion). Do not claim it was added solely because the text was typed in the form.
+2. Test fresh browser Google sign-in to `https://teslamon-stage.ameshalex.com/` using `ameshalexusa@gmail.com`, confirm signed Access JWT has the staging AUD tag, and check owner-only restrictions.
+3. Check two browser sessions with selected/decoy tab, search/play, pause/resume, fullscreen and reconnect; then later iPhone Safari and *parked* Tesla browser with owner approval. Do not test microphone before user permission.
+4. Keep both feature PRs draft and both platform release gates separate; **do not deploy to production without approval**.
 
-In Cloudflare Zero Trust, configure an **Access self-hosted application** protecting `teslamon-stage.ameshalex.com`, restricted to the owner's existing identity/email with the same strict authentication policy as the production YT Streamer. Prefer a separate staging application, and note its **Application AUD tag** (not a secret). Do not rely on an unprotected DNS route or a bare Cloudflare Tunnel.
+## Service and rollback
 
-Once protection is configured:
-1. Set the stage launcher to the new Access Application AUD tag; verify signed controller JWT from the staging app on localhost and ensure forged/mismatched JWT fails. Keep existing prod audience unchanged.
-2. Create staging-only DNS CNAME route via `cloudflared tunnel route dns teslamon-stage teslamon-stage.ameshalex.com` and start **only** the new tunnel/config. Confirm Access challenges occur *before* origin traffic.
-3. Verify browser HTTPS, session/WS pairing, selected and decoy browser, pet overlay, typed controls. Only then give user the stage URL for iPhone/parked Tesla acceptance.
-4. No merge, restart or deployment to production. Stage fallback is stop staging tunnel, then staging launch agent; leave data private.
-
-Do not present a localhost-only service or merely configured tunnel as a ready public staging URL. No user API keys, cookies or JWT strings should be copied to notes.
+- Staging site stop: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.amesh.teslamon.staging.plist`
+- Staging public ingress stop: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.amesh.teslamon.staging-tunnel.plist`
+- Stage startup: bootstrap its own private plist only. Never stop the `yt-streamer` production Cloudflare tunnel or production app service.
+- Logs under `~/Library/Application Support/TeslaMonStaging/{server.log,server.err.log,tunnel.log,tunnel.err.log}`. Avoid copying cookies/JWTs, raw audio, API credentials or OAuth client secrets into notes.
