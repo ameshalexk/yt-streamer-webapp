@@ -252,7 +252,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   }
   function alignPanel(){
     const bounds=pet.getBoundingClientRect();
-    const width=Math.min(336,Math.max(200,innerWidth-16));
+    // Mobile CSS uses a wider panel than desktop. Measure the actual box to
+    // keep it within viewport safe edges after opening, dragging or rotation.
+    const width=panel.getBoundingClientRect().width||Math.min(336,Math.max(200,innerWidth-16));
     const desired=bounds.right-width;
     const left=Math.max(8,Math.min(innerWidth-width-8,desired));
     panel.style.left=(left-bounds.left)+'px';

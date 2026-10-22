@@ -27,6 +27,7 @@
 - `POST /api/teslamon/command` with mismatched/cross-site Origin: **403 wrong_origin**.
 - Separate production 8099 still responds normally; process not restarted.
 - Full Node unit and signed two-WebSocket relay fixture suite passed in source PR #85 (609/609). Stage-specific origin override static check returned exact `https://teslamon-stage.ameshalex.com`.
+- Isolated local headless Chrome UI smoke via `~/Library/Application Support/TeslaMonStaging/browser-smoke.mjs`: routes the not-yet-published HTTPS staging hostname to the loopback instance without touching external users or credentials. The pet overlay opens and stays within viewport at **320x568, 375x667, 390x844, 430x932, 768x1024, 1024x768 and 844x390**, Classic/New selections, and mic button reaches 44px. An initial 390px panel overflow was fixed by measuring actual CSS panel width.
 - These are local developer and unauthenticated security tests, NOT public Cloudflare, real microphone, iPhone or parked Tesla acceptance.
 
 ## Required single external setup step before user device testing
