@@ -2258,7 +2258,10 @@ app.post('/api/ai-agent/bootstrap',async(req,res)=>{
   res.set('Cache-Control','no-store');
   if(!productionMediaRelay)return res.status(503).json({error:'agent_unavailable'});
   try{return res.json(await productionMediaRelay.bootstrap(req));}
-  catch{return res.status(401).json({error:'signed_access_required'});}
+  catch(error){
+    console.warn('[ai-media] bootstrap rejected:',error?.authCode||'auth_service_error');
+    return res.status(401).json({error:'signed_access_required'});
+  }
 });
 
 // Static SPA (served last so API routes win).
