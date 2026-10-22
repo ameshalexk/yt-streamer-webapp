@@ -72,6 +72,7 @@
       mode, playback_phase, paused: active ? Boolean(playbackPaused) : true,
       position_seconds: active ? number(getStreamCurrentTime?.()) : 0,
       duration_seconds: active ? number(streamSeek?.duration) : 0,
+      fullscreen_kind: globalThis.YTStreamerTeslaMonFullscreen?.kind?.() || 'none',
       rendered_frames: Number.isFinite(stats?.renderedFrames) ? stats.renderedFrames : null,
       observed_at: new Date().toISOString(),
     };
@@ -95,6 +96,19 @@
         creator: String(item.channelTitle || "").slice(0, 100),
         duration_seconds: Number.isFinite(item.duration) ? item.duration : null,
       })) } };
+    }
+    if (action === 'request_fullscreen' || action === 'exit_fullscreen') {
+      const hooks=globalThis.YTStreamerTeslaMonFullscreen;
+      if(!hooks?.kind)return {status:'unsupported',error:'fullscreen_unavailable'};
+      try{
+        if(action==='request_fullscreen')await hooks.enter();
+        else await hooks.exit();
+      }catch{return {status:'needs_user_gesture',state:stateSnapshot()};}
+      const newState=stateSnapshot();
+      const targetKind=action==='request_fullscreen'?
+        ['native','in_page'].includes(newState.fullscreen_kind):
+        newState.fullscreen_kind==='none';
+      return {status:targetKind?'completed':'needs_user_gesture',state:newState};
     }
     if (action === "play_media") {
       const item = results.get(args.media_id);

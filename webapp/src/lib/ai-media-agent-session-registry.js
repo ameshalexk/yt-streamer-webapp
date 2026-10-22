@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 // Transport-neutral core: callers of this module must independently authenticate
 // the owner and browser at ingress. Pairing validation deliberately defaults DENY.
-const MUTATIONS = new Set(["play_media", "pause", "resume", "stop", "next", "seek", "set_volume", "request_fullscreen"]);
+const MUTATIONS = new Set(["play_media", "pause", "resume", "stop", "next", "seek", "set_volume", "request_fullscreen", "exit_fullscreen"]);
 const READS = new Set(["get_player_state", "search_media"]);
 const VALID_STATUSES = new Set(["completed", "failed", "unsupported", "needs_user_gesture", "accepted", "playing", "paused", "buffering"]);
 const VALID_PHASES = new Set(["idle", "playing", "paused", "buffering", "failed", "needs_user_gesture"]);

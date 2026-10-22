@@ -30,7 +30,7 @@ async function demo(fn,{results=1,autoAck=true,timeoutMs=100}={}){
     const peers=[];
     const subject='fixture-signed-user',controllerId='verified-controller';
     for(let i=0;i<2;i++){
-      const state={media_id:V[0],playback_phase:'playing'};
+      const state={media_id:V[0],playback_phase:'playing',fullscreen_kind:'none'};
       active.set(i,state);
       const connectionId=C[i];
       const device=registry.register({
@@ -42,6 +42,8 @@ async function demo(fn,{results=1,autoAck=true,timeoutMs=100}={}){
               state.media_id=frame.args.media_id;state.playback_phase='playing';
             }else if(frame.action==='pause')state.playback_phase='paused';
             else if(frame.action==='resume')state.playback_phase='playing';
+            else if(frame.action==='request_fullscreen')state.fullscreen_kind='in_page';
+            else if(frame.action==='exit_fullscreen')state.fullscreen_kind='none';
             registry.acknowledge({
               principal:'owner',deviceId:device.device_id,
               connectionId,commandId:frame.command_id,
@@ -158,12 +160,17 @@ test('pause and resume prove state with readback; only mutations hit journal',as
   });
 });
 
-test('fullscreen clearly unsupported, without player mutation or journal write',async()=>{
+test('fullscreen runs through exact tab and verifies entry and exit readback',async()=>{
   await demo(async x=>{
-    assert.equal((await x.call(3,'request_fullscreen')).status,'unsupported');
-    assert.equal((await x.call(4,'exit_fullscreen')).status,'unsupported');
-    assert.equal(x.sent.length,0);
-    assert.equal(x.ledger.size,0);
+    const entered=await x.call(3,'request_fullscreen');
+    assert.equal(entered.status,'observed');
+    assert.equal(entered.fullscreenMode,'in_page');
+    const exited=await x.call(4,'exit_fullscreen');
+    assert.equal(exited.status,'observed');
+    assert.equal(exited.fullscreenMode,'none');
+    assert.deepEqual(x.sent.map(x=>x.frame.action),
+      ['request_fullscreen','get_player_state','exit_fullscreen','get_player_state']);
+    assert.equal(x.ledger.size,2);
   });
 });
 

@@ -5,7 +5,7 @@ import {createTeslaMonSelectedRelay} from './teslamon-selected-relay.js';
 import {createTeslaMonCandidateService} from './teslamon-candidates.js';
 import {createTeslaMonMcpHandler} from './teslamon-private-mcp.js';
 
-const MUTATIONS=new Set(['play_media','pause','resume']);
+const MUTATIONS=new Set(['play_media','pause','resume','request_fullscreen','exit_fullscreen']);
 const SNAPSHOTS=new Set(['idle','playing','paused','buffering','failed','needs_user_gesture']);
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const out=(status,code)=>({status,...(code?{code}:{})});
@@ -93,13 +93,13 @@ export function createTeslaMonPrivateCoordinator({
       return out('offline','selected_tab_changed');
     if(command.tool==='search_and_play')
       return candidates.searchAndPlay({tool:command.tool,args:command.args});
-    if(command.tool==='request_fullscreen'||command.tool==='exit_fullscreen')
-      return out('unsupported','fullscreen_not_integrated');
+
     if(command.tool==='get_playback_state'){
       const read=await issueRead(command.binding,command.expiresAt,{signal});
       return shapeState(read,clock);
     }
-    if(command.tool!=='pause'&&command.tool!=='resume')
+    if(command.tool!=='pause'&&command.tool!=='resume'&&
+      command.tool!=='request_fullscreen'&&command.tool!=='exit_fullscreen')
       return out('failed','unsupported_intent');
     const action=command.tool;
     const ack=await route({
@@ -112,7 +112,9 @@ export function createTeslaMonPrivateCoordinator({
     const result=shapeState(read,clock);
     if(result.status!=='observed')return result;
     if((action==='pause'&&result.playbackPhase==='paused')||
-      (action==='resume'&&result.playbackPhase==='playing'))return result;
+      (action==='resume'&&result.playbackPhase==='playing')||
+      (action==='request_fullscreen'&&['native','in_page'].includes(result.fullscreenMode))||
+      (action==='exit_fullscreen'&&result.fullscreenMode==='none'))return result;
     return out('accepted','state_not_yet_confirmed');
   }
   return Object.freeze({
