@@ -30,3 +30,6 @@ webapp/.venv-ytdlp/
 # Generated release artifacts and native helper build output
 dist/
 webapp/native/build/
+
+# Ignore node_modules both directories and symlinks
+/webapp/node_modules

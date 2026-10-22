@@ -13,7 +13,8 @@ test("Actual codec is distinct from selected playback preference and visible at 
  assert.match(app,/function updateActivePlaybackStatus\(\)/);
  assert.match(app,/activeCompat\?\.frameFormat === "jxl"/);
  assert.match(app,/screen\?\.classList\.contains\("cyberdash-mode"\)/);
- assert.match(app,/JPEG XL · JXL/);
+ assert.match(app,/JPEG XL · native JXL/);
+ assert.match(app,/JPEG XL · WebAssembly/);
  assert.match(app,/WebCodecs · H\.264/);
  assert.match(app,/MJPEG · JPEG frames/);
  assert.match(html,/aria-live="polite"/);
@@ -48,4 +49,20 @@ test("Codec mode visually distinguishes actual output and JXL requires explicit 
  assert.match(html,/green outline and dot/);
  assert.match(app,/\["mjpeg", "webcodecs"\]\.includes\(localStorage\.getItem/);
  assert.match(app,/if \(next === "jxl"\) localStorage\.removeItem/);
+});
+
+test("JXL WebAssembly experimental mode is explicit and bounded with MJPEG fallback",()=>{
+ const ui=app.match(/\$\("#playbackMethodToggle"\)\?\.addEventListener\("click", async \(event\) => \{[\s\S]*?(?=\$\("#playbackSpeedSelect"\))/)?.[0];
+ assert.ok(ui, "mode-click handler missing");
+ assert.match(ui,/if \(next === "jxl"\) \{/);
+ assert.match(ui,/await import\("\/experimental\/jxl-wasm\/decoder-client\.mjs"\)/);
+ assert.match(ui,/if \(next === "jxl"\) localStorage\.removeItem/);
+ assert.match(ui,/releaseJxlWasmDecoder\(\)/);
+ assert.match(app,/const chosenFps = jxlWasmDecoder\.profile\?\.fps === 15 \? 15 : 12/);
+ assert.match(app,/bufferedUrl = withUrlParam\(withUrlParam\(bufferedUrl, "height", "480"\), "fps", String\(chosenFps\)\)/);
+ assert.match(app,/replacedWasmPlayback = activeCompat\?\.buffered && activeCompat\?\.decodeEngine === "wasm"/);
+ assert.match(app,/jxlWasmDecoder = previous\.recreate\(\)/);
+ assert.match(app,/frameDecoder: meta\.experimentalJxl && jxlWasmDecoder/);
+ assert.match(app,/jxlFallbackInProgress = true/);
+ assert.match(app,/JPEG XL · WebAssembly/);
 });

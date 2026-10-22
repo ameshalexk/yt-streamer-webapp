@@ -6,6 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
+import {startProductionMediaRelay} from "./lib/ai-media-agent-production-relay.js";
 import * as store from "./lib/store.js";
 import * as storageManager from "./lib/storage-manager.js";
 import { findSavedPlayback } from "./lib/saved-playback.js";
@@ -2278,3 +2279,22 @@ httpServer = app.listen(config.port, config.host, () => {
   console.log(`  → library: ${config.libraryDir}`);
   console.log(`  → point your Cloudflare Tunnel at http://${config.host}:${config.port}\n`);
 });
+
+// Opt-in same-origin WSS receives only Cloudflare Access signed browser sessions.
+// The Mac Control command endpoint is a private 0600 Unix socket, never HTTP.
+if(process.env.YT_AI_AGENT_ACCESS_AUDIENCE && process.env.YT_AI_AGENT_CONTROL_DIR){
+  try {
+    const productionMediaRelay=await startProductionMediaRelay({
+      server:httpServer,controlDir:process.env.YT_AI_AGENT_CONTROL_DIR,
+      teamDomain:process.env.YT_AI_AGENT_ACCESS_TEAM_DOMAIN || 'ameshalex.cloudflareaccess.com',
+      audience:process.env.YT_AI_AGENT_ACCESS_AUDIENCE,
+      allowedSubjects:(process.env.YT_AI_AGENT_ALLOWED_SUBJECTS || '').split(',').map(x=>x.trim()).filter(Boolean),
+    });
+    console.log('[ai-media] private Mac Control bridge enabled');
+    for (const signal of ['SIGTERM','SIGINT']) process.once(signal,()=>{
+      void productionMediaRelay.close().finally(()=>process.exit(0));
+    });
+  } catch(error) {
+    console.error('[ai-media] disabled: ',error.message);
+  }
+}

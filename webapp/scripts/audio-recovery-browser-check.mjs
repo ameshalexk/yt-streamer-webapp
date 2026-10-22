@@ -92,7 +92,7 @@ try{
    activeCompat.frameFormat="jxl";
    updateActivePlaybackStatus();
  });
- assert.match(await page.locator("#activePlaybackCodec").textContent(),/JPEG XL · JXL/);
+ assert.match(await page.locator("#activePlaybackCodec").textContent(),/JPEG XL · (?:native )?JXL/);
 
  // Exhaust all bounded automatic retries, verify the UI does not claim sound,
  // then allow recovery by tapping the visible manual control.
