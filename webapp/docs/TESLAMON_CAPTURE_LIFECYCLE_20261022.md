@@ -71,3 +71,39 @@ passed, existing `npm run check` passed, and staged diff whitespace check passed
 Independent source review identified missing chunk MIME validation; it was fixed
 and regression-covered before push. No hosted or both-platform CI result is
 claimed by these local checks.
+
+## Capture button binding continuation
+
+The new `public/teslamon-capture-binding.js` provides an unmounted event adapter
+for a future pet UI button. It receives the button, capture controller, document
+and window explicitly; binding has no microphone side effects. Only deliberate
+primary-pointer or Space/Enter press begins a capture. A plain click never starts
+another recording. The drag handle must remain a separate element.
+
+Normal release clears held state before requesting recorder completion. The
+browser's subsequent normal `lostpointercapture` must not discard that recording.
+Pointer cancellation or unexpected capture loss while held discards audio. Hidden
+pages, focus loss, target changes and teardown cancel recording. The UI owner
+must call `targetChanged()` for authentication/session/target invalidation.
+
+No button is added to the production page by this continuation. The future pet
+owner still owns visible recording states, accessible labeling, 44px touch targets,
+safe areas, keyboard focus and Classic/New viewport acceptance. Real iPhone Safari
+and parked Tesla capture remain unverified; no audio was captured for unit tests.
+
+Ownership reconciliation before this continuation found PR #81's separately owned
+search/play fixture service. It was left untouched. PR #80's standalone registry
+and PR #81's candidate service overlap in candidate storage; the integrator must
+choose/reuse one registry before merge rather than mounting duplicate stores.
+
+Binding API: `bindTeslaMonCaptureButton({button, capture, document, window,
+onError})` returns `targetChanged()` and `dispose()`. Use the concrete capture
+controller from this branch; its lifecycle methods are synchronous except start.
+The binder owns controller teardown when disposed. Mount only on an actual talk
+button, with a separate drag handle; do not add a second click-to-start listener.
+
+Continuation verification: **38/38** combined capture/binding fake tests pass
+(27 capture + 11 binding). New binding syntax check and staged whitespace check
+pass. Independent read-only review completed; root checks added hidden-page and
+Escape cancellation after release. Still no mounted UI, microphone, STT or physical
+acceptance. The prior 7da1f12 CI result does not validate this newer commit.
