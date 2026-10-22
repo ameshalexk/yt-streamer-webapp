@@ -33,6 +33,14 @@ export class TrustedBrowserRegistrationFlow {
   // normally forwards Cf-Access-Jwt-Assertion; a browser may also send its
   // HttpOnly CF_Authorization cookie. Neither is trusted without JWT signature
   // and exact audience verification. Do not accept headers describing users.
+  async authenticateHttp(req){
+    const h=req?.headers;
+    if(req?.method!=="POST" || !this.#origins.has(h?.origin) ||
+       h?.host!==new URL(h.origin).host ||
+       (h["sec-fetch-site"] && h["sec-fetch-site"]!=="same-origin")) deny();
+    const {identity,expiresAt}=await this.#verifyIdentity(h);
+    return {subject:identity.subject,issuer:identity.issuer,expires_at:expiresAt};
+  }
   async connect(req){
     const h=req?.headers;
     const origin=h?.origin;
@@ -40,6 +48,15 @@ export class TrustedBrowserRegistrationFlow {
        String(h?.upgrade||"").toLowerCase()!=="websocket"||
        !String(h?.connection||"").toLowerCase().split(",").some(x=>x.trim()==="upgrade"))
       deny();
+    const {identity,expiresAt}=await this.#verifyIdentity(h);
+    const handle=Object.freeze({});
+    const context={identity:{subject:identity.subject,issuer:identity.issuer},
+      deviceId:randomUUID(),connectionId:randomUUID(),origin,expiresAt,closed:false};
+    this.#connections.set(handle,context);
+    return {handle,device_id:context.deviceId,connection_id:context.connectionId,
+      expires_at:expiresAt,subject:identity.subject};
+  }
+  async #verifyIdentity(h){
     const header=h["cf-access-jwt-assertion"];
     const cookie=cookieJwt(h.cookie);
     if(header!=null&&(typeof header!=="string"||!header))deny();
@@ -78,12 +95,7 @@ export class TrustedBrowserRegistrationFlow {
       if((this.#subjects&&!this.#subjects.has(identity.subject))||!Number.isSafeInteger(expiresAt)
          ||expiresAt<=this.#now())deny();
     }catch{deny();}
-    const handle=Object.freeze({});
-    const context={identity:{subject:identity.subject,issuer:identity.issuer},
-      deviceId:randomUUID(),connectionId:randomUUID(),origin,expiresAt,closed:false};
-    this.#connections.set(handle,context);
-    return {handle,device_id:context.deviceId,connection_id:context.connectionId,
-      expires_at:expiresAt,subject:identity.subject};
+    return {identity,expiresAt};
   }
   #live(handle){
     const c=handle&&this.#connections.get(handle);

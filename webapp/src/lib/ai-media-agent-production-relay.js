@@ -4,7 +4,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,randomBytes} from 'node:crypto';
 import {WebSocketServer} from 'ws';
 import {AgentSessionRegistry} from './ai-media-agent-session-registry.js';
 import {BrowserApprovalRegistry} from './ai-media-agent-remote-authorization.js';
@@ -71,6 +71,24 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
   const approvals=new BrowserApprovalRegistry();
   const proof=Object.freeze({});
   const clients=new Map();
+  const tickets=new Map();
+  const TICKET_MS=15000;
+  const purgeTickets=()=>{
+    for(const [ticket,claim] of tickets)if(Date.now()>=claim.expires)tickets.delete(ticket);
+  };
+  async function bootstrap(req){
+    // Access-protected SAME-ORIGIN HTTP fetch, not a guessed WebSocket JWT.
+    // No user/identity is trusted unless the pinned Access signature verifies.
+    const identity=await flow.authenticateHttp(req);
+    purgeTickets();
+    if(tickets.size>=64)throw Error('pairing_capacity');
+    const ticket=randomBytes(32).toString('base64url');
+    const expires=Math.min(Date.now()+TICKET_MS,identity.expires_at);
+    if(expires<=Date.now())throw Error('access_expired');
+    tickets.set(ticket,{subject:identity.subject,issuer:identity.issuer,
+      expires,accessExpires:identity.expires_at});
+    return {ticket,expires_at:expires};
+  }
   let queued=null,bridge,closed=false;
   const wss=new WebSocketServer({noServer:true,maxPayload:8192});
   let pendingUpgrades=0;
@@ -126,85 +144,83 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
         request_id:requestId,subject,actions}));
     }
   }};
-  const onUpgrade=async(req,socket,head)=>{
-    if(req.url!=='/ai-agent/player'){reject(socket);return;}
-    if(pendingUpgrades+clients.size>=16){reject(socket);return;}
-    pendingUpgrades++;
-    let verified;
-    try{
-      verified=await flow.connect(req);
-      if(socket.destroyed){flow.disconnect(verified.handle);return;}
-      wss.handleUpgrade(req,socket,head,ws=>{
-        const context={ws,verified,deviceId:null,connectionId:verified.connection_id,
-          subject:verified.subject,consent:false,ready:false};
-        clients.set(ws,context);
-        const identifyTimer=setTimeout(()=>ws.close(1008,'hello_required'),5000);
-        const authorized=()=>flow.authorize(verified.handle,context.registrationId,'get_player_state');
-        ws.on('message',raw=>{
-          let msg;try{msg=JSON.parse(String(raw));}catch{ws.close(1008,'bad_json');return;}
-          if(!context.ready){
-            if(msg?.kind!=='hello'||!validKey(msg.tab_key)||msg.consent!==true||
-               !safeName(msg.label)){ws.close(1008,'consent_required');return;}
-            try{
-              const issued=flow.issue(verified.handle,[...CONTROLS]);
-              const registration=flow.redeem(verified.handle,issued.registration_nonce);
-              if(!registration)throw Error('registration_denied');
-              context.registrationId=registration.registration_id;
-              for(const old of clients.values()){
-                if(old===context||!old.ready||old.key!==msg.tab_key||old.subject!==context.subject)continue;
-                old.ws.close(1001,'tab_reconnected');
-                approvals.revokeConnection(old.deviceId,old.connectionId);
-                registry.disconnect({deviceId:old.deviceId,connectionId:old.connectionId});
-                old.ready=false;
-              }
-              context.key=msg.tab_key;context.label=msg.label;
-              context.consent=true;
-              const assigned=registry.register({principal:'owner',pairingProof:proof,
-                connectionId:context.connectionId,label:msg.label,
-                send:frame=>authorized()&&send(ws,frame)});
-              context.deviceId=assigned.device_id;context.ready=true;
-              clearTimeout(identifyTimer);
-              send(ws,{kind:'registered',...assigned,tab_key:context.key});
-              if(queued&&selected&&queued.device_key===context.key&&queued.subject===context.subject){
-                const job=queued;queued=null;
-                if(Date.now()<job.expires)setImmediate(()=>void dispatch(job.action).catch(()=>{}));
-              }
-            }catch{ws.close(1008,'registration_failed');}
-            return;
+  const onUpgrade=(req,socket,head)=>{
+    // Any upgraded socket remains untrusted and inert until it redeems a
+    // one-time ticket from an independently JWT-verified HTTP request.
+    if(req.url!=='/ai-agent/player'||req.headers.origin!==origin||
+       String(req.headers.upgrade||'').toLowerCase()!=='websocket'||
+       clients.size>=16){reject(socket);return;}
+    wss.handleUpgrade(req,socket,head,ws=>{
+      const context={ws,deviceId:null,connectionId:randomUUID(),
+        subject:null,expiresAt:0,consent:false,ready:false};
+      clients.set(ws,context);
+      const identifyTimer=setTimeout(()=>ws.close(1008,'pairing_timeout'),6000);
+      const authorized=()=>context.ready&&Date.now()<context.expiresAt;
+      ws.on('message',raw=>{
+        let msg;try{msg=JSON.parse(String(raw));}catch{ws.close(1008,'bad_json');return;}
+        if(!context.ready){
+          if(msg?.kind!=='hello'||!validKey(msg.tab_key)||msg.consent!==true||
+             !safeName(msg.label)||typeof msg.ticket!=='string'||
+             !/^[A-Za-z0-9_-]{43}$/.test(msg.ticket)){
+            ws.close(1008,'pairing_required');return;
           }
-          if(!authorized()){ws.close(1008,'access_expired');return;}
-          if(msg?.kind==='heartbeat'){
-            if(!registry.heartbeat({principal:'owner',deviceId:context.deviceId,
-              connectionId:context.connectionId,state:msg.state}))ws.close(1012,'expired');
-          }else if(msg?.kind==='ack'){
-            registry.acknowledge({principal:'owner',deviceId:context.deviceId,
-              connectionId:context.connectionId,commandId:msg.command_id,
-              status:msg.status,state:msg.state,result:msg.result,error:msg.error});
-          }else if(msg?.kind==='approve_remote_request'){
-            if(approvals.approvePendingFromBrowser({requestId:msg.request_id,
-              deviceId:context.deviceId,connectionId:context.connectionId}))
-              send(ws,{kind:'remote_approval_recorded'});
-          }else ws.close(1008,'invalid_message');
-        });
-        ws.on('close',()=>{
-          clearTimeout(identifyTimer);clients.delete(ws);
-          approvals.revokeConnection(context.deviceId,context.connectionId);
-          if(context.deviceId)registry.disconnect({deviceId:context.deviceId,
-            connectionId:context.connectionId});
-          flow.disconnect(verified.handle);
-        });
-        ws.on('error',()=>{});
+          try{
+            const ticket=tickets.get(msg.ticket);
+            tickets.delete(msg.ticket); // one-use even after a failed attempt
+            if(!ticket||Date.now()>=ticket.expires)throw Error('ticket_expired');
+            context.expiresAt=ticket.accessExpires;
+            context.subject=ticket.subject;
+            for(const old of clients.values()){
+              if(old===context||!old.ready||old.key!==msg.tab_key||old.subject!==context.subject)continue;
+              old.ws.close(1001,'tab_reconnected');
+              approvals.revokeConnection(old.deviceId,old.connectionId);
+              registry.disconnect({deviceId:old.deviceId,connectionId:old.connectionId});
+              old.ready=false;
+            }
+            context.key=msg.tab_key;context.label=msg.label;context.consent=true;
+            const assigned=registry.register({principal:'owner',pairingProof:proof,
+              connectionId:context.connectionId,label:msg.label,
+              send:frame=>authorized()&&send(ws,frame)});
+            context.deviceId=assigned.device_id;context.ready=true;
+            clearTimeout(identifyTimer);
+            send(ws,{kind:'registered',...assigned,tab_key:context.key});
+            if(queued&&selected&&queued.device_key===context.key&&queued.subject===context.subject){
+              const job=queued;queued=null;
+              if(Date.now()<job.expires)setImmediate(()=>void dispatch(job.action).catch(()=>{}));
+            }
+          }catch{ws.close(1008,'pairing_denied');}
+          return;
+        }
+        if(!authorized()){ws.close(1008,'access_expired');return;}
+        if(msg?.kind==='heartbeat'){
+          if(!registry.heartbeat({principal:'owner',deviceId:context.deviceId,
+            connectionId:context.connectionId,state:msg.state}))ws.close(1012,'expired');
+        }else if(msg?.kind==='ack'){
+          registry.acknowledge({principal:'owner',deviceId:context.deviceId,
+            connectionId:context.connectionId,commandId:msg.command_id,
+            status:msg.status,state:msg.state,result:msg.result,error:msg.error});
+        }else if(msg?.kind==='approve_remote_request'){
+          if(approvals.approvePendingFromBrowser({requestId:msg.request_id,
+            deviceId:context.deviceId,connectionId:context.connectionId}))
+            send(ws,{kind:'remote_approval_recorded'});
+        }else ws.close(1008,'invalid_message');
       });
-    }catch{if(verified)flow.disconnect(verified.handle);reject(socket);}
-    finally{pendingUpgrades--;}
+      ws.on('close',()=>{
+        clearTimeout(identifyTimer);clients.delete(ws);
+        approvals.revokeConnection(context.deviceId,context.connectionId);
+        if(context.deviceId)registry.disconnect({deviceId:context.deviceId,
+          connectionId:context.connectionId});
+      });
+      ws.on('error',()=>{});
+    });
   };
   server.on('upgrade',onUpgrade);
-  const sweep=setInterval(()=>{registry.sweep();if(queued&&Date.now()>=queued.expires)queued=null;},5000);
+  const sweep=setInterval(()=>{registry.sweep();purgeTickets();if(queued&&Date.now()>=queued.expires)queued=null;},5000);
   sweep.unref?.();
   try{bridge=await startMacControlLocalBridge({relay,
     socketPath,maxRequestsPerMinute:80});}
   catch(ex){clearInterval(sweep);server.off('upgrade',onUpgrade);await new Promise(r=>wss.close(r));throw ex;}
-  return {socketPath:bridge.socketPath,devices,async close(){
+  return {socketPath:bridge.socketPath,devices,bootstrap,async close(){
     if(closed)return;closed=true;clearInterval(sweep);server.off('upgrade',onUpgrade);
     for(const ws of clients.keys())ws.terminate();
     await bridge.close();await new Promise(r=>wss.close(r));
