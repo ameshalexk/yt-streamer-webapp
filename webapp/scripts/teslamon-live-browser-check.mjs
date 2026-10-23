@@ -72,6 +72,10 @@ const clickOpen=async page=>{
  assert.equal(await page.locator('#tmFace').getAttribute('aria-expanded'),'true');
  const mic=await page.locator('#tmMic').boundingBox();
  assert.ok(mic&&mic.width>=44&&mic.height>=44,'mic touch target under 44px '+JSON.stringify(mic));
+ const wake=await page.locator('#tmWakeToggle').boundingBox();
+ assert.ok(wake&&wake.width>=44&&wake.height>=44,'hands-free toggle touch target under 44px '+JSON.stringify(wake));
+ assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false','wake mic must default off');
+ assert.match(await page.locator('#tmWakeState').innerText(),/^Off$/,'wake mic must truthfully report Off');
  assert.equal(await page.locator('#tmDevices').count(),0,'remote device selector must not exist');
  assert.match(await page.locator('.tm-self-target').innerText(),/this browser tab only/i);
  const facade=await page.evaluate(()=>typeof globalThis.YTStreamerMediaAgent?.execute);

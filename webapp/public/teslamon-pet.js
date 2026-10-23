@@ -2,6 +2,8 @@ import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261023-f
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {convertTeslaMonAudioToWav} from './teslamon-wav-fallback.js';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
+import {createTeslaMonHandsFree} from './teslamon-handsfree.js';
+import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
 
 if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
   const pet=document.createElement('aside');
@@ -49,6 +51,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       '<div class="tm-head"><strong>TeslaMon</strong>',
         '<button id="tmClose" type="button" aria-label="Close">×</button></div>',
       '<p id="tmState" role="status" aria-live="polite">Connecting to this tab…</p>',
+      '<div class="tm-wake-control" id="tmWakeControl" role="group" aria-label="Hands-free microphone">',
+        '<div class="tm-wake-copy"><strong>Hands-free microphone</strong>',
+          '<span id="tmWakeState" role="status" aria-live="polite">Off</span></div>',
+        '<button id="tmWakeToggle" type="button" aria-pressed="false" aria-label="Turn hands-free microphone on">Mic Off</button>',
+      '</div>',
       '<div class="tm-target tm-self-target" aria-label="Playback target">',
         '<span>Controls this browser tab only</span></div>',
       '<form id="tmForm"><label class="tm-visually-hidden" for="tmText">Command</label>',
@@ -73,6 +80,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const $=id=>pet.querySelector(id);
   const face=$('#tmFace'),handle=$('#tmHandle'),panel=$('#tmPanel'),
     state=$('#tmState'),mic=$('#tmMic'),
+    wakeControl=$('#tmWakeControl'),wakeToggle=$('#tmWakeToggle'),wakeState=$('#tmWakeState'),
     input=$('#tmText'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
@@ -84,11 +92,80 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');})();
   const localPlayer=createTeslaMonLocalPlayer();
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
-    captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0;
+    captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false;
 
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
   }
+  // The Off/On control never remembers consent across reloads. Its click is
+  // the sole entry point that can request a persistent microphone stream.
+  function updateWakeUI({state:phase='off',message}={}){
+    const isOn=handsFree?.enabled??phase==='starting';
+    wakeControl.dataset.active=String(isOn);
+    wakeControl.dataset.error=String(phase==='error');
+    pet.dataset.wake=phase;
+    face.setAttribute('aria-description', 'Hands-free microphone: '+(message||phase));
+    wakeToggle.textContent=isOn?'Mic On':'Mic Off';
+    wakeToggle.setAttribute('aria-pressed',String(isOn));
+    wakeToggle.setAttribute('aria-label',isOn?
+      'Turn hands-free microphone off':'Turn hands-free microphone on');
+    wakeState.textContent=message||(
+      phase==='listening'?'Listening for “Hey Jarvis”':
+      phase==='recording'?'Recording command':
+      phase==='processing'?'Processing command':
+      phase==='starting'?'Requesting microphone permission…':'Off');
+    if(speechMode==='local')mic.disabled=!voiceAvailable||['starting','recording','processing'].includes(phase);
+    if(phase==='error')status(wakeState.textContent,'warn');
+    else if(phase==='recording')status('Hey Jarvis detected. Say one command.','ok');
+    else if(phase==='processing')status('Processing hands-free command…');
+  }
+  function lowerPlaybackDuringCommand(){
+    const changed=[];
+    for(const media of document.querySelectorAll('video,audio')){
+      try{
+        if(media.paused||media.muted||media.volume<=0)continue;
+        const prior=media.volume,next=Math.min(prior,0.12);
+        media.volume=next;
+        if(Math.abs(media.volume-next)<0.005)changed.push([media,prior,next]);
+      }catch{/* Safari can ignore programmatic media volume changes. */}
+    }
+    return ()=>{
+      for(const [media,prior,temporary] of changed){
+        try{if(Math.abs(media.volume-temporary)<0.005)media.volume=prior;}catch{}
+      }
+    };
+  }
+  const handsFree=createTeslaMonHandsFree({
+    getUserMedia:options=>navigator.mediaDevices.getUserMedia(options),
+    createDetector:async options=>{
+      // Loading the ONNX runtime and weights only happens after Mic On.
+      const module=await import('./teslamon-wake-engine.js');
+      return module.createTeslaMonWakeDetector(options);
+    },
+    createCapture:options=>createTeslaMonCapture({
+      ...options, MediaRecorder:window.MediaRecorder,
+    }),
+    createSilenceMonitor:options=>createTeslaMonSilenceMonitor(options),
+    onAudio:(blob,{signal})=>processCapturedAudio(blob,{allowClosed:true,signal}),
+    onState:updateWakeUI,
+    onError:error=>{
+      const name=String(error?.name||'');
+      if(name==='NotAllowedError')
+        status('Microphone permission denied. Allow access in browser settings.','warn');
+    },
+    duckPlayback:lowerPlaybackDuringCommand,
+  });
+  wakeToggle.disabled=true;
+  wakeToggle.addEventListener('click',()=>{
+    if(handsFree.enabled){
+      handsFree.disable();
+      micEpoch++; // Invalidates any older voice plan before dispatch.
+    }else if(voiceAvailable){
+      // getUserMedia is invoked synchronously on this trusted click.
+      void handsFree.enable();
+    }
+  });
+  updateWakeUI({state:'off',message:'Off'});
   function report(response,action){
     const phase=response?.playbackPhase;
     if(response?.status==='observed'){
@@ -149,10 +226,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       status(reasons[response?.code]||('Command failed: '+(response?.code||'unknown')),'warn');
     }
   }
-  async function post(url,data,contentType='application/json'){
+  async function post(url,data,contentType='application/json',signal){
     const answer=await fetch(url,{
       method:'POST',credentials:'same-origin',mode:'same-origin',
-      cache:'no-store',redirect:'error',headers:{
+      cache:'no-store',redirect:'error',signal,headers:{
         'Content-Type':contentType,
         'X-Requested-With':'XMLHttpRequest'
       },
@@ -180,7 +257,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   }
   // Natural language (both typed and PowerALX voice transcript) always goes
   // through the signed Codex CLI planner. Direct buttons skip reasoning.
-  async function interpret(text){
+  async function interpret(text,{allowClosed=false,signal}={}){
+    if(signal?.aborted)return;
     const request=String(text||'').trim();
     if(request.length<1||request.length>220){
       status('Enter a playback request under 220 characters.','warn');return;
@@ -190,8 +268,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     const target=selected,epoch=micEpoch;
     status('Codex is understanding your request…');
     try{
-      const result=await post('/api/teslamon/plan',{text:request,session:tabSession});
-      if(target!==selected||epoch!==micEpoch||!opened)return;
+      const result=await post('/api/teslamon/plan',{text:request,session:tabSession},'application/json',signal);
+      if(signal?.aborted||target!==selected||epoch!==micEpoch||(!opened&&!allowClosed))return;
       if(result.status==='ok'&&typeof result.tool==='string'){
         input.value='';await issue({tool:result.tool,args:result.args||{}});
       }else if(result.status==='ha_done'){
@@ -202,8 +280,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }catch{status('Codex is unavailable. Quick controls still work.','warn');}
     finally{modelBusy=false;}
   }
-  function cancelMic(){
-    micEpoch++;
+  function cancelMic({preserveWake=false}={}){
+    if(!preserveWake)micEpoch++;
     captureBinding?.targetChanged();
     if(speech){speech.cancelled=true;try{speech.abort();}catch{}speech=null;}
   }
@@ -212,7 +290,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     // The current document's player is the only playback target.
     selected=enabled?'this_tab':null;
     if(!enabled){
-      mic.disabled=true;
+      mic.disabled=true;voiceAvailable=false;wakeToggle.disabled=true;
+      handsFree.disable();
       status('This page player is loading. Refresh the page if it stays unavailable.','warn');
       return;
     }
@@ -224,17 +303,65 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       modelOptIn.checked=false;
       if(!result.codexAvailable){
         mic.disabled=true;mic.textContent='Codex unavailable';
+        voiceAvailable=false;wakeToggle.disabled=true;handsFree.disable();
         status('Codex CLI is unavailable. Quick controls still work.','warn');
         return;
       }
-      if(result.localTranscription)setupRecorder();
+      if(result.localTranscription){
+        setupRecorder();
+        voiceAvailable=speechMode==='local';
+        const wakeSupported=Boolean(window.AudioWorkletNode&&
+          (window.AudioContext||window.webkitAudioContext)&&navigator.mediaDevices?.getUserMedia);
+        wakeToggle.disabled=!voiceAvailable||!wakeSupported;
+        if(!wakeSupported&&voiceAvailable&&!handsFree.enabled)
+          updateWakeUI({state:'error',message:'Error: Hands-free wake detection unsupported in this browser'});
+      }
       else {mic.disabled=true;mic.textContent='PowerALX unavailable';
+        voiceAvailable=false;wakeToggle.disabled=true;handsFree.disable();
         status('PowerALX transcription is not configured. Use typed commands.','warn');}
     }catch{
       modelLabel.hidden=true;
       modelOptIn.checked=false;
       mic.disabled=true;mic.textContent='Voice unavailable';
+      voiceAvailable=false;wakeToggle.disabled=true;handsFree.disable();
       status('Could not verify the PowerALX voice service. Use typed commands.','warn');
+    }
+  }
+  // Both hold-to-talk and wake-command clips use the existing authenticated
+  // PowerALX transcription and bounded Codex planner path.
+  async function processCapturedAudio(blob,{allowClosed=false,signal}={}){
+    if(!localPlayer.ready||signal?.aborted)return;
+    const before=selected,epoch=micEpoch;
+    const current=()=>!signal?.aborted&&before===selected&&
+      epoch===micEpoch&&(opened||allowClosed);
+    if(!current())return;
+    status('Audio captured. Sending to PowerALX…');
+    try{
+      let reply=await post('/api/teslamon/transcribe',blob,blob.type,signal);
+      // Safari can produce MP4 recordings with invalid timing metadata.
+      // The fallback repairs only this one command clip in the browser.
+      if(blob.type?.split(';')[0]==='audio/mp4'&&
+        ['invalid_audio','invalid_audio_container','invalid_audio_timing','invalid_audio_duration'].includes(reply?.code)){
+        try{
+          const wav=await convertTeslaMonAudioToWav(blob);
+          if(!current())return;
+          status('Converting iPhone audio for PowerALX…');
+          reply=await post('/api/teslamon/transcribe',wav,wav.type,signal);
+        }catch{
+          if(!current())return;
+          reply={status:'failed',code:'iphone_wav_fallback_failed'};
+        }
+      }
+      if(!current())return;
+      if(reply.status==='ok'&&typeof reply.text==='string'){
+        // The classifier detects the activation phrase, not the command;
+        // strip a possible leading wake phrase before Codex interpretation.
+        const command=reply.text.replace(/^\\s*hey[\\s,.!]*jarvis[\\s,.!:-]*/i,'').trim()||reply.text;
+        input.value=command;
+        await interpret(command,{allowClosed,signal});
+      }else report(reply);
+    }catch{
+      if(current())status('Transcription failed. Type a command.','warn');
     }
   }
   function setupRecorder(){
@@ -247,39 +374,23 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     mic.disabled=false;mic.textContent='Hold to talk';
     const capture=createTeslaMonCapture({
-      getUserMedia:c=>navigator.mediaDevices.getUserMedia(c),
+      getUserMedia:async c=>{
+        if(handsFree.enabled){
+          const suspended=handsFree.suspend();
+          if(!suspended&&!handsFree.suspended)throw new Error('Hands-free command is active');
+        }
+        return navigator.mediaDevices.getUserMedia(c);
+      },
       MediaRecorder:window.MediaRecorder,
       onState:value=>{
         if(value.state==='requesting')status('Requesting microphone access…');
         else if(value.state==='recording')status('Recording audio… release to finish.','ok');
         else if(value.state==='stopping')status('Finishing recording…');
         else if(value.state==='empty')status('No audio was captured. Hold the mic a little longer.','warn');
+        if(['empty','cancelled','error'].includes(value.state))handsFree.resume();
       },
       onAudio:blob=>{
-        if(!localPlayer.ready)return;
-        status('Audio captured. Sending to PowerALX…');
-        const before=selected,epoch=micEpoch;
-        void(async()=>{
-          try{
-            let reply=await post('/api/teslamon/transcribe',blob,blob.type);
-            // Safari WebKit sometimes records MP4 with unusable container
-            // metadata. Repair in the iPhone browser without re-recording,
-            // cloud services or putting decoding/transcription on the Mac.
-            if(blob.type?.split(';')[0]==='audio/mp4' &&
-               ['invalid_audio','invalid_audio_container','invalid_audio_timing','invalid_audio_duration'].includes(reply?.code)){
-              try{
-                const wav=await convertTeslaMonAudioToWav(blob);
-                if(before!==selected||epoch!==micEpoch||!opened)return;
-                status('Converting iPhone audio for PowerALX…');
-                reply=await post('/api/teslamon/transcribe',wav,wav.type);
-              }catch{reply={status:'failed',code:'iphone_wav_fallback_failed'};}
-            }
-            if(before!==selected||epoch!==micEpoch||!opened)return;
-            if(reply.status==='ok'&&typeof reply.text==='string'){
-              input.value=reply.text;interpret(reply.text);
-            }else report(reply);
-          }catch{status('Transcription failed. Type a command.','warn');}
-        })();
+        void processCapturedAudio(blob).finally(()=>{handsFree.resume();});
       },
       onError:error=>{
         const detail=String(error?.message||'').toLowerCase();
@@ -372,11 +483,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     opened=!opened;panel.hidden=!opened;
     face.setAttribute('aria-expanded',String(opened));
     if(opened){alignPanel();void refresh();input.focus();}
-    else cancelMic();
+    else cancelMic({preserveWake:true});
   });
   $('#tmClose').addEventListener('click',()=>{
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
-    cancelMic();face.focus();
+    cancelMic({preserveWake:true});face.focus();
   });
   // Only the current document can receive TeslaMon playback commands.
   $('#tmForm').addEventListener('submit',event=>{
@@ -387,10 +498,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       tool:button.dataset.tm,args:{}
     });}));
   document.addEventListener('visibilitychange',()=>{
-    if(document.hidden)cancelMic();
+    if(document.hidden){handsFree.disable();micEpoch++;cancelMic();}
     else if(opened)void refresh();
   });
   window.addEventListener('pagehide',()=>{
-    captureBinding?.dispose();try{speech?.abort();}catch{}
+    handsFree.disable();micEpoch++;captureBinding?.dispose();try{speech?.abort();}catch{}
   });
 }
