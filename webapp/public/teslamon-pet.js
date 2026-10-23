@@ -1,4 +1,5 @@
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261023-first-result1';
+import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {convertTeslaMonAudioToWav} from './teslamon-wav-fallback.js';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
@@ -73,7 +74,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<button type="button" data-tm="exit_fullscreen">Exit fullscreen</button>',
       '</div>',
       '<p id="tmHelp">Codex handles video requests in this tab and Home Assistant lights. No remote tab selection,',
-        ' device pairing, or separate Cloudflare login is required.</p>',
+        ' device pairing, or separate Cloudflare login is required. Text sends automatically after 2 seconds of no changes.</p>',
     '</section>'
   ].join('');
   document.body.append(pet);
@@ -92,11 +93,33 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');})();
   const localPlayer=createTeslaMonLocalPlayer();
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
-    captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false;
+    captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
+    wakeInputChanged=false,wakeHandled=false;
 
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
   }
+  // Tesla's native keyboard dictation, paste and typing all arrive as text.
+  // Never assume input events identify their actual source.
+  const autoSend=createTeslaMonAutoSend({
+    readText:()=>input.value,
+    canSend:()=>opened&&enabled&&localPlayer.ready&&!modelBusy&&!busy&&!document.hidden,
+    send:text=>{
+      // One wake invocation can produce BOTH native keyboard text and a
+      // PowerALX transcript. The first source to dispatch wins that wake.
+      if(wakeInputChanged&&wakeHandled){
+        wakeInputChanged=false;
+        if(input.value.trim()===text)input.value='';
+        status('This wake command was already sent.','ok');
+        return;
+      }
+      if(wakeInputChanged){
+        wakeHandled=true;
+        if(['recording','processing'].includes(handsFree.state))micEpoch++;
+      }
+      void interpret(text,{allowClosed:true});
+    },
+  });
   // The Off/On control never remembers consent across reloads. Its click is
   // the sole entry point that can request a persistent microphone stream.
   function updateWakeUI({state:phase='off',message}={}){
@@ -115,6 +138,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       phase==='processing'?'Processing command':
       phase==='starting'?'Requesting microphone permission…':'Off');
     if(speechMode==='local')mic.disabled=!voiceAvailable||['starting','recording','processing'].includes(phase);
+    if(phase==='recording'){
+      wakeInputChanged=false;wakeHandled=false;
+      // A wake word can expose/focus the text field. The browser alone cannot
+      // force Tesla's keyboard or activate its native dictation microphone.
+      if(!opened){opened=true;panel.hidden=false;face.setAttribute('aria-expanded','true');}
+      alignPanel();
+      try{input.focus({preventScroll:true});}catch{input.focus();}
+    }
     if(phase==='error')status(wakeState.textContent,'warn');
     else if(phase==='recording')status('Hey Jarvis detected. Say one command.','ok');
     else if(phase==='processing')status('Processing hands-free command…');
@@ -253,7 +284,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(epoch===generation)report(result,intent.tool);
     }catch{
       if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
-    }finally{busy=false;}
+    }finally{busy=false;autoSend.flush();}
   }
   // Natural language (both typed and PowerALX voice transcript) always goes
   // through the signed Codex CLI planner. Direct buttons skip reasoning.
@@ -271,14 +302,15 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       const result=await post('/api/teslamon/plan',{text:request,session:tabSession},'application/json',signal);
       if(signal?.aborted||target!==selected||epoch!==micEpoch||(!opened&&!allowClosed))return;
       if(result.status==='ok'&&typeof result.tool==='string'){
-        input.value='';await issue({tool:result.tool,args:result.args||{}});
+        if(input.value.trim()===request)input.value='';
+        await issue({tool:result.tool,args:result.args||{}});
       }else if(result.status==='ha_done'){
-        input.value='';
+        if(input.value.trim()===request)input.value='';
         status(result.action==='light_changed'?
           'Home Assistant light command completed.':'Home Assistant light state checked.','ok');
       }else report(result);
     }catch{status('Codex is unavailable. Quick controls still work.','warn');}
-    finally{modelBusy=false;}
+    finally{modelBusy=false;autoSend.flush();}
   }
   function cancelMic({preserveWake=false}={}){
     if(!preserveWake)micEpoch++;
@@ -354,14 +386,18 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       }
       if(!current())return;
       if(reply.status==='ok'&&typeof reply.text==='string'){
+        // Native keyboard text takes precedence over the same wake clip.
+        if(allowClosed&&(wakeInputChanged||wakeHandled))return;
+        if(allowClosed)wakeHandled=true;
+        autoSend.cancel();
         // The classifier detects the activation phrase, not the command;
         // strip a possible leading wake phrase before Codex interpretation.
         const command=reply.text.replace(/^\\s*hey[\\s,.!]*jarvis[\\s,.!:-]*/i,'').trim()||reply.text;
         input.value=command;
         await interpret(command,{allowClosed,signal});
-      }else report(reply);
+      }else if(!wakeInputChanged)report(reply);
     }catch{
-      if(current())status('Transcription failed. Type a command.','warn');
+      if(current()&&!wakeInputChanged)status('Transcription failed. Type a command.','warn');
     }
   }
   function setupRecorder(){
@@ -483,25 +519,33 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     opened=!opened;panel.hidden=!opened;
     face.setAttribute('aria-expanded',String(opened));
     if(opened){alignPanel();void refresh();input.focus();}
-    else cancelMic({preserveWake:true});
+    else {autoSend.cancel();cancelMic({preserveWake:true});}
   });
   $('#tmClose').addEventListener('click',()=>{
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
-    cancelMic({preserveWake:true});face.focus();
+    autoSend.cancel();cancelMic({preserveWake:true});face.focus();
   });
+  // A single text insertion (Tesla dictation/paste) and ordinary typing share
+  // this path. The last edit wins; the Send button remains an immediate override.
+  input.addEventListener('input',()=>{
+    if(['recording','processing'].includes(handsFree.state))wakeInputChanged=true;
+    autoSend.changed();
+  });
+  input.addEventListener('compositionstart',()=>autoSend.compositionStart());
+  input.addEventListener('compositionend',()=>autoSend.compositionEnd());
   // Only the current document can receive TeslaMon playback commands.
   $('#tmForm').addEventListener('submit',event=>{
-    event.preventDefault();cancelMic();interpret(input.value);
+    event.preventDefault();autoSend.cancel();cancelMic();void interpret(input.value);
   });
   pet.querySelectorAll('[data-tm]').forEach(button=>
     button.addEventListener('click',()=>{cancelMic();return void issue({
       tool:button.dataset.tm,args:{}
     });}));
   document.addEventListener('visibilitychange',()=>{
-    if(document.hidden){handsFree.disable();micEpoch++;cancelMic();}
+    if(document.hidden){autoSend.cancel();handsFree.disable();micEpoch++;cancelMic();}
     else if(opened)void refresh();
   });
   window.addEventListener('pagehide',()=>{
-    handsFree.disable();micEpoch++;captureBinding?.dispose();try{speech?.abort();}catch{}
+    autoSend.dispose();handsFree.disable();micEpoch++;captureBinding?.dispose();try{speech?.abort();}catch{}
   });
 }

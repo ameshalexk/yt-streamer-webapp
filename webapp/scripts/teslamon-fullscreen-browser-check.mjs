@@ -41,9 +41,29 @@ try{
         try{const response=await route.fetch({url:base+url.pathname+url.search,timeout:6500});
           await route.fulfill({response});}catch{await route.abort();}
       });
+      const plans=[];
+      await page.route('**/api/teslamon/plan',async route=>{
+        plans.push(JSON.parse(route.request().postData()||'{}'));
+        await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({status:'unsupported',code:'unsupported_voice_command'})});
+      });
       await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded',timeout:16000});
       await page.locator('#tmFace').click();
       await page.locator('#tmPanel').waitFor({state:'visible'});
+      // One paste-like insertion should auto-dispatch through Codex with no Send click.
+      await page.locator('#tmText').fill('play MKBHD video');
+      await page.waitForFunction(()=>document.querySelector('#tmText').value==='play MKBHD video');
+      await page.waitForFunction(()=>document.querySelector('#tmState').textContent.includes('Codex')||document.querySelector('#tmState').textContent.includes('TeslaMon'),{timeout:5000}).catch(()=>{});
+      await page.waitForTimeout(2200);
+      assert.equal(plans.length,1,'the first settled text draft is sent exactly once');
+      assert.equal(plans[0].text,'play MKBHD video');
+      await page.waitForTimeout(600);
+      assert.equal(plans.length,1,'input does not auto-loop after a rejected plan');
+      await page.locator('#tmText').fill('pause');
+      await page.locator('#tmSend').click();
+      await page.waitForFunction(()=>document.querySelector('#tmState').textContent.length>0);
+      assert.equal(plans.length,2,'manual Send is immediate and cancels auto-send');
+      await page.waitForTimeout(2300);
+      assert.equal(plans.length,2,'manual Send does not re-submit');
       // Force native fullscreen to reject, as it does on some browsers. The
       // existing player must switch to in-page fullscreen on a real pet tap.
       await page.evaluate(()=>{
