@@ -1,8 +1,27 @@
 {
-  "type":"object","additionalProperties":false,
-  "properties":{
-    "tool":{"type":"string","enum":["pause","resume","get_playback_state","search_and_play","request_fullscreen","exit_fullscreen","unsupported"]},
-    "query":{"type":"string","maxLength":120}
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "tool": {
+      "type": "string",
+      "enum": [
+        "pause",
+        "resume",
+        "get_playback_state",
+        "search_and_play",
+        "request_fullscreen",
+        "exit_fullscreen",
+        "unsupported",
+        "ha_done"
+      ]
+    },
+    "query": {
+      "type": "string",
+      "maxLength": 120
+    }
   },
-  "required":["tool","query"]
+  "required": [
+    "tool",
+    "query"
+  ]
 }

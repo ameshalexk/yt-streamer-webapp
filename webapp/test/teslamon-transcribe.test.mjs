@@ -86,3 +86,12 @@ test('Reject malformed worker endpoint settings rather than command injection',a
     {python:'python3'}
   ])assert.equal(createTeslaMonTranscriber({...config,...overrides}).available,false);
 });
+
+test('Resident PowerALX mode uses the existing transport without a Mac speech model',async()=>{
+  const t=createTeslaMonTranscriber({...config,resident:true,runner:async()=>({
+    status:'ok',text:'turn on the kitchen lights'})});
+  assert.equal(t.available,true);
+  assert.equal(t.engine,'resident_poweralx_worker');
+  assert.equal((await t.transcribe(Buffer.alloc(400),'audio/webm')).text,
+    'turn on the kitchen lights');
+});

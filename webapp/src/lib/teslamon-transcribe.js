@@ -16,6 +16,7 @@ export function createTeslaMonTranscriber({
   release=process.env.TESLAMON_POWERALX_WORKER_RELEASE,
   host=process.env.TESLAMON_POWERALX_SSH_ALIAS||'poweralx',
   python=process.env.TESLAMON_POWERALX_PYTHON||'/usr/bin/python3',
+  resident=process.env.TESLAMON_POWERALX_RESIDENT==='1',
   timeoutMs=125000,runner
 }={}){
   // Disabled in staging unless existing worker explicitly configured.
@@ -40,7 +41,7 @@ export function createTeslaMonTranscriber({
     let child;
     try{
       child=spawn(python,[helper,'--mime',mime,'--worker-root',workerRoot,
-        '--release',release,'--ssh-host',host],
+        '--release',release,'--ssh-host',host,...(resident?['--resident']:[])],
         {stdio:['pipe','pipe','pipe'],signal:controller.signal,
           env:{PATH:process.env.PATH||'/usr/bin:/bin:/opt/homebrew/bin',
             HOME:process.env.HOME||'',PYTHONUTF8:'1'}});
@@ -74,7 +75,7 @@ export function createTeslaMonTranscriber({
   }));
   return Object.freeze({
     available,
-    engine:available?'existing_poweralx_worker':'disabled',
+    engine:available?(resident?'resident_poweralx_worker':'existing_poweralx_worker'):'disabled',
     async transcribe(data,contentType,{signal}={}){
       if(!available)return failed('poweralx_worker_not_configured','unavailable');
       const mime=String(contentType||'').split(';')[0].trim().toLowerCase();
