@@ -1,7 +1,7 @@
 // TeslaMon: this-tab-only player coordinator.
 // Intentionally does not use the remote browser registry, selected-device
 // persistence, WebSockets, global controller or another tab's identity.
-// Search candidate tokens exist solely inside this page instance.
+// Explicit play requests use the first valid ranked search hit in this tab.
 const ACTIONS=new Set([
   'search_and_play','pause','resume','get_playback_state',
   'request_fullscreen','exit_fullscreen'
@@ -11,40 +11,21 @@ const PHASES=new Set(['idle','playing','paused','buffering','ended','failed','ne
 const MODES=new Set(['native','in_page','none','unknown']);
 const plain=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const fail=(code,status='failed')=>({status,code});
-const safeText=(value,limit)=>
-  typeof value==='string'?value.replace(/[\x00-\x1f\x7f]/g,' ').trim().slice(0,limit):'';
 const supported=(intent)=>{
   if(!plain(intent)||!ACTIONS.has(intent.tool)||!plain(intent.args))return false;
   const keys=Object.keys(intent.args);
   if(intent.tool!=='search_and_play')return keys.length===0;
-  return keys.length===1&&(
-    (keys[0]==='query'&&typeof intent.args.query==='string'&&
-     intent.args.query.trim().length>=2&&intent.args.query.trim().length<=120&&
-     !/^(?:https?:\/\/|www\.)/i.test(intent.args.query.trim()))||
-    (keys[0]==='candidate_token'&&typeof intent.args.candidate_token==='string'&&
-     /^[0-9a-f-]{36}$/i.test(intent.args.candidate_token))
-  );
+  return keys.length===1&&keys[0]==='query'&&
+    typeof intent.args.query==='string'&&
+    intent.args.query.trim().length>=2&&intent.args.query.trim().length<=120&&
+    !/^(?:https?:\/\/|www\.)/i.test(intent.args.query.trim());
 };
 export function createTeslaMonLocalPlayer({
-  getPlayer=()=>globalThis.YTStreamerMediaAgent,
-  now=Date.now,
-  makeToken=()=>{
-    if(typeof crypto.randomUUID==='function')return crypto.randomUUID();
-    const bits=crypto.getRandomValues(new Uint8Array(16));
-    bits[6]=(bits[6]&15)|64;bits[8]=(bits[8]&63)|128;
-    const h=Array.from(bits,b=>b.toString(16).padStart(2,'0')).join('');
-    return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+
-      h.slice(16,20)+'-'+h.slice(20);
-  },
-  candidateTtlMs=45000
+  getPlayer=()=>globalThis.YTStreamerMediaAgent
 }={}){
-  if(typeof getPlayer!=='function'||typeof now!=='function'||
-    typeof makeToken!=='function'||!Number.isInteger(candidateTtlMs)||
-    candidateTtlMs<1000||candidateTtlMs>120000)
+  if(typeof getPlayer!=='function')
     throw new TypeError('invalid_local_player_dependencies');
   let busy=false;
-  const candidates=new Map();
-  const invalidate=()=>candidates.clear();
   const stateResult=(state,expectedAction)=>{
     if(!plain(state)||!PHASES.has(state.playback_phase))
       return fail('player_state_unavailable','uncertain');
@@ -80,43 +61,15 @@ export function createTeslaMonLocalPlayer({
     try{
       if(intent.tool==='get_playback_state')return await snapshot(player);
       if(intent.tool==='search_and_play'){
-        let mediaId;
-        const args=intent.args;
-        if('query' in args){
-          invalidate();
-          const found=await player.execute('search_media',{query:args.query.trim(),limit:8});
-          if(found?.status!=='completed'||!Array.isArray(found?.result?.results))
-            return fail('search_failed');
-          const entries=[];
-          const seen=new Set();
-          for(const item of found.result.results.slice(0,8)){
-            if(!plain(item)||!VIDEO.test(item.media_id||'')||seen.has(item.media_id))continue;
-            seen.add(item.media_id);
-            entries.push({media_id:item.media_id,title:safeText(item.title,160)||'Untitled video',
-              creator:safeText(item.creator,100)});
-          }
-          if(!entries.length)return fail('no_results');
-          if(entries.length===1)mediaId=entries[0].media_id;
-          else{
-            const choices=[];
-            const tokens=new Set();
-            for(const entry of entries){
-              const token=makeToken();
-              if(typeof token!=='string'||!(/^[0-9a-f-]{36}$/i).test(token)||tokens.has(token)){
-                invalidate();return fail('candidate_generation_failed');
-              }
-              tokens.add(token);candidates.set(token,{id:entry.media_id,expires:now()+candidateTtlMs});
-              choices.push({candidate_token:token,title:entry.title,creator:entry.creator});
-            }
-            return {status:'needs_selection',choices};
-          }
-        }else{
-          const token=args.candidate_token;
-          const candidate=candidates.get(token);
-          invalidate(); // consume all choices exactly once, including stale choice
-          if(!candidate||candidate.expires<=now())return fail('stale_or_unknown_candidate');
-          mediaId=candidate.id;
-        }
+        // Playback intent is explicit. Search ranking decides the default;
+        // invalid catalog entries are ignored, never used for playback.
+        const found=await player.execute('search_media',{query:intent.args.query.trim(),limit:8});
+        if(found?.status!=='completed'||!Array.isArray(found?.result?.results))
+          return fail('search_failed');
+        const first=found.result.results.slice(0,8).find(item=>
+          plain(item)&&VIDEO.test(item.media_id||''));
+        if(!first)return fail('no_results');
+        const mediaId=first.media_id;
         const result=await player.execute('play_media',{media_id:mediaId});
         if(result?.status==='needs_user_gesture')return fail('needs_user_gesture','needs_user_gesture');
         if(!['completed','accepted','playing','buffering'].includes(result?.status))
@@ -155,7 +108,7 @@ export function createTeslaMonLocalPlayer({
       return fail('local_action_uncertain','uncertain');
     }finally{busy=false;}
   }
-  return Object.freeze({run,invalidate,get ready(){
+  return Object.freeze({run,get ready(){
     return typeof getPlayer()?.execute==='function';
   }});
 }

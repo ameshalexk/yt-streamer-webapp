@@ -58,7 +58,7 @@ const BASE_PROMPT=[
   'Do NOT run shell commands, inspect files, browse or use other MCP tools.',
   'You may call only teslamon_lights MCP tools for LIGHTING requests.',
   'The application checks and executes the JSON itself. Never claim an action succeeded.',
-  'An ambiguous search query is okay: the page will ask the user to select a result.',
+  'For a play request choose search_and_play. The page will play the first valid ranked search result automatically.',
 ].join(' ');
 
 export function createTeslaMonCodex({

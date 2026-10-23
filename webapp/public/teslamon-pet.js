@@ -1,4 +1,4 @@
-import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261022-auto-fullscreen1';
+import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261023-first-result1';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {convertTeslaMonAudioToWav} from './teslamon-wav-fallback.js';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
@@ -36,7 +36,6 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<button type="button" data-tm="request_fullscreen">Fullscreen</button>',
         '<button type="button" data-tm="exit_fullscreen">Exit fullscreen</button>',
       '</div>',
-      '<div id="tmChoices" role="group" aria-label="Video results" hidden></div>',
       '<p id="tmHelp">Codex handles video requests in this tab and Home Assistant lights. No remote tab selection,',
         ' device pairing, or separate Cloudflare login is required.</p>',
     '</section>'
@@ -45,7 +44,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const $=id=>pet.querySelector(id);
   const face=$('#tmFace'),handle=$('#tmHandle'),panel=$('#tmPanel'),
     state=$('#tmState'),mic=$('#tmMic'),
-    input=$('#tmText'),choices=$('#tmChoices'),
+    input=$('#tmText'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
   // Secure per-page session, never stored or shared with another tab.
@@ -61,24 +60,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
   }
-  function clearChoices(){choices.replaceChildren();choices.hidden=true;}
   function report(response,action){
-    clearChoices();
-    if(response?.status==='needs_selection'){
-      const title=document.createElement('p');title.textContent='Choose a video:';
-      choices.append(title);
-      for(const item of response.choices||[]){
-        const button=document.createElement('button');
-        button.className='tm-choice';button.type='button';
-        button.textContent=item.title+(item.creator?' — '+item.creator:'');
-        button.addEventListener('click',()=>void issue({
-          tool:'search_and_play',args:{candidate_token:item.candidate_token}
-        }));
-        choices.append(button);
-      }
-      choices.hidden=false;
-      status('Multiple matches. Choose one result.');return;
-    }
     const phase=response?.playbackPhase;
     if(response?.status==='observed'){
       if(action==='request_fullscreen'||action==='exit_fullscreen'){
@@ -116,7 +98,6 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         teslamon_unavailable:'TeslaMon is not enabled on this server.',
         unreconciled_prior_mutation:'An earlier action is uncertain. Reconcile before sending another.',
         target_busy:'Another command is running.',
-        stale_or_unknown_candidate:'Selection expired. Search again.',
         invalid_audio_payload:'Recording was empty or incomplete. Hold to talk for 2–3 seconds.',
         invalid_audio_container:'iPhone sent an unreadable audio recording. Try again or type a command.',
         invalid_audio_timing:'iPhone recording had no valid audio timing. Try again.',
