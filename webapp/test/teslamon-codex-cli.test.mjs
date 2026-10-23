@@ -20,6 +20,11 @@ const fakeProcess=(responses,record)=>{
         const emit=o=>child.stdout.write(JSON.stringify(o)+'\n');
         emit({type:'thread.started',thread_id:THREAD});
         emit({type:'turn.started'});
+        if(answer.failure){
+          emit({type:'error',message:answer.failure});
+          emit({type:'turn.failed',message:answer.failure});
+          child.stdout.end();child.emit('close',1);return;
+        }
         if(answer.disallowed)emit({type:'item.completed',item:{type:'command_execution'}});
         else {
           if(answer.mcp){
@@ -82,6 +87,21 @@ test('Separate turns resume bounded Codex conversation without passing text in a
 test('Disallowed Codex tool output never becomes a playback action',async()=>{
   const calls=[];const t=client([{disallowed:true}],calls);
   assert.equal((await t.plan('run a shell',SESSION,ID)).code,'codex_disallowed_tool');
+});
+test('Codex usage quota is not misreported as an unsupported tool',async()=>{
+  const t=client([{failure:"You've hit your usage limit. Try again at 9:25 AM."}],[]);
+  assert.deepEqual(await t.plan('Play Kalyanaraman',SESSION,ID),
+    {status:'unavailable',code:'codex_usage_limit',retryAt:'9:25 AM'});
+});
+test('Codex usage quota without a retry time stays safe and actionable',async()=>{
+  const t=client([{failure:'Too many requests, rate limit reached.'}],[]);
+  assert.deepEqual(await t.plan('Pause',SESSION,ID),
+    {status:'unavailable',code:'codex_usage_limit'});
+});
+test('Other Codex service failures cannot masquerade as disallowed tools',async()=>{
+  const t=client([{failure:'Temporary upstream service unavailable'}],[]);
+  assert.deepEqual(await t.plan('Pause',SESSION,ID),
+    {status:'unavailable',code:'codex_unavailable'});
 });
 test('Invalid session, identity or multiline input never starts CLI',async()=>{
   const calls=[];const t=client([],calls);
