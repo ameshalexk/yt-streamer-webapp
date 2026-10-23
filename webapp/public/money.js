@@ -77,7 +77,6 @@ function enrichData(data) {
     assetCategories: groupByCategory(assets),
     liabilityCategories: groupByCategory(liabilities),
     equity: [
-      { name: "Canyon Shore equity", value: valueById(assets, "canyon-shore") - valueById(liabilities, "canyon-shore-mortgage"), formula: "Canyon Shore value - Canyon Shore mortgage" },
       { name: "Cypress Path equity", value: valueById(assets, "cypress-path") - valueById(liabilities, "cypress-path-mortgage"), formula: "Cypress Path value - Cypress Path mortgage" },
       { name: "Tesla net equity", value: valueById(assets, "tesla") - valueById(liabilities, "tesla-loan"), formula: "Tesla value - Tesla loan" },
       { name: "Honda equity", value: valueById(assets, "honda-accord"), formula: "Honda value - no listed loan" },
