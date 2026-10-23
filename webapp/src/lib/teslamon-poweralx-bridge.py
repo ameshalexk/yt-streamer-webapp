@@ -100,6 +100,38 @@ def media_duration(source: Path) -> float:
             subprocess.TimeoutExpired, subprocess.CalledProcessError):
         raise TranscribeFailed("invalid_audio_container")
 
+
+def normalize_for_poweralx(source: Path, mime: str, base: Path, duration: float) -> tuple[Path, float]:
+    """Give Windows FFprobe a seekable M4A instead of Safari's headerless WebM.
+
+    Mac FFprobe can measure WebM by audio packet timestamps when its header
+    reports N/A. The existing PowerALX worker checks ONLY format.duration,
+    so passing that WebM unchanged causes the worker to reject valid iPhone
+    recordings. FFmpeg codec conversion here is bounded media preparation
+    ONLY: no Mac ASR, models, downloads or external service.
+    """
+    if mime not in ("audio/webm", "audio/ogg"):
+        return source, duration
+    dest = base / "normalized.m4a"
+    ffmpeg = "/opt/homebrew/bin/ffmpeg"
+    args = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-i", str(source), "-map", "0:a:0", "-vn",
+            "-ac", "1", "-ar", "16000", "-threads", "1",
+            "-c:a", "aac", "-b:a", "48k", "-movflags", "+faststart", str(dest)]
+    try:
+        subprocess.run(args, capture_output=True, check=True, timeout=18)
+        size = dest.stat().st_size
+        if size < 128 or size > MAX_BYTES:
+            raise TranscribeFailed("normalized_audio_invalid")
+        normalized_duration = media_duration(dest)
+        if abs(normalized_duration - duration) > 0.35:
+            raise TranscribeFailed("normalized_audio_duration_mismatch")
+        return dest, normalized_duration
+    except TranscribeFailed:
+        raise
+    except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        raise TranscribeFailed("audio_normalization_failed")
+
 def validate_response(payload: object, request_id: str, sha: str) -> str:
     if not isinstance(payload, dict) or payload.get("id") != request_id or payload.get("sha256") != sha:
         raise TranscribeFailed("poweralx_result_identity_mismatch")
@@ -151,7 +183,10 @@ def run(mime: str, host: str, root: str, release: str):
         source.write_bytes(data)
         os.chmod(source, 0o600)
         duration = media_duration(source)
-        sha = hashlib.sha256(data).hexdigest()
+        # Keep the worker's metadata SHA bound to the exact normalized bytes
+        # uploaded via SCP, rather than the original Safari WebM.
+        source, duration = normalize_for_poweralx(source, mime, base, duration)
+        sha = hashlib.sha256(source.read_bytes()).hexdigest()
         metadata = {"id": job_id, "sha256": sha, "started": time.time(), "duration": duration}
         manifest = base / "metadata.json"
         manifest.write_text(json.dumps(metadata), encoding="utf-8")
@@ -160,7 +195,7 @@ def run(mime: str, host: str, root: str, release: str):
         # Construct remote paths from only fixed, validated root + UUID.
         # Use a separate per-job TESLAMON folder, not existing life-recorder jobs.
         remote = root.rstrip("\\") + "\\teslamon-jobs\\" + job_id
-        dest_audio = remote + "\\audio" + TYPES[mime]
+        dest_audio = remote + "\\audio" + source.suffix
         dest_meta = remote + "\\metadata.json"
         dest_result = remote + "\\result.json"
         remote_command("/usr/bin/ssh", host, ps_command(
@@ -188,7 +223,14 @@ def run(mime: str, host: str, root: str, release: str):
                 timeout=110)
             transfer("/usr/bin/scp", host, result_file, dest_result, download=True)
             result = json.loads(result_file.read_text(encoding="utf-8-sig"))
-            text = validate_response(result, job_id, sha)
+            try:
+                text = validate_response(result, job_id, sha)
+            except TranscribeFailed as exc:
+                # A fully verified complete result without any speech is a
+                # legitimate terminal outcome. Clean up those remote clips too.
+                if str(exc) == "no_speech_detected":
+                    completed = True
+                raise
             completed = True
             return text
         finally:

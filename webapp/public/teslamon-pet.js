@@ -105,7 +105,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     else{
       const reasons={
         poweralx_worker_not_configured:'PowerALX transcription is not configured.',
-        poweralx_worker_unavailable:'PowerALX transcription is unavailable. Use typed commands.',
+        poweralx_worker_unavailable:'PowerALX worker did not finish the recording. Try voice again.',
+        audio_normalization_failed:'iPhone audio could not be prepared for PowerALX. Try again.',
+        normalized_audio_invalid:'The prepared iPhone recording was empty or too large.',
+        normalized_audio_duration_mismatch:'PowerALX audio duration could not be verified.',
         poweralx_transcription_failed:'PowerALX could not transcribe this clip. Try again.',
         poweralx_timeout_or_cancelled:'PowerALX took too long. Try a shorter voice command.',
         poweralx_result_incomplete:'The transcript was incomplete. Please try again.',
