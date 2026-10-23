@@ -47,11 +47,65 @@ const takeaways = [
   "Yes, the 401(k) is included in standard net worth.",
   "Assets are about 2.6x liabilities in this snapshot.",
   "Compared with typical U.S. households in the 35-44 age band, this is well above average.",
-  "Best plain-English label from the prior analysis: upper-middle / affluent, not statistically rich yet.",
-  "Main practical watchout: liquidity. Much of the wealth is in real estate and retirement accounts.",
+  "This dashboard mixes user-reported balances and older asset estimates.",
+  "Cash reserves, brokerage holdings and retirement funds serve different purposes.",
 ];
 
 const disclaimer = "Planning snapshot only. Asset values, taxes, sale costs, penalties, and current balances can change the number.";
+
+
+/**
+ * Estimated liquid investment mix. The 401(k) and 529 weights are approximations
+ * from comparable published fund allocations, not verified account look-through.
+ * Excludes HSA (holdings unknown), real estate, and vehicles.
+ */
+export function investmentAllocation(assets) {
+  const byId = (id) => Math.max(0, Number(assets.find((item) => item.id === id)?.value || 0));
+  const taxable = byId("robinhood") + byId("fidelity") + byId("etrade");
+  const retirement = byId("401k");
+  const college = byId("529");
+  const cash = byId("cash");
+  const total = taxable + retirement + college + cash;
+  const retirementStockWeight = 0.9768;
+  const retirementBondWeight = 0.0212;
+  const stocks = taxable + retirement * retirementStockWeight + college;
+  const bonds = retirement * retirementBondWeight;
+  const other = Math.max(0, total - stocks - bonds - cash);
+  const mix = (values) => ({
+    ...values,
+    total: values.stocks + values.bonds + values.cash + values.other,
+    stockPct: pct(values.stocks, values.stocks + values.bonds + values.cash + values.other),
+    bondPct: pct(values.bonds, values.stocks + values.bonds + values.cash + values.other),
+    cashPct: pct(values.cash, values.stocks + values.bonds + values.cash + values.other),
+    otherPct: pct(values.other, values.stocks + values.bonds + values.cash + values.other),
+  });
+  const current = mix({ stocks, bonds, cash, other });
+  // Illustration only: a possible principal payment and a target <=60% stock mix.
+  // A sale of LifePath contains both equity and fixed-income exposure.
+  const principalPayment = Math.min(45_500, cash);
+  const targetDenominator = total - principalPayment;
+  const targetStockDollars = targetDenominator * 0.60;
+  const rawExchange = Math.max(0, (stocks - targetStockDollars) / retirementStockWeight);
+  const retirementExchange = Math.min(retirement, Math.ceil(rawExchange / 1_000) * 1_000);
+  const scenario = mix({
+    stocks: stocks - retirementExchange * retirementStockWeight,
+    bonds: bonds + retirementExchange * (1 - retirementBondWeight),
+    cash: cash - principalPayment,
+    other: Math.max(0, other - retirementExchange * (1 - retirementStockWeight - retirementBondWeight)),
+  });
+  return {
+    current,
+    scenario,
+    proposal: {
+      emergencySavingsTransfer: 69_954,
+      principalPayment,
+      retirementExchange,
+      targetStockPct: 60,
+      executed: false,
+    },
+    assumptions: "Estimates: 401(k) LifePath 2055 ~97.68% stock, ~2.12% bonds; 529 Aggressive Growth treated as 100% stock. Brokerages treated as stock; Capital One deposits as cash. HSA excluded until holdings are verified. Figures are not live market quotes.",
+  };
+}
 
 function sum(items) {
   return items.reduce((total, item) => total + item.value, 0);
@@ -168,7 +222,7 @@ export async function updateTrackedData(input) {
     source: {
       ...(await trackedData()).source,
       ...(input?.source && typeof input.source === "object" ? input.source : {}),
-      note: "Tracked balances stored locally on this Mac. Update from statements for exact net worth.",
+      note: String(input?.source?.note || "Tracked balances stored locally on this Mac. Update from statements for exact net worth.") ,
     },
   });
   await fs.mkdir(config.dataDir, { recursive: true });
@@ -199,7 +253,7 @@ export async function dashboardData() {
   const taxableInvestments = assets
     .filter((item) => item.category === "Taxable investments")
     .reduce((total, item) => total + item.value, 0);
-  const accessibleLiquid = taxableInvestments + (assets.find((item) => item.name === "Cash after closing")?.value || 0);
+  const accessibleLiquid = taxableInvestments + (assets.find((item) => item.id === "cash")?.value || 0);
   const retirementIncluded = assets
     .filter((item) => ["401(k)", "HSA"].includes(item.name))
     .reduce((total, item) => total + item.value, 0);
@@ -222,8 +276,14 @@ export async function dashboardData() {
     liabilities,
     assetCategories: groupByCategory(assets),
     liabilityCategories: groupByCategory(liabilities),
+    allocation: investmentAllocation(assets),
     equity: equityLines(assets, liabilities),
-    takeaways,
+    takeaways: [
+      ...takeaways.filter((line) => !line.includes("2.6x")),
+      ...([...assets, ...liabilities].some((item) => item.lastUpdated < data.asOf)
+        ? ["Some entries are still older estimates (HSA, Canyon Shore, vehicle values). Confirm them before relying on the net worth total."] : []),
+      "No proposed mortgage prepayment or 401(k) exchange has been recorded as completed.",
+    ],
     benchmarks,
     disclaimer,
   };
