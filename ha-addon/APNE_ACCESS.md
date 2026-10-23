@@ -6,6 +6,12 @@ Cloudflare Access guard. If the add-on has no signed-access configuration,
 clicking an episode returns HTTP 503 with an empty body; iOS Safari may offer
 to download a file named like the episode date.
 
+The maintained Amesh HA add-on now supplies StreamHA's existing Cloudflare
+Access origin, team issuer, and public application audience as default options.
+An existing installation should receive those defaults during the Supervisor
+upgrade. Confirm the three values in the add-on Configuration screen after
+upgrade; if the Access application changes, update them there.
+
 Configure these **three** Supervisor options for the **StreamHA** hostname:
 
 - `access_control_origin`: the HTTPS origin of the HA site (for example,

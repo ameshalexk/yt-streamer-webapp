@@ -41,6 +41,15 @@ class PackagingTests(unittest.TestCase):
         self.assertIn('yt-dlp[default]==${YTDLP_FALLBACK_VERSION}', dockerfile)
         self.assertIn("YTDLP_FALLBACK_PATH=/opt/yt-dlp-backup/bin/yt-dlp", dockerfile)
 
+    def test_addon_supplies_streamha_signed_access_defaults(self):
+        config = (ADDON / "config.yaml").read_text()
+        self.assertIn('access_control_origin: "https://streamha.ameshalex.com"', config)
+        self.assertIn('access_issuer: "https://ameshalex.cloudflareaccess.com"', config)
+        self.assertRegex(config, r'access_audience: "[A-Za-z0-9_-]{20,}"')
+        self.assertIn("access_control_origin: str", config)
+        self.assertIn("access_issuer: str", config)
+        self.assertIn("access_audience: str", config)
+
     def test_supervisor_option_defaults_and_string_selectors(self):
         with patch.dict(os.environ, {}, clear=True):
             addon_run.apply_options({"mjpeg_height": "720", "download_max_height": "360"})
