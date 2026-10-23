@@ -9,11 +9,40 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   pet.setAttribute('aria-label','TeslaMon playback assistant');
   pet.innerHTML=[
     '<div class="tm-shell">',
-      '<button type="button" id="tmHandle" aria-label="Drag TeslaMon to move">⠿</button>',
-      '<button type="button" id="tmFace" aria-expanded="false" aria-controls="tmPanel">',
-        '<span class="tm-ears" aria-hidden="true">◢ ◣</span>',
-        '<span class="tm-eyes" aria-hidden="true">● ●</span>',
-        '<span class="tm-mouth" aria-hidden="true">⌣</span>',
+      '<button type="button" id="tmHandle" aria-label="Drag TeslaMon to move" title="Drag to move, or use arrow keys when focused">⠿</button>',
+      '<button type="button" id="tmFace" aria-label="TeslaMon puppy — open or close controls" aria-expanded="false" aria-controls="tmPanel">',
+        // Original vector puppy: crisp at icon size, with no font or image request.
+        `<svg class="tm-puppy" viewBox="0 0 104 100" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="53" cy="94" rx="33" ry="4" fill="#07121c" opacity=".28"/>
+          <g stroke="#593522" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path class="tm-tail" d="M73 79 Q94 83 94 62 Q84 66 82 73 L72 72" fill="#d99444"/>
+            <path d="M35 62 Q25 72 30 87 Q35 94 52 91 Q72 95 77 85 Q80 73 69 62" fill="#eeb65d"/>
+            <path d="M44 68 Q52 63 61 69 L64 87 Q52 93 40 86Z" fill="#fff0cd" stroke="none"/>
+            <path d="M37 76 L36 88 M66 76 L68 88" fill="none"/>
+            <ellipse cx="35" cy="89" rx="11" ry="6" fill="#fff0cd"/>
+            <ellipse cx="69" cy="89" rx="11" ry="6" fill="#fff0cd"/>
+            <path d="M31 89v3 M37 89v3 M66 89v3 M72 89v3" stroke-width="1.4"/>
+            <path d="M33 61 Q51 71 71 61 L70 69 Q51 77 34 69Z" fill="#55b7b0"/>
+            <circle class="tm-tag" cx="52" cy="72" r="5" fill="#ffe190"/>
+            <path d="M24 28 Q26 13 43 14 L49 8 L51 14 Q72 10 81 28 L81 46 Q78 66 53 68 Q27 66 23 49Z" fill="#f5c674"/>
+            <path d="M26 24 Q15 17 10 34 Q4 53 17 59 Q25 61 27 46 L32 29Z" fill="#a76635"/>
+            <path d="M77 24 Q88 17 94 34 Q100 53 87 59 Q79 61 77 46 L72 29Z" fill="#a76635"/>
+            <path d="M18 30 Q13 40 16 48 M86 30 Q91 40 88 48" stroke="#ce914d" stroke-width="3" fill="none"/>
+            <path d="M49 20 Q45 35 46 45 L58 45 Q59 33 54 20Z" fill="#fff0cd" stroke="none"/>
+            <ellipse cx="38" cy="39" rx="6.5" ry="9" fill="#2c2422" stroke="none"/>
+            <ellipse cx="66" cy="39" rx="6.5" ry="9" fill="#2c2422" stroke="none"/>
+            <circle cx="36" cy="36" r="2.4" fill="white" stroke="none"/>
+            <circle cx="64" cy="36" r="2.4" fill="white" stroke="none"/>
+            <path d="M33 26 Q37 23 42 26 M62 26 Q67 23 71 26" fill="none"/>
+            <path d="M40 52 Q52 47 64 52 Q62 65 52 65 Q42 65 40 52Z" fill="#593522"/>
+            <path d="M47 58 Q52 55 57 58 L57 63 Q52 70 47 63Z" fill="#ee8e91" stroke-width="1.5"/>
+            <path d="M52 59v4" stroke="#bf5e70" stroke-width="1.2"/>
+            <path d="M52 46 C34 39 27 51 35 57 Q44 63 52 54 Q60 63 69 57 C77 51 70 39 52 46Z" fill="#fff0cd" stroke="none"/>
+            <path d="M45 46 Q52 42 59 46 Q60 50 52 53 Q44 50 45 46Z" fill="#2c2422" stroke="none"/>
+            <path d="M49 46h4" stroke="#fff" stroke-width="1.5"/>
+            <path d="M52 53v2 Q47 60 41 56 M52 55 Q57 60 63 56" fill="none" stroke-width="1.7"/>
+          </g>
+        </svg>`,
       '</button>',
     '</div>',
     '<section class="tm-panel" id="tmPanel" hidden aria-label="TeslaMon controls">',
@@ -106,6 +135,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         no_speech_detected:'No speech detected. Try again or type your command.',
         codex_busy:'Codex is processing another playback request.',
         codex_unavailable:'Codex CLI is unavailable. Quick buttons still work.',
+        codex_usage_limit:response?.retryAt?
+          'Codex usage limit reached. Try again at '+response.retryAt+'.':
+          'Codex usage limit reached. Try again after your allowance resets.',
         codex_timeout_or_cancelled:'Codex took too long. Try the request again.',
         codex_disallowed_tool:'Codex tried an unsupported tool. Nothing was executed.',
         unsupported_voice_command:'TeslaMon supports video playback and Home Assistant lights only.',
@@ -269,31 +301,49 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         else status('Microphone input was interrupted. Try holding to record again.','warn');
       }});
   }
+  function safeInsets(){
+    const css=getComputedStyle(pet);
+    return Object.fromEntries(['top','right','bottom','left'].map(side=>
+      [side,parseFloat(css.getPropertyValue('--tm-safe-'+side))||0]));
+  }
   function alignPanel(){
+    const safe=safeInsets();
     const bounds=pet.getBoundingClientRect();
     // Mobile CSS uses a wider panel than desktop. Measure the actual box to
     // keep it within viewport safe edges after opening, dragging or rotation.
     const width=panel.getBoundingClientRect().width||Math.min(336,Math.max(200,innerWidth-16));
     const desired=bounds.right-width;
-    const left=Math.max(8,Math.min(innerWidth-width-8,desired));
+    const left=Math.max(safe.left+8,Math.min(innerWidth-safe.right-width-8,desired));
     panel.style.left=(left-bounds.left)+'px';
     panel.style.right='auto';
-    const above=Math.max(0,bounds.top-88);
-    const below=Math.max(0,innerHeight-bounds.bottom-12);
+    const above=Math.max(0,bounds.top-safe.top-16);
+    const below=Math.max(0,innerHeight-safe.bottom-bounds.bottom-16);
     if(below>above){
-      panel.style.top='75px';panel.style.bottom='auto';
+      panel.style.top=(bounds.height+8)+'px';panel.style.bottom='auto';
     }else{
-      panel.style.top='auto';panel.style.bottom='80px';
+      panel.style.top='auto';panel.style.bottom=(bounds.height+8)+'px';
     }
     panel.style.maxHeight=Math.max(110,Math.min(650,Math.max(above,below)))+'px';
   }
   function setPosition(x,y){
-    pet.style.left=Math.max(0,Math.min(innerWidth-pet.offsetWidth,x))+'px';
-    pet.style.top=Math.max(0,Math.min(innerHeight-pet.offsetHeight,y))+'px';
+    const safe=safeInsets();
+    pet.style.left=Math.max(safe.left+8,Math.min(innerWidth-safe.right-pet.offsetWidth-8,x))+'px';
+    pet.style.top=Math.max(safe.top+8,Math.min(innerHeight-safe.bottom-pet.offsetHeight-8,y))+'px';
     pet.style.right='auto';pet.style.bottom='auto';
     alignPanel();
   }
   let drag=null;
+  function savePosition(){
+    try{localStorage.setItem(KEY,JSON.stringify({x:pet.offsetLeft,y:pet.offsetTop}));}catch{}
+  }
+  handle.addEventListener('keydown',event=>{
+    const direction={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[event.key];
+    if(!direction)return;
+    event.preventDefault();
+    const step=event.shiftKey?4:20;
+    setPosition(pet.offsetLeft+direction[0]*step,pet.offsetTop+direction[1]*step);
+    savePosition();
+  });
   handle.addEventListener('pointerdown',event=>{
     if(event.button!==0)return;
     const bounds=pet.getBoundingClientRect();
@@ -307,7 +357,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   handle.addEventListener('pointerup',event=>{
     if(!drag||drag.id!==event.pointerId)return;
     drag=null;
-    try{localStorage.setItem(KEY,JSON.stringify({x:pet.offsetLeft,y:pet.offsetTop}));}catch{}
+    savePosition();
   });
   handle.addEventListener('pointercancel',()=>{drag=null;});
   try{

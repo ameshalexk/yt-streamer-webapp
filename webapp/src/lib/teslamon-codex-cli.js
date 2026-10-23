@@ -15,6 +15,18 @@ const TOOLS=new Set(['pause','resume','get_playback_state','search_and_play',
 const SESSION=/^[a-f0-9-]{36}$/i;
 const VALID_LINE=/^[^\x00-\x1f\x7f]{1,220}$/;
 const EXIT_ERROR='codex_unavailable';
+// Codex service failures are not evidence that a prohibited tool was called.
+// Display only a bounded retry time; never forward raw CLI diagnostic text.
+function classifyCodexFailure(evt){
+  const message=typeof evt?.message==='string'?evt.message:
+    typeof evt?.error?.message==='string'?evt.error.message:'';
+  if(/\b(?:usage limit|rate limit|quota exceeded|too many requests)\b/i.test(message)){
+    const retry=message.match(/\btry again at\s+([0-1]?\d:\d{2}\s*[ap]m)\b/i);
+    return {status:'unavailable',code:'codex_usage_limit',
+      ...(retry?{retryAt:retry[1].replace(/\s+/g,' ').toUpperCase()}: {})};
+  }
+  return {status:'unavailable',code:EXIT_ERROR};
+}
 const HA_PROXY=fileURLToPath(new URL('./teslamon-ha-lights-mcp.mjs',import.meta.url));
 const APPROVED_LIGHT_TOOLS=new Set(['search_lights','get_light_state','set_light']);
 const CODEX_FROM_PLUGIN=path.join(os.homedir(),
@@ -102,7 +114,7 @@ export function createTeslaMonCodex({
     const prompt=BASE_PROMPT+'\n\nUser request: '+JSON.stringify(text);
     return new Promise(resolve=>{
       let child=null,buffer='',output='',thread=canResume?oldThread:null,
-        stdoutBytes=0,completed=false,
+        stdoutBytes=0,completed=false,serviceFailure=null,
         suspicious=false,settled=false,timer=null,aborted=false,
         allowedMcpCalls=0,completedMcpCalls=0,lightMutations=0;
       const finish=result=>{
@@ -148,7 +160,11 @@ export function createTeslaMonCodex({
           try{child?.kill('SIGTERM');}catch{}
         }
         if(evt.type==='turn.completed')completed=true;
-        if(evt.type==='turn.failed'||evt.type==='error')suspicious=true;
+        if(evt.type==='turn.failed'||evt.type==='error'){
+          const failure=classifyCodexFailure(evt);
+          // A generic turn.failed may follow a specific quota error.
+          if(!serviceFailure||failure.code==='codex_usage_limit')serviceFailure=failure;
+        }
       }
       child.stdout.on('data',d=>{
         stdoutBytes+=d.length;
@@ -165,8 +181,9 @@ export function createTeslaMonCodex({
         if(settled)return;
         if(buffer.trim())onLine(buffer);
         if(aborted)return finish({status:'failed',code:'codex_timeout_or_cancelled'});
-        if(code!==0||suspicious||!completed)return finish({status:'failed',
-          code:suspicious?'codex_disallowed_tool':EXIT_ERROR});
+        if(suspicious)return finish({status:'failed',code:'codex_disallowed_tool'});
+        if(serviceFailure)return finish(serviceFailure);
+        if(code!==0||!completed)return finish({status:'unavailable',code:EXIT_ERROR});
         let json;try{json=JSON.parse(output)}catch{
           return finish({status:'failed',code:'invalid_codex_reply'});
         }
