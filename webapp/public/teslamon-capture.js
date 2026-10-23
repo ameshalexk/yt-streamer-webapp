@@ -142,7 +142,7 @@ export function createTeslaMonCapture({
     state(session, 'requesting');
     if (active !== session) return false;
     let stream;
-    try { stream = await getUserMedia({ audio: true }); }
+    try { stream = await getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
     catch (error) {
       if (active === session) finish(session, 'error', error);
       return false;

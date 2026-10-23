@@ -58,12 +58,12 @@ function trackStream() {
 async function settle() { await new Promise(resolve => setImmediate(resolve)); }
 
 test('import and controller creation do not request media; start is explicit and release submits transient audio', async () => {
-  let requests = 0;
+  let requests = 0, requestedOptions;
   const { Recorder, instances } = recorderHarness();
   const { stream, track } = trackStream();
   const audio = [];
   const controller = createTeslaMonCapture({
-    getUserMedia: async () => { requests++; return stream; },
+    getUserMedia: async options => { requests++; requestedOptions = options; return stream; },
     MediaRecorder: Recorder,
     onAudio: blob => audio.push(blob),
   });
@@ -71,6 +71,7 @@ test('import and controller creation do not request media; start is explicit and
   assert.equal(controller.state, 'idle');
   await controller.start();
   assert.equal(requests, 1);
+  assert.deepEqual(requestedOptions, {audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
   instances[0].chunk(3);
   controller.release();
   await settle();
