@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createTeslaMonLocalPlayer} from '../public/teslamon-local-player.js';
 const A='AAAaa00000_',B='BBBbb11111_';
 const mk=(initial={})=>{
-  let clock=100000,sequence=0,phase='idle',media='',fullscreen='none';
+  let phase='idle',media='',fullscreen='none';
   const calls=[],results=initial.results??[{media_id:A,title:'Title',creator:'Channel'}];
   const facade={
     get_player_state:()=>({playback_phase:phase,media_id:media,fullscreen_kind:fullscreen}),
@@ -20,10 +20,7 @@ const mk=(initial={})=>{
       return {status:'failed'};
     }
   };
-  return {calls,facade,player:createTeslaMonLocalPlayer({
-    getPlayer:()=>facade,now:()=>clock,
-    makeToken:()=>('00000000-0000-4000-8000-'+String(++sequence).padStart(12,'0'))
-  }),advance:ms=>{clock+=ms}};
+  return {calls,facade,player:createTeslaMonLocalPlayer({getPlayer:()=>facade})};
 };
 test('single search plays through this page facade only',async()=>{
   const x=mk();
@@ -34,40 +31,32 @@ test('single search plays through this page facade only',async()=>{
   assert.deepEqual(x.calls.map(x=>x.action),['search_media','play_media','request_fullscreen','get_player_state']);
   assert.equal(x.calls[1].args.media_id,A);
 });
-test('ambiguous search returns opaque tokens and consumes chosen result once',async()=>{
-  const x=mk({results:[{media_id:A,title:'One',creator:'A'},{media_id:B,title:'Two',creator:'B'}]});
-  const found=await x.player.run({tool:'search_and_play',args:{query:'movie trailers'}});
-  assert.equal(found.status,'needs_selection');
-  assert.equal(found.choices.length,2);
-  assert.ok(found.choices.every(v=>!('media_id' in v)));
-  assert.deepEqual(x.calls.map(c=>c.action),['search_media']);
-  assert.equal((await x.player.run({tool:'search_and_play',
-    args:{candidate_token:found.choices[1].candidate_token}})).status,'observed');
+test('multiple matching results immediately play the top ranked video',async()=>{
+  const x=mk({results:[
+    {media_id:A,title:'Kalyanaraman (2002)',creator:'Movies'},
+    {media_id:B,title:'Kalyanaraman trailer',creator:'Movies'}
+  ]});
+  const result=await x.player.run({tool:'search_and_play',args:{query:'Play Kalyanaraman the movie'}});
+  assert.equal(result.status,'observed');
+  assert.deepEqual(x.calls.map(x=>x.action),
+    ['search_media','play_media','request_fullscreen','get_player_state']);
+  assert.equal(x.calls[1].args.media_id,A);
+  assert.equal(result.choices,undefined);
+});
+test('invalid first search hit is skipped in favor of first valid media ID',async()=>{
+  const x=mk({results:[
+    {media_id:'bad id',title:'Invalid'},
+    {media_id:B,title:'Valid'},
+    {media_id:A,title:'Also valid'}
+  ]});
+  const result=await x.player.run({tool:'search_and_play',args:{query:'a movie'}});
+  assert.equal(result.status,'observed');
   assert.equal(x.calls[1].args.media_id,B);
-  assert.equal((await x.player.run({tool:'search_and_play',
-    args:{candidate_token:found.choices[0].candidate_token}})).code,'stale_or_unknown_candidate');
 });
-test('a candidate token belongs only to the tab instance that minted it',async()=>{
-  const resultSet=[{media_id:A,title:'A'},{media_id:B,title:'B'}];
-  const a=mk({results:resultSet}),b=mk({results:resultSet});
-  const found=await a.player.run({tool:'search_and_play',args:{query:'a movie'}});
-  const attempt=await b.player.run({tool:'search_and_play',
-    args:{candidate_token:found.choices[0].candidate_token}});
-  assert.equal(attempt.code,'stale_or_unknown_candidate');
-  assert.equal(b.calls.length,0);
-});
-test('candidate expires and new search invalidates previous results',async()=>{
-  const x=mk({results:[{media_id:A,title:'A'},{media_id:B,title:'B'}]});
-  const first=await x.player.run({tool:'search_and_play',args:{query:'first'}});
-  x.advance(46000);
-  assert.equal((await x.player.run({tool:'search_and_play',
-    args:{candidate_token:first.choices[0].candidate_token}})).code,'stale_or_unknown_candidate');
-  const next=await x.player.run({tool:'search_and_play',args:{query:'new search'}});
-  assert.equal(next.status,'needs_selection');
-  const another=await x.player.run({tool:'search_and_play',args:{query:'another new search'}});
-  assert.equal(another.status,'needs_selection');
-  assert.equal((await x.player.run({tool:'search_and_play',
-    args:{candidate_token:next.choices[0].candidate_token}})).code,'stale_or_unknown_candidate');
+test('no valid matches cannot trigger playback',async()=>{
+  const x=mk({results:[{media_id:'broken',title:'Invalid'}]});
+  assert.equal((await x.player.run({tool:'search_and_play',args:{query:'a movie'}})).code,'no_results');
+  assert.deepEqual(x.calls.map(x=>x.action),['search_media']);
 });
 test('unknown actions and browser targeting parameters never reach the player',async()=>{
   const x=mk();
@@ -76,6 +65,7 @@ test('unknown actions and browser targeting parameters never reach the player',a
     {tool:'pause',args:{deviceKey:'other'}},
     {tool:'pause',args:{tab_id:'other'}},
     {tool:'search_and_play',args:{media_id:A}},
+    {tool:'search_and_play',args:{candidate_token:'00000000-0000-4000-8000-000000000001'}},
     {tool:'search_and_play',args:{query:'https://another.example/watch'}}
   ])assert.equal((await x.player.run(intent)).status,'failed');
   assert.equal(x.calls.length,0);
