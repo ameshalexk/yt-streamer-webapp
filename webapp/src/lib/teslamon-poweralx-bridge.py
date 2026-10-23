@@ -159,7 +159,7 @@ def validate_response(payload: object, request_id: str, sha: str) -> str:
     # over 220 characters. Do not log/store speech, or broaden the tool surface.
     return text[:220]
 
-def run(mime: str, host: str, root: str, release: str):
+def run(mime: str, host: str, root: str, release: str, resident: bool = False):
     if mime not in TYPES or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,59}", host):
         raise TranscribeFailed("invalid_configuration")
     if not re.fullmatch(r"C:\\[A-Za-z0-9_ .\\-]+", root, flags=re.IGNORECASE):
@@ -213,14 +213,33 @@ def run(mime: str, host: str, root: str, release: str):
             cmd = ('cmd.exe /d /s /c ""' + launcher + '" --audio "' +
                    dest_audio + '" --metadata "' + dest_meta +
                    '" --out "' + dest_result + '""')
-            remote_command("/usr/bin/ssh", host, ps_command(
-                "$ErrorActionPreference='Stop'; "
-                "$env:HF_HUB_OFFLINE='1'; "
-                "$env:TRANSFORMERS_OFFLINE='1'; "
-                "$env:HF_DATASETS_OFFLINE='1'; "
-                "$env:HF_HUB_DISABLE_TELEMETRY='1'; "
-                f"& {cmd}; if ($LASTEXITCODE -ne 0) {{ throw 'ExistingWorkerFailed' }}"),
-                timeout=110)
+            if resident:
+                # An authenticated SSH command on PowerALX reads the local
+                # private bearer from disk and asks the loopback-only warm
+                # worker to process the exact UUID-scoped uploaded file.
+                # The bearer is never sent back to Mac or the browser.
+                token_file = root.rstrip("\\") + "\\teslamon-resident\\token.txt"
+                command = (
+                    "$ErrorActionPreference='Stop'; "
+                    f"$token=[System.IO.File]::ReadAllText('{token_file}').Trim(); "
+                    f"$body=(@{{id='{job_id}'}} | ConvertTo-Json -Compress); "
+                    "$reply=Invoke-RestMethod -Method POST "
+                    "-Uri 'http://127.0.0.1:38491/process' "
+                    "-ContentType 'application/json' "
+                    "-Headers @{Authorization=('Bearer '+$token)} "
+                    "-Body $body -TimeoutSec 95; "
+                    "if ($reply.status -notin @('complete','incomplete')) "
+                    "{ throw 'ResidentWorkerFailed' }")
+                remote_command("/usr/bin/ssh",host,ps_command(command),timeout=105)
+            else:
+                remote_command("/usr/bin/ssh", host, ps_command(
+                    "$ErrorActionPreference='Stop'; "
+                    "$env:HF_HUB_OFFLINE='1'; "
+                    "$env:TRANSFORMERS_OFFLINE='1'; "
+                    "$env:HF_DATASETS_OFFLINE='1'; "
+                    "$env:HF_HUB_DISABLE_TELEMETRY='1'; "
+                    f"& {cmd}; if ($LASTEXITCODE -ne 0) {{ throw 'ExistingWorkerFailed' }}"),
+                    timeout=110)
             transfer("/usr/bin/scp", host, result_file, dest_result, download=True)
             result = json.loads(result_file.read_text(encoding="utf-8-sig"))
             try:
@@ -251,9 +270,10 @@ def main():
     parser.add_argument("--worker-root", required=True)
     parser.add_argument("--release", required=True)
     parser.add_argument("--ssh-host", default="poweralx")
+    parser.add_argument("--resident", action="store_true")
     opts = parser.parse_args()
     try:
-        text = run(opts.mime, opts.ssh_host, opts.worker_root, opts.release)
+        text = run(opts.mime, opts.ssh_host, opts.worker_root, opts.release, resident=opts.resident)
         echo("ok", text=text)
     except TranscribeFailed as error:
         echo("failed", code=str(error))

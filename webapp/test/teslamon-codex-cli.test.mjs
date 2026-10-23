@@ -21,7 +21,18 @@ const fakeProcess=(responses,record)=>{
         emit({type:'thread.started',thread_id:THREAD});
         emit({type:'turn.started'});
         if(answer.disallowed)emit({type:'item.completed',item:{type:'command_execution'}});
-        else emit({type:'item.completed',item:{type:'agent_message',text:JSON.stringify(answer)}});
+        else {
+          if(answer.mcp){
+            const tool=answer.mcp.tool||'get_light_state';
+            const server=answer.mcp.server||'teslamon_lights';
+            emit({type:'item.started',item:{type:'mcp_tool_call',server,tool,status:'in_progress'}});
+            emit({type:'item.completed',item:{type:'mcp_tool_call',server,tool,
+              status:answer.mcp.fail?'failed':'completed',
+              ...(answer.mcp.fail?{error:'tool_failed'}:{})}});
+          }
+          emit({type:'item.completed',item:{type:'agent_message',text:JSON.stringify({
+            tool:answer.tool,query:answer.query})}});
+        }
         emit({type:'turn.completed'});
         child.stdout.end();child.emit('close',0);
       });}});
@@ -78,6 +89,31 @@ test('Invalid session, identity or multiline input never starts CLI',async()=>{
   assert.equal((await t.plan('pause',SESSION,'admin')).code,'invalid_codex_request');
   assert.equal((await t.plan('pause\nresume',SESSION,ID)).code,'invalid_codex_request');
   assert.equal(calls.length,0);
+});
+test('Model cannot claim Home Assistant success without an actual MCP call',async()=>{
+  const t=client([{tool:'ha_done',query:''}],[]);
+  assert.equal((await t.plan('kitchen lights status',SESSION,ID)).code,'ha_mcp_not_called');
+});
+test('Only allowed Home Assistant light tools may report success',async()=>{
+  const t=client([{tool:'ha_done',query:'',mcp:{tool:'get_light_state'}}],[]);
+  assert.deepEqual(await t.plan('Are the lights on?',SESSION,ID),
+    {status:'ha_done',code:'ha_mcp_completed',action:'light_checked'});
+  const writes=client([{tool:'ha_done',query:'',mcp:{tool:'set_light'}}],[]);
+  assert.deepEqual(await writes.plan('Turn off bedroom lights',SESSION,ID),
+    {status:'ha_done',code:'ha_mcp_completed',action:'light_changed'});
+  const other=client([{tool:'ha_done',query:'',mcp:{server:'home_assistant',tool:'control_lock'}}],[]);
+  assert.equal((await other.plan('unlock the door',SESSION,ID)).code,'codex_disallowed_tool');
+  const failure=client([{tool:'ha_done',query:'',mcp:{tool:'set_light',fail:true}}],[]);
+  assert.equal((await failure.plan('turn off lights',SESSION,ID)).code,'codex_disallowed_tool');
+});
+test('Codex must load only scoped MCP and never normal Mac Control config',async()=>{
+  const calls=[];
+  const t=client([{tool:'pause',query:''}],calls);
+  await t.plan('pause',SESSION,ID);
+  const arg=calls[0].args.join(' ');
+  assert.match(arg,/mcp_servers.teslamon_lights/);
+  assert.doesNotMatch(arg,/Mac_Control|danger-full-access|home-assistant-remote/);
+  assert.ok(calls[0].args.includes('--ignore-user-config'));
 });
 test('HA never starts Mac-specific Codex process',async()=>{
   const t=createTeslaMonCodex({isSupportedPlatform:false,binaryExists:()=>true,

@@ -24,7 +24,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<span>Controls this browser tab only</span></div>',
       '<form id="tmForm"><label class="tm-visually-hidden" for="tmText">Command</label>',
         '<input id="tmText" type="text" autocomplete="off" maxlength="220"',
-        ' placeholder="Play a video, pause, resume…" />',
+        ' placeholder="Play video or control lights…" />',
         '<button id="tmSend" type="submit">Send</button></form>',
       '<label id="tmModelLabel" hidden><input id="tmModelOptIn" type="checkbox" />',
         'Use optional AI for unmatched phrases (separate API charges may apply)</label>',
@@ -37,7 +37,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<button type="button" data-tm="exit_fullscreen">Exit fullscreen</button>',
       '</div>',
       '<div id="tmChoices" role="group" aria-label="Video results" hidden></div>',
-      '<p id="tmHelp">Codex understands speech and text. Playback stays in this tab. No remote tab selection,',
+      '<p id="tmHelp">Codex handles video requests in this tab and Home Assistant lights. No remote tab selection,',
         ' device pairing, or separate Cloudflare login is required.</p>',
     '</section>'
   ].join('');
@@ -101,7 +101,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     else if(response?.status==='offline')status('This tab player is unavailable. Reload the page.','warn');
     else if(response?.status==='unsupported')
       status(response.code==='unsupported_voice_command'?
-        'TeslaMon only controls video playback in this tab.':'Not supported by this player.','warn');
+        'TeslaMon controls this tab and Home Assistant lights.':'Not supported by this player.','warn');
     else{
       const reasons={
         poweralx_worker_not_configured:'PowerALX transcription is not configured.',
@@ -127,9 +127,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         codex_unavailable:'Codex CLI is unavailable. Quick buttons still work.',
         codex_timeout_or_cancelled:'Codex took too long. Try the request again.',
         codex_disallowed_tool:'Codex tried an unsupported tool. Nothing was executed.',
-        unsupported_voice_command:'TeslaMon only controls playback in this tab.',
+        unsupported_voice_command:'TeslaMon supports video playback and Home Assistant lights only.',
         invalid_codex_plan:'Codex returned an invalid playback command.',
-        invalid_codex_reply:'Codex could not interpret that command.'
+        invalid_codex_reply:'Codex could not interpret that command.',
+        ha_mcp_not_called:'Codex did not complete a Home Assistant light tool call.',
+        home_assistant_unavailable:'Home Assistant light service is unavailable.'
       };
       status(reasons[response?.code]||('Command failed: '+(response?.code||'unknown')),'warn');
     }
@@ -179,6 +181,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(target!==selected||epoch!==micEpoch||!opened)return;
       if(result.status==='ok'&&typeof result.tool==='string'){
         input.value='';await issue({tool:result.tool,args:result.args||{}});
+      }else if(result.status==='ha_done'){
+        input.value='';
+        status(result.action==='light_changed'?
+          'Home Assistant light command completed.':'Home Assistant light state checked.','ok');
       }else report(result);
     }catch{status('Codex is unavailable. Quick controls still work.','warn');}
     finally{modelBusy=false;}
