@@ -23,14 +23,12 @@ const seedData = {
     { id: "401k", name: "401(k)", category: "Retirement", value: 400_000, source: "Manual", lastUpdated: "2026-05-25", note: "Included in standard net worth" },
     { id: "529", name: "529 plan", category: "Education", value: 32_000, source: "Manual", lastUpdated: "2026-05-25", note: "College savings" },
     { id: "hsa", name: "HSA", category: "Retirement / health", value: 25_000, source: "Manual", lastUpdated: "2026-05-25", note: "Tax-advantaged health savings" },
-    { id: "canyon-shore", name: "Canyon Shore", category: "Real estate", value: 270_000, source: "Manual", lastUpdated: "2026-05-25", note: "Home value estimate used in chat" },
     { id: "cypress-path", name: "Cypress Path", category: "Real estate", value: 570_000, source: "Closing disclosure", lastUpdated: "2026-05-25", note: "Purchase price from CD clarification" },
     { id: "tesla", name: "Tesla", category: "Vehicles", value: 40_000, source: "Manual", lastUpdated: "2026-05-25", note: "Offset by Tesla loan" },
     { id: "honda-accord", name: "Honda Accord", category: "Vehicles", value: 15_000, source: "Manual", lastUpdated: "2026-05-25", note: "Estimated vehicle value" },
     { id: "cash", name: "Cash after closing", category: "Cash", value: 24_131, source: "Closing disclosure math", lastUpdated: "2026-05-25", note: "$143K starting cash minus $118,869.25 cash to close" },
   ],
   liabilities: [
-    { id: "canyon-shore-mortgage", name: "Canyon Shore mortgage", category: "Mortgage", value: 120_000, source: "Manual", lastUpdated: "2026-05-25", note: "Outstanding mortgage estimate" },
     { id: "cypress-path-mortgage", name: "Cypress Path mortgage", category: "Mortgage", value: 456_000, source: "Closing disclosure", lastUpdated: "2026-05-25", note: "$570K purchase with 20% down" },
     { id: "tesla-loan", name: "Tesla loan", category: "Auto loan", value: 40_000, source: "Manual", lastUpdated: "2026-05-25", note: "Estimated outstanding auto loan" },
   ],
@@ -237,7 +235,6 @@ function valueById(items, id) {
 
 function equityLines(assets, liabilities) {
   return [
-    { name: "Canyon Shore equity", value: valueById(assets, "canyon-shore") - valueById(liabilities, "canyon-shore-mortgage"), formula: "Canyon Shore value - Canyon Shore mortgage" },
     { name: "Cypress Path equity", value: valueById(assets, "cypress-path") - valueById(liabilities, "cypress-path-mortgage"), formula: "Cypress Path value - Cypress Path mortgage" },
     { name: "Tesla net equity", value: valueById(assets, "tesla") - valueById(liabilities, "tesla-loan"), formula: "Tesla value - Tesla loan" },
     { name: "Honda equity", value: valueById(assets, "honda-accord"), formula: "Honda value - no listed loan" },
@@ -281,7 +278,7 @@ export async function dashboardData() {
     takeaways: [
       ...takeaways.filter((line) => !line.includes("2.6x")),
       ...([...assets, ...liabilities].some((item) => item.lastUpdated < data.asOf)
-        ? ["Some entries are still older estimates (HSA, Canyon Shore, vehicle values). Confirm them before relying on the net worth total."] : []),
+        ? ["Some entries still use older estimates. Verify those values before relying on the net worth total."] : []),
       "No proposed mortgage prepayment or 401(k) exchange has been recorded as completed.",
     ],
     benchmarks,
