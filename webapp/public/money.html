@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#07111f">
   <title>Money Dashboard</title>
-  <link rel="stylesheet" href="/money.css?v=20260625-track">
+  <link rel="stylesheet" href="/money.css?v=20261023-portfolio">
 </head>
 <body>
   <main class="shell">
@@ -30,6 +30,32 @@
     </section>
 
     <section class="summary-grid" id="summaryGrid" aria-label="Financial summary"></section>
+
+
+    <section class="panel allocation-panel" id="allocationPanel" hidden>
+      <div class="panel-head">
+        <div>
+          <p class="label">Stocks · bonds · cash</p>
+          <h2>Investment allocation</h2>
+        </div>
+        <span class="hero-pill">Estimates, not trades</span>
+      </div>
+      <div class="allocation-grid">
+        <div class="allocation-card">
+          <div class="allocation-title"><strong>Current holdings</strong><span id="allocationCurrentTotal"></span></div>
+          <div class="allocation-stacked" id="allocationCurrentBar" role="img" aria-label="Current estimated stocks bonds and cash allocation"></div>
+          <div class="allocation-breakdown" id="allocationCurrentBreakdown"></div>
+        </div>
+        <div class="allocation-card hypothetical">
+          <div class="allocation-title"><strong>Example at 60% stock cap</strong><span id="allocationScenarioTotal"></span></div>
+          <div class="allocation-stacked" id="allocationScenarioBar" role="img" aria-label="Illustrative stocks bonds and cash allocation"></div>
+          <div class="allocation-breakdown" id="allocationScenarioBreakdown"></div>
+          <p class="allocation-steps" id="allocationScenarioSteps"></p>
+          <p class="unexecuted">Proposed only — no money moved, no mortgage payment made, no 401(k) exchange placed.</p>
+        </div>
+      </div>
+      <p class="fine" id="allocationAssumptions"></p>
+    </section>
 
     <section class="panel math-panel" id="mathPanel" hidden>
       <div>
@@ -140,6 +166,6 @@
     </section>
   </main>
 
-  <script src="/money.js?v=20260625-track"></script>
+  <script src="/money.js?v=20261023-portfolio"></script>
 </body>
 </html>
