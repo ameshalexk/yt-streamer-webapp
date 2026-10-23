@@ -8,6 +8,7 @@ import { Readable } from "node:stream";
 import { config } from "./config.js";
 import {startProductionMediaRelay} from "./lib/ai-media-agent-production-relay.js";
 import {createTeslaMonTranscriber} from "./lib/teslamon-transcribe.js";
+import {createTeslaMonCodex} from "./lib/teslamon-codex-cli.js";
 import * as store from "./lib/store.js";
 import * as storageManager from "./lib/storage-manager.js";
 import { findSavedPlayback } from "./lib/saved-playback.js";
@@ -2258,6 +2259,7 @@ let productionMediaRelay = null;
 // Transport-only: forwards explicitly recorded short audio to the existing
 // PowerALX Life Recorder worker. No Mac model, Whisper or fallback ASR.
 const teslamonPowerAlxSTT=createTeslaMonTranscriber();
+const teslamonCodex=createTeslaMonCodex();
 async function verifyTeslaMonVoiceRequest(req,res,next){
   res.set('Cache-Control','private, no-store');
   // Cloudflare Tunnel can rewrite Host/port; use the pinned public Origin,
@@ -2271,7 +2273,7 @@ async function verifyTeslaMonVoiceRequest(req,res,next){
   if(!productionMediaRelay?.authenticateTeslaMonVoice)
     return res.status(503).json({status:'unavailable',code:'voice_auth_unavailable'});
   try{
-    await productionMediaRelay.authenticateTeslaMonVoice(req);
+    req.teslamonVoiceIdentity=await productionMediaRelay.authenticateTeslaMonVoice(req);
     next();
   }catch{
     return res.status(401).json({status:'failed',code:'signed_access_required'});
@@ -2281,7 +2283,30 @@ app.post('/api/teslamon/capabilities',verifyTeslaMonVoiceRequest,(req,res)=>{
   if(req.body&&Object.keys(req.body).length)
     return res.status(400).json({status:'failed',code:'unexpected_body'});
   return res.json({status:'ok',localTranscription:teslamonPowerAlxSTT.available,
-    modelConfigured:false,engine:teslamonPowerAlxSTT.engine});
+    modelConfigured:false,engine:teslamonPowerAlxSTT.engine,
+    codexAvailable:teslamonCodex.available});
+});
+// Codex selects ONE strict playback command. No model output is executed on
+// the Mac: the authenticated requesting browser tab performs its own action.
+app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  if(!req.body||Object.getPrototypeOf(req.body)!==Object.prototype||
+     Object.keys(req.body).sort().join(',')!=='session,text'||
+     typeof req.body.session!=='string'||typeof req.body.text!=='string'||
+     req.body.text.length<1||req.body.text.length>220||
+     /[\x00-\x1f\x7f]/.test(req.body.text))
+    return res.status(400).json({status:'failed',code:'invalid_codex_request'});
+  const principal=req.teslamonVoiceIdentity;
+  if(typeof principal?.subject!=='string'||!principal.subject||
+     typeof principal.issuer!=='string'||!principal.issuer)
+    return res.status(401).json({status:'failed',code:'signed_access_required'});
+  // Bind per-tab Codex context to the VERIFIED Access principal, not an
+  // unauthenticated header. Works with either edge assertion or signed cookie.
+  const identity=crypto.createHash('sha256').update(principal.issuer+'\n'+principal.subject).digest('hex');
+  try{
+    const outcome=await teslamonCodex.plan(req.body.text,req.body.session,identity);
+    return res.status(outcome.status==='unavailable'?503:outcome.status==='failed'?422:200)
+      .json(outcome);
+  }catch{return res.status(503).json({status:'unavailable',code:'codex_unavailable'});}
 });
 app.post('/api/teslamon/transcribe',verifyTeslaMonVoiceRequest,
   express.raw({type:['audio/webm','audio/ogg','audio/mp4','audio/wav'],limit:'5mb'}),async(req,res)=>{

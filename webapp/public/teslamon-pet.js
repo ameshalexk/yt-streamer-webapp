@@ -1,4 +1,3 @@
-import {interpretTeslaMon} from './teslamon-intent.js';
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261022-auto-fullscreen1';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {convertTeslaMonAudioToWav} from './teslamon-wav-fallback.js';
@@ -38,7 +37,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<button type="button" data-tm="exit_fullscreen">Exit fullscreen</button>',
       '</div>',
       '<div id="tmChoices" role="group" aria-label="Video results" hidden></div>',
-      '<p id="tmHelp">TeslaMon controls only this page. No remote tab selection,',
+      '<p id="tmHelp">Codex understands speech and text. Playback stays in this tab. No remote tab selection,',
         ' device pairing, or separate Cloudflare login is required.</p>',
     '</section>'
   ].join('');
@@ -49,6 +48,12 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     input=$('#tmText'),choices=$('#tmChoices'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
+  // Secure per-page session, never stored or shared with another tab.
+  const tabSession=typeof crypto.randomUUID==='function'?crypto.randomUUID():
+    (()=>{const b=crypto.getRandomValues(new Uint8Array(16));
+      b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;
+      const h=Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
+      return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');})();
   const localPlayer=createTeslaMonLocalPlayer();
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0;
@@ -94,7 +99,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     else if(response?.status==='uncertain')status('Result uncertain. Check player before retrying.','warn');
     else if(response?.status==='needs_user_gesture')status('Tap Fullscreen directly in this tab.','warn');
     else if(response?.status==='offline')status('This tab player is unavailable. Reload the page.','warn');
-    else if(response?.status==='unsupported')status('Not supported by this player.','warn');
+    else if(response?.status==='unsupported')
+      status(response.code==='unsupported_voice_command'?
+        'TeslaMon only controls video playback in this tab.':'Not supported by this player.','warn');
     else{
       const reasons={
         poweralx_worker_not_configured:'PowerALX transcription is not configured.',
@@ -112,7 +119,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         invalid_audio_timing:'iPhone recording had no valid audio timing. Try again.',
         invalid_audio_duration:'Recording was too short or too long. Hold for 2–3 seconds.',
         iphone_wav_fallback_failed:'Safari sent unreadable MP4 audio and WAV conversion failed. Try again.',
-        no_speech_detected:'No speech detected. Try again or type your command.'
+        no_speech_detected:'No speech detected. Try again or type your command.',
+        codex_busy:'Codex is processing another playback request.',
+        codex_unavailable:'Codex CLI is unavailable. Quick buttons still work.',
+        codex_timeout_or_cancelled:'Codex took too long. Try the request again.',
+        codex_disallowed_tool:'Codex tried an unsupported tool. Nothing was executed.',
+        unsupported_voice_command:'TeslaMon only controls playback in this tab.',
+        invalid_codex_plan:'Codex returned an invalid playback command.',
+        invalid_codex_reply:'Codex could not interpret that command.'
       };
       status(reasons[response?.code]||('Command failed: '+(response?.code||'unknown')),'warn');
     }
@@ -146,22 +160,24 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
     }finally{busy=false;}
   }
+  // Natural language (both typed and PowerALX voice transcript) always goes
+  // through the signed Codex CLI planner. Direct buttons skip reasoning.
   async function interpret(text){
-    const command=interpretTeslaMon(text);
-    if(!command.error){input.value='';void issue(command);return;}
-    if(!modelOptIn.checked||modelLabel.hidden){
-      status(command.error,'warn');return;
+    const request=String(text||'').trim();
+    if(request.length<1||request.length>220){
+      status('Enter a playback request under 220 characters.','warn');return;
     }
-    if(modelBusy||busy){status('A command is already being processed.','warn');return;}
-    modelBusy=true;const target=selected,epoch=micEpoch;
-    status('Interpreting command with optional AI…');
+    if(modelBusy||busy){status('A playback request is already running.','warn');return;}
+    modelBusy=true;
+    const target=selected,epoch=micEpoch;
+    status('Codex is understanding your request…');
     try{
-      const result=await post('/api/teslamon/interpret',{text,optIn:true});
+      const result=await post('/api/teslamon/plan',{text:request,session:tabSession});
       if(target!==selected||epoch!==micEpoch||!opened)return;
       if(result.status==='ok'&&typeof result.tool==='string'){
-        input.value='';void issue({tool:result.tool,args:result.args});
+        input.value='';await issue({tool:result.tool,args:result.args||{}});
       }else report(result);
-    }catch{status('Model interpretation unavailable. Use a direct playback command.','warn');}
+    }catch{status('Codex is unavailable. Quick controls still work.','warn');}
     finally{modelBusy=false;}
   }
   function cancelMic(){
@@ -182,8 +198,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     // These are optional signed server capabilities, never remote targeting.
     try{
       const result=await post('/api/teslamon/capabilities',{});
-      modelLabel.hidden=result.modelConfigured!==true;
-      if(modelLabel.hidden)modelOptIn.checked=false;
+      modelLabel.hidden=true;
+      modelOptIn.checked=false;
+      if(!result.codexAvailable){
+        mic.disabled=true;mic.textContent='Codex unavailable';
+        status('Codex CLI is unavailable. Quick controls still work.','warn');
+        return;
+      }
       if(result.localTranscription)setupRecorder();
       else {mic.disabled=true;mic.textContent='PowerALX unavailable';
         status('PowerALX transcription is not configured. Use typed commands.','warn');}
