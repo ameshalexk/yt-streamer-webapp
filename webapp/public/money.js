@@ -113,6 +113,36 @@ function activeData() {
   return state.editing ? state.draft : state.data;
 }
 
+
+function renderAllocation(data) {
+  const section = $("#allocationPanel");
+  if (state.editing || !data.allocation) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  const series = [
+    ["stocks", "Stocks", "stockPct", "stocks"],
+    ["bonds", "Bonds", "bondPct", "bonds"],
+    ["cash", "Cash", "cashPct", "cash"],
+    ["other", "Other", "otherPct", "other"],
+  ];
+  const fill = (prefix, mix) => {
+    $(`#${prefix}Total`).textContent = dollars(mix.total);
+    $(`#${prefix}Bar`).innerHTML = series.map(([id, label, pctField, className]) =>
+      `<div class="allocation-segment ${className}" style="width:${Number(mix[pctField] || 0)}%" title="${esc(label)}: ${pct(mix[pctField])}"></div>`
+    ).join("");
+    $(`#${prefix}Breakdown`).innerHTML = series.map(([id, label, pctField, className]) =>
+      `<div class="allocation-metric"><span class="allocation-dot ${className}"></span><span>${esc(label)}</span><strong>${pct(mix[pctField])}</strong><small>${dollars(mix[id])}</small></div>`
+    ).join("");
+  };
+  fill("allocationCurrent", data.allocation.current);
+  fill("allocationScenario", data.allocation.scenario);
+  const plan = data.allocation.proposal;
+  $("#allocationScenarioSteps").textContent = `Illustration: transfer ${dollars(plan.emergencySavingsTransfer)} between savings buckets (no change in total cash), pay ${dollars(plan.principalPayment)} toward the 6.25% mortgage, and exchange about ${dollars(plan.retirementExchange)} of the existing 401(k) target-date fund into an eligible bond fund. All amounts subject to verification and plan rules.`;
+  $("#allocationAssumptions").textContent = `Scope: identified taxable stocks, 401(k), 529 and Capital One cash only. ${data.allocation.assumptions}`;
+}
+
 function renderSummary(data) {
   const h = data.headline;
   const cards = [
@@ -275,6 +305,7 @@ function render(data) {
   $("#sourceLine").textContent = `${data.source.title} · ${data.source.note}`;
   $("#editBtn").hidden = state.editing;
   renderSummary(data);
+  renderAllocation(data);
 
   $("#mathPanel").hidden = false;
   $("#netWorthMath").textContent = `${dollars(h.totalAssets)} - ${dollars(h.totalLiabilities)} = ${dollars(h.netWorth)}`;
