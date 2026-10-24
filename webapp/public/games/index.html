@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#092b3a">
+  <meta name="description" content="A touch-first TeslaMon puppy trick game.">
+  <title>TeslaMon Play</title>
+  <link rel="stylesheet" href="./styles.css?v=70e1bb0ec1c3">
+</head>
+<body>
+  <main class="game" id="game">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">TESLAMON PLAY</p>
+        <h1>Doggy tricks</h1>
+      </div>
+      <div class="header-actions">
+        <span class="fullscreen-label" aria-label="Use your browser's full screen mode if desired">Full screen</span>
+        <button class="motion-toggle" id="motionToggle" type="button" aria-label="Change game motion" aria-pressed="false">Motion: Gentle</button>
+      </div>
+    </header>
+
+    <section class="stage" id="stage" aria-label="TeslaMon play stage">
+      <div class="sun" aria-hidden="true"></div>
+      <div class="cloud cloud-a" aria-hidden="true"></div>
+      <div class="cloud cloud-b" aria-hidden="true"></div>
+      <div class="ground" aria-hidden="true"></div>
+      <div class="dog-wrap">
+        <svg class="dog" id="dog" viewBox="0 0 104 115" role="img" aria-label="TeslaMon puppy" xmlns="http://www.w3.org/2000/svg">
+          <ellipse class="shadow" cx="53" cy="109" rx="33" ry="4" fill="#07121c" opacity=".28"/>
+          <g class="character">
+          <g class="dog-body" transform="translate(0 15)" stroke="#593522" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path class="tail" d="M73 79 Q94 83 94 62 Q84 66 82 73 L72 72" fill="#d99444"/>
+            <path class="torso" d="M35 62 Q25 72 30 87 Q35 94 52 91 Q72 95 77 85 Q80 73 69 62" fill="#eeb65d"/>
+            <path d="M44 68 Q52 63 61 69 L64 87 Q52 93 40 86Z" fill="#fff0cd" stroke="none"/>
+            <path d="M37 76 L36 88 M66 76 L68 88" fill="none"/>
+            <ellipse cx="35" cy="89" rx="11" ry="6" fill="#fff0cd"/>
+            <ellipse cx="69" cy="89" rx="11" ry="6" fill="#fff0cd"/>
+            <path d="M33 89v3 M37 89v3 M66 89v3 M72 89v3" stroke-width="1.4"/>
+            <path class="collar" d="M33 61 Q51 71 71 61 L70 69 Q51 77 34 69Z" fill="#55b7b0"/>
+            <circle class="tag" cx="52" cy="72" r="5" fill="#ffe190"/>
+            <g class="head">
+              <path d="M24 28 Q26 13 43 14 L49 8 L51 14 Q72 10 81 28 L81 46 Q78 66 53 68 Q27 66 23 49Z" fill="#f5c674"/>
+              <path class="ear ear-left" d="M26 24 Q15 17 10 34 Q4 53 17 59 Q25 61 27 46 L32 29Z" fill="#a76635"/>
+              <path class="ear ear-right" d="M77 24 Q88 17 94 34 Q100 53 87 59 Q79 61 77 46 L72 29Z" fill="#a76635"/>
+              <path d="M18 30 Q13 40 16 48 M86 30 Q91 40 88 48" stroke="#ce914d" stroke-width="3" fill="none"/>
+              <path d="M49 20 Q45 35 46 45 L58 45 Q59 33 54 20Z" fill="#fff0cd" stroke="none"/>
+              <g class="eyes">
+                <ellipse cx="38" cy="39" rx="6.5" ry="9" fill="#2c2422" stroke="none"/>
+                <ellipse cx="66" cy="39" rx="6.5" ry="9" fill="#2c2422" stroke="none"/>
+                <circle cx="36" cy="36" r="2.4" fill="white" stroke="none"/>
+                <circle cx="64" cy="36" r="2.4" fill="white" stroke="none"/>
+              </g>
+              <path d="M33 26 Q37 23 42 26 M62 26 Q67 23 71 26" fill="none"/>
+              <path d="M40 52 Q52 47 64 52 Q62 65 52 65 Q42 65 40 52Z" fill="#593522"/>
+              <path d="M47 58 Q52 55 57 58 L57 63 Q52 70 47 63Z" fill="#ee8e91" stroke-width="1.5"/>
+              <path d="M52 59v4" stroke="#bf5e70" stroke-width="1.2"/>
+              <path d="M52 46 C34 39 27 51 35 57 Q44 63 52 54 Q60 63 69 57 C77 51 70 39 52 46Z" fill="#fff0cd" stroke="none"/>
+              <path d="M45 46 Q52 42 59 46 Q60 50 52 53 Q44 50 45 46Z" fill="#2c2422" stroke="none"/>
+              <path d="M49 46h4" stroke="#fff" stroke-width="1.5"/>
+              <path d="M52 53v2 Q47 60 41 56 M52 55 Q57 60 63 56" fill="none" stroke-width="1.7"/>
+            </g>
+          </g>
+          </g>
+        </svg>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite">Game ready. Pick a trick or tap to speak.</p>
+    </section>
+
+    <section class="controls" aria-label="Trick controls">
+      <div class="tricks">
+        <button data-trick="jump" type="button">Jump</button>
+        <button data-trick="roll" type="button">Roll over</button>
+        <button data-trick="sit" type="button">Sit</button>
+        <button data-trick="spin" type="button">Spin</button>
+      </div>
+      <div class="secondary">
+        <button class="speak" id="speak" type="button" aria-pressed="false">🎙️ Prepare voice</button>
+        <button class="stop" id="stop" type="button">Stop</button>
+      </div>
+      <p class="voice-note" id="voiceNote">Prepare local voice once, then tap Speak. Audio stays in this browser.</p>
+    </section>
+  </main>
+  <script type="module" src="./app.js?v=1b6ee4408d24"></script>
+</body>
+</html>
