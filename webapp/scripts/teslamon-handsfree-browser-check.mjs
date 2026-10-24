@@ -53,20 +53,28 @@ try{
  await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded',timeout:20000});
  await page.locator('#tmFace').click();
  try{await page.waitForFunction(()=>!document.querySelector('#tmWakeToggle').disabled,null,{timeout:5000});}catch(error){console.error('INIT DEBUG',JSON.stringify(await page.evaluate(()=>({wake:document.querySelector('#tmWakeState')?.textContent,mic:document.querySelector('#tmMic')?.textContent,main:document.querySelector('#tmState')?.textContent,pet:!!document.querySelector('#teslamonPet'),toggleDisabled:document.querySelector('#tmWakeToggle')?.disabled})),null,2),'pageErrors',errors,'api',apiUploads,'unexpected',unexpected);throw error;}
- assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false');
- assert.equal(await page.locator('#tmWakeState').innerText(),'Off');
- assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),0,'default Off may not request mic');
- await page.locator('#tmWakeToggle').click();
- try { await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:10000}); }
- catch(error){console.error('WAKE DEBUG',JSON.stringify(await page.evaluate(()=>({wake:document.querySelector('#tmWakeState')?.textContent,mic:document.querySelector('#tmWakeToggle')?.textContent,main:document.querySelector('#tmState')?.textContent,streams:window.__teslamonMicStreams?.length})),null,2),'pageErrors',errors,'api',apiUploads,'unexpected',unexpected);throw error;}
+ // Auto-wake is already ON after page load, subject to browser permissions.
+ try { await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:12000}); }
+ catch(error){console.error('AUTO-WAKE DEBUG',JSON.stringify(await page.evaluate(()=>({wake:document.querySelector('#tmWakeState')?.textContent,mic:document.querySelector('#tmWakeToggle')?.textContent,main:document.querySelector('#tmState')?.textContent,streams:window.__teslamonMicStreams?.length})),null,2),'pageErrors',errors,'api',apiUploads,'unexpected',unexpected);throw error;}
  assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'true');
- assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),1,'single gesture obtains one mic stream');
+ assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),1,'page load obtains one mic stream');
+ assert.equal(await page.locator('#teslamonPet').getAttribute('data-mic'),'on');
+ assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('#tmFace'),'::after').content),'"MIC ON"');
  await page.locator('#tmWakeToggle').click();
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Off',null,{timeout:10000});
  assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false');
+ assert.equal(await page.locator('#teslamonPet').getAttribute('data-mic'),'off');
+ assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('#tmFace'),'::after').content),'"MIC OFF"');
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true,'Mic Off ends all tracks');
+ // Manual On starts a fresh stream, but the second Off closes it again.
+ await page.locator('#tmWakeToggle').click();
+ await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:12000});
+ assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),2);
+ await page.locator('#tmWakeToggle').click();
+ await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Off',null,{timeout:10000});
+ assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true);
  assert.deepEqual(apiUploads,[],'no ambient audio uploaded to PowerALX or Codex');
  assert.deepEqual(unexpected,[],'no third-party network calls');
  assert.deepEqual(errors,[],'no page JS errors');
- console.log('PASS Chrome synthetic Mic Off -> On -> listening for Hey Jarvis -> Off; tracks stopped, no ambient upload');
+ console.log('PASS Chrome synthetic auto Mic On -> Off -> On -> Off with persistent badge; tracks stopped, no ambient upload');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
