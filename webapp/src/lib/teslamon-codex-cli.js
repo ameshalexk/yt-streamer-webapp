@@ -61,6 +61,7 @@ const BASE_PROMPT=[
   'pause, resume, get_playback_state, search_and_play, request_fullscreen, exit_fullscreen.',
   'For search_and_play, set query to the exact video search phrase (2-120 chars).',
   'For every other command set query to the empty string.',
+  'Full screen or fullscreen means request_fullscreen; exit or leave fullscreen means exit_fullscreen.',
   'For LIGHTS requests use only teslamon_lights MCP tools. Search by name/room, read if useful,',
   'then call set_light ONLY for an explicit user request to change lights.',
   'After MCP confirms the requested read/write, output tool ha_done with empty query.',

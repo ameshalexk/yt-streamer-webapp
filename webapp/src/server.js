@@ -2260,6 +2260,10 @@ let productionMediaRelay = null;
 // PowerALX Life Recorder worker. No Mac model, Whisper or fallback ASR.
 const teslamonPowerAlxSTT=createTeslaMonTranscriber();
 const teslamonCodex=createTeslaMonCodex();
+// Stage durations only: never log speech, queries, identities, or credentials.
+function logTeslaMonLatency(stage,started,status){
+  console.info('[teslamon-latency]',JSON.stringify({stage,ms:Date.now()-started,status}));
+}
 async function verifyTeslaMonVoiceRequest(req,res,next){
   res.set('Cache-Control','private, no-store');
   // Cloudflare Tunnel can rewrite Host/port; use the pinned public Origin,
@@ -2302,23 +2306,35 @@ app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
   // Bind per-tab Codex context to the VERIFIED Access principal, not an
   // unauthenticated header. Works with either edge assertion or signed cookie.
   const identity=crypto.createHash('sha256').update(principal.issuer+'\n'+principal.subject).digest('hex');
+  const started=Date.now();
   try{
     const outcome=await teslamonCodex.plan(req.body.text,req.body.session,identity);
+    logTeslaMonLatency('codex_plan',started,outcome.status);
+    res.set('Server-Timing',`codex;dur=${Date.now()-started}`);
     return res.status(outcome.status==='unavailable'?503:outcome.status==='failed'?422:200)
       .json(outcome);
-  }catch{return res.status(503).json({status:'unavailable',code:'codex_unavailable'});}
+  }catch{
+    logTeslaMonLatency('codex_plan',started,'unavailable');
+    return res.status(503).json({status:'unavailable',code:'codex_unavailable'});
+  }
 });
 app.post('/api/teslamon/transcribe',verifyTeslaMonVoiceRequest,
   express.raw({type:['audio/webm','audio/ogg','audio/mp4','audio/wav'],limit:'5mb'}),async(req,res)=>{
     if(!teslamonPowerAlxSTT.available)
       return res.status(503).json({status:'unavailable',code:'poweralx_worker_not_configured'});
+    const started=Date.now();
     try{
       const result=await teslamonPowerAlxSTT.transcribe(
         req.body,req.headers['content-type']);
+      logTeslaMonLatency('poweralx_transcribe',started,result.status);
+      res.set('Server-Timing',`poweralx;dur=${Date.now()-started}`);
       return res.status(result.status==='unavailable'?503:
         result.status==='failed'?422:200).json(result);
-    }catch{return res.status(503).json({status:'unavailable',
-      code:'poweralx_worker_unavailable'});}
+    }catch{
+      logTeslaMonLatency('poweralx_transcribe',started,'unavailable');
+      return res.status(503).json({status:'unavailable',
+        code:'poweralx_worker_unavailable'});
+    }
   });
 app.post('/api/ai-agent/bootstrap',async(req,res)=>{
   res.set('Cache-Control','no-store');

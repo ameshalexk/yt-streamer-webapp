@@ -74,6 +74,7 @@
       duration_seconds: active ? number(streamSeek?.duration) : 0,
       rendered_frames: Number.isFinite(stats?.renderedFrames) ? stats.renderedFrames : null,
       observed_at: new Date().toISOString(),
+      fullscreen_kind: globalThis.YTStreamerTeslaMonFullscreen?.kind?.() || "unknown",
     };
   }
   function videoFrameReady() {
@@ -82,6 +83,22 @@
   }
   async function executeCommand(action, args = {}) {
     if (action === "get_player_state") return { status: "completed", state: stateSnapshot() };
+    if (action === "request_fullscreen" || action === "exit_fullscreen") {
+      // Invoke the existing player's fullscreen helper immediately. A real
+      // user click must reach requestFullscreen before transient activation
+      // expires; serializing this behind an async playback command loses it.
+      const control = globalThis.YTStreamerTeslaMonFullscreen;
+      const run = action === "request_fullscreen" ? control?.enter : control?.exit;
+      if (typeof run !== "function") return { status: "unsupported" };
+      try {
+        await run();
+        return { status: "completed", state: stateSnapshot() };
+      } catch (error) {
+        if (["NotAllowedError", "SecurityError"].includes(error?.name))
+          return { status: "needs_user_gesture" };
+        return { status: "failed", error: "fullscreen_failed" };
+      }
+    }
     if (action === "search_media") {
       const query = typeof args.query === "string" ? args.query.trim() : "";
       if (query.length < 2 || query.length > 120) return { status: "failed", error: "invalid_query" };
