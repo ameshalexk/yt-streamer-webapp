@@ -20,8 +20,14 @@ options:
   mjpeg_fps: 12
   mjpeg_height: "480"
   download_max_height: "480"
+  access_control_origin: "https://streamha.ameshalex.com"
+  access_issuer: "https://ameshalex.cloudflareaccess.com"
+  access_audience: "8ff285867dc898e9c64d0fc7664a63d12972f3002d8a564c0e6277342d1af3d5"
 schema:
   max_streams: int(1,3)
   mjpeg_fps: int(3,30)
   mjpeg_height: list(240|360|480|720)
   download_max_height: list(240|360|480|720)
+  access_control_origin: str
+  access_issuer: str
+  access_audience: str
