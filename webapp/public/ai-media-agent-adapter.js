@@ -103,7 +103,10 @@
       const query = typeof args.query === "string" ? args.query.trim() : "";
       if (query.length < 2 || query.length > 120) return { status: "failed", error: "invalid_query" };
       const limit = Number.isInteger(args.limit) ? Math.min(10, Math.max(1, args.limit)) : 5;
-      const data = await api.get(`/api/youtube/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+      const latestMkbhd = args.source === "latest_mkbhd";
+      const data = await api.get(latestMkbhd
+        ? `/api/youtube/latest-channel?channel=mkbhd&limit=${limit}`
+        : `/api/youtube/search?q=${encodeURIComponent(query)}&limit=${limit}`);
       const entries = (data.items || []).slice(0, limit).filter((item) => /^[A-Za-z0-9_-]{11}$/.test(item.id || ""));
       results.clear();
       entries.forEach((item) => results.set(item.id, item));

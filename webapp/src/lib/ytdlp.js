@@ -7,6 +7,18 @@ import { config } from "../config.js";
 import { classifyExtractorError, probeExtractorCandidates, sanitizeExtractorMessage } from "./extractor-health.js";
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
+// Stream playback needs only the selected formats. Full yt-dlp JSON can
+// exceed the bounded capture limit on YouTube videos with rich metadata.
+export const STREAM_SELECTION_PRINT_TEMPLATE = [
+  '{"id":%(id|null)j',
+  ',"requested_formats":%(requested_formats|null)j',
+  ',"url":%(url|null)j',
+  ',"http_headers":%(http_headers|null)j',
+  ',"duration":%(duration|null)j',
+  ',"title":%(title|null)j',
+  ',"is_live":%(is_live|null)j',
+  ',"live_status":%(live_status|null)j}',
+].join('');
 const MAX_ERROR_BYTES = 64 * 1024;
 const MAX_DOWNLOAD_STDOUT_BYTES = 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -137,7 +149,7 @@ export async function testExtractorPlayback(url) {
   for (const binary of candidatePaths()) {
     const result = { executable: path.basename(binary), ok: false, sourceId: null, error: null };
     try {
-      const json = await run(binary, ["-J", "--no-playlist", "--skip-download", "-f", "bestvideo[height<=480]+bestaudio/best", safeInput], {
+      const json = await run(binary, ["--check-formats", "--print", STREAM_SELECTION_PRINT_TEMPLATE, "--no-playlist", "-f", "bestvideo[height<=480]+bestaudio/best", safeInput], {
         timeoutMs: 15_000,
         maxOutputBytes: MAX_CAPTURE_BYTES,
       });
@@ -190,6 +202,34 @@ export async function searchVideos(query, { limit = 20 } = {}) {
   }) };
 }
 
+// The MKBHD upload tab is ordered newest first. Keep the channel URL fixed
+// rather than accepting a browser-provided arbitrary playlist or URL.
+export async function latestChannelVideos(channel, { limit = 8 } = {}) {
+  if(channel !== 'mkbhd') throw new Error('unsupported latest-video channel');
+  const count = Math.max(1, Math.min(10, parseInt(limit, 10) || 8));
+  const json = await capture(['-J', '--flat-playlist', '--no-warnings',
+    '--playlist-end', String(count), 'https://www.youtube.com/@mkbhd/videos'],
+  { timeoutMs: 90_000 });
+  return formatLatestMkbhdVideos(JSON.parse(json), count);
+}
+
+export function formatLatestMkbhdVideos(info, count = 8) {
+  const entries = Array.isArray(info?.entries) ? info.entries : [];
+  return { query: 'latest MKBHD uploads', items: entries.filter(entry =>
+    entry && /^[A-Za-z0-9_-]{11}$/.test(entry.id || '')).slice(0, count).map(entry => ({
+    id: entry.id,
+    title: entry.title || entry.id,
+    url: 'https://www.youtube.com/watch?v=' + entry.id,
+    duration: Number.isFinite(entry.duration) ? entry.duration : null,
+    thumbnail: bestThumbnail(entry),
+    channelTitle: 'Marques Brownlee',
+    publishedAt: entry.timestamp ? new Date(entry.timestamp * 1000).toISOString() : null,
+    viewCount: entry.view_count || null,
+    isLive: Boolean(entry.is_live),
+    isUpcoming: String(entry.live_status || '').toLowerCase() === 'is_upcoming'
+  })) };
+}
+
 export function selectedStreamInfo(info) {
   const metadata = { isLive: Boolean(info?.is_live) || info?.live_status === "is_live", duration: info?.duration != null && info.duration !== "" && Number.isFinite(Number(info.duration)) ? Number(info.duration) : null, title: info?.title || null };
   const requested = Array.isArray(info?.requested_formats) ? info.requested_formats.filter(Boolean) : [];
@@ -202,7 +242,7 @@ export function selectedStreamInfo(info) {
 }
 
 async function resolveFormatSelection(url, format) {
-  const json = await capture(["--check-formats", "-j", "-f", format, "--no-warnings", "--no-playlist", url]);
+  const json = await capture(["--check-formats", "--print", STREAM_SELECTION_PRINT_TEMPLATE, "-f", format, "--no-warnings", "--no-playlist", url], { maxOutputBytes: 256 * 1024 });
   const selected = selectedStreamInfo(JSON.parse(json));
   if (!selected.videoUrl) throw new Error("no playable stream URL found");
   return selected;

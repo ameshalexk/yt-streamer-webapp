@@ -143,3 +143,40 @@ test('fullscreen transport exceptions do not turn playback into a failure',async
   assert.equal(result.status,'observed');
   assert.equal(result.fullscreenAttempt,'unconfirmed');
 });
+
+test('latest MKBHD voice request uses channel upload ordering',async()=>{
+  const x=mk();
+  await x.player.run({tool:'search_and_play',args:{query:'Play the latest MKBHD video'}});
+  assert.equal(x.calls[0].action,'search_media');
+  assert.equal(x.calls[0].args.source,'latest_mkbhd');
+  const normal=mk();
+  await normal.player.run({tool:'search_and_play',args:{query:'MKBHD video'}});
+  assert.equal(normal.calls[0].args.source,undefined);
+});
+
+test('post-selection observation confirms advancing rendered frames, not accepted alone',async()=>{
+  let frames=0;
+  const facade={get_player_state:()=>({
+    media_id:A,mode:'buffered_mjpeg',playback_phase:'playing',rendered_frames:frames
+  })};
+  const player=createTeslaMonLocalPlayer({
+    getPlayer:()=>facade,sleep:async()=>{frames++;}
+  });
+  assert.equal((await player.observe(A,{attempts:3,intervalMs:0})).status,'observed');
+  frames=0;
+  const stalled=createTeslaMonLocalPlayer({getPlayer:()=>facade,sleep:async()=>{}});
+  assert.deepEqual(await stalled.observe(A,{attempts:3,intervalMs:0}),{
+    status:'uncertain',code:'playback_not_confirmed'
+  });
+});
+
+test('post-selection observation reports failed streams instead of success',async()=>{
+  const player=createTeslaMonLocalPlayer({
+    getPlayer:()=>({get_player_state:()=>({
+      media_id:A,mode:'buffered_mjpeg',playback_phase:'failed',rendered_frames:0
+    })}),sleep:async()=>{}
+  });
+  assert.deepEqual(await player.observe(A,{attempts:2,intervalMs:0}),{
+    status:'failed',code:'playback_stream_failed'
+  });
+});
