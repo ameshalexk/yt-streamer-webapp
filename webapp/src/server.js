@@ -938,6 +938,15 @@ app.get("/api/youtube/search", asyncH(async (req, res) => {
   res.json(await ytdlp.searchVideos(q, { limit }));
 }));
 
+// Only a fixed, reviewed upload feed may be queried for an actual "latest"
+// request; relevance-ranked YouTube search cannot establish upload order.
+app.get("/api/youtube/latest-channel", asyncH(async (req, res) => {
+  const channel = String(req.query.channel || "").trim().toLowerCase();
+  if (channel !== "mkbhd") return res.status(400).json({ error: "unsupported channel" });
+  const limit = Math.min(10, parseInt(req.query.limit, 10) || 8);
+  res.json(await ytdlp.latestChannelVideos(channel, { limit }));
+}));
+
 app.post("/api/prepared/status", asyncH(async (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.slice(0, 250) : [];
   const items = await preparedCache.statuses(ids);

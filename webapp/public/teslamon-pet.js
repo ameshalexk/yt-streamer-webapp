@@ -323,7 +323,22 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     busy=true;syncPetMotion();const epoch=++generation;
     status('Sending command…');
     try{const result=await localPlayer.run(intent);
-      if(epoch===generation)report(result,intent.tool);
+      if(epoch===generation){
+        report(result,intent.tool);
+        if(intent.tool==='search_and_play'&&result.status==='accepted'&&result.mediaId){
+          status('Video selected. Waiting for video frames…');
+          void localPlayer.observe(result.mediaId,{isCurrent:()=>epoch===generation})
+            .then(confirmed=>{
+              if(epoch!==generation)return;
+              if(confirmed.status==='observed')status('Video playing in this tab.','ok');
+              else if(confirmed.code==='playback_stream_failed')
+                status('Video stream failed to load. Try another video.','warn');
+              else if(confirmed.code==='playback_not_confirmed')
+                status('Video has not started after 12 seconds. Check the player.','warn');
+            }).catch(()=>{if(epoch===generation)
+              status('Could not confirm video playback.','warn');});
+        }
+      }
     }catch{
       if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
     }finally{busy=false;syncPetMotion();autoSend.flush();}
