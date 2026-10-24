@@ -51,6 +51,14 @@ export function createTeslaMonLocalPlayer({
       return fail('player_state_unavailable','uncertain');
     return stateResult(result.state);
   }
+  // Confirm the requested video, not some previous video still playing.
+  function isMediaPlaying(mediaId){
+    if(!VIDEO.test(mediaId||''))return false;
+    try{
+      const state=getPlayer()?.get_player_state?.();
+      return state?.media_id===mediaId&&state.playback_phase==='playing';
+    }catch{return false;}
+  }
   async function run(intent){
     if(!supported(intent))return fail('invalid_local_playback_intent');
     if(busy)return fail('target_busy');
@@ -91,6 +99,7 @@ export function createTeslaMonLocalPlayer({
           return {...read,fullscreenAttempt};
         // Streaming startup may be buffering. Never claim sound/video output.
         return {status:'accepted',code:'state_not_yet_confirmed',
+          mediaId,
           playbackPhase:read.playbackPhase,fullscreenMode:read.fullscreenMode,
           fullscreenAttempt};
       }
@@ -108,7 +117,7 @@ export function createTeslaMonLocalPlayer({
       return fail('local_action_uncertain','uncertain');
     }finally{busy=false;}
   }
-  return Object.freeze({run,get ready(){
+  return Object.freeze({run,isMediaPlaying,get ready(){
     return typeof getPlayer()?.execute==='function';
   }});
 }

@@ -1,4 +1,4 @@
-import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261023-first-result1';
+import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261024-auto-collapse1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {convertTeslaMonAudioToWav} from './teslamon-wav-fallback.js';
@@ -155,6 +155,18 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }))return;
     // Hide controls, but keep the puppy, wake mic and media playback alive.
     collapsePanel();
+  }
+  function watchAcceptedPlayback(result,requestRevision,epoch){
+    if(result?.status!=='accepted'||typeof result.mediaId!=='string')return;
+    const deadline=Date.now()+12000;
+    const check=()=>{
+      if(epoch!==generation||!opened||panelRevision!==requestRevision||document.hidden)return;
+      if(localPlayer.isMediaPlaying(result.mediaId)){
+        status('Playing in this tab','ok');
+        collapseAfterSuccess({status:'observed'},requestRevision);
+      }else if(Date.now()<deadline)setTimeout(check,500);
+    };
+    setTimeout(check,500);
   }
   // Tesla's native keyboard dictation, paste and typing all arrive as text.
   // Never assume input events identify their actual source.
@@ -342,6 +354,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(epoch===generation){
         report(result,intent.tool);
         collapseAfterSuccess(result,requestRevision);
+        if(intent.tool==='search_and_play')watchAcceptedPlayback(result,requestRevision,epoch);
       }
     }catch{
       if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
