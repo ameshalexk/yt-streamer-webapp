@@ -1,12 +1,15 @@
 import { TRICKS, matchTrick } from './phrase-matcher.js?v=62156ea68fa8';
 import { captureUtterance } from './audio-capture.js?v=e7ecb194ea4f';
+import { captureContinuously } from './continuous-capture.js?v=200f8b4cfe6c';
 import { VoiceEngine } from './voice-engine.js?v=eb11584ae7f9';
 import { createVoiceController } from './voice-ui.js?v=0d7527a1083c';
+import { createHandsFreeController } from './handsfree-ui.js?v=dc18316c005f';
 
 const $ = id => document.getElementById(id);
 const dog = $('dog');
 const status = $('status');
 const speak = $('speak');
+const handsFreeToggle = $('handsFreeToggle');
 const stop = $('stop');
 const voiceNote = $('voiceNote');
 const motionToggle = $('motionToggle');
@@ -23,6 +26,19 @@ const voice = createVoiceController({
     if (trick) runTrick(trick);
     else say('No trick heard. Try Jump, Roll over, Sit or Spin.', 'warn');
   }
+});
+
+const handsFree = createHandsFreeController({
+  engine: voiceEngine, capture: captureContinuously, button: handsFreeToggle,
+  manualButton: speak, note: voiceNote, supported: voiceSupport,
+  setListening: listening => document.body.classList.toggle('is-listening', listening),
+  say,
+  onTranscript: phrase => {
+    const trick = matchTrick(phrase);
+    if (trick) runTrick(trick);
+    else say('No trick heard. Keep speaking, or switch hands-free Off.', 'warn');
+  },
+  resetManual: () => voice.cancel()
 });
 
 const trickDurations = Object.freeze({ jump: 900, roll: 1100, sit: 950, spin: 1050 });
@@ -61,7 +77,7 @@ function trickLabel(trick) {
   return trick === 'roll' ? 'Roll over' : trick[0].toUpperCase() + trick.slice(1);
 }
 
-function cancelVoice() { voice.cancel(); }
+function cancelVoice() { handsFree.stop(); voice.cancel(); }
 
 function runTrick(trick) {
   if (currentTrick) {
@@ -119,6 +135,7 @@ document.querySelectorAll('[data-trick]').forEach(button => {
   button.addEventListener('click', () => runTrick(button.dataset.trick));
 });
 speak.addEventListener('click', voice.activate);
+handsFreeToggle.addEventListener('click', () => void handsFree.toggle());
 stop.addEventListener('click', () => stopEverything());
 motionToggle.addEventListener('click', () => {
   motionMode = motionMode === 'gentle' ? 'playful' : 'gentle';
@@ -147,5 +164,6 @@ window.addEventListener('pagehide', () => stopEverything('Game paused.'));
 if (!voiceSupport()) {
   voice.cancel();
   speak.title = 'Local voice needs HTTPS, microphone capture, AudioWorklet and WebAssembly.';
+  handsFreeToggle.title = speak.title;
   voiceNote.textContent = speak.title + ' Touch tricks remain available.';
 }

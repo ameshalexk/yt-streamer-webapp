@@ -208,10 +208,13 @@ button:disabled { cursor: default; opacity: .78; }
 .tricks button[data-trick="roll"] { background: #395c68; }
 .tricks button[data-trick="sit"] { background: #4d536c; }
 .tricks button[data-trick="spin"] { background: #5a536f; }
-.secondary { display: grid; grid-template-columns: 1fr 110px; gap: 8px; margin-top: 8px; }
-.secondary button { min-height: 48px; }
+.secondary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 110px; gap: 8px; margin-top: 8px; }
+.secondary button { min-height: 48px; white-space: normal; line-height: 1.1; padding-inline: 7px; }
 .speak { background: #237764; border-color: #9de7c3; }
 .speak[aria-pressed="true"] { background: #bc733e; }
+.handsfree-toggle { background: #855233; border-color: #ffbe89; font-size: .82rem; }
+.handsfree-toggle[aria-pressed="true"] { background: #237764; border-color: #9de7c3; }
+.handsfree-toggle[data-state="preparing"] { background: #8b6a30; border-color: #ffe190; }
 .stop { background: #793d4b; border-color: #e99aa0; }
 .voice-note {
   margin: 6px auto 0;
@@ -388,7 +391,8 @@ button:disabled { cursor: default; opacity: .78; }
   .stage { border-radius: 18px; }
   .tricks { gap: 5px; }
   .tricks button { padding-inline: 4px; font-size: .84rem; }
-  .secondary { grid-template-columns: 1fr 86px; }
+  .secondary { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 86px; }
+  .handsfree-toggle { font-size: .72rem; }
   .status { bottom: 4px; }
   .voice-note { font-size: .62rem; }
   .header-actions { gap: 6px; }

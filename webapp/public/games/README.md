@@ -2,7 +2,7 @@
 
 A standalone static dog-trick game for rear passengers using the Tesla main screen. The touch demo works without a vehicle connection or account.
 
-It includes a large TeslaMon puppy, idle tail wag and blinking, Jump, Roll over, Sit, Spin, Stop, and optional tap-to-speak. It does not use vehicle APIs, YT Streamer, Home Assistant, Codex, PowerALX, analytics, or stored recordings.
+It includes a large TeslaMon puppy, idle tail wag and blinking, Jump, Roll over, Sit, Spin, Stop, optional tap-to-speak, and opt-in hands-free listening. It does not use vehicle APIs, YT Streamer, Home Assistant, Codex, PowerALX, analytics, or stored recordings.
 
 The game is ready as soon as the page loads. There is no Start button or in-app fullscreen request; the page uses the available browser viewport, and the “Full screen” label is informational.
 
@@ -24,9 +24,9 @@ The self-hostable site is written to dist/. The build adds content-based version
 
 ## Voice and platform limits
 
-The first mic-button tap **prepares voice with the microphone off**. Wait for **Voice ready**, then tap Speak to record. Saved model files are reused; opening/reloading the page still initializes the model in memory. Subsequent recordings on the same page reuse that ready model. The button stays disabled while preparing/transcribing; during listening, tap **Finish speaking** to submit early. **Stop** cancels.
+The first manual mic-button tap **prepares voice with the microphone off**. Wait for **Voice ready**, then tap Speak to record. Saved model files are reused; opening/reloading the page still initializes the model in memory. Subsequent recordings on the same page reuse that ready model. Alternatively, tap **Hands-free: Off** once to enable continuous local trick listening; the model is prepared before any microphone is opened. The button stays disabled while preparing/transcribing; during listening, tap **Finish speaking** to submit early. **Stop** cancels.
 
-Tap-to-speak records one bounded utterance (up to 7 seconds, ending after roughly 1 second of silence). **Quantized Whisper Tiny English runs locally in a dedicated WebAssembly worker**, using Transformers.js 3.8.1 and one CPU thread. No native browser speech service, remote STT, Mac, PowerALX or vehicle API is involved. Audio is processed in memory and discarded; transcripts appear on screen until the next attempt/page reload and are not persisted.
+Tap-to-speak records one bounded utterance (up to 7 seconds, ending after roughly 1 second of silence). Hands-free mode also listens for bounded speech segments, then locally transcribes only each detected segment and automatically re-arms without closing the microphone between tricks. **Quantized Whisper Tiny English runs locally in a dedicated WebAssembly worker**, using Transformers.js 3.8.1 and one CPU thread. No native browser speech service, remote STT, Mac, PowerALX or vehicle API is involved. Audio is processed in memory and discarded; transcripts appear on screen until the next attempt/page reload and are not persisted.
 
 First use downloads about **65 MB** of same-origin code/model assets. Model weights use the browser Cache API when available; the worker stays warm for later taps. A cold download may take time on cellular. Stop cancels capture/inference and ignores stale results; Stop also cancels pending model preparation. Hidden pages stop capture and discard pending actions. Touch buttons remain available while voice prepares. Listening shows a live microphone level; transcription shows elapsed processing time and never claims to be downloading the model. Cache status is checked against the actual model files; if browser storage is unavailable, the game says so. A quiet/silent mic is distinguished from a mic that sends no audio frames.
 
@@ -61,5 +61,10 @@ cleanup. CacheStorage may be evicted by the browser.
 
 This optional export does **not** depend on YT Streamer or its APIs. The game
 remains complete and self-hostable as a static HTTPS directory with relative
-asset URLs. Whisper only transcribes after explicit capture; it is not a wake
-word detector. Errors stay local and the game keeps its touch controls.
+asset URLs. Whisper only transcribes manually captured utterances or speech segments after the user explicitly enables hands-free; it is not a wake-word detector. Errors stay local and the game keeps its touch controls.
+
+## Opt-in hands-free mode
+
+**Hands-free: Off** is the default every time the page opens. The toggle requires a real user tap and browser microphone permission. Once enabled, the game first prepares the local Whisper model while the microphone remains **OFF**. It then opens one live microphone stream, monitors audio levels for speech, transcribes a short phrase after speech ends, performs any matching trick, and automatically listens for the next trick. There is no repeated Speak tap, no Hey Jarvis requirement, and no network STT request. A single model/worker is reused for successive phrases.
+
+The toggle turns **green / On** only while the continuous capture is active; **Off** releases microphone tracks and cancels pending work. Stop, changing motion mode, leaving/hiding the page and full navigation also disable continuous capture. Manual tap-to-speak and touch tricks stay available when hands-free is Off; manual Speak is disabled while the continuous mic owns capture. During transcription the microphone stays open, but incoming audio frames are not queued for overlapping inference. Very quiet children, loud background noise, and Tesla browser power/resource limits require physical testing. Continuous listening uses more power than push-to-talk; only enable it when someone is playing.
