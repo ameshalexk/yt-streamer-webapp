@@ -1,0 +1,3 @@
+# Keep pinned third-party ONNX JS byte-for-byte identical to its SHA-256 manifest.
+# Its upstream file contains a trailing-space line; do not rewrite vendored code.
+webapp/public/games/vendor/transformers-3.8.1/ort-wasm-simd-threaded.jsep.mjs whitespace=-blank-at-eol
