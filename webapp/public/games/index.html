@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#092b3a">
   <meta name="description" content="A touch-first TeslaMon puppy trick game.">
   <title>TeslaMon Play</title>
-  <link rel="stylesheet" href="./styles.css?v=70e1bb0ec1c3">
+  <link rel="stylesheet" href="./styles.css?v=0c021dd051e3">
 </head>
 <body>
   <main class="game" id="game">
@@ -65,7 +65,7 @@
           </g>
         </svg>
       </div>
-      <p class="status" id="status" role="status" aria-live="polite">Game ready. Pick a trick or tap to speak.</p>
+      <p class="status" id="status" role="status" aria-live="polite">Game ready. Tap a trick, Speak, or switch hands-free On.</p>
     </section>
 
     <section class="controls" aria-label="Trick controls">
@@ -77,11 +77,12 @@
       </div>
       <div class="secondary">
         <button class="speak" id="speak" type="button" aria-pressed="false">🎙️ Prepare voice</button>
+        <button class="handsfree-toggle" id="handsFreeToggle" type="button" aria-pressed="false" aria-label="Turn continuous local microphone on">🎤 Hands-free: Off</button>
         <button class="stop" id="stop" type="button">Stop</button>
       </div>
-      <p class="voice-note" id="voiceNote">Prepare local voice once, then tap Speak. Audio stays in this browser.</p>
+      <p class="voice-note" id="voiceNote">Mic starts Off. Hands-free listens for tricks until switched Off. Audio stays in this browser.</p>
     </section>
   </main>
-  <script type="module" src="./app.js?v=1b6ee4408d24"></script>
+  <script type="module" src="./app.js?v=da9073746a4a"></script>
 </body>
 </html>
