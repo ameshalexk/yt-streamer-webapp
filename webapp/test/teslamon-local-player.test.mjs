@@ -83,6 +83,7 @@ test('buffering never claims playback observed',async()=>{
   const x=mk({buffer:true});
   const r=await x.player.run({tool:'search_and_play',args:{query:'trailer'}});
   assert.equal(r.status,'accepted');assert.equal(r.code,'state_not_yet_confirmed');
+  assert.equal(r.mediaId,A);
 });
 test('no player is offline rather than choosing another tab',async()=>{
   const x=createTeslaMonLocalPlayer({getPlayer:()=>null});

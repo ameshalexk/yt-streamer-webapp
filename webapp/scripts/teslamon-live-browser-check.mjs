@@ -84,6 +84,11 @@ const clickOpen=async page=>{
  await page.waitForFunction(()=>document.querySelector('#tmState')?.textContent?.includes('Player state:'),null,{timeout:7000});
  const reply=await page.locator('#tmState').innerText();
  assert.match(reply,/idle/i,'synthetic player status should be idle: '+reply);
+ // A confirmed result hides the panel, but the puppy remains tappable.
+ await page.locator('#tmPanel').waitFor({state:'hidden'});
+ assert.equal(await page.locator('#tmFace').getAttribute('aria-expanded'),'false');
+ await page.locator('#tmFace').click();
+ await page.locator('#tmPanel').waitFor({state:'visible'});
 };
 const dragTo=async(page,x,y)=>{
  const handle=page.locator('#tmHandle');
@@ -143,6 +148,37 @@ try{
   results.push({scenario:{width:390,height:844,ui:'classic',reducedMotion:true},tailAnimation:animation,checks:{tailAnimationDisabled:true}});
   console.log('PASS prefers-reduced-motion: tail animation disabled');
  }finally{await ctx.close();}
+ const delayed=await setup({width:390,height:844},'classic');
+ try{
+  await delayed.page.route('**/api/teslamon/plan',route=>route.fulfill({
+   status:200,contentType:'application/json',
+   body:JSON.stringify({status:'ok',tool:'search_and_play',args:{query:'sample video'}})
+  }));
+  await delayed.page.evaluate(()=>{
+   let phase='idle',media='';
+   globalThis.YTStreamerMediaAgent={
+    get_player_state:()=>({media_id:media,playback_phase:phase,fullscreen_kind:'none'}),
+    execute:async(action,args)=>{
+     if(action==='search_media')return {status:'completed',result:{results:[{media_id:'AAAaa00000_',title:'Sample'}]}};
+     if(action==='play_media'){media=args.media_id;phase='buffering';
+      setTimeout(()=>{phase='playing';},1400);return {status:'accepted'};}
+     if(action==='request_fullscreen')return {status:'needs_user_gesture'};
+     if(action==='get_player_state')return {status:'completed',state:{media_id:media,playback_phase:phase,fullscreen_kind:'none'}};
+     return {status:'failed'};
+    }
+   };
+  });
+  await delayed.page.locator('#tmFace').click();
+  await delayed.page.locator('#tmText').fill('play sample video');
+  await delayed.page.locator('#tmSend').click();
+  await delayed.page.waitForFunction(()=>document.querySelector('#tmState')?.textContent?.includes('Waiting for video frames'),null,{timeout:7000});
+  assert.equal(await delayed.page.locator('#tmPanel').isVisible(),true,'accepted-but-buffering playback must leave controls open');
+  await delayed.page.locator('#tmPanel').waitFor({state:'hidden',timeout:7000});
+  assert.equal(await delayed.page.locator('#tmFace').getAttribute('aria-expanded'),'false');
+  assert.deepEqual(delayed.unexpected,[],'delayed playback tested without external network');
+  results.push({scenario:{width:390,height:844,ui:'classic',delayedPlayback:true},checks:{unconfirmedStaysOpen:true,confirmedCloses:true}});
+  console.log('PASS delayed video: controls stay open buffering, collapse once matching video plays');
+ }finally{await delayed.ctx.close();}
  const safe=await setup({width:390,height:844},'classic');
  try{
   await safe.page.addStyleTag({content:'#teslamonPet{--tm-safe-left:44px;--tm-safe-right:44px;--tm-safe-top:0px;--tm-safe-bottom:21px}'});
