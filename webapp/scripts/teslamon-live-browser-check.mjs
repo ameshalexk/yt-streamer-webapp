@@ -84,6 +84,11 @@ const clickOpen=async page=>{
  await page.waitForFunction(()=>document.querySelector('#tmState')?.textContent?.includes('Player state:'),null,{timeout:7000});
  const reply=await page.locator('#tmState').innerText();
  assert.match(reply,/idle/i,'synthetic player status should be idle: '+reply);
+ // A confirmed result hides the panel, but the puppy remains tappable.
+ await page.locator('#tmPanel').waitFor({state:'hidden'});
+ assert.equal(await page.locator('#tmFace').getAttribute('aria-expanded'),'false');
+ await page.locator('#tmFace').click();
+ await page.locator('#tmPanel').waitFor({state:'visible'});
 };
 const dragTo=async(page,x,y)=>{
  const handle=page.locator('#tmHandle');

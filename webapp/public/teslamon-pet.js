@@ -6,6 +6,7 @@ import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 import {createTeslaMonHandsFree} from './teslamon-handsfree.js';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
 import {getTeslaMonPetMotion} from './teslamon-pet-motion.js?v=20261024-poses1';
+import {shouldAutoCollapseTeslaMonPanel} from './teslamon-collapse.js';
 
 if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
   const pet=document.createElement('aside');
@@ -118,7 +119,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const localPlayer=createTeslaMonLocalPlayer();
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
-    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=true,autoWakeBlocked=false;
+    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=true,autoWakeBlocked=false,panelRevision=0;
 
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
@@ -139,6 +140,21 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(requestKeyboard){
       try{const attempt=navigator.virtualKeyboard?.show?.();attempt?.catch?.(()=>{});}catch{}
     }
+  }
+  function collapsePanel({focusFace=false}={}){
+    opened=false;
+    panel.hidden=true;
+    face.setAttribute('aria-expanded','false');
+    autoSend.cancel();
+    if(document.activeElement===input)input.blur();
+    if(focusFace)face.focus();
+  }
+  function collapseAfterSuccess(response,requestRevision){
+    if(!shouldAutoCollapseTeslaMonPanel({
+      response,opened,requestRevision,panelRevision,hasDraft:Boolean(input.value.trim())
+    }))return;
+    // Hide controls, but keep the puppy, wake mic and media playback alive.
+    collapsePanel();
   }
   // Tesla's native keyboard dictation, paste and typing all arrive as text.
   // Never assume input events identify their actual source.
@@ -317,13 +333,16 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       return result;
     }catch{return {status:'failed',code:'invalid_server_reply'};}
   }
-  async function issue(intent){
+  async function issue(intent,requestRevision=panelRevision){
     if(busy){status('Wait for the current command.','warn');return;}
     if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn');return;}
     busy=true;syncPetMotion();const epoch=++generation;
     status('Sending command…');
     try{const result=await localPlayer.run(intent);
-      if(epoch===generation)report(result,intent.tool);
+      if(epoch===generation){
+        report(result,intent.tool);
+        collapseAfterSuccess(result,requestRevision);
+      }
     }catch{
       if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
     }finally{busy=false;syncPetMotion();autoSend.flush();}
@@ -338,18 +357,19 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     if(modelBusy||busy){status('A playback request is already running.','warn');return;}
     modelBusy=true;syncPetMotion();
-    const target=selected,epoch=micEpoch;
+    const target=selected,epoch=micEpoch,requestRevision=panelRevision;
     status('Codex is understanding your request…');
     try{
       const result=await post('/api/teslamon/plan',{text:request,session:tabSession},'application/json',signal);
       if(signal?.aborted||target!==selected||epoch!==micEpoch||(!opened&&!allowClosed))return;
       if(result.status==='ok'&&typeof result.tool==='string'){
         if(input.value.trim()===request)input.value='';
-        await issue({tool:result.tool,args:result.args||{}});
+        await issue({tool:result.tool,args:result.args||{}},requestRevision);
       }else if(result.status==='ha_done'){
         if(input.value.trim()===request)input.value='';
         status(result.action==='light_changed'?
           'Home Assistant light command completed.':'Home Assistant light state checked.','ok');
+        collapseAfterSuccess(result,requestRevision);
       }else report(result);
     }catch{status('Codex is unavailable. Quick controls still work.','warn');}
     finally{modelBusy=false;syncPetMotion();autoSend.flush();}
@@ -563,18 +583,24 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     else alignPanel();
   });
   face.addEventListener('click',()=>{
-    opened=!opened;panel.hidden=!opened;
-    face.setAttribute('aria-expanded',String(opened));
-    if(opened){focusCommand({requestKeyboard:true});void refresh();}
-    else {autoSend.cancel();cancelMic({preserveWake:true});}
+    panelRevision++;
+    if(opened){
+      collapsePanel();
+      cancelMic({preserveWake:true});
+    }else{
+      focusCommand({requestKeyboard:true});
+      void refresh();
+    }
   });
   $('#tmClose').addEventListener('click',()=>{
-    opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
-    autoSend.cancel();cancelMic({preserveWake:true});face.focus();
+    panelRevision++;
+    collapsePanel({focusFace:true});
+    cancelMic({preserveWake:true});
   });
   // A single text insertion (Tesla dictation/paste) and ordinary typing share
   // this path. The last edit wins; the Send button remains an immediate override.
   input.addEventListener('input',()=>{
+    panelRevision++;
     if(['recording','processing'].includes(handsFree.state))wakeInputChanged=true;
     autoSend.changed();
   });
