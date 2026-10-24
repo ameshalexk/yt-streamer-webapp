@@ -94,10 +94,20 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const localPlayer=createTeslaMonLocalPlayer();
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
-    wakeInputChanged=false,wakeHandled=false;
+    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=true,autoWakeBlocked=false;
 
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
+  }
+  function focusCommand({requestKeyboard=false}={}){
+    if(!opened){opened=true;panel.hidden=false;face.setAttribute('aria-expanded','true');}
+    alignPanel();
+    try{input.focus({preventScroll:true});}catch{input.focus();}
+    // Only a real user tap may allow opening the virtual keyboard. A wake-word
+    // callback can still focus the field even when Tesla blocks the keyboard.
+    if(requestKeyboard){
+      try{const attempt=navigator.virtualKeyboard?.show?.();attempt?.catch?.(()=>{});}catch{}
+    }
   }
   // Tesla's native keyboard dictation, paste and typing all arrive as text.
   // Never assume input events identify their actual source.
@@ -120,8 +130,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       void interpret(text,{allowClosed:true});
     },
   });
-  // The Off/On control never remembers consent across reloads. Its click is
-  // the sole entry point that can request a persistent microphone stream.
+  // Attempt foreground wake listening on each page load, using ordinary
+  // browser microphone permission. Off stays off until re-enabled this visit.
   function updateWakeUI({state:phase='off',message}={}){
     const isOn=handsFree?.enabled??phase==='starting';
     wakeControl.dataset.active=String(isOn);
@@ -140,11 +150,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(speechMode==='local')mic.disabled=!voiceAvailable||['starting','recording','processing'].includes(phase);
     if(phase==='recording'){
       wakeInputChanged=false;wakeHandled=false;
-      // A wake word can expose/focus the text field. The browser alone cannot
-      // force Tesla's keyboard or activate its native dictation microphone.
-      if(!opened){opened=true;panel.hidden=false;face.setAttribute('aria-expanded','true');}
-      alignPanel();
-      try{input.focus({preventScroll:true});}catch{input.focus();}
+      focusCommand({requestKeyboard:true});
     }
     if(phase==='error')status(wakeState.textContent,'warn');
     else if(phase==='recording')status('Hey Jarvis detected. Say one command.','ok');
@@ -180,6 +186,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     onAudio:(blob,{signal})=>processCapturedAudio(blob,{allowClosed:true,signal}),
     onState:updateWakeUI,
     onError:error=>{
+      autoWakeBlocked=true;
       const name=String(error?.name||'');
       if(name==='NotAllowedError')
         status('Microphone permission denied. Allow access in browser settings.','warn');
@@ -189,9 +196,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   wakeToggle.disabled=true;
   wakeToggle.addEventListener('click',()=>{
     if(handsFree.enabled){
+      autoWakeWanted=false;
       handsFree.disable();
       micEpoch++; // Invalidates any older voice plan before dispatch.
     }else if(voiceAvailable){
+      autoWakeWanted=true;autoWakeBlocked=false;
       // getUserMedia is invoked synchronously on this trusted click.
       void handsFree.enable();
     }
@@ -347,6 +356,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         wakeToggle.disabled=!voiceAvailable||!wakeSupported;
         if(!wakeSupported&&voiceAvailable&&!handsFree.enabled)
           updateWakeUI({state:'error',message:'Error: Hands-free wake detection unsupported in this browser'});
+        if(wakeSupported&&voiceAvailable&&autoWakeWanted&&!autoWakeBlocked&&
+           !handsFree.enabled&&!document.hidden)
+          void handsFree.enable().then(started=>{if(!started)autoWakeBlocked=true;});
       }
       else {mic.disabled=true;mic.textContent='PowerALX unavailable';
         voiceAvailable=false;wakeToggle.disabled=true;handsFree.disable();
@@ -388,13 +400,15 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(reply.status==='ok'&&typeof reply.text==='string'){
         // Native keyboard text takes precedence over the same wake clip.
         if(allowClosed&&(wakeInputChanged||wakeHandled))return;
-        if(allowClosed)wakeHandled=true;
         autoSend.cancel();
         // The classifier detects the activation phrase, not the command;
         // strip a possible leading wake phrase before Codex interpretation.
         const command=reply.text.replace(/^\\s*hey[\\s,.!]*jarvis[\\s,.!:-]*/i,'').trim()||reply.text;
         input.value=command;
-        await interpret(command,{allowClosed,signal});
+        // PowerALX and Tesla keyboard text use exactly the same quiet-time
+        // auto-send path; do not submit to Codex before the user can correct it.
+        autoSend.changed();
+        status('Transcribed. Sending after 2 seconds without edits…','ok');
       }else if(!wakeInputChanged)report(reply);
     }catch{
       if(current()&&!wakeInputChanged)status('Transcription failed. Type a command.','warn');
@@ -518,7 +532,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   face.addEventListener('click',()=>{
     opened=!opened;panel.hidden=!opened;
     face.setAttribute('aria-expanded',String(opened));
-    if(opened){alignPanel();void refresh();input.focus();}
+    if(opened){focusCommand({requestKeyboard:true});void refresh();}
     else {autoSend.cancel();cancelMic({preserveWake:true});}
   });
   $('#tmClose').addEventListener('click',()=>{
@@ -543,7 +557,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     });}));
   document.addEventListener('visibilitychange',()=>{
     if(document.hidden){autoSend.cancel();handsFree.disable();micEpoch++;cancelMic();}
-    else if(opened)void refresh();
+    else void refresh();
   });
   window.addEventListener('pagehide',()=>{
     autoSend.dispose();handsFree.disable();micEpoch++;captureBinding?.dispose();try{speech?.abort();}catch{}
