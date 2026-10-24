@@ -47,13 +47,28 @@ const assertContained=(m,label)=>{
  assert.ok(m.panel.left>=-1&&m.panel.right<=m.viewport.width+1&&m.panel.top>=-1&&m.panel.bottom<=m.viewport.height+1,label+': panel outside viewport '+JSON.stringify(m));
  assert.ok(m.scrollWidth<=m.viewport.width+2,label+': horizontal overflow '+JSON.stringify(m));
 };
-const setup=async(viewport,ui,reducedMotion=false)=>{
+const setup=async(viewport,ui,reducedMotion=false,simulateWake=false)=>{
  const ctx=await browser.newContext({viewport,serviceWorkers:'block',reducedMotion:reducedMotion?'reduce':'no-preference'});
+ if(simulateWake)await ctx.addInitScript(()=>{
+   // A synthetic live audio track and detector callback test only DOM wiring,
+   // not recognition accuracy or real Tesla microphone permissions.
+   navigator.mediaDevices.getUserMedia=async()=>{
+     const context=new AudioContext();
+     return context.createMediaStreamDestination().stream;
+   };
+ });
  const page=await ctx.newPage();
  const unexpected=[];
  await page.route('**/*',async route=>{
    const url=new URL(route.request().url());
    if(url.origin!==origin){unexpected.push(url.href);return route.abort();}
+   if(simulateWake&&url.pathname==='/api/teslamon/capabilities')return route.fulfill({
+     status:200,contentType:'application/json',body:JSON.stringify({codexAvailable:true})
+   });
+   if(simulateWake&&url.pathname==='/teslamon-wake-engine.js')return route.fulfill({
+     status:200,contentType:'text/javascript',
+     body:'export function createTeslaMonWakeDetector({onWake}){return {async start(){window.__testWake=onWake;return true},pause(){},resume(){},async stop(){}}}'
+   });
    try{const body=await route.fetch({url:local+url.pathname+url.search,timeout:6500});await route.fulfill({response:body});}
    catch{try{await route.abort();}catch{/* navigation settled */}}
  });
@@ -84,6 +99,11 @@ const clickOpen=async page=>{
  await page.waitForFunction(()=>document.querySelector('#tmState')?.textContent?.includes('Player state:'),null,{timeout:7000});
  const reply=await page.locator('#tmState').innerText();
  assert.match(reply,/idle/i,'synthetic player status should be idle: '+reply);
+ await page.locator('#tmPanel').waitFor({state:'hidden'});
+ assert.equal(await page.locator('#teslamonPet').isVisible(),true,'mic off keeps touch fallback visible');
+ await page.locator('#tmFace').click();
+ await page.locator('#tmPanel').waitFor({state:'visible'});
+ assert.equal(await page.evaluate(()=>document.activeElement?.id),'tmText','opened puppy focuses command');
 };
 const dragTo=async(page,x,y)=>{
  const handle=page.locator('#tmHandle');
@@ -143,6 +163,41 @@ try{
   results.push({scenario:{width:390,height:844,ui:'classic',reducedMotion:true},tailAnimation:animation,checks:{tailAnimationDisabled:true}});
   console.log('PASS prefers-reduced-motion: tail animation disabled');
  }finally{await ctx.close();}
+ // Fullscreen must hide the entire pet, including its handle and MIC badge.
+ // With wake OFF, leaving fullscreen must restore the touch fallback.
+ const fullscreen=await setup({width:390,height:844},'classic');
+ try{
+  await clickOpen(fullscreen.page);
+  await fullscreen.page.evaluate(()=>globalThis.YTStreamerTeslaMonFullscreen.enter());
+  await fullscreen.page.waitForFunction(()=>document.querySelector('#teslamonPet')?.hidden===true);
+  assert.equal(await fullscreen.page.locator('#teslamonPet').isVisible(),false);
+  await fullscreen.page.evaluate(()=>globalThis.YTStreamerTeslaMonFullscreen.exit());
+  await fullscreen.page.waitForFunction(()=>document.querySelector('#teslamonPet')?.hidden===false);
+  assert.equal(await fullscreen.page.locator('#teslamonPet').isVisible(),true);
+  assert.deepEqual(fullscreen.unexpected,[],'fullscreen attempted unrelated network requests');
+  results.push({scenario:{width:390,height:844,ui:'classic',fullscreen:true},
+   checks:{petHiddenFullscreen:true,micOffFallbackRestored:true}});
+  console.log('PASS fullscreen hides pet entirely and returns mic-off touch fallback');
+ }finally{await fullscreen.ctx.close();}
+ // Simulate the wake callback while the assistant is fully hidden.
+ // The production detector/model is untouched; real recognition is a device check.
+ const wake=await setup({width:390,height:844},'classic',false,true);
+ try{
+  await wake.page.waitForFunction(()=>document.querySelector('#teslamonPet')?.dataset.wake==='listening',null,{timeout:8000});
+  await wake.page.locator('#tmFace').click();
+  await wake.page.locator('button[data-tm="get_playback_state"]').click();
+  await wake.page.waitForFunction(()=>document.querySelector('#teslamonPet')?.hidden===true,null,{timeout:7000});
+  assert.equal(await wake.page.locator('#tmPanel').isVisible(),false);
+  assert.equal(await wake.page.locator('#teslamonPet').isVisible(),false);
+  await wake.page.evaluate(()=>window.__testWake());
+  await wake.page.waitForFunction(()=>document.querySelector('#teslamonPet')?.hidden===false&&
+   document.querySelector('#tmPanel')?.hidden===false,null,{timeout:7000});
+  assert.equal(await wake.page.evaluate(()=>document.activeElement?.id),'tmText');
+  assert.deepEqual(wake.unexpected,[],'wake test attempted unrelated network requests');
+  results.push({scenario:{width:390,height:844,ui:'classic',syntheticWake:true},
+   checks:{successFullyHides:true,wakeReveals:true,inputFocused:true}});
+  console.log('PASS synthetic Hey Jarvis callback reveals whole pet and focuses command input');
+ }finally{await wake.ctx.close();}
  const safe=await setup({width:390,height:844},'classic');
  try{
   await safe.page.addStyleTag({content:'#teslamonPet{--tm-safe-left:44px;--tm-safe-right:44px;--tm-safe-top:0px;--tm-safe-bottom:21px}'});
