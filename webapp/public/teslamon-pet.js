@@ -562,4 +562,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   window.addEventListener('pagehide',()=>{
     autoSend.dispose();handsFree.disable();micEpoch++;captureBinding?.dispose();try{speech?.abort();}catch{}
   });
+  // Wake listening must initialize even when the puppy panel stays closed.
+  // This triggers only the browser's normal permission flow, never a bypass.
+  void refresh();
 }
