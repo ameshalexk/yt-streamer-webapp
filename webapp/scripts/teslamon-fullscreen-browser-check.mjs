@@ -46,7 +46,10 @@ try{
         plans.push(JSON.parse(route.request().postData()||'{}'));
         await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({status:'unsupported',code:'unsupported_voice_command'})});
       });
+      const initialCapabilities=page.waitForRequest(req=>
+        new URL(req.url()).pathname==='/api/teslamon/capabilities',{timeout:6000});
       await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded',timeout:16000});
+      await initialCapabilities; // Wake setup must run before the puppy is tapped.
       await page.locator('#tmFace').click();
       await page.locator('#tmPanel').waitFor({state:'visible'});
       // One paste-like insertion should auto-dispatch through Codex with no Send click.
