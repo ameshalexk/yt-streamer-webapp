@@ -156,18 +156,6 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     // Hide controls, but keep the puppy, wake mic and media playback alive.
     collapsePanel();
   }
-  function watchAcceptedPlayback(result,requestRevision,epoch){
-    if(result?.status!=='accepted'||typeof result.mediaId!=='string')return;
-    const deadline=Date.now()+12000;
-    const check=()=>{
-      if(epoch!==generation||!opened||panelRevision!==requestRevision||document.hidden)return;
-      if(localPlayer.isMediaPlaying(result.mediaId)){
-        status('Playing in this tab','ok');
-        collapseAfterSuccess({status:'observed'},requestRevision);
-      }else if(Date.now()<deadline)setTimeout(check,500);
-    };
-    setTimeout(check,500);
-  }
   // Tesla's native keyboard dictation, paste and typing all arrive as text.
   // Never assume input events identify their actual source.
   const autoSend=createTeslaMonAutoSend({
@@ -354,7 +342,22 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(epoch===generation){
         report(result,intent.tool);
         collapseAfterSuccess(result,requestRevision);
-        if(intent.tool==='search_and_play')watchAcceptedPlayback(result,requestRevision,epoch);
+        if(intent.tool==='search_and_play'&&result.status==='accepted'&&result.mediaId){
+          status('Video selected. Waiting for video frames…');
+          void localPlayer.observe(result.mediaId,{
+            isCurrent:()=>epoch===generation&&requestRevision===panelRevision&&opened&&!document.hidden
+          }).then(confirmed=>{
+            if(epoch!==generation)return;
+            if(confirmed.status==='observed'){
+              status('Video playing in this tab.','ok');
+              collapseAfterSuccess(confirmed,requestRevision);
+            }else if(confirmed.code==='playback_stream_failed')
+              status('Video stream failed to load. Try another video.','warn');
+            else if(confirmed.code==='playback_not_confirmed')
+              status('Video has not started after 12 seconds. Check the player.','warn');
+          }).catch(()=>{if(epoch===generation)
+            status('Could not confirm video playback.','warn');});
+        }
       }
     }catch{
       if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');

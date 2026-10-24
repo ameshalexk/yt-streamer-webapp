@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commonArgs, selectedStreamInfo } from "../src/lib/ytdlp.js";
+import { commonArgs, selectedStreamInfo, STREAM_SELECTION_PRINT_TEMPLATE, formatLatestMkbhdVideos, latestChannelVideos } from "../src/lib/ytdlp.js";
 
 test("shared yt-dlp arguments select the explicit Node challenge runtime", () => {
   assert.deepEqual(commonArgs(["-J"]), ["--ignore-config", "--js-runtimes", process.env.YTDLP_JS_RUNTIME || "node", "-J"]);
@@ -51,4 +51,24 @@ test("stream resolution retains live/VOD metadata for fallback and seek bounds",
     assert.equal(vod.duration,90);
     assert.equal(vod.title,"VOD");
   }
+});
+
+test("stream resolution uses bounded selected metadata instead of full yt-dlp JSON", () => {
+  const fields = [...STREAM_SELECTION_PRINT_TEMPLATE.matchAll(/%\(([^)]+)\)j/g)]
+    .map(match => match[1]);
+  assert.deepEqual(fields, ["id|null", "requested_formats|null", "url|null",
+    "http_headers|null", "duration|null", "title|null", "is_live|null", "live_status|null"]);
+  assert.ok(STREAM_SELECTION_PRINT_TEMPLATE.length < 500);
+});
+
+test("latest MKBHD catalog preserves newest-first upload order and rejects invalid IDs", async () => {
+  const result = formatLatestMkbhdVideos({entries:[
+    {id:"ESABTN4VtrA",title:"Newest upload",duration:100},
+    {id:"scwlR0QHGOk",title:"Older upload",duration:200},
+    {id:"not an id",title:"Invalid"},
+  ]},8);
+  assert.deepEqual(result.items.map(item => item.id),["ESABTN4VtrA","scwlR0QHGOk"]);
+  assert.equal(result.items[0].url,"https://www.youtube.com/watch?v=ESABTN4VtrA");
+  assert.equal(result.items[0].channelTitle,"Marques Brownlee");
+  await assert.rejects(latestChannelVideos("other"),/unsupported/);
 });

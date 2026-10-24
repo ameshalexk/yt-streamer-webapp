@@ -60,6 +60,7 @@ const BASE_PROMPT=[
   'Select exactly ONE allowed command for this user request:',
   'pause, resume, get_playback_state, search_and_play, request_fullscreen, exit_fullscreen.',
   'For search_and_play, set query to the exact video search phrase (2-120 chars).',
+  'Preserve words like latest, newest, or most recent when the user requests a channels newest upload.',
   'For every other command set query to the empty string.',
   'Full screen or fullscreen means request_fullscreen; exit or leave fullscreen means exit_fullscreen.',
   'For LIGHTS requests use only teslamon_lights MCP tools. Search by name/room, read if useful,',

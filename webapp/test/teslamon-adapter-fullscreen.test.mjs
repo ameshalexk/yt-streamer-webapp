@@ -9,13 +9,14 @@ import {createTeslaMonLocalPlayer} from '../public/teslamon-local-player.js';
 const source=fs.readFileSync(new URL('../public/ai-media-agent-adapter.js',import.meta.url),'utf8');
 function setup({hostname='stream.ameshalex.com',control=true}={}){
   let mode='none';
-  const calls=[];
+  const calls=[],requests=[];
   const screen={classList:{contains:name=>name==='playing'}};
   const context={
     location:{hostname,search:''},URLSearchParams,performance:{now:()=>0},
     document:{querySelector:selector=>selector==='#screen'?screen:null},
     activeCompat:null,replayFn:null,state:{},streamAttempt:0,playbackPaused:false,
     getStreamCurrentTime:()=>0,streamSeek:{duration:0},
+    api:{get:async url=>{requests.push(url);return {items:[{id:'ESABTN4VtrA',title:'Newest'}]};}},
   };
   if(control)context.YTStreamerTeslaMonFullscreen={
     kind:()=>mode,
@@ -24,7 +25,7 @@ function setup({hostname='stream.ameshalex.com',control=true}={}){
   };
   vm.createContext(context);
   vm.runInContext(source,context,{filename:'ai-media-agent-adapter.js'});
-  return {context,calls,get mode(){return mode},
+  return {context,calls,requests,get mode(){return mode},
     player:createTeslaMonLocalPlayer({getPlayer:()=>context.YTStreamerMediaAgent})};
 }
 
@@ -83,4 +84,15 @@ test('adapter remains restricted to the authorized production host',()=>{
   const x=setup({hostname:'another.example'});
   assert.equal(x.context.YTStreamerMediaAgent,undefined);
   assert.equal(x.player.ready,false);
+});
+
+test('adapter routes latest-MKBHD search to reviewed channel upload feed',async()=>{
+  const x=setup();
+  const newest=await x.context.YTStreamerMediaAgent.execute('search_media',{
+    query:'latest MKBHD video',source:'latest_mkbhd',limit:8});
+  assert.equal(newest.status,'completed');
+  assert.equal(newest.result.results[0].media_id,'ESABTN4VtrA');
+  assert.equal(x.requests[0],'/api/youtube/latest-channel?channel=mkbhd&limit=8');
+  await x.context.YTStreamerMediaAgent.execute('search_media',{query:'ordinary clip',limit:5});
+  assert.equal(x.requests[1],'/api/youtube/search?q=ordinary%20clip&limit=5');
 });

@@ -171,7 +171,7 @@ try{
   await delayed.page.locator('#tmFace').click();
   await delayed.page.locator('#tmText').fill('play sample video');
   await delayed.page.locator('#tmSend').click();
-  await delayed.page.waitForFunction(()=>document.querySelector('#tmState')?.textContent?.includes('Command sent.'),null,{timeout:7000});
+  await delayed.page.waitForFunction(()=>document.querySelector('#tmState')?.textContent?.includes('Waiting for video frames'),null,{timeout:7000});
   assert.equal(await delayed.page.locator('#tmPanel').isVisible(),true,'accepted-but-buffering playback must leave controls open');
   await delayed.page.locator('#tmPanel').waitFor({state:'hidden',timeout:7000});
   assert.equal(await delayed.page.locator('#tmFace').getAttribute('aria-expanded'),'false');
