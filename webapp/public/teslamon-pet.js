@@ -5,6 +5,7 @@ import {convertTeslaMonAudioToWav} from './teslamon-wav-fallback.js';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 import {createTeslaMonHandsFree} from './teslamon-handsfree.js';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
+import {getTeslaMonPetMotion} from './teslamon-pet-motion.js?v=20261024-poses1';
 
 if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
   const pet=document.createElement('aside');
@@ -18,32 +19,55 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         `<svg class="tm-puppy" viewBox="0 0 104 100" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
           <ellipse cx="53" cy="94" rx="33" ry="4" fill="#07121c" opacity=".28"/>
           <g stroke="#593522" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-            <path class="tm-tail" d="M73 79 Q94 83 94 62 Q84 66 82 73 L72 72" fill="#d99444"/>
-            <path d="M35 62 Q25 72 30 87 Q35 94 52 91 Q72 95 77 85 Q80 73 69 62" fill="#eeb65d"/>
-            <path d="M44 68 Q52 63 61 69 L64 87 Q52 93 40 86Z" fill="#fff0cd" stroke="none"/>
-            <path d="M37 76 L36 88 M66 76 L68 88" fill="none"/>
-            <ellipse cx="35" cy="89" rx="11" ry="6" fill="#fff0cd"/>
-            <ellipse cx="69" cy="89" rx="11" ry="6" fill="#fff0cd"/>
-            <path d="M31 89v3 M37 89v3 M66 89v3 M72 89v3" stroke-width="1.4"/>
-            <path d="M33 61 Q51 71 71 61 L70 69 Q51 77 34 69Z" fill="#55b7b0"/>
-            <circle class="tm-tag" cx="52" cy="72" r="5" fill="#ffe190"/>
-            <path d="M24 28 Q26 13 43 14 L49 8 L51 14 Q72 10 81 28 L81 46 Q78 66 53 68 Q27 66 23 49Z" fill="#f5c674"/>
-            <path d="M26 24 Q15 17 10 34 Q4 53 17 59 Q25 61 27 46 L32 29Z" fill="#a76635"/>
-            <path d="M77 24 Q88 17 94 34 Q100 53 87 59 Q79 61 77 46 L72 29Z" fill="#a76635"/>
-            <path d="M18 30 Q13 40 16 48 M86 30 Q91 40 88 48" stroke="#ce914d" stroke-width="3" fill="none"/>
-            <path d="M49 20 Q45 35 46 45 L58 45 Q59 33 54 20Z" fill="#fff0cd" stroke="none"/>
-            <ellipse cx="38" cy="39" rx="6.5" ry="9" fill="#2c2422" stroke="none"/>
-            <ellipse cx="66" cy="39" rx="6.5" ry="9" fill="#2c2422" stroke="none"/>
-            <circle cx="36" cy="36" r="2.4" fill="white" stroke="none"/>
-            <circle cx="64" cy="36" r="2.4" fill="white" stroke="none"/>
-            <path d="M33 26 Q37 23 42 26 M62 26 Q67 23 71 26" fill="none"/>
-            <path d="M40 52 Q52 47 64 52 Q62 65 52 65 Q42 65 40 52Z" fill="#593522"/>
-            <path d="M47 58 Q52 55 57 58 L57 63 Q52 70 47 63Z" fill="#ee8e91" stroke-width="1.5"/>
-            <path d="M52 59v4" stroke="#bf5e70" stroke-width="1.2"/>
-            <path d="M52 46 C34 39 27 51 35 57 Q44 63 52 54 Q60 63 69 57 C77 51 70 39 52 46Z" fill="#fff0cd" stroke="none"/>
-            <path d="M45 46 Q52 42 59 46 Q60 50 52 53 Q44 50 45 46Z" fill="#2c2422" stroke="none"/>
-            <path d="M49 46h4" stroke="#fff" stroke-width="1.5"/>
-            <path d="M52 53v2 Q47 60 41 56 M52 55 Q57 60 63 56" fill="none" stroke-width="1.7"/>
+            <g class="tm-pose tm-pose-sit">
+              <path class="tm-tail" d="M73 79 Q94 83 94 62 Q84 66 82 73 L72 72" fill="#d99444"/>
+              <path d="M35 62 Q25 72 30 87 Q35 94 52 91 Q72 95 77 85 Q80 73 69 62" fill="#eeb65d"/>
+              <path d="M44 68 Q52 63 61 69 L64 87 Q52 93 40 86Z" fill="#fff0cd" stroke="none"/>
+              <path d="M37 76 L36 88 M66 76 L68 88" fill="none"/>
+              <ellipse cx="35" cy="89" rx="11" ry="6" fill="#fff0cd"/>
+              <ellipse cx="69" cy="89" rx="11" ry="6" fill="#fff0cd"/>
+              <path d="M31 89v3 M37 89v3 M66 89v3 M72 89v3" stroke-width="1.4"/>
+            </g>
+            <g class="tm-pose tm-pose-stand">
+              <g class="tm-speed-lines" stroke="#ffdd87" stroke-width="3" fill="none" stroke-linecap="round">
+                <path d="M8 72 H22 M4 82 H20 M84 62 H98"/>
+              </g>
+              <path class="tm-tail-stand" d="M75 66 Q91 65 95 52 Q100 58 95 71 Q89 80 75 78Z" fill="#d99444"/>
+              <path d="M31 56 Q24 62 27 73 Q32 80 52 80 Q74 80 78 72 Q81 61 70 56Z" fill="#eeb65d"/>
+              <path d="M43 60 Q52 57 62 60 L65 75 Q53 81 42 75Z" fill="#fff0cd" stroke="none"/>
+              <g class="tm-run-leg tm-run-leg-back">
+                <path d="M30 73 L28 93 Q31 98 40 95 L42 74Z" fill="#d99a4d"/>
+                <ellipse cx="33" cy="95" rx="9" ry="4" fill="#fff0cd"/>
+              </g>
+              <g class="tm-run-leg tm-run-leg-front">
+                <path d="M66 73 L71 93 Q75 99 81 94 L77 72Z" fill="#eeb65d"/>
+                <ellipse cx="76" cy="95" rx="9" ry="4" fill="#fff0cd"/>
+              </g>
+              <path d="M43 74 L41 94 M60 74 L61 94" fill="none"/>
+              <ellipse cx="41" cy="95" rx="8" ry="4" fill="#fff0cd"/>
+              <ellipse cx="62" cy="95" rx="8" ry="4" fill="#fff0cd"/>
+            </g>
+            <g class="tm-head">
+              <path d="M33 61 Q51 71 71 61 L70 69 Q51 77 34 69Z" fill="#55b7b0"/>
+              <circle class="tm-tag" cx="52" cy="72" r="5" fill="#ffe190"/>
+              <path d="M24 28 Q26 13 43 14 L49 8 L51 14 Q72 10 81 28 L81 46 Q78 66 53 68 Q27 66 23 49Z" fill="#f5c674"/>
+              <path d="M26 24 Q15 17 10 34 Q4 53 17 59 Q25 61 27 46 L32 29Z" fill="#a76635"/>
+              <path d="M77 24 Q88 17 94 34 Q100 53 87 59 Q79 61 77 46 L72 29Z" fill="#a76635"/>
+              <path d="M18 30 Q13 40 16 48 M86 30 Q91 40 88 48" stroke="#ce914d" stroke-width="3" fill="none"/>
+              <path d="M49 20 Q45 35 46 45 L58 45 Q59 33 54 20Z" fill="#fff0cd" stroke="none"/>
+              <ellipse cx="38" cy="39" rx="6.5" ry="9" fill="#2c2422" stroke="none"/>
+              <ellipse cx="66" cy="39" rx="6.5" ry="9" fill="#2c2422" stroke="none"/>
+              <circle cx="36" cy="36" r="2.4" fill="white" stroke="none"/>
+              <circle cx="64" cy="36" r="2.4" fill="white" stroke="none"/>
+              <path d="M33 26 Q37 23 42 26 M62 26 Q67 23 71 26" fill="none"/>
+              <path d="M40 52 Q52 47 64 52 Q62 65 52 65 Q42 65 40 52Z" fill="#593522"/>
+              <path d="M47 58 Q52 55 57 58 L57 63 Q52 70 47 63Z" fill="#ee8e91" stroke-width="1.5"/>
+              <path d="M52 59v4" stroke="#bf5e70" stroke-width="1.2"/>
+              <path d="M52 46 C34 39 27 51 35 57 Q44 63 52 54 Q60 63 69 57 C77 51 70 39 52 46Z" fill="#fff0cd" stroke="none"/>
+              <path d="M45 46 Q52 42 59 46 Q60 50 52 53 Q44 50 45 46Z" fill="#2c2422" stroke="none"/>
+              <path d="M49 46h4" stroke="#fff" stroke-width="1.5"/>
+              <path d="M52 53v2 Q47 60 41 56 M52 55 Q57 60 63 56" fill="none" stroke-width="1.7"/>
+            </g>
           </g>
         </svg>`,
       '</button>',
@@ -99,6 +123,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
   }
+  // Keep the puppy seated during passive wake-word scanning; a recognized
+  // wake word stands it up, and active work runs it in place.
+  function syncPetMotion(){
+    pet.dataset.motion=getTeslaMonPetMotion({
+      wakeState:pet.dataset.wake,modelBusy,busy
+    });
+  }
   function focusCommand({requestKeyboard=false}={}){
     if(!opened){opened=true;panel.hidden=false;face.setAttribute('aria-expanded','true');}
     alignPanel();
@@ -137,6 +168,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     wakeControl.dataset.active=String(isOn);
     wakeControl.dataset.error=String(phase==='error');
     pet.dataset.wake=phase;
+    pet.dataset.mic=isOn&&phase!=='error'?'on':'off';
+    syncPetMotion();
     face.setAttribute('aria-description', 'Hands-free microphone: '+(message||phase));
     wakeToggle.textContent=isOn?'Mic On':'Mic Off';
     wakeToggle.setAttribute('aria-pressed',String(isOn));
@@ -287,13 +320,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   async function issue(intent){
     if(busy){status('Wait for the current command.','warn');return;}
     if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn');return;}
-    busy=true;const epoch=++generation;
+    busy=true;syncPetMotion();const epoch=++generation;
     status('Sending command…');
     try{const result=await localPlayer.run(intent);
       if(epoch===generation)report(result,intent.tool);
     }catch{
       if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
-    }finally{busy=false;autoSend.flush();}
+    }finally{busy=false;syncPetMotion();autoSend.flush();}
   }
   // Natural language (both typed and PowerALX voice transcript) always goes
   // through the signed Codex CLI planner. Direct buttons skip reasoning.
@@ -304,7 +337,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       status('Enter a playback request under 220 characters.','warn');return;
     }
     if(modelBusy||busy){status('A playback request is already running.','warn');return;}
-    modelBusy=true;
+    modelBusy=true;syncPetMotion();
     const target=selected,epoch=micEpoch;
     status('Codex is understanding your request…');
     try{
@@ -319,7 +352,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           'Home Assistant light command completed.':'Home Assistant light state checked.','ok');
       }else report(result);
     }catch{status('Codex is unavailable. Quick controls still work.','warn');}
-    finally{modelBusy=false;autoSend.flush();}
+    finally{modelBusy=false;syncPetMotion();autoSend.flush();}
   }
   function cancelMic({preserveWake=false}={}){
     if(!preserveWake)micEpoch++;
