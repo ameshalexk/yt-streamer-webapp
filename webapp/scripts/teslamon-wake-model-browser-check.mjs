@@ -24,7 +24,7 @@ try{
   const detail=await page.evaluate(async()=>{
     const {WakeWordEngine}=await import('/teslamon-wake-engine.js');
     const engine=new WakeWordEngine({
-      keywords:['hey_jarvis','hey_luna','alexa'],baseAssetUrl:'/teslamon-wake-assets/models',
+      keywords:['hey_jarvis','alexa','hey_mycroft','hey_rhasspy'],baseAssetUrl:'/teslamon-wake-assets/models',
       ortWasmPath:'/teslamon-wake-assets/ort/',executionProviders:['wasm']
     });
     try{
@@ -50,7 +50,7 @@ try{
   assert.equal(detail.loaded,true);
   assert.equal(detail.workletStarted,true,'real Chrome AudioWorklet start');
   assert.equal(detail.allTracksStopped,true,'mic tracks must be stopped');
-  assert.deepEqual(detail.keywords,['hey_jarvis','hey_luna','alexa']);
+  assert.deepEqual(detail.keywords,['hey_jarvis','alexa','hey_mycroft','hey_rhasspy']);
   for(const head of Object.values(detail.heads))assert.ok(Number.isFinite(head.score)&&head.score>=0&&head.score<=1,'valid real wake-head inference score');
   assert.equal(errors.length,0,errors.join('\n'));
   console.log('PASS real Chrome browser ONNX WebAssembly load and inference',JSON.stringify(detail));

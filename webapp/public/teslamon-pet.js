@@ -3,11 +3,11 @@ import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261024-shared-stt1';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
-import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261024-three-wake1';
+import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261025-mycroft-rhasspy1';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
 import {getTeslaMonPetMotion} from './teslamon-pet-motion.js?v=20261024-poses1';
 import {shouldDismissTeslaMon} from './teslamon-presence.js';
-import {TESLAMON_WAKE_KEYWORDS, normalizeTeslaMonWakeKeywords, stripTeslaMonWakePhrasePrefix, teslaMonWakePhraseLabel} from './teslamon-wake-phrases.js';
+import {TESLAMON_WAKE_KEYWORDS, normalizeTeslaMonWakeKeywords, restoreTeslaMonWakeKeywords, stripTeslaMonWakePhrasePrefix, teslaMonWakePhraseLabel} from './teslamon-wake-phrases.js?v=20261025-mycroft-rhasspy1';
 
 if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
   const pet=document.createElement('aside');
@@ -87,8 +87,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<legend>Wake phrases</legend>',
         '<div class="tm-wake-options">',
           '<label><input type="checkbox" name="tmWakePhrase" value="hey_jarvis" checked>Hey Jarvis</label>',
-          '<label><input type="checkbox" name="tmWakePhrase" value="hey_luna" checked>Hey Luna</label>',
           '<label><input type="checkbox" name="tmWakePhrase" value="alexa" checked>Alexa</label>',
+          '<label><input type="checkbox" name="tmWakePhrase" value="hey_mycroft" checked>Hey Mycroft</label>',
+          '<label><input type="checkbox" name="tmWakePhrase" value="hey_rhasspy" checked>Hey Rhasspy</label>',
         '</div>',
         '<span id="tmWakePhraseHelp" role="status" aria-live="polite">Any selected phrase can wake TeslaMon.</span>',
       '</fieldset>',
@@ -138,7 +139,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   let selectedWakeKeywords=[...TESLAMON_WAKE_KEYWORDS];
   try {
     const stored=JSON.parse(localStorage.getItem(WAKE_KEY)||'null');
-    selectedWakeKeywords=normalizeTeslaMonWakeKeywords(stored)||[...TESLAMON_WAKE_KEYWORDS];
+    selectedWakeKeywords=restoreTeslaMonWakeKeywords(stored)||[...TESLAMON_WAKE_KEYWORDS];
+    if(Array.isArray(stored)&&stored.includes('hey_luna')) {
+      try{localStorage.setItem(WAKE_KEY,JSON.stringify(selectedWakeKeywords));}
+      catch{/* Disabled storage must not discard this visit's migrated selection. */}
+    }
   } catch { selectedWakeKeywords=[...TESLAMON_WAKE_KEYWORDS]; }
   const wakePhraseInputs=Array.from(wakePhraseSet.querySelectorAll('input[name="tmWakePhrase"]'));
   function renderWakePhraseSelection(message='Any selected phrase can wake TeslaMon.'){
@@ -298,7 +303,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     getUserMedia:options=>navigator.mediaDevices.getUserMedia(options),
     createDetector:async options=>{
       // Loading the ONNX runtime and weights only happens after Mic On.
-      const module=await import('./teslamon-wake-engine.js?v=20261024-three-wake1');
+      const module=await import('./teslamon-wake-engine.js?v=20261025-mycroft-rhasspy1');
       return module.createTeslaMonWakeDetector(options);
     },
     createCapture:options=>createTeslaMonCapture({

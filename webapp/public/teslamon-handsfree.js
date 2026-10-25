@@ -1,6 +1,6 @@
 // TeslaMon foreground-only openWakeWord microphone lifecycle.
 // Neither importing nor creating this controller requests microphone access.
-import {normalizeTeslaMonWakeKeywords, teslaMonWakePhraseLabel} from './teslamon-wake-phrases.js';
+import {normalizeTeslaMonWakeKeywords, teslaMonWakePhraseLabel} from './teslamon-wake-phrases.js?v=20261025-mycroft-rhasspy1';
 export function createTeslaMonHandsFree({
   getUserMedia,
   createDetector,
@@ -10,7 +10,7 @@ export function createTeslaMonHandsFree({
   onState = () => {},
   onError = () => {},
   duckPlayback = () => () => {},
-  getKeywords = () => ['hey_jarvis', 'hey_luna', 'alexa'],
+  getKeywords = () => ['hey_jarvis', 'alexa', 'hey_mycroft', 'hey_rhasspy'],
   timers = globalThis,
   commandTimeoutMs = 12_000,
   cooldownMs = 1500,
@@ -22,7 +22,7 @@ export function createTeslaMonHandsFree({
   let microphone = null, detector = null, recorder = null, silenceMonitor = null;
   let processingAbort = null, cooldownTimer = null, startPromise = null;
   let restorePlayback = null, trackListeners = [];
-  let commandConsumed = false, activeKeywords = ['hey_jarvis', 'hey_luna', 'alexa'];
+  let commandConsumed = false, activeKeywords = ['hey_jarvis', 'alexa', 'hey_mycroft', 'hey_rhasspy'];
   const listeningMessage=()=>`Listening for ${activeKeywords.map(teslaMonWakePhraseLabel).join(', ')}`;
 
   const current = id => wanted && serial === id;

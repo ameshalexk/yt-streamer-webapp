@@ -174,24 +174,24 @@ test('hold-to-talk suspends wake and resumes without a duplicate stream',async()
 });
 
 test('selected keywords are snapshotted on enable and reported with the detected phrase',async()=>{
-  let selected=['hey_luna','alexa'];
+  let selected=['alexa','hey_mycroft'];
   const h=rig({settings:{getKeywords:()=>selected}});
   await h.handsfree.enable();
-  assert.deepEqual(h.detectorOptions.keywords,['hey_luna','alexa']);
+  assert.deepEqual(h.detectorOptions.keywords,['alexa','hey_mycroft']);
   selected=['hey_jarvis']; // Changes cannot hot-reload the active detector.
-  assert.deepEqual(h.detectorOptions.keywords,['hey_luna','alexa']);
-  h.wake({keyword:'hey_luna',score:0.87});
+  assert.deepEqual(h.detectorOptions.keywords,['alexa','hey_mycroft']);
+  h.wake({keyword:'hey_mycroft',score:0.87});
   h.wake({keyword:'alexa',score:0.92}); // Same inference window must not start another capture.
   await settle();
   assert.equal(h.captures.length,1);
   assert.deepEqual(h.events.at(-1),{
-    state:'recording',message:'“Hey Luna” detected. Say one command.',keyword:'hey_luna',score:0.87,
+    state:'recording',message:'“Hey Mycroft” detected. Say one command.',keyword:'hey_mycroft',score:0.87,
   });
   h.handsfree.disable();
 });
 
 test('empty or invalid keyword selections fail before requesting the microphone',async()=>{
-  for(const keywords of [[],['hey_luna','unknown'],['alexa','alexa']]){
+  for(const keywords of [[],['hey_rhasspy','unknown'],['alexa','alexa']]){
     const h=rig({settings:{getKeywords:()=>keywords}});
     assert.equal(await h.handsfree.enable(),false);
     assert.equal(h.asked,0);

@@ -34,7 +34,7 @@ const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/A
   headless:true,args:['--no-first-run','--use-fake-ui-for-media-stream']});
 const sizes=[[320,568],[375,812],[390,844],[430,932],[768,1024],[1024,768],[844,390]];
 const results=[],errors=[];
-const evidence=path.resolve(root,'../docs/teslamon-three-wake-evidence');
+const evidence=path.resolve(root,'../docs/teslamon-four-wake-evidence-20261025');
 await fs.mkdir(evidence,{recursive:true});
 try{
   for(const [width,height] of sizes){
@@ -80,7 +80,7 @@ try{
         mode+' '+width+' panel outside horizontal safe area '+JSON.stringify(result));
       assert.ok(result.panel.y>=result.inset.top-1 && result.panel.bottom<=height-result.inset.bottom+1,
         mode+' '+width+' panel outside vertical safe area '+JSON.stringify(result));
-      assert.equal(result.wakeOptions.length,3);
+      assert.equal(result.wakeOptions.length,4);
       assert.ok(result.wakeOptions.every(option=>option.checked));
       if(mode==='classic'&&[320,390].includes(width))await page.screenshot({path:path.join(evidence,`${width}-wake-phrases.png`)});
       results.push({width,height,mode,...result});
