@@ -16,12 +16,12 @@ function rig(){
   WakeWordEngine.prototype.stop=async function(){};
   return {...api,get engine(){return engine;}};
 }
-for(const keyword of ['hey_jarvis','hey_luna','alexa']){
+for(const keyword of ['hey_jarvis','alexa','hey_mycroft','hey_rhasspy']){
   test(keyword+' wakes once, rejects a second simultaneous phrase, and resumes',async()=>{
     const r=rig(),events=[];
     const detector=r.createTeslaMonWakeDetector({onWake:event=>events.push(event)});
     await detector.start();
-    assert.deepEqual(Array.from(r.engine.config.keywords),['hey_jarvis','hey_luna','alexa']);
+    assert.deepEqual(Array.from(r.engine.config.keywords),['hey_jarvis','alexa','hey_mycroft','hey_rhasspy']);
     r.engine._emitter.emit('detect',{keyword,score:0.8});
     r.engine._emitter.emit('detect',{keyword:'alexa',score:0.9});
     assert.equal(events.length,1);
@@ -36,12 +36,12 @@ for(const keyword of ['hey_jarvis','hey_luna','alexa']){
 }
 test('only selected heads load and unselected detection cannot wake',async()=>{
   const r=rig(),events=[];
-  const detector=r.createTeslaMonWakeDetector({keywords:['hey_luna','hey_luna'],onWake:e=>events.push(e)});
+  const detector=r.createTeslaMonWakeDetector({keywords:['hey_rhasspy','hey_rhasspy'],onWake:e=>events.push(e)});
   await detector.start();
-  assert.deepEqual(Array.from(r.engine.config.keywords),['hey_luna']);
+  assert.deepEqual(Array.from(r.engine.config.keywords),['hey_rhasspy']);
   r.engine._emitter.emit('detect',{keyword:'alexa',score:1});
   assert.equal(events.length,0);
-  r.engine._emitter.emit('detect',{keyword:'hey_luna',score:0.8});
+  r.engine._emitter.emit('detect',{keyword:'hey_rhasspy',score:0.8});
   assert.equal(events.length,1);
   await detector.stop();
 });
@@ -53,7 +53,7 @@ test('empty or unsupported selection is rejected before microphone/model setup',
 test('bundled additional models match pinned provenance, size and hash',async()=>{
   const base=new URL('../public/teslamon-wake-assets/',import.meta.url);
   const manifest=JSON.parse(await fs.readFile(new URL('ADDED_MODELS.json',base)));
-  assert.equal(manifest.length,2);
+  assert.equal(manifest.length,3);
   for(const item of manifest){
     const bytes=await fs.readFile(new URL('models/'+item.file,base));
     assert.equal(bytes.length,item.bytes,item.file);

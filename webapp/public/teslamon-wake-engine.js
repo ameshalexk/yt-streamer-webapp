@@ -7,8 +7,9 @@ ort.env.wasm.proxy = false;
 
 export const MODEL_FILE_MAP = Object.freeze({
     hey_jarvis: 'hey_jarvis_v0.1.onnx',
-    hey_luna: 'hey_luna.onnx',
-    alexa: 'alexa_v0.1.onnx'
+    alexa: 'alexa_v0.1.onnx',
+    hey_mycroft: 'hey_mycroft_v0.1.onnx',
+    hey_rhasspy: 'hey_rhasspy_v0.1.onnx'
 });
 
 // AudioWorklet code is a same-origin static module, not a blob script.

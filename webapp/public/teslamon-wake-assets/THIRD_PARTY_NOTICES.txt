@@ -49,8 +49,9 @@ Voice Satellite's AGPL-3.0 implementation was not copied or vendored.
    Source: https://github.com/dscripka/openWakeWord/releases/tag/v0.5.1
    License: CC BY-NC-SA 4.0, as in item 3.
 
-5. Pretrained Hey Luna wake head: contributors to Florian Wartner's
-   home-assistant-wakewords-collection, en/Hey Luna/hey_luna.onnx.
-   Source: https://github.com/fwartner/home-assistant-wakewords-collection
-   Repository license: MIT (text above). No custom training was performed.
-   Exact source revision, sizes and SHA-256 hashes: ADDED_MODELS.json.
+5. Additional pretrained Hey Mycroft and Hey Rhasspy wake heads: David
+   Scripka/openWakeWord contributors, hey_mycroft_v0.1.onnx and
+   hey_rhasspy_v0.1.onnx from upstream release v0.5.1.
+   Source: https://github.com/dscripka/openWakeWord/releases/tag/v0.5.1
+   License: CC BY-NC-SA 4.0, as in item 3. No custom training was performed.
+   Exact source URLs, sizes, and SHA-256 hashes: ADDED_MODELS.json.

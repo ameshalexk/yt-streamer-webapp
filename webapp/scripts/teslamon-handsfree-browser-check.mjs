@@ -57,7 +57,7 @@ try{
  try { await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:12000}); }
  catch(error){console.error('AUTO-WAKE DEBUG',JSON.stringify(await page.evaluate(()=>({wake:document.querySelector('#tmWakeState')?.textContent,mic:document.querySelector('#tmWakeToggle')?.textContent,main:document.querySelector('#tmState')?.textContent,streams:window.__teslamonMicStreams?.length})),null,2),'pageErrors',errors,'api',apiUploads,'unexpected',unexpected);throw error;}
  assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'true');
- assert.match(await page.locator('#tmWakeState').innerText(),/Hey Jarvis, Hey Luna, Alexa/);
+ assert.match(await page.locator('#tmWakeState').innerText(),/Hey Jarvis, Alexa, Hey Mycroft, Hey Rhasspy/);
  assert.equal(await page.locator('#tmWakePhraseSet').evaluate(fieldset=>fieldset.disabled),true,'phrase changes locked while listening');
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),1,'page load obtains one mic stream');
  assert.equal(await page.locator('#teslamonPet').getAttribute('data-mic'),'on');
@@ -68,30 +68,42 @@ try{
  assert.equal(await page.locator('#teslamonPet').getAttribute('data-mic'),'off');
  assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('#tmFace'),'::after').content),'"MIC OFF"');
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true,'Mic Off ends all tracks');
- // Select only Luna while Off; reject attempts to disable the last phrase.
+ // Select only Mycroft while Off; reject attempts to disable the last phrase.
  assert.equal(await page.locator('#tmWakePhraseSet').evaluate(fieldset=>fieldset.disabled),false);
  await page.locator('input[value=hey_jarvis]').uncheck();
  await page.locator('input[value=alexa]').uncheck();
- await page.locator('input[value=hey_luna]').click();
- assert.equal(await page.locator('input[value=hey_luna]').isChecked(),true,'last phrase stays enabled');
+ await page.locator('input[value=hey_rhasspy]').uncheck();
+ await page.locator('input[value=hey_mycroft]').click();
+ assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true,'last phrase stays enabled');
  assert.match(await page.locator('#tmWakePhraseHelp').innerText(),/at least one/);
- // Manual On starts a fresh stream with only Luna.
+ // Manual On starts a fresh stream with only Mycroft.
  await page.locator('#tmWakeToggle').click();
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:12000});
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),2);
- assert.equal(await page.locator('#tmWakeState').innerText(),'Listening for Hey Luna');
+ assert.equal(await page.locator('#tmWakeState').innerText(),'Listening for Hey Mycroft');
  await page.locator('#tmWakeToggle').click();
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Off',null,{timeout:10000});
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true);
- // Reload restores only Luna and automatic listening uses the persisted choice.
+ // Reload restores only Mycroft and automatic listening uses the persisted choice.
  await page.reload({waitUntil:'domcontentloaded'});
- await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Listening for Hey Luna',null,{timeout:15000});
+ await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Listening for Hey Mycroft',null,{timeout:15000});
  await page.locator('#tmFace').click();
- assert.equal(await page.locator('input[value=hey_luna]').isChecked(),true);
+ assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true);
  assert.equal(await page.locator('input[value=alexa]').isChecked(),false);
  assert.equal(await page.locator('input[value=hey_jarvis]').isChecked(),false);
+ assert.equal(await page.locator('input[value=hey_rhasspy]').isChecked(),false);
  await page.locator('#tmWakeToggle').click();
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true);
+ // Existing Luna-only browser choice must migrate to both replacement phrases.
+ await page.evaluate(()=>localStorage.setItem('ytStreamerTeslaMonWakePhrasesV1',JSON.stringify(['hey_luna'])));
+ await page.reload({waitUntil:'domcontentloaded'});
+ await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Listening for Hey Mycroft, Hey Rhasspy',null,{timeout:15000});
+ await page.locator('#tmFace').click();
+ assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true);
+ assert.equal(await page.locator('input[value=hey_rhasspy]').isChecked(),true);
+ assert.equal(await page.locator('input[value=hey_jarvis]').isChecked(),false);
+ assert.equal(await page.locator('input[value=alexa]').isChecked(),false);
+ await page.locator('#tmWakeToggle').click();
  assert.deepEqual(apiUploads,[],'no ambient audio uploaded to PowerALX or Codex');
  assert.deepEqual(unexpected,[],'no third-party network calls');
  assert.deepEqual(errors,[],'no page JS errors');
