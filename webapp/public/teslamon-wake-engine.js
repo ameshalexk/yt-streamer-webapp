@@ -1,11 +1,15 @@
 // Adapted from dnavarrom/openwakeword_wasm v0.1.1 (MIT); browser-only.
-// Only pretrained openWakeWord 'hey_jarvis' and its feature models are loaded.
+// Pretrained wake heads share one local mel/embedding/VAD pipeline.
 // Pretrained model weights are CC BY-NC-SA 4.0; see documentation.
 import * as ort from './teslamon-wake-assets/ort/ort.wasm.min.mjs';
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.proxy = false;
 
-export const MODEL_FILE_MAP = {hey_jarvis: 'hey_jarvis_v0.1.onnx'};
+export const MODEL_FILE_MAP = Object.freeze({
+    hey_jarvis: 'hey_jarvis_v0.1.onnx',
+    hey_luna: 'hey_luna.onnx',
+    alexa: 'alexa_v0.1.onnx'
+});
 
 // AudioWorklet code is a same-origin static module, not a blob script.
 
@@ -413,9 +417,12 @@ export class WakeWordEngine {
 }
 
 /** Wrap the MIT openWakeWord browser pipeline for a caller-owned mic stream. */
-export function createTeslaMonWakeDetector({stream,onWake=()=>{},onError=()=>{}}={}) {
+export function createTeslaMonWakeDetector({stream,keywords=Object.keys(MODEL_FILE_MAP),onWake=()=>{},onError=()=>{}}={}) {
+  if(!Array.isArray(keywords)||!keywords.length||keywords.some(key=>!Object.hasOwn(MODEL_FILE_MAP,key)))
+    throw new TypeError('Choose at least one supported wake phrase.');
+  const selected=[...new Set(keywords)];
   const engine=new WakeWordEngine({
-    keywords:['hey_jarvis'],
+    keywords:selected,
     baseAssetUrl:'/teslamon-wake-assets/models',
     ortWasmPath:'/teslamon-wake-assets/ort/',
     detectionThreshold:0.5,
@@ -424,7 +431,7 @@ export function createTeslaMonWakeDetector({stream,onWake=()=>{},onError=()=>{}}
   });
   let stopped=false,started=false,paused=false;
   const offDetect=engine.on('detect',event=>{
-    if(stopped||!started||paused||event.keyword!=='hey_jarvis')return;
+    if(stopped||!started||paused||!selected.includes(event.keyword))return;
     paused=true;
     engine.pause();
     try{onWake(event);}catch(error){try{onError(error);}catch{}}

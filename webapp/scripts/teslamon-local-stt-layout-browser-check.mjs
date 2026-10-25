@@ -13,7 +13,7 @@ const server=http.createServer(async(req,res)=>{
   const pathname=new URL(req.url,'http://127.0.0.1').pathname;
   if(pathname.startsWith('/api/')){
     res.writeHead(200,{'content-type':'application/json'});
-    res.end(JSON.stringify(pathname==='/api/teslamon/capabilities'?{codexAvailable:true,localTranscription:false}:{ok:true,items:[]}));
+    res.end(JSON.stringify(pathname==='/api/teslamon/capabilities'?{codexAvailable:true,localTranscription:false}:pathname==='/api/playlists'?[]:{ok:true,items:[]}));
     return;
   }
   const target=path.resolve(root,decodeURIComponent(pathname==='/'?'index.html':pathname.slice(1)));
@@ -34,6 +34,8 @@ const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/A
   headless:true,args:['--no-first-run','--use-fake-ui-for-media-stream']});
 const sizes=[[320,568],[375,812],[390,844],[430,932],[768,1024],[1024,768],[844,390]];
 const results=[],errors=[];
+const evidence=path.resolve(root,'../docs/teslamon-three-wake-evidence');
+await fs.mkdir(evidence,{recursive:true});
 try{
   for(const [width,height] of sizes){
     for(const mode of ['classic','new']){
@@ -61,14 +63,16 @@ try{
           bottom:parseFloat(style.getPropertyValue('--tm-safe-bottom'))||0};
         const buttons=[...pet.querySelectorAll('button')].filter(button=>
           button.getBoundingClientRect().width>0&&button.getBoundingClientRect().height>0);
-        const small=buttons.map(button=>({id:button.id||button.dataset.tm,
+        const targets=[...buttons,...pet.querySelectorAll('.tm-wake-options label')];
+        const small=targets.map(button=>({id:button.id||button.dataset.tm,
           width:button.getBoundingClientRect().width,height:button.getBoundingClientRect().height}))
           .filter(item=>item.width<43.5||item.height<43.5);
         return {overflowX:document.documentElement.scrollWidth-innerWidth,
           panel:{x:rect.x,y:rect.y,right:rect.right,bottom:rect.bottom,
             width:rect.width,height:rect.height,scrollHeight:panel.scrollHeight},
           inset,small,buttons:buttons.length,voiceButton:document.querySelector('#tmMic')?.textContent,
-          controlMode:document.querySelector('#tmWakeToggle')?.textContent};
+          controlMode:document.querySelector('#tmWakeToggle')?.textContent,
+          wakeOptions:[...pet.querySelectorAll('.tm-wake-options input')].map(input=>({value:input.value,checked:input.checked}))};
       });
       assert.ok(result.overflowX<=2,mode+' '+width+' document horizontal overflow '+JSON.stringify(result));
       assert.deepEqual(result.small,[],mode+' '+width+' controls smaller than 44px');
@@ -76,11 +80,15 @@ try{
         mode+' '+width+' panel outside horizontal safe area '+JSON.stringify(result));
       assert.ok(result.panel.y>=result.inset.top-1 && result.panel.bottom<=height-result.inset.bottom+1,
         mode+' '+width+' panel outside vertical safe area '+JSON.stringify(result));
+      assert.equal(result.wakeOptions.length,3);
+      assert.ok(result.wakeOptions.every(option=>option.checked));
+      if(mode==='classic'&&[320,390].includes(width))await page.screenshot({path:path.join(evidence,`${width}-wake-phrases.png`)});
       results.push({width,height,mode,...result});
       await page.close();
     }
   }
   assert.deepEqual(errors,[]);
+  await fs.writeFile(path.join(evidence,'layout.json'),JSON.stringify({kind:'Chrome viewport emulation; not real iPhone/Tesla',results},null,2)+'\n');
   console.log(JSON.stringify({passed:results.length,results:results.map(item=>({
     width:item.width,height:item.height,mode:item.mode,
     panel:item.panel,buttons:item.buttons,overflowX:item.overflowX

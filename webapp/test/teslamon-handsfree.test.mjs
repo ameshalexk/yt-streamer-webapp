@@ -5,7 +5,7 @@ import {createTeslaMonHandsFree} from '../public/teslamon-handsfree.js';
 const settle = async () => {await new Promise(resolve=>setImmediate(resolve));};
 function rig(overrides={}) {
   const events=[],uploads=[],captures=[],monitors=[];
-  let wake=()=>{},detectorPauses=0,detectorResumes=0,detectorStops=0,asked=0,stopped=0;
+  let wake=()=>{},detectorOptions=null,detectorPauses=0,detectorResumes=0,detectorStops=0,asked=0,stopped=0;
   let next=0;
   const jobs=new Map();
   const timers={
@@ -38,7 +38,7 @@ function rig(overrides={}) {
       asked++;assert.deepEqual(options,{audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
       return overrides.permission?overrides.permission():stream;
     },
-    createDetector:async opts=>{wake=opts.onWake;return detector;},
+    createDetector:async opts=>{detectorOptions=opts;wake=opts.onWake;return detector;},
     createCapture:opts=>{
       const capture={
         opts,started:0,released:0,cancelled:0,
@@ -61,7 +61,7 @@ function rig(overrides={}) {
     ...(overrides.settings||{})
   });
   return {handsfree,events,uploads,captures,monitors,timers,stream,track,
-    wake:()=>wake(),get asked(){return asked;},get stopped(){return stopped;},
+    wake:metadata=>wake(metadata),get detectorOptions(){return detectorOptions;},get asked(){return asked;},get stopped(){return stopped;},
     get paused(){return detectorPauses;},get resumed(){return detectorResumes;},get detectorStops(){return detectorStops;}};
 }
 
@@ -170,5 +170,43 @@ test('hold-to-talk suspends wake and resumes without a duplicate stream',async()
   h.timers.run(1500);
   h.wake();await settle();
   assert.equal(h.captures.length,1);
+  h.handsfree.disable();
+});
+
+test('selected keywords are snapshotted on enable and reported with the detected phrase',async()=>{
+  let selected=['hey_luna','alexa'];
+  const h=rig({settings:{getKeywords:()=>selected}});
+  await h.handsfree.enable();
+  assert.deepEqual(h.detectorOptions.keywords,['hey_luna','alexa']);
+  selected=['hey_jarvis']; // Changes cannot hot-reload the active detector.
+  assert.deepEqual(h.detectorOptions.keywords,['hey_luna','alexa']);
+  h.wake({keyword:'hey_luna',score:0.87});
+  h.wake({keyword:'alexa',score:0.92}); // Same inference window must not start another capture.
+  await settle();
+  assert.equal(h.captures.length,1);
+  assert.deepEqual(h.events.at(-1),{
+    state:'recording',message:'“Hey Luna” detected. Say one command.',keyword:'hey_luna',score:0.87,
+  });
+  h.handsfree.disable();
+});
+
+test('empty or invalid keyword selections fail before requesting the microphone',async()=>{
+  for(const keywords of [[],['hey_luna','unknown'],['alexa','alexa']]){
+    const h=rig({settings:{getKeywords:()=>keywords}});
+    assert.equal(await h.handsfree.enable(),false);
+    assert.equal(h.asked,0);
+    assert.equal(h.handsfree.enabled,false);
+    assert.equal(h.handsfree.state,'error');
+    assert.match(h.events.at(-1).message,/at least one valid wake phrase/i);
+  }
+});
+
+test('detector events for keywords outside the enable snapshot are ignored',async()=>{
+  const h=rig({settings:{getKeywords:()=>['alexa']}});
+  await h.handsfree.enable();
+  h.wake({keyword:'hey_jarvis',score:0.99});
+  await settle();
+  assert.equal(h.captures.length,0);
+  assert.equal(h.handsfree.state,'listening');
   h.handsfree.disable();
 });

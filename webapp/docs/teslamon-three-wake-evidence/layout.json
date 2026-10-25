@@ -1,0 +1,551 @@
+{
+  "kind": "Chrome viewport emulation; not real iPhone/Tesla",
+  "results": [
+    {
+      "width": 320,
+      "height": 568,
+      "mode": "classic",
+      "overflowX": 0,
+      "panel": {
+        "x": 8,
+        "y": 8,
+        "right": 312,
+        "bottom": 392,
+        "width": 304,
+        "height": 384,
+        "scrollHeight": 736
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 320,
+      "height": 568,
+      "mode": "new",
+      "overflowX": 0,
+      "panel": {
+        "x": 8,
+        "y": 8,
+        "right": 312,
+        "bottom": 392,
+        "width": 304,
+        "height": 384,
+        "scrollHeight": 736
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 375,
+      "height": 812,
+      "mode": "classic",
+      "overflowX": 0,
+      "panel": {
+        "x": 8,
+        "y": 8,
+        "right": 367,
+        "bottom": 636,
+        "width": 359,
+        "height": 628,
+        "scrollHeight": 685
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 375,
+      "height": 812,
+      "mode": "new",
+      "overflowX": 0,
+      "panel": {
+        "x": 8,
+        "y": 8,
+        "right": 367,
+        "bottom": 636,
+        "width": 359,
+        "height": 628,
+        "scrollHeight": 685
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "mode": "classic",
+      "overflowX": 0,
+      "panel": {
+        "x": 8,
+        "y": 18,
+        "right": 382,
+        "bottom": 668,
+        "width": 374,
+        "height": 650,
+        "scrollHeight": 669
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "mode": "new",
+      "overflowX": 0,
+      "panel": {
+        "x": 8,
+        "y": 18,
+        "right": 382,
+        "bottom": 668,
+        "width": 374,
+        "height": 650,
+        "scrollHeight": 669
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 430,
+      "height": 932,
+      "mode": "classic",
+      "overflowX": 0,
+      "panel": {
+        "x": 80,
+        "y": 112,
+        "right": 416,
+        "bottom": 762,
+        "width": 336,
+        "height": 650,
+        "scrollHeight": 685
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 430,
+      "height": 932,
+      "mode": "new",
+      "overflowX": 0,
+      "panel": {
+        "x": 80,
+        "y": 112,
+        "right": 416,
+        "bottom": 762,
+        "width": 336,
+        "height": 650,
+        "scrollHeight": 685
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "mode": "classic",
+      "overflowX": 0,
+      "panel": {
+        "x": 418,
+        "y": 204,
+        "right": 754,
+        "bottom": 854,
+        "width": 336,
+        "height": 650,
+        "scrollHeight": 685
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "mode": "new",
+      "overflowX": 0,
+      "panel": {
+        "x": 418,
+        "y": 204,
+        "right": 754,
+        "bottom": 854,
+        "width": 336,
+        "height": 650,
+        "scrollHeight": 685
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "mode": "classic",
+      "overflowX": 0,
+      "panel": {
+        "x": 674,
+        "y": 8,
+        "right": 1010,
+        "bottom": 598,
+        "width": 336,
+        "height": 590,
+        "scrollHeight": 685
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "mode": "new",
+      "overflowX": 0,
+      "panel": {
+        "x": 674,
+        "y": 8,
+        "right": 1010,
+        "bottom": 598,
+        "width": 336,
+        "height": 590,
+        "scrollHeight": 685
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 844,
+      "height": 390,
+      "mode": "classic",
+      "overflowX": 0,
+      "panel": {
+        "x": 494,
+        "y": 8,
+        "right": 830,
+        "bottom": 220,
+        "width": 336,
+        "height": 212,
+        "scrollHeight": 685
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    },
+    {
+      "width": 844,
+      "height": 390,
+      "mode": "new",
+      "overflowX": 0,
+      "panel": {
+        "x": 494,
+        "y": 8,
+        "right": 830,
+        "bottom": 220,
+        "width": 336,
+        "height": 212,
+        "scrollHeight": 685
+      },
+      "inset": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "small": [],
+      "buttons": 11,
+      "voiceButton": "Hold to talk",
+      "controlMode": "Mic Off",
+      "wakeOptions": [
+        {
+          "value": "hey_jarvis",
+          "checked": true
+        },
+        {
+          "value": "hey_luna",
+          "checked": true
+        },
+        {
+          "value": "alexa",
+          "checked": true
+        }
+      ]
+    }
+  ]
+}
