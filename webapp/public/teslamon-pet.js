@@ -3,10 +3,11 @@ import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261024-shared-stt1';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
-import {createTeslaMonHandsFree} from './teslamon-handsfree.js';
+import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261024-three-wake1';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
 import {getTeslaMonPetMotion} from './teslamon-pet-motion.js?v=20261024-poses1';
 import {shouldDismissTeslaMon} from './teslamon-presence.js';
+import {TESLAMON_WAKE_KEYWORDS, normalizeTeslaMonWakeKeywords, stripTeslaMonWakePhrasePrefix, teslaMonWakePhraseLabel} from './teslamon-wake-phrases.js';
 
 if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
   const pet=document.createElement('aside');
@@ -82,6 +83,15 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           '<span id="tmWakeState" role="status" aria-live="polite">Off</span></div>',
         '<button id="tmWakeToggle" type="button" aria-pressed="false" aria-label="Turn hands-free microphone on">Mic Off</button>',
       '</div>',
+      '<fieldset class="tm-wake-phrases" id="tmWakePhraseSet">',
+        '<legend>Wake phrases</legend>',
+        '<div class="tm-wake-options">',
+          '<label><input type="checkbox" name="tmWakePhrase" value="hey_jarvis" checked>Hey Jarvis</label>',
+          '<label><input type="checkbox" name="tmWakePhrase" value="hey_luna" checked>Hey Luna</label>',
+          '<label><input type="checkbox" name="tmWakePhrase" value="alexa" checked>Alexa</label>',
+        '</div>',
+        '<span id="tmWakePhraseHelp" role="status" aria-live="polite">Any selected phrase can wake TeslaMon.</span>',
+      '</fieldset>',
       '<div class="tm-target tm-self-target" aria-label="Playback target">',
         '<span>Controls this browser tab only</span></div>',
       '<form id="tmForm"><label class="tm-visually-hidden" for="tmText">Command</label>',
@@ -107,6 +117,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const face=$('#tmFace'),handle=$('#tmHandle'),panel=$('#tmPanel'),
     state=$('#tmState'),mic=$('#tmMic'),
     wakeControl=$('#tmWakeControl'),wakeToggle=$('#tmWakeToggle'),wakeState=$('#tmWakeState'),
+    wakePhraseSet=$('#tmWakePhraseSet'),wakePhraseHelp=$('#tmWakePhraseHelp'),
     input=$('#tmText'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
@@ -123,6 +134,27 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
     wakeInputChanged=false,wakeHandled=false,autoWakeWanted=true,autoWakeBlocked=false,
     panelRevision=0,fullscreenSeen=false,dismissedForSuccess=false;
+  const WAKE_KEY='ytStreamerTeslaMonWakePhrasesV1';
+  let selectedWakeKeywords=[...TESLAMON_WAKE_KEYWORDS];
+  try {
+    const stored=JSON.parse(localStorage.getItem(WAKE_KEY)||'null');
+    selectedWakeKeywords=normalizeTeslaMonWakeKeywords(stored)||[...TESLAMON_WAKE_KEYWORDS];
+  } catch { selectedWakeKeywords=[...TESLAMON_WAKE_KEYWORDS]; }
+  const wakePhraseInputs=Array.from(wakePhraseSet.querySelectorAll('input[name="tmWakePhrase"]'));
+  function renderWakePhraseSelection(message='Any selected phrase can wake TeslaMon.'){
+    for(const checkbox of wakePhraseInputs)checkbox.checked=selectedWakeKeywords.includes(checkbox.value);
+    const locked=Boolean(handsFree?.enabled)||handsFree?.state==='starting';
+    wakePhraseSet.disabled=locked;
+    wakePhraseHelp.textContent=locked?'Turn Mic Off to change wake phrases.':message;
+  }
+  for(const checkbox of wakePhraseInputs)checkbox.addEventListener('change',()=>{
+    const next=wakePhraseInputs.filter(option=>option.checked).map(option=>option.value);
+    const valid=normalizeTeslaMonWakeKeywords(next);
+    if(!valid){renderWakePhraseSelection('Select at least one wake phrase.');return;}
+    selectedWakeKeywords=valid;
+    try{localStorage.setItem(WAKE_KEY,JSON.stringify(selectedWakeKeywords));}catch{/* Storage can be disabled; this visit still works. */}
+    renderWakePhraseSelection();
+  });
 
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
@@ -214,7 +246,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   });
   // Attempt foreground wake listening on each page load, using ordinary
   // browser microphone permission. Off stays off until re-enabled this visit.
-  function updateWakeUI({state:phase='off',message}={}){
+  function updateWakeUI({state:phase='off',message,keyword,score}={}){
     const isOn=handsFree?.enabled??phase==='starting';
     wakeControl.dataset.active=String(isOn);
     wakeControl.dataset.error=String(phase==='error');
@@ -226,8 +258,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     wakeToggle.setAttribute('aria-pressed',String(isOn));
     wakeToggle.setAttribute('aria-label',isOn?
       'Turn hands-free microphone off':'Turn hands-free microphone on');
+    renderWakePhraseSelection();
     wakeState.textContent=message||(
-      phase==='listening'?'Listening for “Hey Jarvis”':
+      phase==='listening'?'Listening for '+selectedWakeKeywords.map(teslaMonWakePhraseLabel).join(', '):
       phase==='recording'?'Recording command':
       phase==='processing'?'Processing command':
       phase==='starting'?'Requesting microphone permission…':'Off');
@@ -240,8 +273,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       pet.hidden=false;dismissedForSuccess=false;
     }
     if(phase==='error')status(wakeState.textContent,'warn');
-    else if(phase==='recording')status('Hey Jarvis detected. Say one command.','ok');
-    else if(phase==='processing')status('Processing hands-free command…');
+    else if(phase==='recording')status((keyword?`${teslaMonWakePhraseLabel(keyword)} detected`:'Wake phrase detected')+
+      (Number.isFinite(score)?` (${Math.round(score*100)}%)`:'')+'. Say one command.','ok');
+    else if(phase==='processing')status('Transcribing command locally…');
   }
   function lowerPlaybackDuringCommand(){
     const changed=[];
@@ -260,10 +294,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     };
   }
   const handsFree=createTeslaMonHandsFree({
+    getKeywords:()=>[...selectedWakeKeywords],
     getUserMedia:options=>navigator.mediaDevices.getUserMedia(options),
     createDetector:async options=>{
       // Loading the ONNX runtime and weights only happens after Mic On.
-      const module=await import('./teslamon-wake-engine.js');
+      const module=await import('./teslamon-wake-engine.js?v=20261024-three-wake1');
       return module.createTeslaMonWakeDetector(options);
     },
     createCapture:options=>createTeslaMonCapture({
@@ -280,6 +315,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     },
     duckPlayback:lowerPlaybackDuringCommand,
   });
+  renderWakePhraseSelection();
   wakeToggle.disabled=true;
   wakeToggle.addEventListener('click',()=>{
     if(handsFree.enabled){
@@ -524,8 +560,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         return;
       }
       autoSend.cancel();
-      // Hey Jarvis is handled by its dedicated ONNX wake worker, not Whisper.
-      const command=result.text.replace(/^\\s*hey[\\s,.!]*jarvis[\\s,.!:-]*/i,'').trim()||result.text;
+      // The wake prefix is removed only at the transcript start. A standalone
+      // phrase does not contain a command to send to the planner.
+      const command=stripTeslaMonWakePhrasePrefix(result.text);
+      if(!command){status('Say a command after the wake phrase.','warn');return;}
       input.value=command;
       autoSend.changed();
       status('Heard “'+command.slice(0,100)+'” · Sending after 2 seconds without edits.','ok');

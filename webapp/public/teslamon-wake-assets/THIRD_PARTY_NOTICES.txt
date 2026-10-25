@@ -43,3 +43,14 @@ SOFTWARE.
    before commercial redistribution. No custom model training was performed.
 
 Voice Satellite's AGPL-3.0 implementation was not copied or vendored.
+
+4. Additional pretrained Alexa wake head: David Scripka/openWakeWord,
+   alexa_v0.1.onnx from upstream release v0.5.1.
+   Source: https://github.com/dscripka/openWakeWord/releases/tag/v0.5.1
+   License: CC BY-NC-SA 4.0, as in item 3.
+
+5. Pretrained Hey Luna wake head: contributors to Florian Wartner's
+   home-assistant-wakewords-collection, en/Hey Luna/hey_luna.onnx.
+   Source: https://github.com/fwartner/home-assistant-wakewords-collection
+   Repository license: MIT (text above). No custom training was performed.
+   Exact source revision, sizes and SHA-256 hashes: ADDED_MODELS.json.

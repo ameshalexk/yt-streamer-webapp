@@ -1,5 +1,6 @@
 // TeslaMon foreground-only openWakeWord microphone lifecycle.
 // Neither importing nor creating this controller requests microphone access.
+import {normalizeTeslaMonWakeKeywords, teslaMonWakePhraseLabel} from './teslamon-wake-phrases.js';
 export function createTeslaMonHandsFree({
   getUserMedia,
   createDetector,
@@ -9,6 +10,7 @@ export function createTeslaMonHandsFree({
   onState = () => {},
   onError = () => {},
   duckPlayback = () => () => {},
+  getKeywords = () => ['hey_jarvis', 'hey_luna', 'alexa'],
   timers = globalThis,
   commandTimeoutMs = 12_000,
   cooldownMs = 1500,
@@ -20,12 +22,13 @@ export function createTeslaMonHandsFree({
   let microphone = null, detector = null, recorder = null, silenceMonitor = null;
   let processingAbort = null, cooldownTimer = null, startPromise = null;
   let restorePlayback = null, trackListeners = [];
-  let commandConsumed = false;
+  let commandConsumed = false, activeKeywords = ['hey_jarvis', 'hey_luna', 'alexa'];
+  const listeningMessage=()=>`Listening for ${activeKeywords.map(teslaMonWakePhraseLabel).join(', ')}`;
 
   const current = id => wanted && serial === id;
-  function emit(state, message) {
+  function emit(state, message, metadata = {}) {
     phase = state;
-    try { onState({state, message}); } catch {}
+    try { onState({state, message, ...metadata}); } catch {}
   }
   function stopTracks(stream) {
     try { for (const track of stream?.getTracks?.() || []) track.stop(); } catch {}
@@ -88,7 +91,7 @@ export function createTeslaMonHandsFree({
       cooldownTimer=null;
       if(!current(id)||suspended||recorder||processingAbort)return;
       resumeDetector();
-      if(current(id))emit('listening','Listening for “Hey Jarvis”');
+      if(current(id))emit('listening',listeningMessage());
     },cooldownMs);
   }
   function finishNoSpeech(id) {
@@ -109,7 +112,7 @@ export function createTeslaMonHandsFree({
     commandConsumed=true;
     stopMonitor();
     recorder=null; // The recorder's stop event already released the clone.
-    emit('processing','Processing command through PowerALX and Codex…');
+    emit('processing','Transcribing command locally…');
     const controller = new AbortController();
     processingAbort = controller;
     try {
@@ -124,12 +127,16 @@ export function createTeslaMonHandsFree({
       if(current(id))resumeListening(id);
     }
   }
-  async function onWake(id) {
+  async function onWake(id, detection = {}) {
     if(!current(id)||suspended||phase!=='listening'||recorder)return;
+    if(detection?.keyword && !activeKeywords.includes(detection.keyword))return;
+    const keyword=activeKeywords.includes(detection?.keyword)?detection.keyword:null;
     commandConsumed=false;
     pauseDetector();
     if(!current(id))return;
-    emit('recording','Recording command…');
+    emit('recording',keyword ? `“${teslaMonWakePhraseLabel(keyword)}” detected. Say one command.` : 'Wake phrase detected. Say one command.', {
+      keyword, score:Number.isFinite(detection?.score)?detection.score:undefined,
+    });
     try{restorePlayback=duckPlayback()||null;}catch{restorePlayback=null;}
     if(!current(id)) {restore();return;}
     try {
@@ -167,6 +174,13 @@ export function createTeslaMonHandsFree({
   }
   function enable() {
     if(wanted)return startPromise??Promise.resolve(true);
+    let requested;
+    try { requested=normalizeTeslaMonWakeKeywords(getKeywords()); } catch { requested=null; }
+    if(!requested) {
+      emit('error','Select at least one valid wake phrase before turning Mic On.');
+      return Promise.resolve(false);
+    }
+    activeKeywords=[...requested];
     wanted=true;suspended=false;
     const id=++serial;
     emit('starting','Requesting microphone permission…');
@@ -187,15 +201,15 @@ export function createTeslaMonHandsFree({
           trackListeners.push([track,handler]);
         }
         const engine=await createDetector({
-          stream,onWake:()=>{void onWake(id);},
+          stream,keywords:[...activeKeywords],onWake:metadata=>{void onWake(id,metadata);},
           onError:error=>{if(current(id))fail(error);}
         });
         if(!current(id)){void stopDetector(engine);return false;}
         detector=engine;
         const started=await engine.start();
         if(!current(id)){void stopDetector(engine);return false;}
-        if(started===false)throw new Error('Hey Jarvis detector could not start');
-        emit('listening','Listening for “Hey Jarvis”');
+        if(started===false)throw new Error('Wake phrase detector could not start');
+        emit('listening',listeningMessage());
         return true;
       }catch(error){
         if(current(id))fail(error);

@@ -24,12 +24,14 @@ try{
   const detail=await page.evaluate(async()=>{
     const {WakeWordEngine}=await import('/teslamon-wake-engine.js');
     const engine=new WakeWordEngine({
-      keywords:['hey_jarvis'],baseAssetUrl:'/teslamon-wake-assets/models',
+      keywords:['hey_jarvis','hey_luna','alexa'],baseAssetUrl:'/teslamon-wake-assets/models',
       ortWasmPath:'/teslamon-wake-assets/ort/',executionProviders:['wasm']
     });
     try{
       await engine.load();
-      await engine._processChunk(new Float32Array(1280),{emitEvents:false});
+      // Exercise the shared embedding and every actual wake head.
+      for(let i=0;i<24;i++)await engine._processChunk(new Float32Array(1280),{emitEvents:false});
+      const heads=Object.fromEntries(Object.entries(engine._keywordModels).map(([name,head])=>[name,{windowSize:head.windowSize,score:head.scores.at(-1)}]));
       const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
       let workletStarted=false,allTracksStopped=false;
       const loaded=engine._loaded,keywords=Object.keys(engine._keywordModels),embeddings=engine._keywordModels.hey_jarvis?.history.length,vad=engine._isSpeechActive;
@@ -42,13 +44,14 @@ try{
         stream.getTracks().forEach(track=>track.stop());
         allTracksStopped=stream.getTracks().every(track=>track.readyState==='ended');
       }
-      return {loaded,keywords,embeddings,vad,workletStarted,allTracksStopped,context:'Chrome synthetic microphone, no speech supplied or uploads'};
+      return {loaded,keywords,heads,embeddings,vad,workletStarted,allTracksStopped,context:'Chrome synthetic microphone, no speech supplied or uploads'};
     }finally{await engine.stop();}
   },{timeout:60000});
   assert.equal(detail.loaded,true);
   assert.equal(detail.workletStarted,true,'real Chrome AudioWorklet start');
   assert.equal(detail.allTracksStopped,true,'mic tracks must be stopped');
-  assert.deepEqual(detail.keywords,['hey_jarvis']);
+  assert.deepEqual(detail.keywords,['hey_jarvis','hey_luna','alexa']);
+  for(const head of Object.values(detail.heads))assert.ok(Number.isFinite(head.score)&&head.score>=0&&head.score<=1,'valid real wake-head inference score');
   assert.equal(errors.length,0,errors.join('\n'));
   console.log('PASS real Chrome browser ONNX WebAssembly load and inference',JSON.stringify(detail));
 }finally{await browser.close();await new Promise(r=>server.close(r));}
