@@ -6,6 +6,7 @@ import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 import {createTeslaMonHandsFree} from './teslamon-handsfree.js';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
 import {getTeslaMonPetMotion} from './teslamon-pet-motion.js?v=20261024-poses1';
+import {shouldDismissTeslaMon} from './teslamon-presence.js';
 
 if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
   const pet=document.createElement('aside');
@@ -120,7 +121,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   let activeTranscript=null;
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
-    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=true,autoWakeBlocked=false;
+    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=true,autoWakeBlocked=false,
+    panelRevision=0,fullscreenSeen=false,dismissedForSuccess=false;
 
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
@@ -131,6 +133,53 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     pet.dataset.motion=getTeslaMonPetMotion({
       wakeState:pet.dataset.wake,modelBusy,busy
     });
+  }
+  function collapseControls({focusFace=false}={}) {
+    opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
+    autoSend.cancel();
+    if(pet.contains(document.activeElement))document.activeElement.blur?.();
+    if(focusFace&&!pet.hidden)face.focus();
+  }
+  function showPet({focus=false}={}) {
+    dismissedForSuccess=false;
+    pet.hidden=false;
+    if(focus)focusCommand({requestKeyboard:true});
+  }
+  function hidePet({fullscreen=false}={}) {
+    collapseControls();
+    // Do not strand the user behind an invisible microphone-off assistant.
+    // Native/in-page fullscreen is the exception: the player must stay clear.
+    if(fullscreen||handsFree.enabled&&handsFree.state!=='off'&&handsFree.state!=='error')
+      pet.hidden=true;
+  }
+  function fullscreenActive() {
+    const kind=globalThis.YTStreamerTeslaMonFullscreen?.kind?.();
+    return kind==='native'||kind==='in_page'||
+      document.body.classList.contains('screen-fullscreen')||
+      Boolean(document.fullscreenElement||document.webkitFullscreenElement);
+  }
+  function monitorFullscreen() {
+    // Native fullscreen only paints descendants of its fullscreen element.
+    // Temporarily move TeslaMon there so Hey Jarvis can recall it.
+    const root=document.fullscreenElement||document.webkitFullscreenElement;
+    if(root&&!root.contains(pet))root.append(pet);
+    else if(!root&&pet.parentElement!==document.body)document.body.append(pet);
+    const now=fullscreenActive();
+    if(now&&!fullscreenSeen) {
+      fullscreenSeen=true;
+      hidePet({fullscreen:true});
+    }else if(!now&&fullscreenSeen) {
+      fullscreenSeen=false;
+      if(!dismissedForSuccess||!handsFree.enabled)pet.hidden=false;
+    }
+  }
+  function dismissAfterSuccess(response,tool,requestRevision) {
+    if(!shouldDismissTeslaMon({
+      response,tool,requestRevision,panelRevision,
+      hasDraft:Boolean(input.value.trim()),panelOpen:opened,fullscreen:fullscreenSeen
+    }))return;
+    dismissedForSuccess=true;
+    hidePet();
   }
   function focusCommand({requestKeyboard=false}={}){
     if(!opened){opened=true;panel.hidden=false;face.setAttribute('aria-expanded','true');}
@@ -185,7 +234,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(speechMode==='local')mic.disabled=!voiceAvailable||['starting','recording','processing'].includes(phase);
     if(phase==='recording'){
       wakeInputChanged=false;wakeHandled=false;
-      focusCommand({requestKeyboard:true});
+      panelRevision++;showPet({focus:true});
+    }else if((phase==='off'||phase==='error')&&!fullscreenActive()){
+      // An unavailable wake listener must never leave an invisible pet.
+      pet.hidden=false;dismissedForSuccess=false;
     }
     if(phase==='error')status(wakeState.textContent,'warn');
     else if(phase==='recording')status('Hey Jarvis detected. Say one command.','ok');
@@ -319,7 +371,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       return result;
     }catch{return {status:'failed',code:'invalid_server_reply'};}
   }
-  async function issue(intent){
+  async function issue(intent,requestRevision=panelRevision){
     if(busy){status('Wait for the current command.','warn');return;}
     if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn');return;}
     busy=true;syncPetMotion();const epoch=++generation;
@@ -327,12 +379,16 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     try{const result=await localPlayer.run(intent);
       if(epoch===generation){
         report(result,intent.tool);
+        dismissAfterSuccess(result,intent.tool,requestRevision);
         if(intent.tool==='search_and_play'&&result.status==='accepted'&&result.mediaId){
           status('Video selected. Waiting for video frames…');
-          void localPlayer.observe(result.mediaId,{isCurrent:()=>epoch===generation})
+          void localPlayer.observe(result.mediaId,{isCurrent:()=>epoch===generation&&requestRevision===panelRevision&&!document.hidden})
             .then(confirmed=>{
               if(epoch!==generation)return;
-              if(confirmed.status==='observed')status('Video playing in this tab.','ok');
+              if(confirmed.status==='observed'){
+                status('Video playing in this tab.','ok');
+                dismissAfterSuccess(confirmed,intent.tool,requestRevision);
+              }
               else if(confirmed.code==='playback_stream_failed')
                 status('Video stream failed to load. Try another video.','warn');
               else if(confirmed.code==='playback_not_confirmed')
@@ -355,18 +411,19 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     if(modelBusy||busy){status('A playback request is already running.','warn');return;}
     modelBusy=true;syncPetMotion();
-    const target=selected,epoch=micEpoch;
+    const target=selected,epoch=micEpoch,requestRevision=panelRevision;
     status('Codex is understanding your request…');
     try{
       const result=await post('/api/teslamon/plan',{text:request,session:tabSession},'application/json',signal);
       if(signal?.aborted||target!==selected||epoch!==micEpoch||(!opened&&!allowClosed))return;
       if(result.status==='ok'&&typeof result.tool==='string'){
         if(input.value.trim()===request)input.value='';
-        await issue({tool:result.tool,args:result.args||{}});
+        await issue({tool:result.tool,args:result.args||{}},requestRevision);
       }else if(result.status==='ha_done'){
         if(input.value.trim()===request)input.value='';
         status(result.action==='light_changed'?
           'Home Assistant light command completed.':'Home Assistant light state checked.','ok');
+        dismissAfterSuccess(result,'ha_done',requestRevision);
       }else report(result);
     }catch{status('Codex is unavailable. Quick controls still work.','warn');}
     finally{modelBusy=false;syncPetMotion();autoSend.flush();}
@@ -599,18 +656,18 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     else alignPanel();
   });
   face.addEventListener('click',()=>{
-    opened=!opened;panel.hidden=!opened;
-    face.setAttribute('aria-expanded',String(opened));
-    if(opened){focusCommand({requestKeyboard:true});void refresh();}
-    else {autoSend.cancel();cancelMic({preserveWake:true});}
+    panelRevision++;
+    if(opened){collapseControls();cancelMic({preserveWake:true});}
+    else {showPet({focus:true});void refresh();}
   });
   $('#tmClose').addEventListener('click',()=>{
-    opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
-    autoSend.cancel();cancelMic({preserveWake:true});face.focus();
+    panelRevision++;
+    collapseControls({focusFace:true});cancelMic({preserveWake:true});
   });
   // A single text insertion (Tesla dictation/paste) and ordinary typing share
   // this path. The last edit wins; the Send button remains an immediate override.
   input.addEventListener('input',()=>{
+    panelRevision++;
     if(['recording','processing'].includes(handsFree.state))wakeInputChanged=true;
     autoSend.changed();
   });
@@ -631,6 +688,15 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   window.addEventListener('pagehide',()=>{
     autoSend.dispose();handsFree.disable();micEpoch++;cancelMic();localStt.dispose();captureBinding?.dispose();try{speech?.abort();}catch{}
   });
+  document.addEventListener('fullscreenchange',monitorFullscreen);
+  document.addEventListener('webkitfullscreenchange',monitorFullscreen);
+  // The existing player can also use a CSS in-page fullscreen fallback.
+  const fullscreenObserver=new MutationObserver(monitorFullscreen);
+  fullscreenObserver.observe(document.body,{attributes:true,attributeFilter:['class']});
+  const screen=document.querySelector('#screen');
+  if(screen)fullscreenObserver.observe(screen,{attributes:true,attributeFilter:['class']});
+  window.addEventListener('pagehide',()=>fullscreenObserver.disconnect(),{once:true});
+  monitorFullscreen();
   // Wake listening must initialize even when the puppy panel stays closed.
   // This triggers only the browser's normal permission flow, never a bypass.
   void refresh();
