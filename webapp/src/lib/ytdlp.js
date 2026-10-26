@@ -194,7 +194,7 @@ export function extractStoryboard(info) {
           && parsed.pathname.startsWith("/sb/" + id + "/");
       } catch { return false; }
     })) continue;
-    return { width, height, rows, columns, fps, urls };
+    return { width, height, rows, columns, fps, urls: urls.map((value) => new URL(value).href) };
   }
   return null;
 }
