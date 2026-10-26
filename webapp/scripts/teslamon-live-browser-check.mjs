@@ -225,6 +225,8 @@ try{
   assert.ok(Math.abs(restored.x-moved.x)<=2&&Math.abs(restored.y-moved.y)<=2,'touch scenario: saved paw position did not restore');
   assert.equal(await pawTouch.page.locator('#teslamonPet').getAttribute('data-disabled'),'true','touch scenario: disabled state not persisted');
   await pawTouch.page.touchscreen.tap(restored.x+restored.width/2,restored.y+restored.height/2);
+  // Linux Chrome may deliver the synthetic touch-generated click on the next task.
+  await pawTouch.page.waitForFunction(()=>document.querySelector('#teslamonPet')?.dataset.disabled==='false',null,{timeout:5000});
   assert.equal(await pawTouch.page.locator('#teslamonPet').getAttribute('data-disabled'),'false','touch scenario: tapping paw did not re-enable assistant');
   assert.deepEqual(pawTouch.unexpected,[],'touch scenario attempted unrelated network requests');
   results.push({scenario:{width:390,height:844,ui:'classic',touchPaw:true},initial,moved,restored,checks:{touchDrag:true,dragDoesNotReactivate:true,pawPersistence:true,tapRestores:true,syntheticNetwork:true}});
