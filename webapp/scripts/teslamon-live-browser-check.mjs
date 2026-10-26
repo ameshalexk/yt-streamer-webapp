@@ -47,8 +47,8 @@ const assertContained=(m,label)=>{
  assert.ok(m.panel.left>=-1&&m.panel.right<=m.viewport.width+1&&m.panel.top>=-1&&m.panel.bottom<=m.viewport.height+1,label+': panel outside viewport '+JSON.stringify(m));
  assert.ok(m.scrollWidth<=m.viewport.width+2,label+': horizontal overflow '+JSON.stringify(m));
 };
-const setup=async(viewport,ui,reducedMotion=false,simulateWake=false)=>{
- const ctx=await browser.newContext({viewport,serviceWorkers:'block',reducedMotion:reducedMotion?'reduce':'no-preference'});
+const setup=async(viewport,ui,reducedMotion=false,simulateWake=false,hasTouch=false)=>{
+ const ctx=await browser.newContext({viewport,hasTouch,serviceWorkers:'block',reducedMotion:reducedMotion?'reduce':'no-preference'});
  if(simulateWake)await ctx.addInitScript(()=>{
    // A synthetic live audio track and detector callback test only DOM wiring,
    // not recognition accuracy or real Tesla microphone permissions.
@@ -198,6 +198,40 @@ try{
    checks:{successFullyHides:true,wakeReveals:true,inputFocused:true}});
   console.log('PASS synthetic Hey Jarvis callback reveals whole pet and focuses command input');
  }finally{await wake.ctx.close();}
+ // Exercise real touch events rather than mouse-drag emulation on the disabled paw.
+ const pawTouch=await setup({width:390,height:844},'classic',false,false,true);
+ try{
+  await pawTouch.page.locator('#tmFace').click();
+  await pawTouch.page.locator('#tmDisable').click();
+  assert.equal(await pawTouch.page.locator('#teslamonPet').getAttribute('data-disabled'),'true','touch scenario: assistant should be disabled');
+  const initial=await pawTouch.page.locator('#tmRestore').boundingBox();
+  assert.ok(initial.x>=300&&initial.y>=730,'touch scenario: default paw not near bottom right '+JSON.stringify(initial));
+  const cdp=await pawTouch.ctx.newCDPSession(pawTouch.page);
+  const start={x:Math.round(initial.x+initial.width/2),y:Math.round(initial.y+initial.height/2),id:1};
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[start]});
+  for(let i=1;i<=12;i++){
+   const point={x:Math.round(start.x+(110-start.x)*i/12),y:Math.round(start.y+(190-start.y)*i/12),id:1};
+   await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[point]});
+  }
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  const moved=await pawTouch.page.locator('#tmRestore').boundingBox();
+  assert.ok(moved.x<200&&moved.y<280,'touch scenario: paw did not follow finger '+JSON.stringify({initial,moved}));
+  assert.equal(await pawTouch.page.locator('#teslamonPet').getAttribute('data-disabled'),'true','touch scenario: dragging paw accidentally enabled assistant');
+  const saved=JSON.parse(await pawTouch.page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonPawPositionV1')));
+  assert.ok(saved&&Number.isFinite(saved.x)&&Number.isFinite(saved.y),'touch scenario: paw position not persisted');
+  await pawTouch.page.reload({waitUntil:'domcontentloaded'});
+  await pawTouch.page.locator('#tmRestore').waitFor({state:'visible'});
+  const restored=await pawTouch.page.locator('#tmRestore').boundingBox();
+  assert.ok(Math.abs(restored.x-moved.x)<=2&&Math.abs(restored.y-moved.y)<=2,'touch scenario: saved paw position did not restore');
+  assert.equal(await pawTouch.page.locator('#teslamonPet').getAttribute('data-disabled'),'true','touch scenario: disabled state not persisted');
+  await pawTouch.page.touchscreen.tap(restored.x+restored.width/2,restored.y+restored.height/2);
+  // Linux Chrome may deliver the synthetic touch-generated click on the next task.
+  await pawTouch.page.waitForFunction(()=>document.querySelector('#teslamonPet')?.dataset.disabled==='false',null,{timeout:5000});
+  assert.equal(await pawTouch.page.locator('#teslamonPet').getAttribute('data-disabled'),'false','touch scenario: tapping paw did not re-enable assistant');
+  assert.deepEqual(pawTouch.unexpected,[],'touch scenario attempted unrelated network requests');
+  results.push({scenario:{width:390,height:844,ui:'classic',touchPaw:true},initial,moved,restored,checks:{touchDrag:true,dragDoesNotReactivate:true,pawPersistence:true,tapRestores:true,syntheticNetwork:true}});
+  console.log('PASS touch drag: paw bottom-right by default, movable without reactivation, persists, and touch tap restores');
+ }finally{await pawTouch.ctx.close();}
  const safe=await setup({width:390,height:844},'classic');
  try{
   await safe.page.addStyleTag({content:'#teslamonPet{--tm-safe-left:44px;--tm-safe-right:44px;--tm-safe-top:0px;--tm-safe-bottom:21px}'});
