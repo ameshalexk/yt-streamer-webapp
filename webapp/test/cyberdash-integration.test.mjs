@@ -256,7 +256,9 @@ test("fast WebCodecs playback re-buffers by freezing and resuming the unlocked A
   assert.match(renderBlock, /state\.rebufferCount\+\+/);
   assert.match(renderBlock, /state\.audioCtx\.suspend\(\)/);
   assert.match(renderBlock, /state\.audioCtx\.resume\(\)/);
-  assert.match(renderBlock, /videoAhead < lowVideoSourceSec \|\| audioAhead < targets\.rebufferLowWallSec/);
+  assert.match(renderBlock, /const needsBuffer = rate > 1/);
+  assert.match(renderBlock, /normalSpeedNeedsRebuffer/);
+  assert.match(renderBlock, /if \(needsBuffer\) \{\s*beginRebuffer\(\)/);
   assert.match(renderBlock, /targets\.rebufferHighVideoSourceSec/);
   assert.match(renderBlock, /targets\.rebufferHighWallSec/);
 });

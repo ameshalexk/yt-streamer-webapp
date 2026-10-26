@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { commonArgs, selectedStreamInfo, STREAM_SELECTION_PRINT_TEMPLATE, formatLatestMkbhdVideos, latestChannelVideos } from "../src/lib/ytdlp.js";
 
 test("shared yt-dlp arguments select the explicit Node challenge runtime", () => {
@@ -59,6 +60,13 @@ test("stream resolution uses bounded selected metadata instead of full yt-dlp JS
   assert.deepEqual(fields, ["id|null", "requested_formats|null", "url|null",
     "http_headers|null", "duration|null", "title|null", "is_live|null", "live_status|null"]);
   assert.ok(STREAM_SELECTION_PRINT_TEMPLATE.length < 500);
+});
+
+test("YouTube stream selection uses the larger bounded capture limit", () => {
+  const source = fs.readFileSync(new URL("../src/lib/ytdlp.js", import.meta.url), "utf8");
+  const selection = source.match(/async function resolveFormatSelection\([\s\S]*?\n\}/)?.[0] || "";
+  assert.match(selection, /maxOutputBytes: MAX_CAPTURE_BYTES/);
+  assert.doesNotMatch(selection, /256 \* 1024/);
 });
 
 test("latest MKBHD catalog preserves newest-first upload order and rejects invalid IDs", async () => {

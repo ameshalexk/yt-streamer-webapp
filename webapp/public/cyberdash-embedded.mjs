@@ -134,9 +134,11 @@ export function fastPlaybackBufferTargets({ playbackRate = 1, fps = 30 } = {}) {
       startupVideoSourceSec: 0,
       startupVideoFrames: 3,
       startupAudioWallSec: 0,
-      rebufferLowWallSec: 0,
-      rebufferHighWallSec: 0,
-      rebufferHighVideoSourceSec: 0,
+      // Normal-speed playback stays fast to start, but can now suspend its
+      // audio master clock when video or audio genuinely stops arriving.
+      rebufferLowWallSec: 0.05,
+      rebufferHighWallSec: 0.45,
+      rebufferHighVideoSourceSec: 0.45,
     };
   }
   // Trade a little startup latency for enough reserve to survive normal Wi-Fi/cellular
@@ -153,6 +155,23 @@ export function fastPlaybackBufferTargets({ playbackRate = 1, fps = 30 } = {}) {
     rebufferHighWallSec,
     rebufferHighVideoSourceSec: Math.min(6.5, rebufferHighWallSec * rate),
   };
+}
+
+// Normal-speed playback usually has only a few decoded frames in flight.
+// Require a sustained stall before suspending audio, otherwise ordinary gaps
+// between 12/15-FPS frames would cause needless buffering.
+export function normalSpeedNeedsRebuffer({
+  hasFirstPicture = false,
+  videoFeedDone = false,
+  audioFeedDone = false,
+  videoAheadSec = 0,
+  audioAheadSec = 0,
+  timeSinceVideoFrameMs = 0,
+  timeSinceAudioReadyMs = 0,
+} = {}) {
+  if (!hasFirstPicture || videoFeedDone || audioFeedDone) return false;
+  return (videoAheadSec < 0.08 && timeSinceVideoFrameMs >= 500)
+    || (audioAheadSec < 0.05 && timeSinceAudioReadyMs >= 350);
 }
 
 function decodedVideoAheadSec(state, elapsed = playbackElapsed(state)) {
@@ -700,16 +719,24 @@ function startRenderLoop(state) {
         }
 
         const elapsed = playbackElapsed(state);
-        if (
-          normalizePlaybackRate(state.playbackRate) > 1 &&
-          state.firstPictureMs != null &&
-          !state.videoFeedDone &&
-          !state.audioFeedDone
-        ) {
+        if (state.firstPictureMs != null && !state.videoFeedDone && !state.audioFeedDone) {
+          const rate = normalizePlaybackRate(state.playbackRate);
           const videoAhead = decodedVideoAheadSec(state, elapsed);
           const audioAhead = scheduledAudioAheadSec(state);
-          const lowVideoSourceSec = targets.rebufferLowWallSec * normalizePlaybackRate(state.playbackRate);
-          if (videoAhead < lowVideoSourceSec || audioAhead < targets.rebufferLowWallSec) {
+          const now = performance.now();
+          if (audioAhead >= 0.05) state.lastAudioAheadAt = now;
+          const needsBuffer = rate > 1
+            ? videoAhead < targets.rebufferLowWallSec * rate || audioAhead < targets.rebufferLowWallSec
+            : normalSpeedNeedsRebuffer({
+              hasFirstPicture: true,
+              videoFeedDone: state.videoFeedDone,
+              audioFeedDone: state.audioFeedDone,
+              videoAheadSec: videoAhead,
+              audioAheadSec: audioAhead,
+              timeSinceVideoFrameMs: now - (state.lastVideoFrameAt ?? now),
+              timeSinceAudioReadyMs: now - (state.lastAudioAheadAt ?? now),
+            });
+          if (needsBuffer) {
             beginRebuffer();
             schedule();
             return;
@@ -759,6 +786,7 @@ function startRenderLoop(state) {
             state.canvas.height = frame.displayHeight;
           }
           ctx.drawImage(frame, 0, 0, state.canvas.width, state.canvas.height);
+          state.lastVideoFrameAt = performance.now();
           const videoPts = (frame.timestamp || 0) / 1e6;
           state.drifts.push((videoPts - elapsed) * 1000);
           state.renderedFrames++;
@@ -1087,6 +1115,8 @@ export function createCyberdashPlayer({
       audioNodes: new Set(),
       pendingAudio: [],
       decodedVideo: [],
+      lastVideoFrameAt: null,
+      lastAudioAheadAt: null,
       bufferTargets: fastPlaybackBufferTargets({ playbackRate, fps }),
       startupVideoBufferSec: 0,
       startupAudioBufferSec: 0,

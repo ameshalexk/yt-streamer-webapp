@@ -7,6 +7,7 @@ const {
   MultipartMjpegParser,
   BufferedFrameQueue,
   BufferPolicy,
+  BufferedMjpegPlayer,
   SessionGuard,
   AdaptiveRecoveryBuffer,
   boundaryFromContentType,
@@ -91,6 +92,25 @@ test("queue bounds duration and bytes and resumes after consumer progress", asyn
   queue.push({ size: 20, index: 4 });
   assert.ok(queue.bytes <= 100);
   assert.ok(queue.durationSeconds() <= 2);
+});
+
+test("audio failure bypass opens the video gate without recording audio as ready", () => {
+  const milestones = [];
+  const mock = {
+    audioReady: false,
+    startedAt: performance.now() - 100,
+    stats: { audioReadyMs: null },
+    _milestone: (kind) => milestones.push(kind),
+    _maybeStartOrResume: () => {},
+  };
+  BufferedMjpegPlayer.prototype.setAudioReady.call(mock, true, { playable: false });
+  assert.equal(mock.audioReady, true);
+  assert.equal(mock.stats.audioReadyMs, null);
+  assert.deepEqual(milestones, []);
+  mock.audioReady = false;
+  BufferedMjpegPlayer.prototype.setAudioReady.call(mock, true);
+  assert.ok(mock.stats.audioReadyMs >= 0);
+  assert.deepEqual(milestones, ["audio-ready"]);
 });
 
 test("buffer policy starts short streams at EOF and uses separate startup/rebuffer thresholds", () => {

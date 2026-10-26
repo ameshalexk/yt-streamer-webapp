@@ -663,9 +663,10 @@
       return Math.max(0, this.lastRenderedTime || 0);
     }
 
-    setAudioReady(ready = true) {
+    setAudioReady(ready = true, { playable = true } = {}) {
       const next = Boolean(ready);
-      if (next && !this.audioReady && this.stats.audioReadyMs == null) {
+      // Releasing a failed audio gate is not a successful audio-ready milestone.
+      if (next && playable && this.stats.audioReadyMs == null) {
         this.stats.audioReadyMs = Math.round(performance.now() - this.startedAt);
         this._milestone("audio-ready");
       }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { advanceAudioHealthIncident, classifyAudioSchedule, fastPlaybackBufferTargets, normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
+import { advanceAudioHealthIncident, classifyAudioSchedule, fastPlaybackBufferTargets, normalSpeedNeedsRebuffer, normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
 
 const FRAME = 1024 / 48000;
 
@@ -106,6 +106,23 @@ test("fast playback prebuffer scales source video with playback rate", () => {
   assert.equal(two.rebufferHighVideoSourceSec, 5);
 });
 
+
+test("normal-speed stall protection waits for a real underrun without slowing startup", () => {
+  const base = { hasFirstPicture: true, videoAheadSec: 0.02, audioAheadSec: 0.8 };
+  assert.equal(normalSpeedNeedsRebuffer({ ...base, timeSinceVideoFrameMs: 150 }), false);
+  assert.equal(normalSpeedNeedsRebuffer({ ...base, timeSinceVideoFrameMs: 499 }), false);
+  assert.equal(normalSpeedNeedsRebuffer({ ...base, timeSinceVideoFrameMs: 500 }), true);
+  assert.equal(normalSpeedNeedsRebuffer({ ...base, videoAheadSec: 0.5, timeSinceVideoFrameMs: 900 }), false);
+  assert.equal(normalSpeedNeedsRebuffer({ ...base, hasFirstPicture: false, timeSinceVideoFrameMs: 900 }), false);
+  assert.equal(normalSpeedNeedsRebuffer({ ...base, videoFeedDone: true, timeSinceVideoFrameMs: 900 }), false);
+  assert.equal(normalSpeedNeedsRebuffer({ ...base, audioFeedDone: true, timeSinceVideoFrameMs: 900 }), false);
+  assert.equal(normalSpeedNeedsRebuffer({ ...base, videoAheadSec: 0.5, audioAheadSec: 0.01, timeSinceAudioReadyMs: 349 }), false);
+  assert.equal(normalSpeedNeedsRebuffer({ ...base, videoAheadSec: 0.5, audioAheadSec: 0.01, timeSinceAudioReadyMs: 350 }), true);
+  const one = fastPlaybackBufferTargets({ playbackRate: 1, fps: 15 });
+  assert.equal(one.startupVideoFrames, 3);
+  assert.equal(one.rebufferHighVideoSourceSec, 0.45);
+  assert.equal(one.rebufferHighWallSec, 0.45);
+});
 
 test("audio diagnostic classifies running-video scheduling gaps without affecting playback", () => {
   const base = { playing: true, audioStarted: true, videoMoving: true, audioContextState: "running", audioAheadSec: 0.01 };
