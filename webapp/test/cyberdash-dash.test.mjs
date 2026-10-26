@@ -19,7 +19,9 @@ test("CyberDash DASH args use configured H.264, AAC, fMP4 DASH, and separate aud
   assert.equal(args[args.indexOf("-c:v") + 1], config.video.dashEncoder);
   assert.equal(args[args.indexOf("-c:a") + 1], "aac");
   assert.equal(args[args.indexOf("-f") + 1], "dash");
-  assert.equal(args[args.indexOf("-seg_duration") + 1], "1");
+  assert.equal(args[args.indexOf("-seg_duration") + 1], "0.5");
+  assert.equal(args[args.indexOf("-frag_duration") + 1], "0.5");
+  assert.equal(args[args.indexOf("-g") + 1], "15");
   assert.equal(args[args.indexOf("-init_seg_name") + 1], "init-$RepresentationID$.m4s");
   assert.equal(args[args.indexOf("-media_seg_name") + 1], "chunk-$RepresentationID$-$Number%05d$.m4s");
   assert.equal(args.at(-1), manifestPath);
@@ -127,6 +129,8 @@ test("CyberDash DASH args honor low-FPS player selections", () => {
     manifestPath: "/tmp/manifest.mpd",
   });
   assert.match(args[args.indexOf("-vf") + 1], /scale=-2:360,fps=5/);
+  assert.equal(args[args.indexOf("-seg_duration") + 1], "1");
+  assert.equal(args[args.indexOf("-g") + 1], "5");
 });
 
 
@@ -226,4 +230,46 @@ test("CyberDash DASH atempo is clamped with the supported playback range", () =>
  test("portable DASH supports the Linux software encoder", () => {
   const args = buildCyberdashDashArgs({videoInput:"/tmp/video.mp4",encoder:"libx264",manifestPath:"/tmp/manifest.mpd"});
   assert.equal(args[args.indexOf("-c:v")+1],"libx264");
+});
+
+
+test("real FFmpeg produces independently decodable half-second DASH video and audio after seeking", { timeout: 20_000 }, async (t) => {
+  const { spawnSync } = await import("node:child_process");
+  const os = await import("node:os");
+  const probe = spawnSync("ffmpeg", ["-version"], { encoding: "utf8", timeout: 3_000 });
+  if (probe.error?.code === "ENOENT") return t.skip("FFmpeg not installed");
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ytstreamer-half-second-dash-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const input = path.join(directory, "test-input.mp4");
+  const source = spawnSync("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-y",
+    "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30",
+    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+    "-t", "3", "-c:v", "libx264", "-preset", "ultrafast",
+    "-pix_fmt", "yuv420p", "-c:a", "aac", input,
+  ], { encoding: "utf8", timeout: 10_000 });
+  assert.equal(source.status, 0, source.stderr);
+
+  const output = path.join(directory, "manifest.mpd");
+  const encode = spawnSync("ffmpeg", buildCyberdashDashArgs({
+    videoInput: input,
+    height: 240,
+    fps: 30,
+    startAt: 1.25,
+    encoder: "libx264",
+    initialBurstSupported: false,
+    manifestPath: output,
+  }), { encoding: "utf8", timeout: 10_000 });
+  assert.equal(encode.status, 0, encode.stderr);
+  const manifest = parseDashManifest(fs.readFileSync(output, "utf8"));
+  assert.ok(manifest.video?.id != null, "DASH video representation");
+  assert.ok(manifest.audio?.id != null, "DASH audio representation");
+  const files = fs.readdirSync(directory);
+  for (const id of [manifest.video.id, manifest.audio.id]) {
+    assert.ok(files.includes(`init-${id}.m4s`), "codec init segment exists");
+    const segments = files.filter((name) => name.startsWith(`chunk-${id}-`) && name.endsWith(".m4s"));
+    assert.ok(segments.length >= 2, "multiple seeked A/V fragments exist");
+    assert.ok(segments.every((name) => fs.statSync(path.join(directory, name)).size > 0));
+  }
 });

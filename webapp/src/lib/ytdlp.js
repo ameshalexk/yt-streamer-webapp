@@ -242,7 +242,7 @@ export function selectedStreamInfo(info) {
 }
 
 async function resolveFormatSelection(url, format) {
-  const json = await capture(["--check-formats", "--print", STREAM_SELECTION_PRINT_TEMPLATE, "-f", format, "--no-warnings", "--no-playlist", url], { maxOutputBytes: 256 * 1024 });
+  const json = await capture(["--check-formats", "--print", STREAM_SELECTION_PRINT_TEMPLATE, "-f", format, "--no-warnings", "--no-playlist", url], { maxOutputBytes: MAX_CAPTURE_BYTES });
   const selected = selectedStreamInfo(JSON.parse(json));
   if (!selected.videoUrl) throw new Error("no playable stream URL found");
   return selected;

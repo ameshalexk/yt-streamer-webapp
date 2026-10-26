@@ -3046,7 +3046,8 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     audioFailed = true;
     activeCompat.audioReady = true;
     player.setAudioDisabled(true, clockPosition);
-    player.setAudioReady(true);
+    // Video may proceed silently, but don't report failed audio as playable.
+    player.setAudioReady(true, { playable: false });
     const mediaError = Number(audio.error?.code || 0);
     reportPlaybackEvent("buffered_audio_failed", {
       label,
@@ -3079,13 +3080,17 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       "Video continues using its own clock. Tap Retry audio to reconnect sound, or select WebCodecs for synchronized audio/video.");
   };
 
+  // The video is often ready in 2–5s while broken upstream audio consumes the
+  // old 12s hard gate. Release it sooner and let existing audio retry reconnect.
+  // Resilient connections get a little more time than stable/fast ones.
+  const audioStartupTimeoutMs = Math.round(Math.max(3000, Math.min(6000, bufferPolicy.startupSeconds * 1500)));
   const armAudioLoadTimeout = () => {
     clearTimeout(audioLoadTimer);
     audioLoadTimer = setTimeout(() => {
       audioLoadTimer = null;
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
-      if (!audioReadyForSync(audio)) handleBufferedAudioFailure("Audio did not buffer within 12 seconds");
-    }, 12000);
+      if (!audioReadyForSync(audio)) handleBufferedAudioFailure(`Audio did not buffer within ${audioStartupTimeoutMs / 1000} seconds`);
+    }, audioStartupTimeoutMs);
   };
 
   const markAudioReady = () => {

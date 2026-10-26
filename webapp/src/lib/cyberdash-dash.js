@@ -65,6 +65,9 @@ export function buildCyberdashDashArgs({
   const outHeight = clampInt(height, 240, 1080, 720);
   const outFps = clampInt(fps, 5, 60, 30);
   const seek = safeSeek(startAt);
+  // A half-second GOP/segment gets the first seek result to the decoder sooner.
+  // Retain whole seconds at very low FPS to avoid excessive tiny segments.
+  const segmentSeconds = outFps >= 12 ? 0.5 : 1;
   const rate = bitrateForHeight(outHeight);
   const speed = safePlaybackRate(playbackRate);
   // Keep a large producer margin at fast playback. YouTube normally reads pre-encoded
@@ -97,7 +100,7 @@ export function buildCyberdashDashArgs({
     "-b:v", `${rate.target}k`,
     "-maxrate", `${rate.max}k`,
     "-bufsize", `${rate.max * 2}k`,
-    "-g", String(outFps),
+    "-g", String(Math.max(1, Math.round(outFps * segmentSeconds))),
     // Speed audio on the server with FFmpeg's time-stretch filter. Unlike
     // AudioBufferSourceNode.playbackRate, atempo preserves speech pitch.
     "-af", `atempo=${speed}`,
@@ -106,8 +109,8 @@ export function buildCyberdashDashArgs({
     "-ar", "48000",
     "-ac", "2",
     "-f", "dash",
-    "-seg_duration", "1",
-    "-frag_duration", "1",
+    "-seg_duration", String(segmentSeconds),
+    "-frag_duration", String(segmentSeconds),
     "-use_template", "1",
     "-use_timeline", "1",
     "-window_size", "0",
