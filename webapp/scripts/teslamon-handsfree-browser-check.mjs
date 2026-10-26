@@ -125,6 +125,11 @@ try{
  const other=await context.newPage();
  await other.goto(origin+'/?ui=new',{waitUntil:'domcontentloaded'});
  await other.locator('#tmFace').waitFor({state:'visible'});
+ const puppyHandle=await page.locator('#tmHandle').boundingBox();
+ await page.mouse.move(puppyHandle.x+22,puppyHandle.y+22);
+ await page.mouse.down();await page.mouse.move(135,225,{steps:10});await page.mouse.up();
+ const dogPosition=JSON.parse(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonPetPositionV1')));
+ assert.ok(Number.isFinite(dogPosition?.x)&&Number.isFinite(dogPosition?.y),'dog remembers its own position');
  const closeBox=await page.locator('#tmDisable').boundingBox();
  assert.ok(closeBox&&closeBox.width>=44&&closeBox.height>=44,'puppy X needs 44px touch target');
  await page.locator('#tmDisable').click();
@@ -136,6 +141,29 @@ try{
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true,'puppy X must stop all tracks');
  assert.equal(await other.locator('#tmFace').isVisible(),false,'other tab hides dog as well');
  await other.close();
+ const initialPaw=await page.locator('#tmRestore').boundingBox();
+ const viewport=page.viewportSize();
+ assert.ok(viewport.width-initialPaw.x-initialPaw.width<=20&&
+   viewport.height-initialPaw.y-initialPaw.height<=20,'closed paw defaults to bottom-right');
+ const pawCenter={x:initialPaw.x+initialPaw.width/2,y:initialPaw.y+initialPaw.height/2};
+ await page.mouse.move(pawCenter.x,pawCenter.y);await page.mouse.down();
+ await page.mouse.move(90,145,{steps:12});await page.mouse.up();
+ assert.equal(await page.locator('#teslamonPet').getAttribute('data-disabled'),'true','dragging paw must not re-enable TeslaMon');
+ const movedPaw=await page.locator('#tmRestore').boundingBox();
+ assert.ok(movedPaw.x<150&&movedPaw.y<200,'paw moves independently to upper left');
+ const pawSaved=JSON.parse(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonPawPositionV1')));
+ assert.ok(Number.isFinite(pawSaved?.x)&&Number.isFinite(pawSaved?.y),'paw position persists');
+ assert.deepEqual(JSON.parse(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonPetPositionV1'))),dogPosition,
+   'paw drag cannot overwrite the dog position');
+ await page.reload({waitUntil:'domcontentloaded'});
+ await page.locator('#tmRestore').waitFor({state:'visible'});
+ const afterPawReload=await page.locator('#tmRestore').boundingBox();
+ assert.ok(Math.abs(afterPawReload.x-pawSaved.x)<=1&&Math.abs(afterPawReload.y-pawSaved.y)<=1,
+   'disabled paw drag position survives reload');
+ await page.locator('#tmRestore').focus();
+ await page.keyboard.press('ArrowDown');
+ const pawKeyboardSaved=JSON.parse(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonPawPositionV1')));
+ assert.ok(pawKeyboardSaved.y>pawSaved.y,'paw arrow keys move and save position');
  await page.reload({waitUntil:'domcontentloaded'});
  await page.locator('#tmRestore').waitFor({state:'visible'});
  const restoreBox=await page.locator('#tmRestore').boundingBox();
@@ -145,10 +173,13 @@ try{
  await page.locator('#tmRestore').click();
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
  assert.equal(await page.locator('#tmFace').isVisible(),true,'dog returns after restore');
+ const restoredDog=await page.locator('#teslamonPet').evaluate(el=>({x:el.offsetLeft,y:el.offsetTop}));
+ assert.ok(Math.abs(restoredDog.x-dogPosition.x)<=1&&Math.abs(restoredDog.y-dogPosition.y)<=1,
+   'restoring dog uses its own saved position rather than the paw position');
  assert.equal(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonDisabledV1')),null,'restore clears persistent opt-out');
  await page.locator('#tmDisable').click();
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true,'second disable stops resumed mic');
- console.log('PASS puppy X stops mic, persists across reload, syncs to other tab and restores via paw');
+ console.log('PASS puppy X stops mic; paw defaults bottom-right, drags/keyboard-moves independently, persists and restores');
  assert.deepEqual(modelRequests,[],'choosing Base never eagerly downloads transcription weights');
  assert.deepEqual(apiUploads,[],'no ambient audio uploaded to PowerALX or Codex');
  assert.deepEqual(unexpected,[],'no third-party network calls');

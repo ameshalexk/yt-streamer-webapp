@@ -75,7 +75,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       '</button>',
       '<button type="button" id="tmDisable" aria-label="Turn off TeslaMon and microphone" title="Turn off TeslaMon"><span aria-hidden="true">×</span></button>',
     '</div>',
-    '<button type="button" id="tmRestore" hidden aria-label="Enable TeslaMon" title="Enable TeslaMon">🐾</button>',
+    '<button type="button" id="tmRestore" hidden aria-label="Enable TeslaMon (drag to move)" title="Enable TeslaMon · drag to move">🐾</button>',
     '<section class="tm-panel" id="tmPanel" hidden aria-label="TeslaMon controls">',
       '<div class="tm-head"><strong>TeslaMon</strong>',
         '<button id="tmClose" type="button" aria-label="Close">×</button></div>',
@@ -135,6 +135,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     input=$('#tmText'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
+  const PAW_KEY='ytStreamerTeslaMonPawPositionV1';
   const DISABLED_KEY='ytStreamerTeslaMonDisabledV1';
   let userDisabled=false;
   try{userDisabled=localStorage.getItem(DISABLED_KEY)==='1';}catch{}
@@ -535,6 +536,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     pet.dataset.disabled=String(disabled);
     restoreButton.hidden=!disabled;
+    restorePositionForMode();
     if(disabled){
       autoWakeWanted=false;autoWakeBlocked=true;
       autoSend.cancel();
@@ -754,38 +756,70 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     pet.style.right='auto';pet.style.bottom='auto';
     alignPanel();
   }
-  let drag=null;
   function savePosition(){
-    try{localStorage.setItem(KEY,JSON.stringify({x:pet.offsetLeft,y:pet.offsetTop}));}catch{}
+    const key=userDisabled?PAW_KEY:KEY;
+    try{localStorage.setItem(key,JSON.stringify({x:pet.offsetLeft,y:pet.offsetTop}));}catch{}
   }
-  handle.addEventListener('keydown',event=>{
+  function restorePositionForMode(){
+    // The dog and the disabled paw each remember their own positions.
+    // Without a saved paw position, CSS pins its compact button bottom-right.
+    pet.style.left='';pet.style.top='';pet.style.right='';pet.style.bottom='';
+    try{
+      const key=userDisabled?PAW_KEY:KEY;
+      const old=JSON.parse(localStorage.getItem(key)||'null');
+      if(Number.isFinite(old?.x)&&Number.isFinite(old?.y)){
+        setPosition(old.x,old.y);
+        return;
+      }
+    }catch{}
+    alignPanel();
+  }
+  function moveWithArrow(event){
     const direction={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[event.key];
     if(!direction)return;
     event.preventDefault();
     const step=event.shiftKey?4:20;
     setPosition(pet.offsetLeft+direction[0]*step,pet.offsetTop+direction[1]*step);
     savePosition();
-  });
-  handle.addEventListener('pointerdown',event=>{
-    if(event.button!==0)return;
-    const bounds=pet.getBoundingClientRect();
-    drag={id:event.pointerId,dx:event.clientX-bounds.left,dy:event.clientY-bounds.top};
-    try{handle.setPointerCapture(event.pointerId);}catch{}
-  });
-  handle.addEventListener('pointermove',event=>{
-    if(drag&&drag.id===event.pointerId)
-      setPosition(event.clientX-drag.dx,event.clientY-drag.dy);
-  });
-  handle.addEventListener('pointerup',event=>{
-    if(!drag||drag.id!==event.pointerId)return;
-    drag=null;
-    savePosition();
-  });
-  handle.addEventListener('pointercancel',()=>{drag=null;});
-  try{
-    const old=JSON.parse(localStorage.getItem(KEY)||'null');
-    if(Number.isFinite(old?.x)&&Number.isFinite(old?.y))setPosition(old.x,old.y);
-  }catch{}
+  }
+  handle.addEventListener('keydown',moveWithArrow);
+  restoreButton.addEventListener('keydown',moveWithArrow);
+  let suppressRestoreClick=false;
+  function makeDraggable(button,{suppressClick=false}={}){
+    let drag=null;
+    button.addEventListener('pointerdown',event=>{
+      if(event.button!==0)return;
+      const bounds=pet.getBoundingClientRect();
+      drag={id:event.pointerId,startX:event.clientX,startY:event.clientY,
+        dx:event.clientX-bounds.left,dy:event.clientY-bounds.top,moved:false};
+      try{button.setPointerCapture(event.pointerId);}catch{}
+    });
+    button.addEventListener('pointermove',event=>{
+      if(!drag||drag.id!==event.pointerId)return;
+      if(Math.hypot(event.clientX-drag.startX,event.clientY-drag.startY)>=8)
+        drag.moved=true;
+      if(drag.moved)setPosition(event.clientX-drag.dx,event.clientY-drag.dy);
+    });
+    button.addEventListener('pointerup',event=>{
+      if(!drag||drag.id!==event.pointerId)return;
+      const moved=drag.moved;
+      drag=null;
+      if(!moved)return;
+      savePosition();
+      if(suppressClick){
+        // Browser-generated click following a drag must not reactivate TeslaMon.
+        suppressRestoreClick=true;
+        setTimeout(()=>{suppressRestoreClick=false;},450);
+      }
+    });
+    button.addEventListener('pointercancel',()=>{
+      if(drag?.moved)savePosition();
+      drag=null;
+    });
+  }
+  makeDraggable(handle);
+  makeDraggable(restoreButton,{suppressClick:true});
+  restorePositionForMode();
   window.addEventListener('resize',()=>{
     if(pet.style.left)setPosition(pet.offsetLeft,pet.offsetTop);
     else alignPanel();
@@ -794,7 +828,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     panelRevision++;
     setUserDisabled(true);
   });
-  restoreButton.addEventListener('click',()=>{
+  restoreButton.addEventListener('click',event=>{
+    if(suppressRestoreClick){suppressRestoreClick=false;event.preventDefault();return;}
     panelRevision++;
     setUserDisabled(false,{armWake:true});
   });
