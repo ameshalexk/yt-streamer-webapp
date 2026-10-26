@@ -804,7 +804,17 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(!drag||drag.id!==event.pointerId)return;
       const moved=drag.moved;
       drag=null;
-      if(!moved)return;
+      if(!moved){
+        if(suppressClick&&event.pointerType==='touch'){
+          // Some embedded Chromium builds dispatch pointerup but omit the
+          // subsequent synthetic click. A finger tap must still restore.
+          event.preventDefault();
+          suppressRestoreClick=true;
+          setTimeout(()=>{suppressRestoreClick=false;},450);
+          reactivateTeslaMon();
+        }
+        return;
+      }
       savePosition();
       if(suppressClick){
         // Browser-generated click following a drag must not reactivate TeslaMon.
@@ -828,10 +838,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     panelRevision++;
     setUserDisabled(true);
   });
-  restoreButton.addEventListener('click',event=>{
-    if(suppressRestoreClick){suppressRestoreClick=false;event.preventDefault();return;}
+  function reactivateTeslaMon(){
     panelRevision++;
     setUserDisabled(false,{armWake:true});
+  }
+  restoreButton.addEventListener('click',event=>{
+    if(suppressRestoreClick){suppressRestoreClick=false;event.preventDefault();return;}
+    reactivateTeslaMon();
   });
   face.addEventListener('click',()=>{
     panelRevision++;
