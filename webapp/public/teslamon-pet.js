@@ -73,7 +73,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           </g>
         </svg>`,
       '</button>',
+      '<button type="button" id="tmDisable" aria-label="Turn off TeslaMon and microphone" title="Turn off TeslaMon"><span aria-hidden="true">×</span></button>',
     '</div>',
+    '<button type="button" id="tmRestore" hidden aria-label="Enable TeslaMon" title="Enable TeslaMon">🐾</button>',
     '<section class="tm-panel" id="tmPanel" hidden aria-label="TeslaMon controls">',
       '<div class="tm-head"><strong>TeslaMon</strong>',
         '<button id="tmClose" type="button" aria-label="Close">×</button></div>',
@@ -125,6 +127,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   document.body.append(pet);
   const $=id=>pet.querySelector(id);
   const face=$('#tmFace'),handle=$('#tmHandle'),panel=$('#tmPanel'),
+    disableButton=$('#tmDisable'),restoreButton=$('#tmRestore'),
     state=$('#tmState'),mic=$('#tmMic'),
     wakeControl=$('#tmWakeControl'),wakeToggle=$('#tmWakeToggle'),wakeState=$('#tmWakeState'),
     wakePhraseSet=$('#tmWakePhraseSet'),wakePhraseHelp=$('#tmWakePhraseHelp'),
@@ -132,6 +135,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     input=$('#tmText'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
+  const DISABLED_KEY='ytStreamerTeslaMonDisabledV1';
+  let userDisabled=false;
+  try{userDisabled=localStorage.getItem(DISABLED_KEY)==='1';}catch{}
+  pet.dataset.disabled=String(userDisabled);
+  restoreButton.hidden=!userDisabled;
   // Secure per-page session, never stored or shared with another tab.
   const tabSession=typeof crypto.randomUUID==='function'?crypto.randomUUID():
     (()=>{const b=crypto.getRandomValues(new Uint8Array(16));
@@ -148,7 +156,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   let activeTranscript=null,captureActive=false,sttModelMessage='';
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
-    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=true,autoWakeBlocked=false,
+    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=!userDisabled,autoWakeBlocked=false,
     panelRevision=0,fullscreenSeen=false,dismissedForSuccess=false;
   const WAKE_KEY='ytStreamerTeslaMonWakePhrasesV1';
   let selectedWakeKeywords=[...TESLAMON_WAKE_KEYWORDS];
@@ -205,6 +213,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(focusFace&&!pet.hidden)face.focus();
   }
   function showPet({focus=false}={}) {
+    if(userDisabled)return;
     dismissedForSuccess=false;
     pet.hidden=false;
     if(focus)focusCommand({requestKeyboard:true});
@@ -515,7 +524,41 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(activeTranscript){activeTranscript.abort();activeTranscript=null;localStt.cancelPending();}
     if(speech){speech.cancelled=true;try{speech.abort();}catch{}speech=null;}
   }
+  function setUserDisabled(disabled,{persist=true,armWake=false}={}){
+    if(userDisabled===disabled)return;
+    userDisabled=disabled;
+    if(persist){
+      try{
+        if(disabled)localStorage.setItem(DISABLED_KEY,'1');
+        else localStorage.removeItem(DISABLED_KEY);
+      }catch{/* Privacy opt-out still works for this tab without storage. */}
+    }
+    pet.dataset.disabled=String(disabled);
+    restoreButton.hidden=!disabled;
+    if(disabled){
+      autoWakeWanted=false;autoWakeBlocked=true;
+      autoSend.cancel();
+      handsFree.disable(); // Stops all microphone tracks and wake detection immediately.
+      cancelMic(); // Cancels push-to-talk and pending transcription or commands.
+      localStt.dispose();
+      sttModelMessage='';renderSttModelState();
+      collapseControls();
+      status('TeslaMon is off. Tap the paw to enable.','ok');
+      pet.hidden=fullscreenActive();
+      if(!pet.hidden)restoreButton.focus({preventScroll:true});
+    }else{
+      // Other tabs may reveal the dog, but only this tab's explicit tap can
+      // restart wake listening. Never turn on other tabs' microphones remotely.
+      autoWakeWanted=armWake;autoWakeBlocked=false;
+      pet.hidden=fullscreenActive();
+      status('TeslaMon enabled.','ok');
+      if(!pet.hidden)face.focus({preventScroll:true});
+      if(armWake&&voiceAvailable&&!document.hidden)void handsFree.enable();
+      void refresh();
+    }
+  }
   async function refresh(){
+    if(userDisabled)return;
     enabled=localPlayer.ready;
     // The current document's player is the only playback target.
     selected=enabled?'this_tab':null;
@@ -529,6 +572,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     // These are optional signed server capabilities, never remote targeting.
     try{
       const result=await post('/api/teslamon/capabilities',{});
+      if(userDisabled)return;
       modelLabel.hidden=true;
       modelOptIn.checked=false;
       if(!result.codexAvailable){
@@ -746,6 +790,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(pet.style.left)setPosition(pet.offsetLeft,pet.offsetTop);
     else alignPanel();
   });
+  disableButton.addEventListener('click',()=>{
+    panelRevision++;
+    setUserDisabled(true);
+  });
+  restoreButton.addEventListener('click',()=>{
+    panelRevision++;
+    setUserDisabled(false,{armWake:true});
+  });
   face.addEventListener('click',()=>{
     panelRevision++;
     if(opened){collapseControls();cancelMic({preserveWake:true});}
@@ -772,6 +824,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     button.addEventListener('click',()=>{cancelMic();return void issue({
       tool:button.dataset.tm,args:{}
     });}));
+  window.addEventListener('storage',event=>{
+    if(event.key!==DISABLED_KEY)return;
+    // Disabling on any same-origin tab stops this tab's microphone too.
+    setUserDisabled(event.newValue==='1',{persist:false,armWake:false});
+  });
   document.addEventListener('visibilitychange',()=>{
     if(document.hidden){autoSend.cancel();handsFree.disable();micEpoch++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();}
     else void refresh();

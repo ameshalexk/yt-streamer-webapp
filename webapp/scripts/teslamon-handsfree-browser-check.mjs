@@ -118,6 +118,37 @@ try{
  assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-tiny.en','invalid saved model falls back to Tiny');
  await page.locator('#tmWakeToggle').click();
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true);
+ // Turn off via the small X on the puppy: this must stop the microphone,
+ // survive reloads and synchronize the opt-out across same-origin tabs.
+ await page.locator('#tmWakeToggle').click();
+ await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
+ const other=await context.newPage();
+ await other.goto(origin+'/?ui=new',{waitUntil:'domcontentloaded'});
+ await other.locator('#tmFace').waitFor({state:'visible'});
+ const closeBox=await page.locator('#tmDisable').boundingBox();
+ assert.ok(closeBox&&closeBox.width>=44&&closeBox.height>=44,'puppy X needs 44px touch target');
+ await page.locator('#tmDisable').click();
+ await page.waitForFunction(()=>document.querySelector('#teslamonPet')?.dataset.disabled==='true');
+ await other.waitForFunction(()=>document.querySelector('#teslamonPet')?.dataset.disabled==='true');
+ assert.equal(await page.locator('#tmFace').isVisible(),false,'dog hides when disabled');
+ assert.equal(await page.locator('#tmRestore').isVisible(),true,'restore paw stays accessible');
+ assert.equal(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonDisabledV1')),'1');
+ assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true,'puppy X must stop all tracks');
+ assert.equal(await other.locator('#tmFace').isVisible(),false,'other tab hides dog as well');
+ await other.close();
+ await page.reload({waitUntil:'domcontentloaded'});
+ await page.locator('#tmRestore').waitFor({state:'visible'});
+ const restoreBox=await page.locator('#tmRestore').boundingBox();
+ assert.ok(restoreBox&&restoreBox.width>=44&&restoreBox.height>=44,'restore paw needs 44px touch target');
+ assert.equal(await page.locator('#tmFace').isVisible(),false);
+ assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),0,'opted-out page must not request microphone on load');
+ await page.locator('#tmRestore').click();
+ await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
+ assert.equal(await page.locator('#tmFace').isVisible(),true,'dog returns after restore');
+ assert.equal(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonDisabledV1')),null,'restore clears persistent opt-out');
+ await page.locator('#tmDisable').click();
+ assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true,'second disable stops resumed mic');
+ console.log('PASS puppy X stops mic, persists across reload, syncs to other tab and restores via paw');
  assert.deepEqual(modelRequests,[],'choosing Base never eagerly downloads transcription weights');
  assert.deepEqual(apiUploads,[],'no ambient audio uploaded to PowerALX or Codex');
  assert.deepEqual(unexpected,[],'no third-party network calls');
