@@ -2268,7 +2268,9 @@ let productionMediaRelay = null;
 // Transport-only: forwards explicitly recorded short audio to the existing
 // PowerALX Life Recorder worker. No Mac model, Whisper or fallback ASR.
 const teslamonPowerAlxSTT=createTeslaMonTranscriber();
-const teslamonCodex=createTeslaMonCodex();
+const teslamonCodex=createTeslaMonCodex({
+  onDiagnostic:event=>console.info('[teslamon-codex]',JSON.stringify(event))
+});
 // Stage durations only: never log speech, queries, identities, or credentials.
 function logTeslaMonLatency(stage,started,status){
   console.info('[teslamon-latency]',JSON.stringify({stage,ms:Date.now()-started,status}));

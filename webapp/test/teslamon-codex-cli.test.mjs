@@ -141,3 +141,75 @@ test('HA never starts Mac-specific Codex process',async()=>{
   assert.equal(t.available,false);
   assert.equal((await t.plan('pause',SESSION,ID)).status,'unavailable');
 });
+
+test('Codex diagnostics capture phase timings without raw prompt, identity or thread IDs',async()=>{
+  const events=[],calls=[];
+  const t=createTeslaMonCodex({
+    binary:'/private/test-codex',workspace:'/private/test-workspace',
+    isSupportedPlatform:true,binaryExists:()=>true,
+    launch:fakeProcess([{tool:'ha_done',query:'',mcp:{tool:'get_light_state'}}],calls),
+    onDiagnostic:event=>events.push(event)
+  });
+  assert.equal((await t.plan('Is secret-room light on?',SESSION,ID)).status,'ha_done');
+  assert.deepEqual(events.map(e=>e.phase),[
+    'request_started','process_spawned','first_stdout','thread_started',
+    'mcp_started','mcp_completed','turn_completed','process_closed','finished'
+  ]);
+  assert.equal(events[4].tool,'get_light_state');
+  assert.equal(events[5].success,true);
+  assert.equal(events.at(-1).status,'ha_done');
+  assert.equal(events.every(e=>e.traceId===events[0].traceId),true);
+  assert.equal(events.every(e=>Number.isFinite(e.elapsedMs)&&e.elapsedMs>=0),true);
+  const json=JSON.stringify(events);
+  for(const forbidden of ['secret-room',SESSION,ID,THREAD,'/private/test-workspace'])
+    assert.equal(json.includes(forbidden),false);
+});
+test('Codex deadline reports exact termination reason without exposing prompts',async()=>{
+  const events=[];
+  const launch=()=>{
+    const child=new EventEmitter();
+    child.stdout=new PassThrough();child.stderr=new PassThrough();
+    child.stdin=new Writable({write(_chunk,_enc,cb){cb();}});
+    child.kill=()=>{queueMicrotask(()=>child.emit('close',null));};
+    return child;
+  };
+  const t=createTeslaMonCodex({
+    binary:'/private/test-codex',workspace:'/private/test-workspace',
+    isSupportedPlatform:true,binaryExists:()=>true,
+    launch,timeoutMs:5,onDiagnostic:event=>events.push(event)
+  });
+  const result=await t.plan('Please pause',SESSION,ID);
+  assert.deepEqual(result,{status:'failed',code:'codex_timeout_or_cancelled'});
+  assert.equal(events.find(e=>e.phase==='termination_requested')?.reason,'deadline');
+  assert.equal(events.at(-1).terminationReason,'deadline');
+});
+test('Observability callback errors cannot break valid Codex playback plans',async()=>{
+  const t=createTeslaMonCodex({
+    binary:'/private/test-codex',workspace:'/private/test-workspace',
+    isSupportedPlatform:true,binaryExists:()=>true,
+    launch:fakeProcess([{tool:'pause',query:''}],[]),
+    onDiagnostic(){throw new Error('logging unavailable');}
+  });
+  assert.equal((await t.plan('Pause',SESSION,ID)).tool,'pause');
+});
+
+test('Caller cancellation is logged separately from the 45-second deadline',async()=>{
+  const events=[],controller=new AbortController();
+  const launch=()=>{
+    const child=new EventEmitter();
+    child.stdout=new PassThrough();child.stderr=new PassThrough();
+    child.stdin=new Writable({write(_chunk,_enc,cb){cb();}});
+    child.kill=()=>{queueMicrotask(()=>child.emit('close',null));};
+    queueMicrotask(()=>controller.abort());
+    return child;
+  };
+  const t=createTeslaMonCodex({
+    binary:'/private/test-codex',workspace:'/private/test-workspace',
+    isSupportedPlatform:true,binaryExists:()=>true,
+    launch,timeoutMs:20000,onDiagnostic:event=>events.push(event)
+  });
+  assert.equal((await t.plan('Pause',SESSION,ID,{signal:controller.signal})).code,
+    'codex_timeout_or_cancelled');
+  assert.equal(events.find(e=>e.phase==='termination_requested')?.reason,
+    'request_cancelled');
+});
