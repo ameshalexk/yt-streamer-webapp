@@ -10,6 +10,8 @@ import { chromium } from 'playwright-core';
 
 const fixture = process.env.TESLAMON_STT_TEST_WAV;
 if (!fixture) throw new Error('Provide TESLAMON_STT_TEST_WAV (a controlled spoken WAV fixture).');
+const modelId=process.env.TESLAMON_STT_MODEL_ID||'whisper-tiny.en';
+assert.ok(['whisper-tiny.en','whisper-base.en'].includes(modelId));
 const encoded = (await fs.readFile(fixture)).toString('base64');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
 const mime = { '.html':'text/html', '.js':'text/javascript', '.mjs':'text/javascript',
@@ -50,7 +52,8 @@ try {
   const context = await browser.newContext({ viewport:{width:390,height:844},
     permissions:['microphone'] });
   const page = await context.newPage();
-  await page.addInitScript(({ encoded }) => {
+  await page.addInitScript(({ encoded, modelId }) => {
+    localStorage.setItem('ytStreamerTeslaMonSttModelV1',modelId);
     const state = window.__teslamonFixture = { micCalls:0, workerCount:0, loadCount:0,
       inferences:0, workerResults:[], pcm:[], tracks:[], videoFrames:0,
       searchCalls:0, playCalls:0, mediaId:null, mode:'buffered_mjpeg' };
@@ -139,7 +142,7 @@ try {
           mode:state.mode, rendered_frames:state.videoFrames, fullscreen_kind:'none' };
       }
     };
-  }, { encoded });
+  }, { encoded, modelId });
 
   page.on('pageerror', error => evidence.errors.push(String(error)));
   page.on('request', request => {
@@ -181,20 +184,23 @@ try {
   await page.waitForTimeout(350);
   async function holdAndWait() {
     const previous = evidence.planTexts.length;
+    if(!await page.locator('#tmPanel').isVisible())await page.locator('#tmFace').click();
+    await page.locator('#tmMic').scrollIntoViewIfNeeded();
     const box = await page.locator('#tmMic').boundingBox();
     await page.mouse.move(box.x+box.width/2, box.y+box.height/2);
     await page.mouse.down();
     await page.waitForFunction(() => /Recording audio|Requesting microphone/.test(document.querySelector('#tmState')?.textContent || ''), null, { timeout:10000 });
     await page.waitForTimeout(4800);
     await page.mouse.up();
-    const deadline = Date.now() + 120000;
+    const deadline = Date.now() + Number(process.env.TESLAMON_STT_WAIT_MS||120000);
     while (evidence.planTexts.length <= previous && Date.now() < deadline) {
       await page.waitForTimeout(250);
     }
+    if(evidence.planTexts.length<=previous)console.error('NO PLAN DEBUG',JSON.stringify({evidence,ui:await page.evaluate(()=>({status:document.querySelector('#tmState')?.textContent,input:document.querySelector('#tmText')?.value,panelHidden:document.querySelector('#tmPanel')?.hidden,selectedModel:document.querySelector('#tmSttModel')?.value,modelState:document.querySelector('#tmSttModelState')?.textContent,results:window.__teslamonFixture.workerResults,loads:window.__teslamonFixture.loadCount,inferences:window.__teslamonFixture.inferences}))},null,2));
     assert.ok(evidence.planTexts.length > previous,
       'a real Whisper result must reach the signed planner after recording');
     try {
-      await page.waitForFunction(() => /Video playing in this tab|Video selected|Playing in this tab/.test(
+      await page.waitForFunction(() => /Video playing in this tab|Playing in this tab/.test(
         document.querySelector('#tmState')?.textContent || ''), null, {timeout:18000});
     } catch (error) {
       console.error('STT PLAYBACK DEBUG',JSON.stringify({
@@ -212,6 +218,7 @@ try {
     }
     return await page.locator('#tmState').innerText();
   }
+  assert.equal(await page.locator('#tmSttModel').inputValue(),modelId);
   const firstStatus = await holdAndWait();
   evidence.commands.push({ firstStatus, state:await page.evaluate(() => window.YTStreamerMediaAgent.get_player_state()) });
   assert.ok(evidence.planTexts.length >= 1, 'real Whisper transcript must reach the planner');
@@ -234,7 +241,8 @@ try {
       tracksEnded:f.tracks.every(track => track.readyState === 'ended'), modelEntries:
       entries.filter(url => url.includes('/games/models/')).length };
   });
-  evidence.result = { ...result, firstFrames };
+  evidence.result = {modelId, ...result, firstFrames };
+  assert.ok(evidence.modelRequests.filter(url=>url.endsWith('.onnx')).every(url=>url.includes(modelId==='whisper-base.en'?'whisper-base-en-95bf40a':'whisper-tiny-en-79fb389')),'only selected model weights requested');
   assert.equal(result.workerCount, 1, 'one Whisper worker for multiple recordings on a page');
   assert.equal(result.loadCount, 1, 'model initialized only once');
   assert.equal(result.inferences, 2, 'each PTT clip was actually transcribed');

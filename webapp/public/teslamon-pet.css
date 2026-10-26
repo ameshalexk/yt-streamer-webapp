@@ -57,6 +57,11 @@
 #teslamonPet .tm-wake-phrases:disabled{opacity:.76}
 #teslamonPet .tm-wake-phrases:disabled label{cursor:not-allowed}
 #teslamonPet #tmWakePhraseHelp{display:block;min-height:32px;padding-top:5px;color:#bed1df;font-size:11px;line-height:1.35}
+#teslamonPet .tm-stt-model{display:grid;gap:6px;margin:0 0 12px;padding:10px;border:1px solid #526c7d;border-radius:9px;background:#182b38}
+#teslamonPet .tm-stt-model label{font-size:13px;color:#d9eaf5}
+#teslamonPet #tmSttModel{min-height:44px;font-size:12px}
+#teslamonPet #tmSttModelHelp,#teslamonPet #tmSttModelState{font-size:11px;line-height:1.4;color:#bed1df;overflow-wrap:anywhere}
+#teslamonPet #tmSttModelState{min-height:16px;color:#d6edff}
 #teslamonPet #tmWakeToggle{min-width:104px;min-height:48px;flex:none;border:1px solid #86a1b1;border-radius:10px;background:#344a59;color:#fff;font-weight:700;padding:8px}
 #teslamonPet .tm-wake-control[data-active="true"]{border-color:#65d1a1;background:#173c35}
 #teslamonPet .tm-wake-control[data-active="true"] #tmWakeToggle{background:#126b4b;border-color:#87f1c5}

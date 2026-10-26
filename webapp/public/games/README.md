@@ -68,3 +68,18 @@ asset URLs. Whisper only transcribes manually captured utterances or speech segm
 **Hands-free: Off** is the default every time the page opens. The toggle requires a real user tap and browser microphone permission. Once enabled, the game first prepares the local Whisper model while the microphone remains **OFF**. It then opens one live microphone stream, monitors audio levels for speech, transcribes a short phrase after speech ends, performs any matching trick, and automatically listens for the next trick. There is no repeated Speak tap, no Hey Jarvis requirement, and no network STT request. A single model/worker is reused for successive phrases.
 
 The toggle turns **green / On** only while the continuous capture is active; **Off** releases microphone tracks and cancels pending work. Stop, changing motion mode, leaving/hiding the page and full navigation also disable continuous capture. Manual tap-to-speak and touch tricks stay available when hands-free is Off; manual Speak is disabled while the continuous mic owns capture. During transcription the microphone stays open, but incoming audio frames are not queued for overlapping inference. Very quiet children, loud background noise, and Tesla browser power/resource limits require physical testing. Continuous listening uses more power than push-to-talk; only enable it when someone is playing.
+
+
+## Streamer transcription model selector (2026-10-25)
+
+The main TeslaMon dog panel now offers Whisper Tiny English (fast/default)
+and Whisper Base English (larger quality option). Both use q8 single-thread
+WASM and the same shared engine with immutable model choice per worker.
+`new VoiceEngine()` and this standalone game remain Tiny English by default.
+Base weights are pinned to Xenova/whisper-base.en revision
+95bf40a508535962c6483ead40270b2e32267508 under
+`models/whisper-base-en-95bf40a/`; provenance/hashes/license are recorded in
+`base-model-manifest.json`. Audio stays local and no remote model fallback
+is enabled. The main selector changes only the transcription stage, not
+openWakeWord wake detection. Preserve these registry/worker additions if
+refreshing the static game package from the independent game source.

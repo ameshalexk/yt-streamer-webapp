@@ -24,7 +24,7 @@ const browser=await chromium.launch({
 try{
  const context=await browser.newContext({viewport:{width:390,height:844},permissions:['microphone'],serviceWorkers:'block'});
  const page=await context.newPage();
- const unexpected=[],apiUploads=[],errors=[];
+ const unexpected=[],apiUploads=[],errors=[],modelRequests=[];
  await page.addInitScript(()=>{
    window.__teslamonMicStreams=[];
    window.YTStreamerMediaAgent={execute:async()=>({status:'completed',state:{playback_phase:'idle',fullscreen_kind:'none'}})};
@@ -38,6 +38,7 @@ try{
  page.on('pageerror',error=>errors.push(String(error)));
  await page.route('**/*',async route=>{
    const requested=new URL(route.request().url());
+   if(requested.pathname.startsWith('/games/models/'))modelRequests.push(requested.pathname);
    if(requested.origin!==origin){unexpected.push(requested.href);return route.abort();}
    if(requested.pathname==='/api/teslamon/capabilities'){
      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({codexAvailable:true,localTranscription:true})});
@@ -59,6 +60,7 @@ try{
  assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'true');
  assert.match(await page.locator('#tmWakeState').innerText(),/Hey Jarvis, Alexa, Hey Mycroft, Hey Rhasspy/);
  assert.equal(await page.locator('#tmWakePhraseSet').evaluate(fieldset=>fieldset.disabled),true,'phrase changes locked while listening');
+ assert.equal(await page.locator('#tmSttModel').isDisabled(),true,'model choice locked while Mic On');
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),1,'page load obtains one mic stream');
  assert.equal(await page.locator('#teslamonPet').getAttribute('data-mic'),'on');
  assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('#tmFace'),'::after').content),'"MIC ON"');
@@ -70,6 +72,9 @@ try{
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true,'Mic Off ends all tracks');
  // Select only Mycroft while Off; reject attempts to disable the last phrase.
  assert.equal(await page.locator('#tmWakePhraseSet').evaluate(fieldset=>fieldset.disabled),false);
+ assert.equal(await page.locator('#tmSttModel').isDisabled(),false);
+ await page.locator('#tmSttModel').selectOption('whisper-base.en');
+ assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-base.en');
  await page.locator('input[value=hey_jarvis]').uncheck();
  await page.locator('input[value=alexa]').uncheck();
  await page.locator('input[value=hey_rhasspy]').uncheck();
@@ -91,6 +96,7 @@ try{
  assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true);
  assert.equal(await page.locator('input[value=alexa]').isChecked(),false);
  assert.equal(await page.locator('input[value=hey_jarvis]').isChecked(),false);
+ assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-base.en','transcription choice survives reload');
  assert.equal(await page.locator('input[value=hey_rhasspy]').isChecked(),false);
  await page.locator('#tmWakeToggle').click();
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true);
@@ -102,8 +108,17 @@ try{
  assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true);
  assert.equal(await page.locator('input[value=hey_rhasspy]').isChecked(),true);
  assert.equal(await page.locator('input[value=hey_jarvis]').isChecked(),false);
+ assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-base.en','transcription choice survives reload');
  assert.equal(await page.locator('input[value=alexa]').isChecked(),false);
  await page.locator('#tmWakeToggle').click();
+ await page.evaluate(()=>localStorage.setItem('ytStreamerTeslaMonSttModelV1','__proto__'));
+ await page.reload({waitUntil:'domcontentloaded'});
+ await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
+ await page.locator('#tmFace').click();
+ assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-tiny.en','invalid saved model falls back to Tiny');
+ await page.locator('#tmWakeToggle').click();
+ assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true);
+ assert.deepEqual(modelRequests,[],'choosing Base never eagerly downloads transcription weights');
  assert.deepEqual(apiUploads,[],'no ambient audio uploaded to PowerALX or Codex');
  assert.deepEqual(unexpected,[],'no third-party network calls');
  assert.deepEqual(errors,[],'no page JS errors');

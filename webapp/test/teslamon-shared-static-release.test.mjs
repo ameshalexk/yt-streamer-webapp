@@ -32,12 +32,26 @@ test('both pages import the same game-owned STT implementation and model URL', a
   const worker = await read('voice-worker.js').then(bytes => bytes.toString('utf8'));
   assert.match(pet, /createTeslaMonLocalStt/);
   assert.doesNotMatch(pet, /post\(['"]\/api\/teslamon\/transcribe/);
-  assert.ok(pet.includes("teslamon-local-stt.js?v=20261024-shared-stt1"));
-  assert.ok(adapter.includes("import('./games/voice-engine.js?v=20261024-shared-stt1')"));
+  assert.ok(pet.includes("teslamon-local-stt.js?v=20261025-stt-models1"));
+  assert.ok(adapter.includes("import('./games/voice-engine.js?v=20261025-stt-models1')"));
   assert.ok(adapter.includes("import('./games/recorded-audio.js?v=20261024-shared-stt1')"));
   assert.match(worker, /new URL\('\.\/models\/', import\.meta\.url\)/);
   assert.match(worker, /numThreads = 1/);
   assert.match(worker, /allowRemoteModels = false/);
   const gameApp = await read('app.js').then(bytes => bytes.toString('utf8'));
   assert.doesNotMatch(gameApp, /\/api\/teslamon\/|\/api\/health|YTStreamerMediaAgent/);
+});
+
+
+test('base quality option ships only pinned same-origin q8 assets',async()=>{
+  const manifest=JSON.parse(await read('base-model-manifest.json'));
+  assert.equal(manifest.model,'Xenova/whisper-base.en');
+  assert.equal(manifest.revision,'95bf40a508535962c6483ead40270b2e32267508');
+  assert.equal(Object.keys(manifest.files).length,7);
+  for(const [relative,expected] of Object.entries(manifest.files)){
+    const bytes=await read(relative);
+    assert.equal(bytes.length,expected.bytes,relative);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'),expected.sha256,relative);
+    assert.ok(expected.source.includes('/'+manifest.revision+'/'));
+  }
 });

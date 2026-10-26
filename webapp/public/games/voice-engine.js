@@ -1,5 +1,4 @@
-const LOAD_TIMEOUT_MS = 120_000;
-const TRANSCRIBE_TIMEOUT_MS = 45_000;
+import { getVoiceModel } from './voice-models.js?v=20261025-stt-models1';
 
 function abortError() {
   const error = new Error('Voice request was canceled.');
@@ -21,7 +20,8 @@ function withAbort(promise, signal) {
 
 /** Browser-only, lazy Whisper worker client. Audio stays in the current page. */
 export class VoiceEngine {
-  constructor() {
+  constructor({ modelId = 'whisper-tiny.en' } = {}) {
+    this.model = getVoiceModel(modelId);
     this.worker = null;
     this.nextId = 1;
     this.pending = new Map();
@@ -36,7 +36,7 @@ export class VoiceEngine {
   _ensureWorker() {
     if (this.disposed) throw new Error('Voice engine has been disposed.');
     if (!this.worker) {
-      this.worker = new Worker(new URL('./voice-worker.js?v=e2cf34b3cb75', import.meta.url), { type: 'module' });
+      this.worker = new Worker(new URL('./voice-worker.js?v=20261025-stt-models1', import.meta.url), { type: 'module' });
       this.worker.onmessage = event => this._onMessage(event.data || {});
       this.worker.onerror = event => {
         const error = new Error(event.message || 'Voice worker failed to start.');
@@ -88,8 +88,8 @@ export class VoiceEngine {
       }, timeoutMs);
       this.pending.set(id, entry);
       try {
-        if (type === 'transcribe') worker.postMessage({ id, type, ...payload }, [payload.audio.buffer]);
-        else worker.postMessage({ id, type, ...payload });
+        if (type === 'transcribe') worker.postMessage({ id, type, modelId: this.model.modelId, ...payload }, [payload.audio.buffer]);
+        else worker.postMessage({ id, type, modelId: this.model.modelId, ...payload });
       } catch (error) {
         entry.reject(error);
       }
@@ -120,7 +120,7 @@ export class VoiceEngine {
     if (this.loaded) return Promise.resolve(this.modelInfo);
     if (onProgress) this.loadProgressCallbacks.add(onProgress);
     if (!this.loading) {
-      const promise = this._request('load', {}, { timeoutMs: LOAD_TIMEOUT_MS }).then(info => {
+      const promise = this._request('load', {}, { timeoutMs: this.model.loadTimeoutMs }).then(info => {
         this.loaded = true;
         this.modelInfo = info;
         return info;
@@ -148,7 +148,7 @@ export class VoiceEngine {
     const onAbort = () => this._reset(abortError());
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      request = this._request('transcribe', { audio: samples }, { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
+      request = this._request('transcribe', { audio: samples }, { timeoutMs: this.model.transcribeTimeoutMs });
       return await withAbort(request, signal);
     } finally {
       signal?.removeEventListener('abort', onAbort);

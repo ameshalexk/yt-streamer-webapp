@@ -1,0 +1,73 @@
+{
+  "context": "Mac Chrome, generated speech, direct WASM; not Tesla/iPhone or human accent evidence",
+  "seconds": 3.167625,
+  "results": [
+    {
+      "modelId": "whisper-tiny.en",
+      "info": {
+        "cacheState": "complete",
+        "cachedFiles": 7,
+        "totalFiles": 7,
+        "modelId": "whisper-tiny.en",
+        "modelLabel": "Whisper Tiny English"
+      },
+      "loadMs": 1072.2000000476837,
+      "transcriptions": [
+        {
+          "text": "Please play a video about the fabric of space and time.",
+          "elapsedMs": 1718.8000000715256
+        },
+        {
+          "text": "Please play a video about the fabric of space and time.",
+          "elapsedMs": 1477.3999999761581
+        }
+      ]
+    },
+    {
+      "modelId": "whisper-base.en",
+      "info": {
+        "cacheState": "complete",
+        "cachedFiles": 7,
+        "totalFiles": 7,
+        "modelId": "whisper-base.en",
+        "modelLabel": "Whisper Base English"
+      },
+      "loadMs": 1382.3000000715256,
+      "transcriptions": [
+        {
+          "text": "Please play a video about the fabric of space and time.",
+          "elapsedMs": 3283.5
+        },
+        {
+          "text": "Please play a video about the fabric of space and time.",
+          "elapsedMs": 3021.600000023842
+        }
+      ]
+    },
+    {
+      "modelId": "whisper-tiny.en",
+      "info": {
+        "cacheState": "complete",
+        "cachedFiles": 7,
+        "totalFiles": 7,
+        "modelId": "whisper-tiny.en",
+        "modelLabel": "Whisper Tiny English"
+      },
+      "loadMs": 799.2999999523163,
+      "transcriptions": [
+        {
+          "text": "Please play a video about the fabric of space and time.",
+          "elapsedMs": 1473.5999999046326
+        },
+        {
+          "text": "Please play a video about the fabric of space and time.",
+          "elapsedMs": 1339.6000000238419
+        }
+      ]
+    }
+  ],
+  "active": 0,
+  "maxActive": 1,
+  "created": 3,
+  "defaultModel": "whisper-tiny.en"
+}

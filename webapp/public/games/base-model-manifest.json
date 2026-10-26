@@ -1,0 +1,42 @@
+{
+  "model": "Xenova/whisper-base.en",
+  "revision": "95bf40a508535962c6483ead40270b2e32267508",
+  "license": "Apache-2.0",
+  "files": {
+    "models/whisper-base-en-95bf40a/config.json": {
+      "bytes": 2202,
+      "sha256": "5c390f2c6ba84ddeb7e362cd8b2123832911407850174e64d7081ccc36df2d64",
+      "source": "https://huggingface.co/Xenova/whisper-base.en/resolve/95bf40a508535962c6483ead40270b2e32267508/config.json"
+    },
+    "models/whisper-base-en-95bf40a/generation_config.json": {
+      "bytes": 1500,
+      "sha256": "1e57ed56ad1bd7f08a49ece7fe7daada674573805a35f8bdbbe68380aab5b1ee",
+      "source": "https://huggingface.co/Xenova/whisper-base.en/resolve/95bf40a508535962c6483ead40270b2e32267508/generation_config.json"
+    },
+    "models/whisper-base-en-95bf40a/preprocessor_config.json": {
+      "bytes": 339,
+      "sha256": "a6a76d28c93edb273669eb9e0b0636a2bddbb1272c3261e47b7ca6dfdbac1b8d",
+      "source": "https://huggingface.co/Xenova/whisper-base.en/resolve/95bf40a508535962c6483ead40270b2e32267508/preprocessor_config.json"
+    },
+    "models/whisper-base-en-95bf40a/tokenizer.json": {
+      "bytes": 2128494,
+      "sha256": "c6ee8f089220a5b1188f6426456772572671c6141ae007eecb83c6a8349f5deb",
+      "source": "https://huggingface.co/Xenova/whisper-base.en/resolve/95bf40a508535962c6483ead40270b2e32267508/tokenizer.json"
+    },
+    "models/whisper-base-en-95bf40a/tokenizer_config.json": {
+      "bytes": 835,
+      "sha256": "e082c1ad251541bf277967a703252cddd4bb37a71a43737e03d050c22ec08238",
+      "source": "https://huggingface.co/Xenova/whisper-base.en/resolve/95bf40a508535962c6483ead40270b2e32267508/tokenizer_config.json"
+    },
+    "models/whisper-base-en-95bf40a/onnx/encoder_model_quantized.onnx": {
+      "bytes": 23200856,
+      "sha256": "d0d4e59e2842617b39787cece73d7e8f76f99b1697d3386c0e682eca2269f4a1",
+      "source": "https://huggingface.co/Xenova/whisper-base.en/resolve/95bf40a508535962c6483ead40270b2e32267508/onnx/encoder_model_quantized.onnx"
+    },
+    "models/whisper-base-en-95bf40a/onnx/decoder_model_merged_quantized.onnx": {
+      "bytes": 53707027,
+      "sha256": "a25afc5858a20aabb7652cb2d555996ebe10691a69bbdb423d5073d52f060325",
+      "source": "https://huggingface.co/Xenova/whisper-base.en/resolve/95bf40a508535962c6483ead40270b2e32267508/onnx/decoder_model_merged_quantized.onnx"
+    }
+  }
+}
