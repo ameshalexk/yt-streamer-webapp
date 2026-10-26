@@ -630,6 +630,7 @@ function startRenderLoop(state) {
         renderedFrames: state.renderedFrames,
         receivedFrames,
         droppedFrames: state.droppedFrames,
+        decoderQueueSize: state.videoDecoder?.decodeQueueSize ?? null,
         queueSeconds,
         queueTrend,
         rebufferCount: state.rebufferCount,

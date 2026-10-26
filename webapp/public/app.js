@@ -689,6 +689,53 @@ let cyberdashModulePromise = null;
 let cyberdashModule = null;
 let cyberdashPlayer = null;
 let activeYoutubeSourceUrl = "";
+let diagnosticsStats = null;
+let diagnosticsMethod = null;
+let diagnosticsError = null;
+let diagnosticsQualityReason = null;
+
+function playbackDiagnosticsSnapshot() {
+  const screen = $("#screen");
+  const playing = Boolean(screen?.classList.contains("playing"));
+  const method = !playing ? (diagnosticsError ? diagnosticsMethod : null)
+    : screen?.classList.contains("cyberdash-mode") ? "webcodecs"
+    : screen?.classList.contains("mjpeg-buffered-mode") && activeCompat?.frameFormat === "jxl" ? "jxl"
+    : screen?.classList.contains("mjpeg-buffered-mode") || screen?.classList.contains("mjpeg-mode") ? "mjpeg"
+    : screen?.classList.contains("video-mode") ? "native" : diagnosticsMethod;
+  const state = diagnosticsError ? "error"
+    : !playing ? "idle" : playbackPaused ? "paused"
+    : diagnosticsStats?.state || (screen?.classList.contains("loading") ? "buffering" : "playing");
+  const audioStatus = !playing ? "idle"
+    : !soundOn ? "muted" : activeCompat?.audioStatus || "source";
+  const sourceManaged = playing && !qualityProfilesAvailableForCurrentMode();
+  return { method, state, audioStatus, quality: sourceManaged ? "source" : streamQualitySelection,
+    stats: diagnosticsError ? null : diagnosticsStats,
+    qualityReason: sourceManaged ? null : diagnosticsQualityReason, errorCategory: diagnosticsError };
+}
+
+function refreshPlaybackDiagnostics() {
+  const panel = $("#playbackDiagnostics");
+  if (!panel?.open || !window.PlaybackDiagnostics) return;
+  window.PlaybackDiagnostics.render($("#playbackDiagnosticsContent"), playbackDiagnosticsSnapshot());
+}
+
+function initPlaybackDiagnostics() {
+  const panel = $("#playbackDiagnostics");
+  const copy = $("#playbackDiagnosticsCopy");
+  const status = $("#playbackDiagnosticsCopyStatus");
+  if (!panel || !copy || !status || !window.PlaybackDiagnostics) return;
+  panel.addEventListener("toggle", refreshPlaybackDiagnostics);
+  copy.addEventListener("click", async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(window.PlaybackDiagnostics.report(playbackDiagnosticsSnapshot()));
+      status.textContent = "Report copied.";
+    } catch {
+      status.textContent = "Copy unavailable in this browser.";
+    }
+  });
+  setInterval(refreshPlaybackDiagnostics, 1000);
+}
 
 function updateActivePlaybackStatus() {
   const codec = $("#activePlaybackCodec");
@@ -1855,6 +1902,9 @@ function seekStreamTo(time) {
 
 function failStreamAttempt(attempt, title, detail) {
   if (!currentAttempt(attempt)) return;
+  diagnosticsMethod = playbackDiagnosticsSnapshot().method;
+  diagnosticsError = "playback-failed";
+  diagnosticsStats = null;
   const recovery = playbackRecoverySample();
   const retrying = playbackRecovery?.request("failure", recovery);
   pendingPlaybackMethodRestore = null;
@@ -2208,6 +2258,10 @@ function canTryMpegts() {
 }
 
 function cleanupMedia(keepWatchProgress = false) {
+  diagnosticsStats = null;
+  diagnosticsMethod = null;
+  diagnosticsError = null;
+  if (!pendingQualityRestore) diagnosticsQualityReason = null;
   if (!keepWatchProgress) void watchProgress.stop();
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
   void stopCyberdashPlayback({ report: true });
@@ -2832,6 +2886,10 @@ function bufferedMjpegSupported() {
 
 function updateBufferedMjpegDebug(stats = null) {
   window.__YT_STREAMER_BUFFER_STATS__ = stats ? { ...stats, updatedAt: Date.now() } : null;
+  if (stats) {
+    diagnosticsStats = { ...stats };
+    diagnosticsMethod = activeCompat?.frameFormat === "jxl" ? "jxl" : "mjpeg";
+  }
 }
 
 function markBufferedStreamPlaying(attempt, stats = null, { revealControls = true } = {}) {
@@ -3561,7 +3619,10 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
         }
       },
       onStats(stats) {
-        if (!currentAttempt(attempt) || playbackPaused) return;
+        if (!currentAttempt(attempt)) return;
+        diagnosticsStats = { ...stats };
+        diagnosticsMethod = "webcodecs";
+        if (playbackPaused) return;
         reportPeriodicPlaybackSample({
           attempt, method: "webcodecs", label: sourceBadge, streamUrl: youtubeUrl || "", stats,
         });
@@ -4296,6 +4357,7 @@ function requestAutoQualityTier(decision, stats = null) {
     message: `${decision.from}->${decision.to}; ${autoQualityReasonLabel(decision.reason)}`,
     stats: stats || decision.metrics,
   });
+  diagnosticsQualityReason = decision.reason;
 
   if (!replay || !qualityProfilesAvailableForCurrentMode()) return true;
   const transition = {
@@ -4328,6 +4390,7 @@ function requestQualityProfile(profileId) {
   }
   const profile = STREAM_QUALITY_PROFILES[profileId];
   if (!profile) return;
+  diagnosticsQualityReason = null;
   const resumeAt = qualitySwitchResumeAt();
   const pause = qualitySwitchPauseIntent();
   const seekable = streamSeek.seekable;
@@ -4371,6 +4434,7 @@ function requestQualityProfile(profileId) {
 
 // Re-apply controls live: restart whatever is currently playing with new params.
 function reapplyControls() {
+  diagnosticsQualityReason = null;
   if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) {
     setStreamQualitySelection(null);
   } else {
@@ -10224,6 +10288,7 @@ function initEverydayControls() {
 // ---- Init ----
 (async function init() {
   initTheme();
+  initPlaybackDiagnostics();
   initWatchAccordion();
   initEverydayControls();
   window.ExtractorControls?.init({ container: "#watch-settings-panel" });

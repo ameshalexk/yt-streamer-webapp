@@ -23,6 +23,8 @@ const server=http.createServer(async(req,res)=>{
   res.end(content);
  }catch {res.writeHead(404);res.end();}
 });
+const sockets=new Set();
+server.on("connection",socket=>{sockets.add(socket);socket.on("close",()=>sockets.delete(socket));});
 await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 const browser=await chromium.launch({
  executablePath:process.env.MOBILE_TEST_CHROME||"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -31,7 +33,7 @@ const browser=await chromium.launch({
 const url="http://127.0.0.1:"+server.address().port+"/";
 let passed=0;
 try{
- for(const [width,height] of [[320,568],[375,812],[390,844],[430,932],[768,1024]]){
+ for(const [width,height] of [[320,568],[375,812],[390,844],[430,932],[768,1024],[844,390]]){
   for(const style of ["classic","new"]){
    const page=await browser.newPage({
     viewport:{width,height},deviceScaleFactor:3,isMobile:true,hasTouch:true,
@@ -39,6 +41,70 @@ try{
    });
    await page.goto(url+"?ui="+style,{waitUntil:"domcontentloaded"});
    await page.waitForFunction(()=>typeof window.beginNewPlaybackQuality==="function" && typeof window.setMode==="function",{timeout:14000});
+   if(width===320 && style==="classic"){
+    const transitions=await page.evaluate(()=>{
+     diagnosticsQualityReason="recovery";
+     requestQualityProfile("low");
+     const manualReason=playbackDiagnosticsSnapshot().qualityReason;
+     resetStreamSettings({persist:false});
+     diagnosticsQualityReason="recovery";
+     const screen=document.querySelector("#screen");
+     screen.classList.add("playing","browser-mode");
+     setBrowserStreamActive(true);
+     updatePlayerQualityAccess();
+     const source=playbackDiagnosticsSnapshot();
+     setBrowserStreamActive(false);
+     screen.classList.remove("playing","browser-mode");
+     diagnosticsError="playback-failed";
+     diagnosticsMethod="mjpeg";
+     updateBufferedMjpegDebug({queueSeconds:9,receiveFps:48,renderedFps:24,renderedFrames:24,receivedFrames:48});
+     const lateCallback=playbackDiagnosticsSnapshot();
+     diagnosticsError=null;diagnosticsMethod=null;diagnosticsQualityReason=null;diagnosticsStats=null;
+     updateBufferedMjpegDebug(null);
+     resetStreamSettings({persist:false});
+     return {manualReason,sourceQuality:source.quality,sourceReason:source.qualityReason,
+      sourceButton:document.querySelector("#playerQualityBtn").textContent,lateStats:lateCallback.stats};
+    });
+    assert.equal(transitions.manualReason,null,"manual profile selection should clear a prior automatic quality reason");
+    assert.equal(transitions.sourceQuality,"source","browser-controlled playback should report source-managed quality");
+    assert.equal(transitions.sourceReason,null,"browser-controlled playback should omit a stale automatic quality reason");
+    assert.match(transitions.sourceButton,/Quality · Source/);
+    assert.equal(transitions.lateStats,null,"late stats callback must not repopulate diagnostics after an error");
+   }
+   // The disclosure must start closed and expose a useful, URL-free idle report
+   // when opened. Mock the browser clipboard API for this interaction.
+   const diagnosticsIdle = await page.evaluate(()=>({
+    exists:!!document.querySelector("#playbackDiagnostics"),
+    open:document.querySelector("#playbackDiagnostics")?.open,
+    copy:!!document.querySelector("#playbackDiagnosticsCopy")
+   }));
+   assert.ok(diagnosticsIdle.exists,style+" "+width+": diagnostics disclosure missing");
+   assert.equal(diagnosticsIdle.open,false,style+" "+width+": diagnostics must start collapsed");
+   await page.locator("#playbackDiagnostics > summary").click();
+   await page.waitForFunction(()=>document.querySelector("#playbackDiagnosticsContent")?.textContent.includes("Status"));
+   const diagnostics = await page.evaluate(()=>{
+    const panel=document.querySelector("#playbackDiagnostics"), copy=document.querySelector("#playbackDiagnosticsCopy");
+    const r=copy.getBoundingClientRect();
+    return {open:panel.open,text:document.querySelector("#playbackDiagnosticsContent").innerText,
+      copyWidth:r.width,copyHeight:r.height,overflow:document.documentElement.scrollWidth-innerWidth};
+   });
+   assert.ok(diagnostics.open,style+" "+width+": disclosure did not open");
+   assert.match(diagnostics.text,/Status\s+Idle/i,style+" "+width+": idle status missing");
+   assert.ok(diagnostics.copyWidth>=44 && diagnostics.copyHeight>=44,
+     style+" "+width+": copy target under 44x44 "+JSON.stringify(diagnostics));
+   assert.ok(diagnostics.overflow<=2,style+" "+width+": diagnostics overflow "+JSON.stringify(diagnostics));
+   await page.evaluate(()=>{
+    window.__copiedPlaybackReport="";
+    Object.defineProperty(navigator,"clipboard",{configurable:true,value:{writeText:async text=>{window.__copiedPlaybackReport=text;}}});
+   });
+   await page.locator("#playbackDiagnosticsCopy").click();
+   await page.waitForFunction(()=>document.querySelector("#playbackDiagnosticsCopyStatus")?.textContent.includes("copied"));
+   const report=await page.evaluate(()=>window.__copiedPlaybackReport);
+   assert.match(report,/Method: Unavailable[\s\S]*Status: Idle/);
+   assert.ok(!/https?:\/\//i.test(report),style+" "+width+": copied report contains a URL");
+   await page.locator("#playbackDiagnostics > summary").click();
+   assert.equal(await page.locator("#playbackDiagnostics").evaluate(el=>el.open),false,
+     style+" "+width+": disclosure did not close");
    await page.evaluate(()=>{
     window.setMode("recommended");
     document.querySelector("#recommendationsView").style.minHeight="1800px";
@@ -134,13 +200,18 @@ try{
    assert.equal(await page.locator("#playerQualitySlot").isVisible(),false);
    assert.match(await page.locator("#playerQualityContext").textContent(),/source manages its own resolution/i);
    await page.locator("#playerQualityCloseBtn").click();
-   console.log("PASS "+style+" iPhone "+width+"x"+height+": player visible, quality accessible, no overflow");
+   console.log("PASS "+style+" viewport "+width+"x"+height+": diagnostics and player responsive, quality accessible, no overflow");
    passed++;
    await page.close();
   }
  }
- console.log(passed+"/10 responsive scenarios passed.");
+ console.log(passed+"/12 responsive scenarios passed.");
 }finally{
  await browser.close();
- await new Promise(resolve=>server.close(resolve));
+ // Chromium can leave keep-alive requests open after its context closes;
+ // stop accepting first, then destroy every remaining local fixture socket.
+ const stopped=new Promise(resolve=>server.close(resolve));
+ for(const socket of sockets) socket.destroy();
+ server.closeAllConnections?.();
+ await stopped;
 }
