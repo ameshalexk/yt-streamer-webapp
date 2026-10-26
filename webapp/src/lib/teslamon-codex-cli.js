@@ -4,7 +4,7 @@
 // browser, filesystem mutation, arbitrary MCPs or device-control credentials.
 import {spawn} from 'node:child_process';
 import {existsSync} from 'node:fs';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
@@ -80,7 +80,7 @@ export function createTeslaMonCodex({
   workspace=path.join(os.homedir(),'Library/Application Support/YTStreamerWebapp/private/teslamon-codex/workspace'),
   launch=spawn,timeoutMs=45000,now=Date.now,
   isSupportedPlatform=process.platform==='darwin',binaryExists=existsSync,
-  maxOutputBytes=64000,maxSessions=10
+  maxOutputBytes=64000,maxSessions=10,onDiagnostic=()=>{}
 }={}){
   const sessions=new Map();
   let busy=false;
@@ -114,30 +114,63 @@ export function createTeslaMonCodex({
       const at=args.indexOf('-c');args.splice(at,0,'--sandbox','read-only');
     }
     const prompt=BASE_PROMPT+'\n\nUser request: '+JSON.stringify(text);
+    const started=now(),traceId=randomUUID();
+    // Only fixed phase labels, elapsed times, counts and outcome codes are logged.
+    // Never include transcripts, prompts, thread IDs, identities or CLI stderr.
+    const diagnostic=(phase,detail={})=>{
+      try{onDiagnostic({traceId,phase,elapsedMs:Math.max(0,now()-started),...detail});}
+      catch{/* Observability must never affect commands. */}
+    };
+    diagnostic('request_started',{resumed:canResume});
     return new Promise(resolve=>{
       let child=null,buffer='',output='',thread=canResume?oldThread:null,
         stdoutBytes=0,completed=false,serviceFailure=null,
         suspicious=false,settled=false,timer=null,aborted=false,
+        terminationReason=null,stderrBytes=0,firstStdout=false,guardrailLogged=false,
         allowedMcpCalls=0,completedMcpCalls=0,lightMutations=0;
       const finish=result=>{
         if(settled)return;settled=true;clearTimeout(timer);
-        signal?.removeEventListener('abort',abort);
+        signal?.removeEventListener('abort',abortSignal);
         busy=false;
+        diagnostic('finished',{status:result.status,code:result.code||null,
+          terminationReason});
         resolve(result);
       };
-      const abort=()=>{aborted=true;try{child?.kill('SIGTERM')}catch{}};
-      if(signal?.aborted){finish({status:'failed',code:'codex_cancelled'});return;}
+      const abort=(reason='request_cancelled')=>{
+        if(aborted)return;
+        aborted=true;terminationReason=reason;
+        diagnostic('termination_requested',{reason});
+        try{child?.kill('SIGTERM')}catch{}
+      };
+      const disallowed=()=>{
+        if(!guardrailLogged){
+          guardrailLogged=true;
+          diagnostic('guardrail_termination',{reason:'disallowed_tool'});
+        }
+        try{child?.kill('SIGTERM')}catch{}
+      };
+      const abortSignal=()=>abort('request_cancelled');
+      if(signal?.aborted){
+        terminationReason='request_cancelled';
+        finish({status:'failed',code:'codex_cancelled'});return;
+      }
       try{
         child=launch(binary,args,{cwd:workspace,stdio:['pipe','pipe','pipe'],
           env:{HOME:os.homedir(),CODEX_HOME:path.join(os.homedir(),'.codex'),
             PATH:'/usr/bin:/bin:/opt/homebrew/bin',LANG:'en_US.UTF-8',
             TMPDIR:process.env.TMPDIR||'/tmp'}});
-      }catch{finish({status:'unavailable',code:EXIT_ERROR});return;}
-      signal?.addEventListener('abort',abort,{once:true});
-      timer=setTimeout(()=>{aborted=true;abort()},timeoutMs);
+      }catch{
+        diagnostic('spawn_failed');
+        finish({status:'unavailable',code:EXIT_ERROR});return;
+      }
+      diagnostic('process_spawned');
+      signal?.addEventListener('abort',abortSignal,{once:true});
+      timer=setTimeout(()=>abort('deadline'),timeoutMs);
       function onLine(line){
         let evt;try{evt=JSON.parse(line)}catch{return;}
-        if(evt.type==='thread.started'&&SESSION.test(evt.thread_id||''))thread=evt.thread_id;
+        if(evt.type==='thread.started'&&SESSION.test(evt.thread_id||'')){
+          thread=evt.thread_id;diagnostic('thread_started');
+        }
         if(evt.type==='item.completed'&&evt.item?.type==='agent_message'&&
            typeof evt.item.text==='string')output=evt.item.text;
         // Codex makes direct MCP calls, but only through three allowed light
@@ -148,39 +181,51 @@ export function createTeslaMonCodex({
             suspicious=true;
           }else if(evt.type==='item.started'){
             allowedMcpCalls++;
+            diagnostic('mcp_started',{tool:item.tool,callNumber:allowedMcpCalls});
             if(item.tool==='set_light')lightMutations++;
             if(allowedMcpCalls>5||lightMutations>1)suspicious=true;
           }else if(evt.type==='item.completed'){
-            if(item.status==='completed'&&!item.error)completedMcpCalls++;
+            const success=item.status==='completed'&&!item.error;
+            diagnostic('mcp_completed',{tool:item.tool,success});
+            if(success)completedMcpCalls++;
             else suspicious=true;
           }
-          if(suspicious){try{child?.kill('SIGTERM')}catch{}}
+          if(suspicious)disallowed();
         }
         if(['command_execution','file_change','web_search','tool_call']
           .includes(evt.item?.type)){
           suspicious=true;
-          try{child?.kill('SIGTERM');}catch{}
+          disallowed();
         }
-        if(evt.type==='turn.completed')completed=true;
+        if(evt.type==='turn.completed'){
+          completed=true;diagnostic('turn_completed');
+        }
         if(evt.type==='turn.failed'||evt.type==='error'){
           const failure=classifyCodexFailure(evt);
           // A generic turn.failed may follow a specific quota error.
           if(!serviceFailure||failure.code==='codex_usage_limit')serviceFailure=failure;
+          diagnostic('service_failure',{code:failure.code});
         }
       }
       child.stdout.on('data',d=>{
+        if(!firstStdout){firstStdout=true;diagnostic('first_stdout');}
         stdoutBytes+=d.length;
-        if(stdoutBytes>maxOutputBytes){abort();return;}
+        if(stdoutBytes>maxOutputBytes){abort('output_limit');return;}
         buffer+=String(d);
         const lines=buffer.split('\n');buffer=lines.pop()||'';
         for(const line of lines)onLine(line);
       });
-      child.stderr.on('data',()=>{}); // Never log credentials or prompt contents.
+      child.stderr.on('data',d=>{stderrBytes+=d.length;}); // Never log stderr content.
       child.stdin.on('error',()=>{});
       child.stdin.end(prompt);
-      child.on('error',()=>finish({status:'unavailable',code:EXIT_ERROR}));
+      child.on('error',()=>{
+        diagnostic('process_error');
+        finish({status:'unavailable',code:EXIT_ERROR});
+      });
       child.on('close',code=>{
         if(settled)return;
+        diagnostic('process_closed',{exitCode:Number.isInteger(code)?code:null,
+          stderrBytes,stdoutBytes});
         if(buffer.trim())onLine(buffer);
         if(aborted)return finish({status:'failed',code:'codex_timeout_or_cancelled'});
         if(suspicious)return finish({status:'failed',code:'codex_disallowed_tool'});
