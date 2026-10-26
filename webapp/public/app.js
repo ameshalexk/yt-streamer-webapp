@@ -18,7 +18,13 @@ const api = {
     if (!r.ok) throw new Error(data?.error || r.statusText);
     return data;
   },
-  async get(p) { return this.parse(await fetch(p)); },
+  async get(p) {
+    const data = await this.parse(await fetch(p));
+    if (p.startsWith("/api/youtube/info?url=")) {
+      try { rememberStreamStoryboard(new URL(p, location.origin).searchParams.get("url"), data); } catch {}
+    }
+    return data;
+  },
   async send(method, p, body) {
     const r = await fetch(p, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
     return this.parse(r);
@@ -1134,6 +1140,99 @@ const streamSeek = {
   timer: null,
   liveAtMs: 0,
 };
+
+// Sprite metadata is reused across quality switches and seek-triggered restarts.
+// Images are fetched directly by the browser only while the user previews a time.
+const seekPreview = {
+  source: "",
+  storyboard: null,
+  metadataCache: new Map(),
+  pendingSource: "",
+  showing: false,
+  dragging: false,
+  time: 0,
+};
+
+function rememberStreamStoryboard(url, info) {
+  const id = youtubeIdFromUrl(url);
+  if (!/^[A-Za-z0-9_-]{11}$/.test(id) || !info || info.id !== id) return;
+  seekPreview.metadataCache.set(id, info.storyboard || null);
+  if (seekPreview.metadataCache.size > 32) seekPreview.metadataCache.delete(seekPreview.metadataCache.keys().next().value);
+  if (seekPreview.source && youtubeIdFromUrl(seekPreview.source) === id) {
+    seekPreview.storyboard = info.storyboard || null;
+    if (seekPreview.showing) renderStreamSeekPreview();
+  }
+}
+
+function hideStreamSeekPreview() {
+  seekPreview.showing = false;
+  const node = $("#streamSeekPreview");
+  if (node) node.hidden = true;
+}
+
+function renderStreamSeekPreview(clientX = null) {
+  if (!seekPreview.showing || !streamSeek.seekable) return;
+  const track = $("#streamSeekTrack");
+  const popup = $("#streamSeekPreview");
+  const frame = $("#streamSeekPreviewFrame");
+  if (!track || !popup || !frame) return;
+  const rect = track.getBoundingClientRect();
+  const sheet = seekPreview.storyboard;
+  const frameNumber = Math.floor(seekPreview.time * Number(sheet?.fps));
+  const perSheet = Number(sheet?.columns) * Number(sheet?.rows);
+  const index = perSheet > 0 ? Math.floor(frameNumber / perSheet) : -1;
+  const url = index >= 0 && index < (sheet?.urls?.length || 0) ? sheet.urls[index] : null;
+
+  // Small portrait players clip overflowing overlays. Fit the real frame above
+  // the track; never allow the preview to extend outside the video viewport.
+  const screenRect = $("#screen")?.getBoundingClientRect();
+  const spaceAbove = Math.max(0, rect.top - (screenRect?.top ?? 0) - 8);
+  const spaceBelow = Math.max(0, (screenRect?.bottom ?? 0) - rect.bottom - 8);
+  const positionBelow = spaceBelow > spaceAbove && spaceBelow >= 70;
+  const usableSpace = positionBelow ? spaceBelow : spaceAbove;
+  popup.style.top = positionBelow ? (rect.height + 8) + "px" : "auto";
+  popup.style.bottom = positionBelow ? "auto" : "52px";
+  const ratio = sheet?.height && sheet?.width ? sheet.height / sheet.width : (90 / 160);
+  const frameWidth = Math.floor(Math.min(window.innerWidth <= 480 ? 140 : 160,
+    (usableSpace - 24) / ratio));
+  const hasFrame = Boolean(url && frameWidth >= 78);
+  const displayedWidth = hasFrame ? frameWidth : 76;
+  popup.style.width = (displayedWidth + 4) + "px";
+  popup.classList.toggle("has-frame", hasFrame);
+  frame.style.width = displayedWidth + "px";
+  frame.style.height = hasFrame ? Math.floor(sheet.height * displayedWidth / sheet.width) + "px" : "";
+  const x = clientX == null ? rect.width * (seekPreview.time / (streamSeek.duration || 1)) : clientX - rect.left;
+  const half = (displayedWidth + 4) / 2;
+  popup.style.left = (rect.width <= half * 2 ? rect.width / 2 : Math.max(half, Math.min(rect.width - half, x))) + "px";
+  popup.hidden = false;
+  $("#streamSeekPreviewTime").textContent = clock(seekPreview.time);
+  if (!hasFrame) {
+    frame.style.backgroundImage = "none";
+    return;
+  }
+  const scale = displayedWidth / sheet.width;
+  frame.style.backgroundImage = 'url("' + url + '")';
+  frame.style.backgroundSize = (sheet.columns * displayedWidth) + "px " + (sheet.rows * sheet.height * scale) + "px";
+  frame.style.backgroundPosition = (-((frameNumber % perSheet) % sheet.columns) * displayedWidth) + "px "
+    + (-Math.floor((frameNumber % perSheet) / sheet.columns) * sheet.height * scale) + "px";
+}
+
+function showStreamSeekPreview(time, clientX = null) {
+  if (!streamSeek.seekable) return;
+  seekPreview.time = streamSeekTarget(time);
+  seekPreview.showing = true;
+  renderStreamSeekPreview(clientX);
+  const source = seekPreview.source;
+  if (!source || seekPreview.storyboard || seekPreview.pendingSource === source
+      || seekPreview.metadataCache.has(youtubeIdFromUrl(source))) return;
+  seekPreview.pendingSource = source;
+  void api.get("/api/youtube/info?url=" + encodeURIComponent(source))
+    .catch(() => {
+      // Restricted, live and unavailable videos still show an accurate timestamp.
+      seekPreview.metadataCache.set(youtubeIdFromUrl(source), null);
+    })
+    .finally(() => { if (seekPreview.pendingSource === source) seekPreview.pendingSource = ""; });
+}
 const STREAM_WARN_MS = 12000;
 const STREAM_FAIL_MS = 30000;
 const COMPAT_STREAM_WARN_MS = 25000;
@@ -1710,6 +1809,8 @@ function stopStreamSeekTimer(reset = false) {
   streamSeek.timer = null;
   streamSeek.liveAtMs = 0;
   if (reset) {
+    hideStreamSeekPreview();
+    seekPreview.dragging = false;
     streamSeek.seekable = false;
     streamSeek.isLive = false;
     streamSeek.showUnavailable = false;
@@ -1733,6 +1834,11 @@ function configureStreamSeek(meta = {}, startAt = 0) {
   streamSeek.isLive = Boolean(meta.isLive || meta.live);
   streamSeek.showUnavailable = Boolean(!streamSeek.seekable && (streamSeek.isLive || meta.seekable === false));
   streamSeek.startAt = clampStreamSeekTime(startAt);
+  const source = String(meta.youtubeUrl || "");
+  const id = youtubeIdFromUrl(source);
+  seekPreview.source = /^[A-Za-z0-9_-]{11}$/.test(id) && !streamSeek.isLive ? source : "";
+  seekPreview.storyboard = seekPreview.metadataCache.get(id) || null;
+  hideStreamSeekPreview();
   updateStreamSeekUi(streamSeek.startAt);
 }
 
@@ -8916,29 +9022,52 @@ window.addEventListener("message", async (event) => {
 });
 $("#streamBackBtn").onclick = () => seekStreamTo(getStreamCurrentTime() - 10);
 $("#streamForwardBtn").onclick = () => seekStreamTo(getStreamCurrentTime() + 10);
-$("#streamSeekTrack").addEventListener("pointerdown", (e) => {
-  if (!streamSeek.seekable) return;
+const seekTrack = $("#streamSeekTrack");
+function streamSeekTimeAt(clientX) {
+  const rect = seekTrack.getBoundingClientRect();
+  return streamSeek.duration * Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+}
+seekTrack.addEventListener("pointerenter", (e) => {
+  if (e.pointerType === "mouse" && !seekPreview.dragging && streamSeek.seekable)
+    showStreamSeekPreview(streamSeekTimeAt(e.clientX), e.clientX);
+});
+seekTrack.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "mouse" && !seekPreview.dragging && streamSeek.seekable)
+    showStreamSeekPreview(streamSeekTimeAt(e.clientX), e.clientX);
+});
+seekTrack.addEventListener("pointerleave", () => {
+  if (!seekPreview.dragging) hideStreamSeekPreview();
+});
+seekTrack.addEventListener("pointerdown", (e) => {
+  if (!streamSeek.seekable || seekPreview.dragging) return;
   e.preventDefault();
   e.stopPropagation();
+  seekPreview.dragging = true;
   beginScreenControlInteraction();
   clearInterval(streamSeek.timer);
-  const seek = (clientX) => {
-    const rect = $("#streamSeekTrack").getBoundingClientRect();
-    const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    updateStreamSeekUi(pos * streamSeek.duration);
-    return pos * streamSeek.duration;
+  streamSeek.timer = null;
+  const preview = (clientX) => {
+    const time = streamSeekTimeAt(clientX);
+    updateStreamSeekUi(time);
+    showStreamSeekPreview(time, clientX);
+    return time;
   };
-  let target = seek(e.clientX);
-  const move = (ev) => { target = seek(ev.clientX); };
+  let target = preview(e.clientX);
+  const pointerId = e.pointerId;
+  const move = (ev) => { if (ev.pointerId === pointerId) target = preview(ev.clientX); };
   const finish = (commit) => {
     document.removeEventListener("pointermove", move);
     document.removeEventListener("pointerup", up);
     document.removeEventListener("pointercancel", cancel);
+    seekPreview.dragging = false;
+    hideStreamSeekPreview();
     if (commit) seekStreamTo(target);
+    else if (streamSeek.seekable && $("#screen").classList.contains("playing")) startStreamSeekTimer();
+    else updateStreamSeekUi();
     endScreenControlInteraction();
   };
-  const up = () => finish(true);
-  const cancel = () => finish(false);
+  const up = (ev) => { if (ev.pointerId === pointerId) finish(true); };
+  const cancel = (ev) => { if (ev.pointerId === pointerId) finish(false); };
   document.addEventListener("pointermove", move);
   document.addEventListener("pointerup", up);
   document.addEventListener("pointercancel", cancel);

@@ -812,6 +812,25 @@ body.fullscreen-controls-idle .screen .stream-badge {
 .stream-seek-time {
   color: rgba(255,255,255,.8); font-size: 13px; line-height: 1.25; text-align: center; font-variant-numeric: tabular-nums;
 }
+.stream-seek-preview {
+  position: absolute; z-index: 5; bottom: 52px; left: 50%; transform: translateX(-50%);
+  width: 164px; padding: 2px; border-radius: 9px; background: rgba(9,11,16,.96);
+  box-shadow: 0 6px 24px rgba(0,0,0,.65); pointer-events: none; text-align: center;
+}
+.stream-seek-preview[hidden] { display: none !important; }
+.stream-seek-preview-frame {
+  height: 90px; width: 160px; max-width: 100%; margin: 0 auto;
+  background-color: #161b25; background-repeat: no-repeat; border-radius: 6px;
+}
+.stream-seek-preview:not(.has-frame) .stream-seek-preview-frame { display: none; }
+.stream-seek-preview-time {
+  display: block; padding: 4px 0 2px; font-size: 12px; font-weight: 700;
+  font-variant-numeric: tabular-nums; color: #fff;
+}
+@media (max-width: 480px) {
+  .stream-seek-preview { width: 144px; }
+  .stream-seek-preview-frame { width: 140px; height: 79px; }
+}
 .live-seek-status {
   min-height: 36px; margin: 0 0 8px;
   display: flex; align-items: center; gap: 8px;

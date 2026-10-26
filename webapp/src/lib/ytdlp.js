@@ -168,11 +168,42 @@ export async function testExtractorPlayback(url) {
   return results;
 }
 
+// YouTube supplies sprite sheets of real frames. Reuse the metadata lookup;
+// no FFmpeg process, video restart, or audio pipeline is involved.
+export function extractStoryboard(info) {
+  if (info?.is_live || info?.live_status === "is_live" || !(Number(info?.duration) > 0)) return null;
+  const id = String(info?.id || "");
+  if (!/^[A-Za-z0-9_-]{11}$/.test(id)) return null;
+  const candidates = (Array.isArray(info?.formats) ? info.formats : [])
+    .filter((format) => format?.format_note === "storyboard")
+    .sort((a, b) => Math.abs(Number(a.width) - 160) - Math.abs(Number(b.width) - 160));
+  for (const candidate of candidates) {
+    const { width, height, rows, columns, fps } = candidate;
+    if (![width, height, rows, columns, fps].every((value) => Number.isFinite(value) && value > 0)) continue;
+    if (width > 320 || height > 180 || rows > 10 || columns > 10 || fps > 3
+        || !Number.isInteger(rows) || !Number.isInteger(columns)) continue;
+    const fragments = candidate.fragments;
+    if (!Array.isArray(fragments) || !fragments.length) continue;
+    // Bound JSON and browser memory for unusually long videos.
+    const urls = fragments.slice(0, 1000).map((fragment) => fragment?.url);
+    if (!urls.every((value) => {
+      if (typeof value !== "string" || value.length > 2048) return false;
+      try {
+        const parsed = new URL(value);
+        return parsed.protocol === "https:" && parsed.hostname === "i.ytimg.com"
+          && parsed.pathname.startsWith("/sb/" + id + "/");
+      } catch { return false; }
+    })) continue;
+    return { width, height, rows, columns, fps, urls: urls.map((value) => new URL(value).href) };
+  }
+  return null;
+}
+
 // Single video/stream metadata (no download).
 export async function getInfo(url) {
   const json = await capture(["-J", "--no-warnings", "--no-playlist", url]);
   const info = JSON.parse(json);
-  return { id: info.id, title: info.title, duration: info.duration, thumbnail: info.thumbnail, uploader: info.uploader, isLive: !!info.is_live, webpage_url: info.webpage_url || url };
+  return { id: info.id, title: info.title, duration: info.duration, thumbnail: info.thumbnail, uploader: info.uploader, isLive: !!info.is_live, webpage_url: info.webpage_url || url, storyboard: extractStoryboard(info) };
 }
 
 // Expand a YouTube playlist/channel URL into a flat list of entries.
