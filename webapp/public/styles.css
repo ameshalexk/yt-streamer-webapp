@@ -648,7 +648,19 @@ body.fullscreen-controls-idle .video-controls-overlay .video-controls-panel { po
 }
 .screen.browser-input-active {
   touch-action: none;
+  overscroll-behavior: contain;
+  -webkit-user-select: none;
+  user-select: none;
   cursor: crosshair;
+}
+/* Chrome browser frames are pixels, not draggable page content. Route
+   touch/pointer events to #screen rather than letting Tesla drag the image. */
+.screen.browser-input-active > :is(video, img, canvas) {
+  pointer-events: none;
+  touch-action: none;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .screen.browser-zoom-active {
   cursor: grab;

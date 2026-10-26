@@ -21,7 +21,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e10600'/><polygon points='40,30 72,50 40,70' fill='white'/></svg>" />
   <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <link rel="stylesheet" href="/styles.css?v=20261018-iphone-player-fix" />
+  <link rel="stylesheet" href="/styles.css?v=20261021-native-touch-scroll-v2" />
   <link rel="stylesheet" href="/everyday-controls.css?v=20261007" />
   <link rel="stylesheet" href="/ui-switch.css?v=20261008-v3" />
   <script src="/ui-switch.js?v=20261008-v3"></script>
@@ -260,7 +260,7 @@
             </div>
           </div>
           <video id="video" playsinline></video>
-          <img id="mjpeg" alt="" />
+          <img id="mjpeg" alt="" draggable="false" />
           <canvas id="mjpegCanvas" aria-label="Buffered video"></canvas>
           <canvas id="cyberdashCanvas" aria-label="WebCodecs video"></canvas>
           <canvas id="pauseFrame" aria-hidden="true"></canvas>
@@ -851,7 +851,7 @@
   <script src="/playback-recovery.js?v=20261007"></script>
   <script src="/everyday-controls.js?v=20261007"></script>
   <script src="/extractor-controls.js?v=20261007"></script>
-  <script src="/app.js?v=20261021-output-indicator"></script>
+  <script src="/app.js?v=20261021-native-touch-scroll-v2"></script>
   <script src="/modern-ui.js?v=20261008-v3"></script>
   <script src="/vlc-cast.js?v=20261011-issue35"></script>
   <script src="/ai-media-agent-adapter.js?v=20261023-teslamon-fullscreen1"></script>
