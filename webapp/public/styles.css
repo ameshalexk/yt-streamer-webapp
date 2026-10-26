@@ -2414,3 +2414,76 @@ html[data-ui='new'] #castVlcPanel:not([hidden]) {
   margin: 0 auto; z-index: 450;
   box-shadow: 0 12px 42px #0009;
 }
+
+/* Opt-in playback diagnostics stay in document flow beside playback modes and quality. */
+.playback-diagnostics {
+  min-width: 0;
+  margin: 8px 16px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.playback-diagnostics[hidden] { display: none !important; }
+.playback-diagnostics-summary {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 8px 14px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 750;
+  cursor: pointer;
+  list-style: none;
+}
+.playback-diagnostics-summary::-webkit-details-marker { display: none; }
+.playback-diagnostics-summary::after {
+  content: "⌄";
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 18px;
+}
+.playback-diagnostics[open] > .playback-diagnostics-summary::after { content: "⌃"; }
+.playback-diagnostics-summary:focus-visible {
+  outline: 3px solid var(--accent-2);
+  outline-offset: -3px;
+  border-radius: 9px;
+}
+.playback-diagnostics-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+.playback-diagnostics-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.playback-diagnostics-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 14px;
+}
+.playback-diagnostics-list dt { color: var(--muted); }
+.playback-diagnostics-list dd { margin: 0; overflow-wrap: anywhere; }
+.playback-diagnostics-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.playback-diagnostics-actions .btn { min-height: 44px; }
+.playback-diagnostics-copy-status { min-width: 0; color: var(--muted); font-size: 13px; }
+.playback-diagnostics-copy-status:empty { display: none; }
+@media (max-width: 700px) {
+  .playback-diagnostics { margin: 8px 12px 12px; }
+  .playback-diagnostics-summary { min-height: 48px; padding-inline: 12px; }
+  .playback-diagnostics-body { padding: 0 12px 12px; }
+  .playback-diagnostics-actions { align-items: stretch; flex-direction: column; }
+  .playback-diagnostics-actions .btn { width: 100%; min-height: 48px; }
+}

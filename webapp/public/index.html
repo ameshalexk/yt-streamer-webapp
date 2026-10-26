@@ -328,6 +328,17 @@
           <span class="player-video-modes-hint" id="videoModeHint">Selected mode is a preference (blue). The active video output has a green outline and dot; status shows the codec actually in use.</span>
         </section>
 
+        <details class="playback-diagnostics" id="playbackDiagnostics">
+          <summary class="playback-diagnostics-summary">Playback details</summary>
+          <div class="playback-diagnostics-body">
+            <div id="playbackDiagnosticsContent" class="playback-diagnostics-content"></div>
+            <div class="playback-diagnostics-actions">
+              <button class="btn small ghost" id="playbackDiagnosticsCopy" type="button">Copy details</button>
+              <span id="playbackDiagnosticsCopyStatus" class="playback-diagnostics-copy-status" role="status" aria-live="polite"></span>
+            </div>
+          </div>
+        </details>
+
         <section class="player-quality-panel" id="playerQualityPanel" aria-label="Player quality settings" hidden>
           <div class="player-quality-panel-head">
             <strong>Playback quality</strong>
@@ -855,7 +866,8 @@
   <script src="/playback-recovery.js?v=20261007"></script>
   <script src="/everyday-controls.js?v=20261007"></script>
   <script src="/extractor-controls.js?v=20261007"></script>
-  <script src="/app.js?v=20261026-storyboard-preview"></script>
+  <script src="/playback-diagnostics.js?v=20261026-1"></script>
+  <script src="/app.js?v=20261026-playback-diagnostics-1"></script>
   <script src="/modern-ui.js?v=20261008-v3"></script>
   <script src="/vlc-cast.js?v=20261011-issue35"></script>
   <script src="/ai-media-agent-adapter.js?v=20261023-teslamon-fullscreen1"></script>
