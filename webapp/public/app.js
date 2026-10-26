@@ -917,6 +917,7 @@ let activeEmbedHeight = "";
 let streamAttempt = 0;
 let streamWarnTimer = null;
 let streamFailTimer = null;
+let streamWatchdog = null;
 let restreamTimer = null;
 let qualitySwitchTimer = null;
 let qualitySwitchGeneration = 0;
@@ -1309,6 +1310,7 @@ function clearStreamTimers() {
   streamWarnTimer = null;
   streamFailTimer = null;
   restreamTimer = null;
+  streamWatchdog = null;
 }
 
 function clearStreamNotice() {
@@ -1841,6 +1843,7 @@ function pausePlayback() {
   if (screen.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
     pausedResumeAt = getStreamCurrentTime();
     playbackPaused = true;
+    suspendStreamWatchdog();
     void cyberdashPlayer.pause();
     clearInterval(streamSeek.timer);
     streamSeek.timer = null;
@@ -1860,6 +1863,7 @@ function pausePlayback() {
   const restartableMjpegPause = screen.classList.contains("mjpeg-mode") && !bufferedPauseActive;
   pausedResumeAt = legacy.playing ? (audio.currentTime || 0) : getStreamCurrentTime();
   playbackPaused = true;
+  suspendStreamWatchdog();
   try { video.pause(); } catch {}
   try { audio.pause(); } catch {}
   if (restartableMjpegPause && activeCompat?.browserPcm) destroyBrowserPcmAudio();
@@ -1896,6 +1900,7 @@ async function resumePlayback() {
   const screen = $("#screen");
   if (screen.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
     playbackPaused = false;
+    resumeStreamWatchdog();
     screen.classList.remove("playback-paused");
     setPauseButtonState("Ⅱ Pause", false);
     await cyberdashPlayer.resume();
@@ -1911,6 +1916,7 @@ async function resumePlayback() {
   const wasMjpeg = screen.classList.contains("mjpeg-mode");
   const resumeAt = streamReplayTime(pausedResumeAt);
   playbackPaused = false;
+  resumeStreamWatchdog();
   screen.classList.remove("playback-paused");
   $("#pauseFrame").hidden = true;
   setPauseButtonState("Ⅱ Pause", false);
@@ -1939,26 +1945,67 @@ function togglePlaybackPause() {
   else pausePlayback();
 }
 
-function startStreamWatchdog(attempt, mode, { warnMs = STREAM_WARN_MS, failMs = STREAM_FAIL_MS, silent = false } = {}) {
-  clearStreamTimers();
-  streamWarnTimer = setTimeout(() => {
-    if (!currentAttempt(attempt)) return;
-    if (!silent) {
+// Only active loading time counts toward a first-frame timeout. WebCodecs
+// intentionally stops decoder input on Pause, which must not be an error.
+function armStreamWatchdog(watchdog) {
+  if (streamWatchdog !== watchdog || watchdog.suspended || !currentAttempt(watchdog.attempt)) return;
+  watchdog.armedAt = Date.now();
+  if (!watchdog.warned && !watchdog.silent) {
+    streamWarnTimer = setTimeout(() => {
+      if (streamWatchdog !== watchdog || !currentAttempt(watchdog.attempt)) return;
+      if (playbackPaused) return suspendStreamWatchdog();
+      watchdog.warned = true;
       setBadge("reconnecting", "Still connecting...");
       showStreamNotice(
         "warning",
         "Still connecting",
-        `${mode} has not delivered a video frame yet. Waiting a bit longer before marking it failed.`
+        `${watchdog.mode} has not delivered a video frame yet. Waiting a bit longer before marking it failed.`
       );
-    }
-  }, warnMs);
+    }, watchdog.warnRemaining);
+  }
   streamFailTimer = setTimeout(() => {
+    if (streamWatchdog !== watchdog || !currentAttempt(watchdog.attempt)) return;
+    if (playbackPaused) return suspendStreamWatchdog();
     failStreamAttempt(
-      attempt,
+      watchdog.attempt,
       "No video frames received",
-      `The stream connection stayed open, but no playable video arrived after ${Math.round(failMs / 1000)} seconds. Try Retry, Lower quality, another channel, or check VPN/geo restrictions.`
+      `No playable video frames arrived during ${Math.round(watchdog.failMs / 1000)} seconds of active loading. Try Retry or another video if this continues.`
     );
-  }, failMs);
+  }, watchdog.failRemaining);
+}
+
+function suspendStreamWatchdog() {
+  const watchdog = streamWatchdog;
+  if (!watchdog || watchdog.suspended) return;
+  const elapsed = Math.max(0, Date.now() - watchdog.armedAt);
+  watchdog.warnRemaining = Math.max(0, watchdog.warnRemaining - elapsed);
+  watchdog.failRemaining = Math.max(0, watchdog.failRemaining - elapsed);
+  watchdog.suspended = true;
+  clearTimeout(streamWarnTimer);
+  clearTimeout(streamFailTimer);
+  streamWarnTimer = null;
+  streamFailTimer = null;
+}
+
+function resumeStreamWatchdog() {
+  const watchdog = streamWatchdog;
+  if (!watchdog || !watchdog.suspended || !currentAttempt(watchdog.attempt)) return;
+  watchdog.suspended = false;
+  // Resume gets a small grace window to fetch its next frame, while retaining
+  // the active-loading budget accrued before Pause.
+  watchdog.failRemaining = Math.max(10000, watchdog.failRemaining);
+  armStreamWatchdog(watchdog);
+}
+
+function startStreamWatchdog(attempt, mode, { warnMs = STREAM_WARN_MS, failMs = STREAM_FAIL_MS, silent = false } = {}) {
+  clearStreamTimers();
+  const watchdog = {
+    attempt, mode, failMs, silent, warned: false,
+    warnRemaining: warnMs, failRemaining: failMs,
+    suspended: playbackPaused, armedAt: Date.now(),
+  };
+  streamWatchdog = watchdog;
+  if (!watchdog.suspended) armStreamWatchdog(watchdog);
 }
 
 // Lazy-load mpegts.js: local copy first, CDN fallback.

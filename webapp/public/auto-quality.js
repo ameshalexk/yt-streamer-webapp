@@ -86,6 +86,10 @@
       emergencyCooldownMs = 3500,
       lowUpgradeStableMs = 12000,
       mediumUpgradeStableMs = 18000,
+      startupGraceMs = 12000,
+      deliveryPressureHoldMs = 6000,
+      renderPressureHoldMs = 5000,
+      rebufferGraceMs = 6000,
     } = {}) {
       this.now = now;
       this.observeIntervalMs = observeIntervalMs;
@@ -93,12 +97,19 @@
       this.emergencyCooldownMs = emergencyCooldownMs;
       this.lowUpgradeStableMs = lowUpgradeStableMs;
       this.mediumUpgradeStableMs = mediumUpgradeStableMs;
+      this.startupGraceMs = startupGraceMs;
+      this.deliveryPressureHoldMs = deliveryPressureHoldMs;
+      this.renderPressureHoldMs = renderPressureHoldMs;
+      this.rebufferGraceMs = rebufferGraceMs;
       this.enabled = false;
       this.tier = "medium";
       this.lastSwitchAt = 0;
       this.lastObservedAt = Number.NEGATIVE_INFINITY;
       this.stableSince = null;
       this.lastRebufferCount = 0;
+      this.attemptStartedAt = 0;
+      this.deliveryPressureSince = null;
+      this.renderPressureSince = null;
     }
 
     enable({ tier = "medium" } = {}) {
@@ -117,6 +128,9 @@
     }
 
     beginAttempt() {
+      this.attemptStartedAt = this.now();
+      this.deliveryPressureSince = null;
+      this.renderPressureSince = null;
       this.lastObservedAt = Number.NEGATIVE_INFINITY;
       this.stableSince = null;
       this.lastRebufferCount = 0;
@@ -171,10 +185,25 @@
           && m.queueSeconds < Math.max(1.25, m.rebufferSeconds * 1.15))
       );
 
+      // Quality changes rebuild the stream and discard its buffer. Segment
+      // delivery varies at startup; one low-FPS sample is not a stall.
+      if (m.state === "playing" && deliveryPressure) this.deliveryPressureSince ??= now;
+      else this.deliveryPressureSince = null;
+      if (m.state === "playing" && renderPressure) this.renderPressureSince ??= now;
+      else this.renderPressureSince = null;
+      const sustainedDelivery = this.deliveryPressureSince != null
+        && now - this.attemptStartedAt >= this.startupGraceMs
+        && now - this.deliveryPressureSince >= this.deliveryPressureHoldMs;
+      const sustainedRender = this.renderPressureSince != null
+        && now - this.attemptStartedAt >= this.startupGraceMs
+        && now - this.renderPressureSince >= this.renderPressureHoldMs;
+      const repeatedRebuffer = newRebuffer && m.rebufferCount >= 2
+        && now - this.attemptStartedAt >= this.rebufferGraceMs;
+
       if (this.tier !== "low"
-          && (newRebuffer || renderPressure || deliveryPressure)
+          && (repeatedRebuffer || sustainedRender || sustainedDelivery)
           && sinceSwitch >= this.emergencyCooldownMs) {
-        const reason = newRebuffer ? "rebuffer" : (renderPressure ? "device-overload" : "delivery-slow");
+        const reason = repeatedRebuffer ? "rebuffer" : (sustainedRender ? "device-overload" : "delivery-slow");
         return this._switch(nextTier(this.tier, -1), reason, m, now);
       }
 
@@ -222,6 +251,8 @@
       this.lastObservedAt = now;
       this.stableSince = null;
       this.lastRebufferCount = metrics.rebufferCount;
+      this.deliveryPressureSince = null;
+      this.renderPressureSince = null;
       return { action: "switch", from, to, reason, metrics: { ...metrics } };
     }
   }

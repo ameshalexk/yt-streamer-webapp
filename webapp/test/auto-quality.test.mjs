@@ -53,41 +53,51 @@ test("Auto starts at Medium and upgrades only after sustained headroom", () => {
   assert.equal(decision?.reason, "stable-headroom");
 });
 
-test("Auto drops one tier immediately after a rebuffer", () => {
+test("Auto does not restart on a single rebuffer, but downgrades after repeated confirmed stalls", () => {
   let now = 1000;
   const controller = new AutoQualityController({ now: () => now });
   controller.enable({ tier: "high" });
-  const decision = controller.observe({
-    ...strongStats({ fps: 24, queueSeconds: 0.5 }),
-    state: "buffering",
-    rebufferCount: 1,
-  });
+  const stats = { ...strongStats({ fps: 24, queueSeconds: 0.5 }), state: "buffering" };
+  assert.equal(controller.observe({ ...stats, rebufferCount: 1 }), null);
+  now = 8000;
+  const decision = controller.observe({ ...stats, rebufferCount: 2 });
   assert.equal(decision?.from, "high");
   assert.equal(decision?.to, "medium");
   assert.equal(decision?.reason, "rebuffer");
 });
 
-test("Auto can detect delivery pressure before a full stall", () => {
+test("Auto ignores a brief low-FPS sample and downgrades after sustained delivery pressure", () => {
   let now = 1000;
   const controller = new AutoQualityController({ now: () => now });
   controller.enable({ tier: "medium" });
-  const decision = controller.observe({
-    state: "playing",
-    fps: 15,
-    receiveFps: 10,
-    renderedFps: 14.8,
-    producerSpeed: 0.67,
-    renderedFrames: 100,
-    receivedFrames: 100,
-    droppedFrames: 0,
-    averageDecodeMs: 8,
-    lastAvDriftMs: 30,
-    queueSeconds: 0.6,
-    queueTrend: "shrinking",
-    rebufferCount: 0,
-  });
+  const slow = {
+    state: "playing", fps: 15, receiveFps: 10, renderedFps: 14.8,
+    producerSpeed: 0.67, renderedFrames: 100, receivedFrames: 100,
+    droppedFrames: 0, averageDecodeMs: 8, lastAvDriftMs: 30,
+    queueSeconds: 0.6, queueTrend: "shrinking", rebufferCount: 0,
+  };
+  assert.equal(controller.observe(slow), null);
+  now = 8000;
+  assert.equal(controller.observe(slow), null);
+  now = 13100;
+  const decision = controller.observe(slow);
   assert.equal(decision?.to, "low");
   assert.equal(decision?.reason, "delivery-slow");
+});
+
+test("Auto clears delivery pressure after healthy sample instead of restarting later", () => {
+  let now = 1000;
+  const controller = new AutoQualityController({ now: () => now });
+  controller.enable();
+  const slow = { ...strongStats(), receiveFps: 5, producerSpeed: 0.33, queueSeconds: 0.3, queueTrend: "shrinking" };
+  assert.equal(controller.observe(slow), null);
+  now = 7000;
+  assert.equal(controller.observe(strongStats()), null);
+  now = 15000;
+  assert.equal(controller.observe(slow), null);
+  now = 19000;
+  assert.equal(controller.observe(slow), null);
+  assert.equal(controller.tier, "medium");
 });
 
 test("Auto UI is separate from Low Medium High and is persisted as a mode", () => {
