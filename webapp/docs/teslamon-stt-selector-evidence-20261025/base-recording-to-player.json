@@ -1,0 +1,74 @@
+{
+  "origin": "http://127.0.0.1:63636",
+  "planTexts": [
+    "Please play a video about the fabric of space and time.",
+    "Please play a video about the fabric of space and time."
+  ],
+  "forbiddenUploads": [],
+  "modelRequests": [
+    "/games/models/whisper-base-en-95bf40a/tokenizer.json",
+    "/games/models/whisper-base-en-95bf40a/tokenizer_config.json",
+    "/games/models/whisper-base-en-95bf40a/config.json",
+    "/games/models/whisper-base-en-95bf40a/preprocessor_config.json",
+    "/games/models/whisper-base-en-95bf40a/onnx/encoder_model_quantized.onnx",
+    "/games/models/whisper-base-en-95bf40a/onnx/decoder_model_merged_quantized.onnx",
+    "/games/models/whisper-base-en-95bf40a/generation_config.json"
+  ],
+  "errors": [],
+  "commands": [
+    {
+      "firstStatus": "Video playing in this tab.",
+      "state": {
+        "media_id": "abcDEF12345",
+        "playback_phase": "playing",
+        "mode": "buffered_mjpeg",
+        "rendered_frames": 41,
+        "fullscreen_kind": "none"
+      }
+    },
+    {
+      "secondStatus": "Playing in this tab Tap Fullscreen directly in this tab.",
+      "state": {
+        "media_id": "abcDEF12345",
+        "playback_phase": "playing",
+        "mode": "buffered_mjpeg",
+        "rendered_frames": 253,
+        "fullscreen_kind": "none"
+      }
+    }
+  ],
+  "checks": [
+    "real MediaRecorder > mono decode > Whisper WASM > planner > selected video frame progress"
+  ],
+  "result": {
+    "modelId": "whisper-base.en",
+    "micCalls": 3,
+    "workerCount": 1,
+    "loadCount": 1,
+    "inferences": 2,
+    "workerResults": [
+      "Please play a video about the fabric of space and time.",
+      "Please play a video about the fabric of space and time."
+    ],
+    "pcm": [
+      {
+        "length": 76800,
+        "peak": 2.0345869483764863e-34
+      },
+      {
+        "length": 76800,
+        "peak": 2.0345869483764863e-34
+      }
+    ],
+    "videoFrames": 253,
+    "firstVideoFrameCount": null,
+    "framesAdvanced": true,
+    "tracksEnded": true,
+    "modelEntries": 7,
+    "firstFrames": 41
+  },
+  "gameCache": {
+    "cachedFiles": 7,
+    "modelRequestsAfterNavigation": 0
+  }
+}

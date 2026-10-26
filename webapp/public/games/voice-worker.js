@@ -1,7 +1,7 @@
 import * as Transformers from './vendor/transformers-3.8.1/transformers.min.js';
 import { inspectModelCache, MODEL_CACHE_FILES } from './model-cache-status.js?v=63822c97e34c';
+import { getVoiceModel } from './voice-models.js?v=20261025-stt-models1';
 
-const MODEL_ID = 'whisper-tiny-en-79fb389';
 const MODELS_BASE = new URL('./models/', import.meta.url);
 const WASM_BASE = new URL('./vendor/transformers-3.8.1/', import.meta.url);
 
@@ -16,20 +16,33 @@ let recognizer = null;
 let loadPromise = null;
 let inferenceActive = false;
 let modelInfo = null;
+let activeModelId = null;
 
 function emitProgress(id, info, extra = {}) {
   self.postMessage({ id, type: 'progress', ...info, ...extra });
 }
 
-function fileName(file) {
-  return typeof file === 'string' ? file.replace(/^.*?whisper-tiny-en-79fb389\//, '') : '';
+function fileName(file, directory) {
+  if (typeof file !== 'string') return '';
+  const marker = `${directory}/`;
+  const index = file.indexOf(marker);
+  return index < 0 ? '' : file.slice(index + marker.length);
 }
 
 function postError(id, error) {
   self.postMessage({ id, type: 'error', message: error instanceof Error ? error.message : String(error) });
 }
 
-async function loadRecognizer(id) {
+async function loadRecognizer(id, requestedModelId = 'whisper-tiny.en') {
+  let model;
+  try { model = getVoiceModel(requestedModelId); }
+  catch (error) { postError(id, error); throw error; }
+  if (activeModelId && activeModelId !== model.modelId) {
+    const error = new Error('This voice worker is already bound to another model. Create a new voice engine to switch models.');
+    postError(id, error);
+    throw error;
+  }
+  activeModelId = model.modelId;
   if (recognizer) {
     self.postMessage({ id, type: 'ready', modelInfo });
     return recognizer;
@@ -39,44 +52,48 @@ async function loadRecognizer(id) {
       const { cachedFileNames, ...cacheInfo } = await inspectModelCache({
         cacheStorage: self.caches,
         modelBase: MODELS_BASE.href,
-        modelId: MODEL_ID
+        modelId: model.directory,
+        files: MODEL_CACHE_FILES
       });
       const cachedAtStart = new Set(cachedFileNames);
       emitProgress(id, {
         phase: cacheInfo.cacheState === 'complete' ? 'cached' : 'download',
+        modelId: model.modelId,
+        modelLabel: model.label,
         ...cacheInfo,
         status: 'cache-check'
       });
 
       const completedFiles = new Set();
       let initializationAnnounced = false;
-      const pipeline = await Transformers.pipeline('automatic-speech-recognition', MODEL_ID, {
+      const pipeline = await Transformers.pipeline('automatic-speech-recognition', model.directory, {
         device: 'wasm',
-        dtype: 'q8',
+        dtype: model.dtype,
         local_files_only: true,
-        revision: '79fb389fc764e7c395bd330e9531d9d32ada7049',
+        revision: model.revision,
         progress_callback: progress => {
-          const file = fileName(progress.file);
+          const file = fileName(progress.file, model.directory);
           // Pipeline-wide initiate/ready events have no file and are not downloads.
           if (!file) return;
           const phase = cachedAtStart.has(file) ? 'cached' : 'download';
-          emitProgress(id, { phase, ...progress, ...cacheInfo });
+          emitProgress(id, { phase, modelId: model.modelId, modelLabel: model.label, ...progress, ...cacheInfo });
           if (progress.status === 'done' && MODEL_CACHE_FILES.includes(file)) completedFiles.add(file);
           if (!initializationAnnounced && completedFiles.size >= MODEL_CACHE_FILES.length) {
             initializationAnnounced = true;
-            emitProgress(id, { phase: 'initializing', status: 'initializing', ...cacheInfo });
+            emitProgress(id, { phase: 'initializing', status: 'initializing', modelId: model.modelId, modelLabel: model.label, ...cacheInfo });
           }
         }
       });
       const { cachedFileNames: _cachedFileNames, ...finalCacheInfo } = await inspectModelCache({
         cacheStorage: self.caches,
         modelBase: MODELS_BASE.href,
-        modelId: MODEL_ID
+        modelId: model.directory,
+        files: MODEL_CACHE_FILES
       });
       if (!initializationAnnounced) {
-        emitProgress(id, { phase: 'initializing', status: 'initializing', ...finalCacheInfo });
+        emitProgress(id, { phase: 'initializing', status: 'initializing', modelId: model.modelId, modelLabel: model.label, ...finalCacheInfo });
       }
-      modelInfo = finalCacheInfo;
+      modelInfo = { ...finalCacheInfo, modelId: model.modelId, modelLabel: model.label };
       return pipeline;
     })().then(pipeline => {
       recognizer = pipeline;
@@ -85,6 +102,7 @@ async function loadRecognizer(id) {
       loadPromise = null;
       recognizer = null;
       modelInfo = null;
+      activeModelId = null;
       throw error;
     });
   }
@@ -102,7 +120,7 @@ self.onmessage = event => {
   const message = event.data || {};
   const { id, type } = message;
   if (type === 'load') {
-    void loadRecognizer(id).catch(() => {});
+    void loadRecognizer(id, message.modelId).catch(() => {});
     return;
   }
   if (type === 'transcribe') {
@@ -114,7 +132,7 @@ self.onmessage = event => {
     void (async () => {
       const started = performance.now();
       try {
-        const pipeline = await loadRecognizer(id);
+        const pipeline = await loadRecognizer(id, message.modelId);
         const audio = message.audio instanceof Float32Array ? message.audio : new Float32Array(message.audio || []);
         const result = await pipeline(audio, {
           max_new_tokens: 64

@@ -76,6 +76,98 @@ test('dispose resets the in-memory instance, preserving the reusable module impl
   assert.equal(disposed, 1);
 });
 
+test('model selection reports its default before loading and replaces the warm worker once', async () => {
+  const constructed = [], disposed = [];
+  class Engine {
+    constructor({ modelId }) { this.modelId=modelId;constructed.push(modelId);this.loaded=true;this.worker={}; }
+    async transcribe() { return { text:this.modelId }; }
+    dispose() { disposed.push(this.modelId); }
+  }
+  const stt=createTeslaMonLocalStt({loadImplementation:async()=>({VoiceEngine:Engine,
+    decodeRecordedAudio:async()=>new Float32Array([0.1])})});
+  assert.equal(stt.getState().selectedModelId,'whisper-tiny.en');
+  assert.equal(stt.getState().modelInfo,null);
+  await stt.transcribe({size:1});
+  await stt.setModel('whisper-base.en');
+  assert.deepEqual(disposed,['whisper-tiny.en']);
+  assert.equal(stt.getState().selectedModel.label,'Base English');
+  assert.equal(stt.getState().modelInfo,null);
+  assert.equal((await stt.transcribe({size:1})).text,'whisper-base.en');
+  assert.deepEqual(constructed,['whisper-tiny.en','whisper-base.en']);
+  assert.deepEqual(disposed,['whisper-tiny.en']);
+  stt.dispose();
+  assert.deepEqual(disposed,['whisper-tiny.en','whisper-base.en']);
+});
+
+test('unknown or busy model changes are rejected without changing the active worker selection', async () => {
+  let releaseDecode, decoding;
+  const atDecode=new Promise(resolve=>{decoding=resolve;});
+  class Engine {
+    constructor({modelId}) { this.modelId=modelId;this.loaded=true; }
+    async transcribe() { return {text:this.modelId}; }
+    dispose() {}
+  }
+  const stt=createTeslaMonLocalStt({loadImplementation:async()=>({VoiceEngine:Engine,
+    decodeRecordedAudio:()=>{decoding();return new Promise(resolve=>{releaseDecode=resolve;});}})});
+  await assert.rejects(stt.setModel('stale-model'),/Unsupported/);
+  await assert.rejects(stt.setModel('toString'),/Unsupported/);
+  await assert.rejects(stt.setModel('constructor'),/Unsupported/);
+  await assert.rejects(stt.setModel('__proto__'),/Unsupported/);
+  const pending=stt.transcribe({size:1});
+  await atDecode;
+  await assert.rejects(stt.setModel('whisper-base.en'),/Finish or cancel/);
+  assert.equal(stt.getState().selectedModelId,'whisper-tiny.en');
+  releaseDecode(new Float32Array([0.1]));
+  assert.equal((await pending).text,'whisper-tiny.en');
+  await stt.setModel('whisper-base.en');
+  assert.equal(stt.getState().selectedModelId,'whisper-base.en');
+});
+
+test('constructor rejects inherited and non-string model IDs', () => {
+  for(const modelId of ['toString','constructor','__proto__',{},null])
+    assert.throws(()=>createTeslaMonLocalStt({modelId}),/Unsupported/);
+});
+
+test('switch during canceled module import cannot construct a stale model engine', async () => {
+  let releaseImport, constructed=[];
+  const loading=new Promise(resolve=>{releaseImport=resolve;});
+  class Engine {
+    constructor({modelId}) { constructed.push(modelId);this.modelId=modelId;this.loaded=true; }
+    async transcribe() { return {text:this.modelId}; }
+    dispose() {}
+  }
+  const stt=createTeslaMonLocalStt({loadImplementation:()=>loading});
+  const controller=new AbortController();
+  const pending=stt.transcribe({size:1},{signal:controller.signal});
+  await assert.rejects(stt.setModel('whisper-base.en'),/Finish or cancel/);
+  assert.equal(stt.getState().selectedModelId,'whisper-tiny.en');
+  controller.abort();
+  await assert.rejects(pending,{name:'AbortError'});
+  await stt.setModel('whisper-base.en');
+  releaseImport({VoiceEngine:Engine,decodeRecordedAudio:async()=>new Float32Array([0.1])});
+  assert.equal((await stt.transcribe({size:1})).text,'whisper-base.en');
+  assert.deepEqual(constructed,['whisper-base.en']);
+});
+
+test('dispose invalidates a pending import so it cannot retain a stale engine', async () => {
+  let releaseImport,constructed=0;
+  const loading=new Promise(resolve=>{releaseImport=resolve;});
+  class Engine {
+    constructor() { constructed++;this.loaded=true; }
+    async transcribe() { return {text:'stale'}; }
+    dispose() {}
+  }
+  const stt=createTeslaMonLocalStt({loadImplementation:()=>loading});
+  const pending=stt.transcribe({size:1});
+  await Promise.resolve();
+  stt.dispose();
+  await assert.rejects(pending,{name:'AbortError'});
+  releaseImport({VoiceEngine:Engine,decodeRecordedAudio:async()=>new Float32Array([0.1])});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(constructed,0);
+  assert.equal(stt.getState().worker,false);
+});
+
 test('cancellation during a delayed module import unlocks retry without stale inference', async () => {
   let releaseImport, loaded = 0, inferred = 0;
   const implementation = new Promise(resolve => { releaseImport = resolve; });

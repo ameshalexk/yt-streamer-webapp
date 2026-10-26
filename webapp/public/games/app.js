@@ -1,7 +1,7 @@
 import { TRICKS, matchTrick } from './phrase-matcher.js?v=62156ea68fa8';
 import { captureUtterance } from './audio-capture.js?v=e7ecb194ea4f';
 import { captureContinuously } from './continuous-capture.js?v=200f8b4cfe6c';
-import { VoiceEngine } from './voice-engine.js?v=eb11584ae7f9';
+import { VoiceEngine } from './voice-engine.js?v=20261025-stt-models1';
 import { createVoiceController } from './voice-ui.js?v=0d7527a1083c';
 import { createHandsFreeController } from './handsfree-ui.js?v=dc18316c005f';
 

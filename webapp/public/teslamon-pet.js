@@ -1,7 +1,7 @@
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261023-first-result1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
-import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261024-shared-stt1';
+import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261025-stt-models1';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261025-mycroft-rhasspy1';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
@@ -93,6 +93,15 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '</div>',
         '<span id="tmWakePhraseHelp" role="status" aria-live="polite">Any selected phrase can wake TeslaMon.</span>',
       '</fieldset>',
+      '<div class="tm-stt-model" id="tmSttModelControl">',
+        '<label for="tmSttModel"><strong>Transcription model</strong></label>',
+        '<select id="tmSttModel" aria-describedby="tmSttModelHelp tmSttModelState">',
+          '<option value="whisper-tiny.en">Whisper Tiny — Fast (43 MB)</option>',
+          '<option value="whisper-base.en">Whisper Base — Quality (79 MB)</option>',
+        '</select>',
+        '<span id="tmSttModelHelp">English models. Audio stays in this browser. Base is slower and uses more memory.</span>',
+        '<span id="tmSttModelState" role="status" aria-live="polite"></span>',
+      '</div>',
       '<div class="tm-target tm-self-target" aria-label="Playback target">',
         '<span>Controls this browser tab only</span></div>',
       '<form id="tmForm"><label class="tm-visually-hidden" for="tmText">Command</label>',
@@ -119,6 +128,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     state=$('#tmState'),mic=$('#tmMic'),
     wakeControl=$('#tmWakeControl'),wakeToggle=$('#tmWakeToggle'),wakeState=$('#tmWakeState'),
     wakePhraseSet=$('#tmWakePhraseSet'),wakePhraseHelp=$('#tmWakePhraseHelp'),
+    sttModelSelect=$('#tmSttModel'),sttModelState=$('#tmSttModelState'),
     input=$('#tmText'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
@@ -129,8 +139,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       const h=Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
       return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');})();
   const localPlayer=createTeslaMonLocalPlayer();
-  const localStt=createTeslaMonLocalStt();
-  let activeTranscript=null;
+  const STT_MODEL_KEY='ytStreamerTeslaMonSttModelV1';
+  const validSttModel=id=>['whisper-tiny.en','whisper-base.en'].includes(id);
+  let initialSttModel='whisper-tiny.en';
+  try{const stored=localStorage.getItem(STT_MODEL_KEY);if(validSttModel(stored))initialSttModel=stored;}catch{}
+  const localStt=createTeslaMonLocalStt({modelId:initialSttModel});
+  sttModelSelect.value=initialSttModel;
+  let activeTranscript=null,captureActive=false,sttModelMessage='';
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
     wakeInputChanged=false,wakeHandled=false,autoWakeWanted=true,autoWakeBlocked=false,
@@ -170,6 +185,18 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     pet.dataset.motion=getTeslaMonPetMotion({
       wakeState:pet.dataset.wake,modelBusy,busy
     });
+  }
+  function isSttModelLocked(){
+    return captureActive||Boolean(activeTranscript)||Boolean(handsFree?.enabled)||
+      Boolean(handsFree&&handsFree.state!=='off'&&handsFree.state!=='error')||busy||modelBusy;
+  }
+  function renderSttModelState(message=sttModelMessage){
+    const state=localStt.getState(),micBusy=isSttModelLocked();
+    sttModelSelect.disabled=micBusy;
+    sttModelSelect.value=state.selectedModelId;
+    if(!state.loaded&&message.includes('warm and ready'))message='';
+    const current=message||`${state.selectedModel.label} selected${state.loaded?' and ready':' · loads locally on the first voice command'}.`;
+    sttModelState.textContent=current+(micBusy?' Turn Mic Off and finish any voice or playback request before changing models.':'');
   }
   function collapseControls({focusFace=false}={}) {
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
@@ -270,6 +297,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       phase==='processing'?'Processing command':
       phase==='starting'?'Requesting microphone permission…':'Off');
     if(speechMode==='local')mic.disabled=!voiceAvailable||['starting','recording','processing'].includes(phase);
+    renderSttModelState();
     if(phase==='recording'){
       wakeInputChanged=false;wakeHandled=false;
       panelRevision++;showPet({focus:true});
@@ -319,6 +347,18 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         status('Microphone permission denied. Allow access in browser settings.','warn');
     },
     duckPlayback:lowerPlaybackDuringCommand,
+  });
+  renderSttModelState();
+  sttModelSelect.addEventListener('change',async()=>{
+    const requested=sttModelSelect.value;
+    if(!validSttModel(requested)||isSttModelLocked()){renderSttModelState();return;}
+    try{
+      await localStt.setModel(requested);
+      try{localStorage.setItem(STT_MODEL_KEY,requested);}catch{}
+      const label=requested==='whisper-base.en'?'Base English':'Tiny English';
+      sttModelMessage=`${label} selected · about ${requested==='whisper-base.en'?79:43} MB model download loads locally on the first voice command. Audio stays in this browser.`;
+    }catch(error){sttModelMessage=String(error?.message||'Could not change the local transcription model.');}
+    renderSttModelState();
   });
   renderWakePhraseSelection();
   wakeToggle.disabled=true;
@@ -415,7 +455,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   async function issue(intent,requestRevision=panelRevision){
     if(busy){status('Wait for the current command.','warn');return;}
     if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn');return;}
-    busy=true;syncPetMotion();const epoch=++generation;
+    busy=true;syncPetMotion();renderSttModelState();const epoch=++generation;
     status('Sending command…');
     try{const result=await localPlayer.run(intent);
       if(epoch===generation){
@@ -440,7 +480,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       }
     }catch{
       if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
-    }finally{busy=false;syncPetMotion();autoSend.flush();}
+    }finally{busy=false;syncPetMotion();renderSttModelState();autoSend.flush();}
   }
   // Natural language (both typed and browser-local voice transcript) always goes
   // through the signed Codex CLI planner. Direct buttons skip reasoning.
@@ -451,7 +491,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       status('Enter a playback request under 220 characters.','warn');return;
     }
     if(modelBusy||busy){status('A playback request is already running.','warn');return;}
-    modelBusy=true;syncPetMotion();
+    modelBusy=true;syncPetMotion();renderSttModelState();
     const target=selected,epoch=micEpoch,requestRevision=panelRevision;
     status('Codex is understanding your request…');
     try{
@@ -467,7 +507,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         dismissAfterSuccess(result,'ha_done',requestRevision);
       }else report(result);
     }catch{status('Codex is unavailable. Quick controls still work.','warn');}
-    finally{modelBusy=false;syncPetMotion();autoSend.flush();}
+    finally{modelBusy=false;syncPetMotion();renderSttModelState();autoSend.flush();}
   }
   function cancelMic({preserveWake=false}={}){
     if(!preserveWake)micEpoch++;
@@ -535,6 +575,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       return;
     }
     activeTranscript=currentController;
+    renderSttModelState();
     const externalAbort=()=>currentController.abort();
     signal?.addEventListener('abort',externalAbort,{once:true});
     if(signal?.aborted)currentController.abort();
@@ -546,6 +587,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(!current())return;
       clearElapsed();
       status(step.message||'Preparing local transcription…');
+      sttModelMessage=step.message||'';renderSttModelState(sttModelMessage);
       if(step.phase==='transcribing'){
         const started=Date.now();
         const tick=()=>{if(current())
@@ -558,6 +600,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(!current())return;
       const result=await localStt.transcribe(blob,{signal:currentController.signal,onPhase});
       if(!current())return;
+      sttModelMessage=`${localStt.getState().selectedModel.label} is warm and ready. Audio stays in this browser.`;
       // Native keyboard dictation entered during this wake has priority.
       if(allowClosed&&(wakeInputChanged||wakeHandled))return;
       if(!result.text){
@@ -575,12 +618,15 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }catch(error){
       if(current()&&!wakeInputChanged&&error?.name!=='AbortError'){
         const detail=String(error?.message||'Local voice unavailable').slice(0,170);
+        sttModelMessage=`${localStt.getState().selectedModel.label} could not finish loading or transcribing: ${detail}`;
+        renderSttModelState(sttModelMessage);
         status(detail+' You can still type commands.','warn');
       }
     }finally{
       clearElapsed();
       signal?.removeEventListener('abort',externalAbort);
       if(activeTranscript===currentController)activeTranscript=null;
+      renderSttModelState();
     }
   }
   function setupRecorder(){
@@ -602,6 +648,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       },
       MediaRecorder:window.MediaRecorder,
       onState:value=>{
+        captureActive=['requesting','recording','stopping'].includes(value.state);
+        renderSttModelState();
         if(value.state==='requesting')status('Requesting microphone access…');
         else if(value.state==='recording')status('Recording audio… release to finish.','ok');
         else if(value.state==='stopping')status('Finishing recording…');
@@ -725,11 +773,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       tool:button.dataset.tm,args:{}
     });}));
   document.addEventListener('visibilitychange',()=>{
-    if(document.hidden){autoSend.cancel();handsFree.disable();micEpoch++;cancelMic();localStt.dispose();}
+    if(document.hidden){autoSend.cancel();handsFree.disable();micEpoch++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();}
     else void refresh();
   });
   window.addEventListener('pagehide',()=>{
-    autoSend.dispose();handsFree.disable();micEpoch++;cancelMic();localStt.dispose();captureBinding?.dispose();try{speech?.abort();}catch{}
+    autoSend.dispose();handsFree.disable();micEpoch++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();captureBinding?.dispose();try{speech?.abort();}catch{}
   });
   document.addEventListener('fullscreenchange',monitorFullscreen);
   document.addEventListener('webkitfullscreenchange',monitorFullscreen);
