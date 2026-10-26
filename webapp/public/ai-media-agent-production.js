@@ -20,12 +20,12 @@
   const box=document.createElement('div');
   box.id='aiMediaProductionPanel';
   box.setAttribute('aria-label','ChatGPT playback controller');
-  box.style.cssText='position:fixed;z-index:999990;bottom:10px;left:10px;max-width:min(340px,calc(100vw - 20px));background:#182330;color:#fff;border:1px solid #8192ac;border-radius:10px;padding:8px 10px;font:13px system-ui;box-shadow:0 2px 10px #0005';
+  box.style.cssText='position:fixed;z-index:999990;bottom:max(10px,env(safe-area-inset-bottom));left:max(10px,env(safe-area-inset-left));box-sizing:border-box;max-width:min(340px,calc(100vw - 20px - env(safe-area-inset-left) - env(safe-area-inset-right)));background:#182330;color:#fff;border:1px solid #8192ac;border-radius:10px;padding:8px 10px;font:13px system-ui;box-shadow:0 2px 10px #0005';
   const status=document.createElement('span');status.id='aiMediaProductionStatus';
   status.setAttribute('role','status');status.textContent='AI playback is off';
   const toggle=document.createElement('button');toggle.type='button';toggle.id='aiMediaProductionToggle';
   toggle.textContent=consent?'Disable AI':'Enable AI';
-  toggle.style.cssText='min-height:34px;margin-right:8px;font:inherit;padding:4px 10px;border-radius:7px;background:#f1f4fa;color:#182330;border:0';
+  toggle.style.cssText='min-height:44px;margin-right:8px;font:inherit;padding:4px 10px;border-radius:7px;background:#f1f4fa;color:#182330;border:0';
   // Cloudflare Access owns the authorization cookie. A site-only refresh
   // cannot sign out a browser; Cloudflare's real logout route can.
   // This explicit owner action revokes the Access session across apps.
@@ -34,14 +34,40 @@
   signIn.href='/cdn-cgi/access/logout';
   signIn.textContent='Sign out & sign in';
   signIn.setAttribute('aria-label','Sign out of Cloudflare Access across apps, then sign in again');
-  signIn.style.cssText='display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:4px 9px;background:#2f4159;color:#e4f0ff;border:1px solid #8192ac;border-radius:7px;font:inherit;text-decoration:underline';
+  signIn.style.cssText='display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:4px 9px;background:#2f4159;color:#e4f0ff;border:1px solid #8192ac;border-radius:7px;font:inherit;text-decoration:underline';
   const actions=document.createElement('div');
   actions.style.cssText='display:flex;gap:6px;flex-wrap:wrap;align-items:center';
   toggle.style.marginRight='0';
   actions.append(toggle,signIn);
   status.style.cssText='display:block;margin-top:5px;overflow-wrap:anywhere';
   box.append(actions,status);
-  document.body.append(box);
+  const reopen=document.createElement('button');
+  reopen.type='button';reopen.id='aiMediaProductionReopen';reopen.textContent='AI';
+  reopen.setAttribute('aria-label','Show AI playback controls');
+  reopen.setAttribute('aria-controls',box.id);
+  reopen.setAttribute('aria-expanded','true');
+  reopen.style.cssText='position:fixed;z-index:999990;bottom:max(10px,env(safe-area-inset-bottom));left:max(10px,env(safe-area-inset-left));min-width:44px;min-height:44px;padding:8px;border:1px solid #8192ac;border-radius:10px;background:#182330;color:#fff;font:13px system-ui';
+  reopen.hidden=true;
+  document.body.append(box,reopen);
+  let hideTimer=null;
+  const scheduleHide=()=>{
+    clearTimeout(hideTimer);
+    hideTimer=setTimeout(()=>{
+      const hadFocus=box.contains(document.activeElement);
+      box.hidden=true;reopen.hidden=false;
+      reopen.setAttribute('aria-expanded','false');
+      if(hadFocus)reopen.focus({preventScroll:true});
+    },5000);
+  };
+  reopen.addEventListener('click',()=>{
+    box.hidden=false;reopen.hidden=true;
+    reopen.setAttribute('aria-expanded','true');
+    toggle.focus({preventScroll:true});scheduleHide();
+  });
+  box.addEventListener('pointerdown',scheduleHide);
+  box.addEventListener('keydown',scheduleHide);
+  box.addEventListener('focusin',scheduleHide);
+  scheduleHide();
   let socket=null,ticker=null,retryTimer=null,retryMs=1500,generation=0,deviceId=null,pairing=false;
   const completed=new Map();
   const report=value=>{status.textContent=value;};
