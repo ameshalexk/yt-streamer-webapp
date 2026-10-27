@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": { "type": "string", "enum": ["selected", "uncertain"] },
+    "index": { "type": ["integer", "null"], "minimum": 0 }
+  },
+  "required": ["status", "index"]
+}

@@ -8,7 +8,7 @@ import { Readable } from "node:stream";
 import { config } from "./config.js";
 import {startProductionMediaRelay} from "./lib/ai-media-agent-production-relay.js";
 import {createTeslaMonTranscriber} from "./lib/teslamon-transcribe.js";
-import {createTeslaMonCodex} from "./lib/teslamon-codex-cli.js";
+import {createTeslaMonCodex,createTeslaMonCodexSelector} from "./lib/teslamon-codex-cli.js";
 import * as store from "./lib/store.js";
 import * as storageManager from "./lib/storage-manager.js";
 import { findSavedPlayback } from "./lib/saved-playback.js";
@@ -2271,6 +2271,7 @@ const teslamonPowerAlxSTT=createTeslaMonTranscriber();
 const teslamonCodex=createTeslaMonCodex({
   onDiagnostic:event=>console.info('[teslamon-codex]',JSON.stringify(event))
 });
+const teslamonCodexSelector=createTeslaMonCodexSelector();
 // Stage durations only: never log speech, queries, identities, or credentials.
 function logTeslaMonLatency(stage,started,status){
   console.info('[teslamon-latency]',JSON.stringify({stage,ms:Date.now()-started,status}));
@@ -2327,6 +2328,35 @@ app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
   }catch{
     logTeslaMonLatency('codex_plan',started,'unavailable');
     return res.status(503).json({status:'unavailable',code:'codex_unavailable'});
+  }
+});
+app.post('/api/teslamon/select-candidate',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  const body=req.body;
+  if(!body||Object.getPrototypeOf(body)!==Object.prototype||
+     Object.keys(body).sort().join(',')!=='candidates,query,session,text'||
+     typeof body.session!=='string'||typeof body.text!=='string'||body.text.length<1||body.text.length>220||
+     typeof body.query!=='string'||body.query.length<1||body.query.length>220||
+     /[\x00-\x1f\x7f]/.test(body.text+body.query)||!Array.isArray(body.candidates)||
+     body.candidates.length<1||body.candidates.length>8)
+    return res.status(400).json({status:'uncertain'});
+  const principal=req.teslamonVoiceIdentity;
+  if(typeof principal?.subject!=='string'||!principal.subject||typeof principal.issuer!=='string'||!principal.issuer)
+    return res.status(401).json({status:'uncertain'});
+  const identity=crypto.createHash('sha256').update(principal.issuer+'\n'+principal.subject).digest('hex');
+  const started=Date.now();
+  const controller=new AbortController();
+  const onResponseClose=()=>{if(!res.writableEnded)controller.abort()};
+  res.once('close',onResponseClose);
+  try{
+    const outcome=await teslamonCodexSelector.select(body.text,body.session,identity,body.candidates,body.query,{signal:controller.signal});
+    logTeslaMonLatency('codex_select_candidate',started,outcome.status);
+    res.set('Server-Timing',`codex;dur=${Date.now()-started}`);
+    return res.json(outcome);
+  }catch{
+    logTeslaMonLatency('codex_select_candidate',started,'uncertain');
+    return res.json({status:'uncertain'});
+  }finally{
+    res.removeListener('close',onResponseClose);
   }
 });
 app.post('/api/teslamon/transcribe',verifyTeslaMonVoiceRequest,
