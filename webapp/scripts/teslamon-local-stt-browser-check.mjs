@@ -1,5 +1,6 @@
 // Controlled Chrome integration. Real MediaRecorder -> local Whisper WASM ->
-// signed-planner request -> same-tab video frame progress. No mocked transcript.
+// mocked planner/candidate selector -> synthetic same-tab video frame progress.
+// No mocked transcript; this is not authenticated production API verification.
 // Usage: TESLAMON_STT_TEST_WAV=/absolute/generated-speech.wav node scripts/teslamon-local-stt-browser-check.mjs
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -45,7 +46,7 @@ const browser = await chromium.launch({
   executablePath:process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless:true, args:['--no-first-run','--use-fake-ui-for-media-stream']
 });
-const evidence = { origin, planTexts:[], forbiddenUploads:[], modelRequests:[],
+const evidence = { origin, planTexts:[], selectionRequests:[], forbiddenUploads:[], modelRequests:[],
   errors:[], commands:[], checks:[] };
 
 try {
@@ -159,6 +160,12 @@ try {
       return route.fulfill({status:200,contentType:'application/json',
         body:JSON.stringify({status:'ok',tool:'search_and_play',args:{query:'space and time documentary'}})});
     }
+    if (url.pathname === '/api/teslamon/select-candidate') {
+      const body = req.postDataJSON();
+      evidence.selectionRequests.push({text:body.text,query:body.query,candidateCount:body.candidates?.length});
+      return route.fulfill({status:200,contentType:'application/json',
+        body:JSON.stringify({status:'selected',index:0})});
+    }
     evidence.forbiddenUploads.push(url.pathname);
     return route.fulfill({status:410,contentType:'application/json',
       body:JSON.stringify({status:'failed',code:'unsupported'})});
@@ -222,6 +229,8 @@ try {
   const firstStatus = await holdAndWait();
   evidence.commands.push({ firstStatus, state:await page.evaluate(() => window.YTStreamerMediaAgent.get_player_state()) });
   assert.ok(evidence.planTexts.length >= 1, 'real Whisper transcript must reach the planner');
+  assert.ok(evidence.selectionRequests.length >= 1, 'contextual candidate selection route must be exercised');
+  assert.equal(evidence.selectionRequests[0].candidateCount,2,'fixture selects from the actual filtered search candidates');
   assert.match(evidence.planTexts[0], /video|space|time|fabric/i,
     'planner receives the complete natural sentence, not a game trick');
   await page.waitForFunction(() => window.__teslamonFixture.videoFrames > 5 &&

@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-27",
+  "command": "node scripts/teslamon-handsfree-browser-check.mjs",
+  "result": "passed",
+  "scope": "Local headless Chrome synthetic fixture. The existing page retains real wake-model startup/lifecycle coverage. A separate fixture injects a deterministic accepted wake and fake recorder input while exercising the actual TeslaMon pet/hands-free code and same-tab YTStreamerMediaAgent adapter.",
+  "playbackFixture": "Native video element playing a local canvas captureStream; no external media or live APIs.",
+  "wakes": [
+    {
+      "eventOrder": ["adapter-pause-requested", "adapter-pause-completed", "capture-created", "recorder-start"],
+      "before": {"videoPaused": false, "currentTimeSeconds": 0.215384},
+      "afterPause": {"videoPaused": true, "currentTimeSeconds": 0.22014, "adapterPlaybackPhase": "paused"},
+      "after250ms": {"currentTimeSeconds": 0.22014}
+    },
+    {
+      "eventOrder": ["adapter-pause-requested", "adapter-pause-completed", "capture-created", "recorder-start"],
+      "before": {"videoPaused": false, "currentTimeSeconds": 0.535161},
+      "afterPause": {"videoPaused": true, "currentTimeSeconds": 0.536966, "adapterPlaybackPhase": "paused"},
+      "after250ms": {"currentTimeSeconds": 0.536966}
+    }
+  ],
+  "explicitResume": {"adapterStatus": "accepted", "nativeVideoResumed": true},
+  "terminalCleanup": {"automaticResumeCalls": 0, "playbackRemainedPaused": true},
+  "acceptanceLimits": [
+    "The wake event is deterministic and does not establish speech recognition accuracy.",
+    "Synthetic local Chrome is not physical iPhone Safari or Tesla browser acceptance."
+  ]
+}
