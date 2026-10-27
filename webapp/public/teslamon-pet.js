@@ -1,4 +1,4 @@
-import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261023-first-result1';
+import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261025-stt-models1';
@@ -147,7 +147,12 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;
       const h=Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
       return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');})();
-  const localPlayer=createTeslaMonLocalPlayer();
+  const localPlayer=createTeslaMonLocalPlayer({selectCandidate:async({originalRequest,query,candidates,signal})=>{
+    const answer=await post('/api/teslamon/select-candidate',{
+      text:originalRequest,query,session:tabSession,candidates
+    },'application/json',signal);
+    return answer;
+  }});
   const STT_MODEL_KEY='ytStreamerTeslaMonSttModelV1';
   const validSttModel=id=>['whisper-tiny.en','whisper-base.en'].includes(id);
   let initialSttModel='whisper-tiny.en';
@@ -402,7 +407,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         (response.fullscreenAttempt==='needs_user_gesture'?
           ' Tap Fullscreen directly in this tab.':''));
     }
-    else if(response?.status==='uncertain')status('Result uncertain. Check player before retrying.','warn');
+    else if(response?.status==='uncertain')status(
+      response.code?.startsWith('candidate_selection_')?
+        'I found possible videos but could not confidently choose one, so nothing was played. Try a more specific title.':
+        'Result uncertain. Check player before retrying.','warn');
     else if(response?.status==='needs_user_gesture')status('Tap Fullscreen directly in this tab.','warn');
     else if(response?.status==='offline')status('This tab player is unavailable. Reload the page.','warn');
     else if(response?.status==='unsupported')
@@ -462,12 +470,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       return result;
     }catch{return {status:'failed',code:'invalid_server_reply'};}
   }
-  async function issue(intent,requestRevision=panelRevision){
+  async function issue(intent,requestRevision=panelRevision,context={}){
     if(busy){status('Wait for the current command.','warn');return;}
     if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn');return;}
     busy=true;syncPetMotion();renderSttModelState();const epoch=++generation;
     status('Sending command…');
-    try{const result=await localPlayer.run(intent);
+    try{const result=await localPlayer.run(intent,{...context,
+      isCurrent:()=>requestRevision===panelRevision&&!document.hidden&&
+        (typeof context.isCurrent!=='function'||context.isCurrent())});
       if(epoch===generation){
         report(result,intent.tool);
         dismissAfterSuccess(result,intent.tool,requestRevision);
@@ -509,7 +519,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(signal?.aborted||target!==selected||epoch!==micEpoch||(!opened&&!allowClosed))return;
       if(result.status==='ok'&&typeof result.tool==='string'){
         if(input.value.trim()===request)input.value='';
-        await issue({tool:result.tool,args:result.args||{}},requestRevision);
+        await issue({tool:result.tool,args:result.args||{}},requestRevision,
+          result.tool==='search_and_play'?{originalRequest:request,signal,
+            isCurrent:()=>target===selected&&epoch===micEpoch&&requestRevision===panelRevision}:{});
       }else if(result.status==='ha_done'){
         if(input.value.trim()===request)input.value='';
         status(result.action==='light_changed'?

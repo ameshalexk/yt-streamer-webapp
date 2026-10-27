@@ -22,6 +22,7 @@ const supported=(intent)=>{
 };
 export function createTeslaMonLocalPlayer({
   getPlayer=()=>globalThis.YTStreamerMediaAgent,
+  selectCandidate=async()=>({status:'unavailable'}),
   sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
 }={}){
   if(typeof getPlayer!=='function'||typeof sleep!=='function')
@@ -52,7 +53,7 @@ export function createTeslaMonLocalPlayer({
       return fail('player_state_unavailable','uncertain');
     return stateResult(result.state);
   }
-  async function run(intent){
+  async function run(intent,{originalRequest='',signal,isCurrent=()=>true}={}){
     if(!supported(intent))return fail('invalid_local_playback_intent');
     if(busy)return fail('target_busy');
     const player=getPlayer();
@@ -69,12 +70,26 @@ export function createTeslaMonLocalPlayer({
           /\b(mkbhd|marques brownlee)\b/i.test(query);
         const found=await player.execute('search_media',{query,limit:8,
           ...(latestMkbhd?{source:'latest_mkbhd'}:{})});
+        if(signal?.aborted||!isCurrent())return fail('candidate_selection_uncertain','uncertain');
         if(found?.status!=='completed'||!Array.isArray(found?.result?.results))
           return fail('search_failed');
-        const first=found.result.results.slice(0,8).find(item=>
-          plain(item)&&VIDEO.test(item.media_id||''));
-        if(!first)return fail('no_results');
-        const mediaId=first.media_id;
+        const candidates=found.result.results.slice(0,8).filter(item=>
+          plain(item)&&VIDEO.test(item.media_id||'')).map(item=>({
+            media_id:item.media_id,
+            title:typeof item.title==='string'?item.title.slice(0,180):'',
+            creator:typeof item.creator==='string'?item.creator.slice(0,120):'',
+            duration:Number.isFinite(item.duration_seconds)&&item.duration_seconds>=0&&
+              item.duration_seconds<=86400?item.duration_seconds:null
+          }));
+        if(!candidates.length)return fail('no_results');
+        let selection;
+        try{selection=await selectCandidate({originalRequest:String(originalRequest).slice(0,220),query,
+          candidates,signal});}catch{return fail('candidate_selection_uncertain','uncertain');}
+        if(signal?.aborted||!isCurrent())return fail('candidate_selection_uncertain','uncertain');
+        if(!selection||selection.status!=='selected'||!Number.isInteger(selection.index)||
+           selection.index<0||selection.index>=candidates.length)
+          return fail(selection?.status==='ambiguous'?'candidate_selection_ambiguous':'candidate_selection_uncertain','uncertain');
+        const mediaId=candidates[selection.index].media_id;
         const result=await player.execute('play_media',{media_id:mediaId});
         if(result?.status==='needs_user_gesture')return fail('needs_user_gesture','needs_user_gesture');
         if(!['completed','accepted','playing','buffering'].includes(result?.status))
