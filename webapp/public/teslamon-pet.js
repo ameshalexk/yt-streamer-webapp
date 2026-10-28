@@ -165,9 +165,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(!userDisabled&&!fullscreenActive())pet.hidden=false;
     }
   }
-  setAuraEnabled(auraEnabled,{persist:false});
   let userDisabled=false;
   try{userDisabled=localStorage.getItem(DISABLED_KEY)==='1';}catch{}
+  setAuraEnabled(auraEnabled,{persist:false});
   pet.dataset.disabled=String(userDisabled);
   restoreButton.hidden=!userDisabled;
   // Secure per-page session, never stored or shared with another tab.
