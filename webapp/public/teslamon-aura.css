@@ -1,0 +1,146 @@
+/* Aura is a presentation-only viewport overlay. It does not use the Fullscreen
+   API: automatic native fullscreen is blocked by user-gesture rules on Safari. */
+#tmAura[hidden]{display:none!important}
+#tmAura,#tmAura *{box-sizing:border-box}
+#tmAura{
+  --ta-ink:#eef3ff;--ta-soft:#a4b1cc;--ta-cyan:#85fcf4;--ta-violet:#a4a0ff;
+  position:fixed;inset:0;width:100%;height:100vh;height:100dvh;
+  z-index:2147483645;overflow:hidden;isolation:isolate;
+  display:flex;flex-direction:column;justify-content:space-between;
+  background:#030612;color:var(--ta-ink);
+  font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  padding:calc(24px + env(safe-area-inset-top,0px)) calc(28px + env(safe-area-inset-right,0px))
+    calc(22px + env(safe-area-inset-bottom,0px)) calc(28px + env(safe-area-inset-left,0px));
+}
+#tmAura:focus-visible{outline:3px solid var(--ta-cyan);outline-offset:-5px}
+#tmAura .ta-ambient{position:absolute;z-index:-2;pointer-events:none;filter:blur(50px);border-radius:50%;opacity:.7}
+#tmAura .ta-ambient-left{
+  width:min(78vw,950px);height:min(85vh,780px);top:-28%;left:-28%;
+  background:radial-gradient(circle,#2e287c70 0%,#123b7d55 42%,transparent 72%);
+  animation:ta-drift 11s ease-in-out infinite alternate
+}
+#tmAura .ta-ambient-right{
+  width:min(88vw,1050px);height:min(110vh,900px);right:-31%;bottom:-52%;
+  background:radial-gradient(circle,#0d7e9570 0%,#232b8055 50%,transparent 75%);
+  animation:ta-drift 13s ease-in-out infinite alternate-reverse
+}
+#tmAura .ta-grid{
+  position:absolute;inset:0;z-index:-1;pointer-events:none;opacity:.24;
+  background-image:linear-gradient(#b9dcff12 1px,transparent 1px),
+    linear-gradient(90deg,#b9dcff12 1px,transparent 1px);
+  background-size:64px 64px;
+  mask-image:radial-gradient(ellipse at 50% 58%,#000 0%,transparent 85%);
+  -webkit-mask-image:radial-gradient(ellipse at 50% 58%,#000 0%,transparent 85%)
+}
+#tmAura .ta-grain{
+  position:absolute;inset:0;z-index:-1;pointer-events:none;opacity:.34;
+  background:radial-gradient(circle at 50% 45%,transparent 5%,#02050eb8 82%),
+    repeating-linear-gradient(0deg,transparent 0 3px,#ffffff04 3px 4px)
+}
+#tmAura .ta-header,#tmAura .ta-footer{width:100%;display:flex;align-items:center;justify-content:space-between;gap:18px;position:relative;z-index:2}
+#tmAura .ta-logo{display:flex;align-items:center;gap:10px;font-size:12px;font-weight:700;letter-spacing:.25em;white-space:nowrap}
+#tmAura .ta-logo b{color:var(--ta-cyan);font-weight:800}
+#tmAura .ta-logo-mark{display:grid;place-items:center;width:31px;height:31px;border:1px solid #7cdfe680;border-radius:9px;color:#a4fff6;box-shadow:inset 0 0 13px #4dfcec1c;font-size:20px}
+#tmAura .ta-live{display:flex;align-items:center;gap:9px;padding:8px 12px;border-radius:99px;border:1px solid #9cbbf436;background:#a9caff0b;color:#c4d1e7;font-size:10px;font-weight:700;letter-spacing:.16em;white-space:nowrap}
+#tmAura .ta-live i{height:6px;width:6px;border-radius:50%;background:#69f4d4;box-shadow:0 0 0 4px #69f4d41a,0 0 15px #69f4d4}
+#tmAura .ta-stage{min-height:0;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;position:relative;padding:0 8px}
+#tmAura .ta-kicker{font-size:clamp(10px,1.2vw,12px);font-weight:800;letter-spacing:.32em;color:#9dffe9;margin-bottom:clamp(10px,2vh,24px)}
+#tmAura .ta-visual{
+  position:relative;flex:none;width:min(38vw,40vh,430px);height:min(38vw,40vh,430px);
+  min-width:175px;min-height:175px;max-width:430px;max-height:430px;
+  display:grid;place-items:center;filter:drop-shadow(0 15px 50px #5475db2a)
+}
+#tmAura .ta-halo{
+  position:absolute;inset:0;border-radius:50%;border:1px solid #9fbafa28;
+  box-shadow:0 0 22px #87acfa11,inset 0 0 25px #82b1e408
+}
+#tmAura .ta-halo-outer{inset:-14%;border-color:#a4d1fd1c;animation:ta-rotate 19s linear infinite}
+#tmAura .ta-halo-outer:before,#tmAura .ta-halo-outer:after{
+  content:"";position:absolute;border-radius:50%;height:6px;width:6px;background:var(--ta-cyan);
+  box-shadow:0 0 20px var(--ta-cyan)
+}
+#tmAura .ta-halo-outer:before{left:14%;top:15%}
+#tmAura .ta-halo-outer:after{right:14%;bottom:15%;background:#a09cff}
+#tmAura .ta-halo-middle{inset:-4%;border:2px solid transparent;border-top-color:#7cf5ec77;border-bottom-color:#9f91ff44;animation:ta-rotate 13s linear infinite reverse}
+#tmAura .ta-halo-inner{inset:7%;border-color:#94d5f830;animation:ta-pulse 3.5s ease-in-out infinite}
+#tmAura .ta-orb{
+  position:absolute;inset:14%;border-radius:50%;overflow:hidden;
+  background:
+    radial-gradient(ellipse at 28% 23%,#fff9 0%,#c8fafb63 6%,transparent 29%),
+    radial-gradient(circle at 72% 75%,#4c7dff 4%,#384ccb99 35%,transparent 74%),
+    radial-gradient(circle at 26% 33%,#b5fff8 5%,#31e3d6 22%,#1f9ec2 44%,#3b4bba 72%,#131d5e 100%);
+  box-shadow:inset -22px -25px 45px #07103c99,inset 10px 8px 23px #efffff5c,0 0 40px #49bdde76,0 0 100px #4775ff57;
+  animation:ta-breathe 3.8s ease-in-out infinite;
+}
+#tmAura .ta-orb:after{content:"";position:absolute;inset:3%;border-radius:50%;border:1px solid #fff6;opacity:.3}
+#tmAura .ta-orb-shine{
+  position:absolute;inset:0;border-radius:50%;mix-blend-mode:screen;
+  background:conic-gradient(from 40deg at 48% 55%,transparent 0 30%,#6efcff66 44%,transparent 56%,#9ba9ff55 76%,transparent 100%);
+  animation:ta-rotate 9s linear infinite
+}
+#tmAura .ta-orb-center{
+  position:absolute;inset:28%;border-radius:50%;filter:blur(24px);
+  background:radial-gradient(circle,#aafffcbc,transparent 70%);animation:ta-pulse 2.8s ease-in-out infinite
+}
+#tmAura .ta-star{position:absolute;font-size:28px;color:#bcfdff8f;animation:ta-twinkle 3s ease-in-out infinite}
+#tmAura .ta-star-one{left:0;top:15%}
+#tmAura .ta-star-two{right:-1%;bottom:10%;animation-delay:1.2s;font-size:21px;color:#d3bdff99}
+#tmAura .ta-wave{height:31px;display:flex;align-items:center;justify-content:center;gap:4px;margin-top:clamp(20px,3vh,28px)}
+#tmAura .ta-wave i{width:3px;height:5px;border-radius:5px;background:linear-gradient(#a8fff8,#8b8cff);opacity:.7;animation:ta-wave 1.2s ease-in-out infinite alternate;animation-delay:calc(var(--i) * -70ms)}
+#tmAura .ta-title{font-size:clamp(25px,4.1vw,56px);font-weight:650;letter-spacing:-.045em;line-height:1.13;margin:18px 0 0;max-width:920px;text-wrap:balance}
+#tmAura .ta-hint{font-size:clamp(13px,1.5vw,17px);color:#aab8d2;letter-spacing:.025em;margin:14px 0 0}
+#tmAura .ta-caption{font-size:clamp(12px,1.3vw,15px);line-height:1.45;color:#97e6e4;margin:12px 0 0;max-width:620px;min-height:21px;text-wrap:balance;overflow-wrap:anywhere}
+#tmAura .ta-caption[data-kind="warn"]{color:#ffbea9}
+#tmAura .ta-transcript{max-width:min(630px,88vw);border:1px solid #8cb3ed50;background:#a2b7ff0d;border-radius:16px;padding:11px 21px;margin:13px 0 0;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+#tmAura .ta-transcript[hidden]{display:none}
+#tmAura .ta-transcript span{display:block;font-size:9px;font-weight:800;letter-spacing:.23em;color:#90fded}
+#tmAura .ta-transcript p{font-size:clamp(12px,1.45vw,17px);font-weight:500;color:#e5eaff;margin:5px 0 0;overflow-wrap:anywhere}
+#tmAura .ta-footer{color:#91a2c2;font-size:10px;font-weight:700;letter-spacing:.17em}
+#tmAura .ta-footer i{font-style:normal;color:#62dfd5;margin:0 6px}
+#tmAura .ta-tap{display:flex;align-items:center;gap:12px;color:#d7e8f8;white-space:nowrap}
+#tmAura .ta-tap b{border:1px solid #8ec9e660;border-radius:50%;width:27px;height:27px;display:grid;place-items:center;font-size:17px;font-weight:400;color:#88fff2}
+#tmAura[data-phase="listening"] .ta-orb,#tmAura[data-phase="listening"] .ta-halo{animation-duration:1.7s}
+#tmAura[data-phase="transcribing"] .ta-orb{filter:hue-rotate(27deg)}
+#tmAura[data-phase="thinking"] .ta-orb{filter:hue-rotate(48deg)}
+#tmAura[data-phase="acting"] .ta-orb{filter:hue-rotate(95deg)}
+#tmAura[data-phase="complete"] .ta-orb{filter:hue-rotate(-35deg)}
+#tmAura[data-phase="error"] .ta-orb{filter:hue-rotate(140deg)}
+#tmAura[data-phase="standby"] .ta-wave i,#tmAura[data-phase="complete"] .ta-wave i{animation-duration:2.8s}
+@keyframes ta-breathe{0%,100%{transform:scale(.97)}50%{transform:scale(1.035)}}
+@keyframes ta-pulse{0%,100%{opacity:.55;transform:scale(.98)}50%{opacity:1;transform:scale(1.04)}}
+@keyframes ta-wave{0%{height:5px;opacity:.35}50%{opacity:.9}100%{height:28px;opacity:1}}
+@keyframes ta-rotate{to{transform:rotate(360deg)}}
+@keyframes ta-drift{to{transform:translate(9%,7%) scale(1.17)}}
+@keyframes ta-twinkle{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.12)}}
+@media(max-width:600px){
+  #tmAura{padding:calc(18px + env(safe-area-inset-top,0px)) calc(17px + env(safe-area-inset-right,0px))
+    calc(16px + env(safe-area-inset-bottom,0px)) calc(17px + env(safe-area-inset-left,0px))}
+  #tmAura .ta-header{align-items:flex-start}
+  #tmAura .ta-logo{font-size:10px;letter-spacing:.14em;gap:7px}
+  #tmAura .ta-logo-mark{width:28px;height:28px}
+  #tmAura .ta-live{font-size:8px;letter-spacing:.08em;padding:7px 9px}
+  #tmAura .ta-visual{width:min(62vw,36vh);height:min(62vw,36vh);min-width:135px;min-height:135px}
+  #tmAura .ta-title{font-size:clamp(24px,7vw,35px);margin-top:8px}
+  #tmAura .ta-kicker{font-size:9px;letter-spacing:.2em;margin-bottom:13px}
+  #tmAura .ta-wave{margin-top:17px;height:23px;gap:3px}
+  #tmAura .ta-wave i{width:2px}
+  #tmAura .ta-hint{margin-top:9px}
+  #tmAura .ta-footer{font-size:8px;letter-spacing:.06em}
+  #tmAura .ta-footer>span:first-child{max-width:48%;line-height:1.6}
+  #tmAura .ta-tap{max-width:50%;text-align:right;line-height:1.5;gap:6px}
+  #tmAura .ta-tap b{flex:none;width:23px;height:23px;font-size:13px}
+}
+@media(max-height:550px){
+  #tmAura .ta-stage{justify-content:center}
+  #tmAura .ta-visual{width:min(25vh,28vw);height:min(25vh,28vw);min-width:100px;min-height:100px}
+  #tmAura .ta-kicker{margin-bottom:4px}
+  #tmAura .ta-wave{height:16px;margin-top:9px}
+  #tmAura .ta-wave i{max-height:16px}
+  #tmAura .ta-title{font-size:clamp(21px,3.2vw,35px);margin-top:5px}
+  #tmAura .ta-hint,#tmAura .ta-caption{margin-top:5px;font-size:12px}
+  #tmAura .ta-transcript{padding:6px 12px;margin-top:6px}
+}
+@media(prefers-reduced-motion:reduce){
+  #tmAura .ta-ambient,#tmAura .ta-halo,#tmAura .ta-orb,#tmAura .ta-orb-shine,#tmAura .ta-orb-center,#tmAura .ta-star,#tmAura .ta-wave i{animation:none!important}
+}

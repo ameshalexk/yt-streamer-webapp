@@ -191,13 +191,18 @@ try{
   assert.equal(await wake.page.locator('#tmPanel').isVisible(),false);
   assert.equal(await wake.page.locator('#teslamonPet').isVisible(),false);
   await wake.page.evaluate(()=>window.__testWake());
-  await wake.page.waitForFunction(()=>document.querySelector('#teslamonPet')?.hidden===false&&
-   document.querySelector('#tmPanel')?.hidden===false,null,{timeout:7000});
-  assert.equal(await wake.page.evaluate(()=>document.activeElement?.id),'tmText');
+  await wake.page.waitForFunction(()=>document.querySelector('#tmAura')?.hidden===false,null,{timeout:7000});
+  assert.equal(await wake.page.locator('#tmAura').isVisible(),true,'Aura replaces the pet panel on wake');
+  assert.equal(await wake.page.locator('#tmPanel').isVisible(),false,'pet controls remain closed during Aura');
+  assert.equal(await wake.page.locator('#teslamonPet').isVisible(),false,'puppy stays hidden behind Aura');
+  await wake.page.locator('#tmAura').click();
+  assert.equal(await wake.page.locator('#tmAura').isVisible(),false,'tap exits Aura');
+  assert.equal(await wake.page.locator('#teslamonPet').isVisible(),true,'puppy returns after Aura exit');
+  assert.equal(await wake.page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'true','Aura dismissal keeps mic on');
   assert.deepEqual(wake.unexpected,[],'wake test attempted unrelated network requests');
   results.push({scenario:{width:390,height:844,ui:'classic',syntheticWake:true},
-   checks:{successFullyHides:true,wakeReveals:true,inputFocused:true}});
-  console.log('PASS synthetic Hey Jarvis callback reveals whole pet and focuses command input');
+   checks:{successFullyHides:true,auraReplacesPanel:true,tapReturnsToPet:true,micRemainsOn:true}});
+  console.log('PASS synthetic Hey Jarvis opens Aura; dismiss returns puppy without stopping mic');
  }finally{await wake.ctx.close();}
  // Exercise real touch events rather than mouse-drag emulation on the disabled paw.
  const pawTouch=await setup({width:390,height:844},'classic',false,false,true);

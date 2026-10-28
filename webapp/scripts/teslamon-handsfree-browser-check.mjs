@@ -29,7 +29,7 @@ const server=http.createServer(async(req,res)=>{
    bytes=Buffer.concat([bytes,Buffer.from("\nif(new URLSearchParams(location.search).has('teslamon_pause_fixture')){window.__teslamonPauseFixture={async start(){const video=document.querySelector('#video');const canvas=document.createElement('canvas');canvas.width=320;canvas.height=180;const ctx=canvas.getContext('2d');let frame=0;window.__teslamonPauseFixture.timer=setInterval(()=>{ctx.fillStyle=frame++%2?'#2879c8':'#22aa70';ctx.fillRect(0,0,canvas.width,canvas.height);},50);video.srcObject=canvas.captureStream(20);replayFn=()=>{};state.youtubeSearchPlayingId='abcDEF12345';const screen=document.querySelector('#screen');screen.classList.remove('mjpeg-mode','mjpeg-buffered-mode','cyberdash-mode');screen.classList.add('playing','video-mode');const button=document.querySelector('#pauseBtn');if(button)button.disabled=false;playbackPaused=false;await video.play();},get paused(){return playbackPaused;}};}\n")]);
   }
   if(pauseFixture){
-   bytes=Buffer.from(bytes.toString('utf8').replace('/app.js?v=20261026-playback-diagnostics-1','/app.js?v=20261026-playback-diagnostics-1&teslamon_pause_fixture=1').replace('/teslamon-pet.js?v=20261027-pause-on-wake1','/teslamon-pet.js?v=20261027-pause-on-wake1&teslamon_pause_fixture=1').replace('</head>','<style>#aiAgentDevPanel{display:none!important}</style></head>'));
+   bytes=Buffer.from(bytes.toString('utf8').replace('/app.js?v=20261026-playback-diagnostics-1','/app.js?v=20261026-playback-diagnostics-1&teslamon_pause_fixture=1').replace('/teslamon-pet.js?v=20261027-aura1','/teslamon-pet.js?v=20261027-aura1&teslamon_pause_fixture=1').replace('</head>','<style>#aiAgentDevPanel{display:none!important}</style></head>'));
   }
   res.writeHead(200,{'content-type':mime[path.extname(full)]||'application/octet-stream'});res.end(bytes);
  }
@@ -248,6 +248,10 @@ try{
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
  await page.waitForFunction(()=>{const video=document.querySelector('#video');return video&&!video.paused&&video.readyState>=2&&video.currentTime>0.2;},null,{timeout:10000});
  await acceptedWakeMustPausePlayback();
+ assert.equal(await page.locator('#tmAura').isVisible(),true,'wake presents Aura by default');
+ await page.locator('#tmAura').click();
+ assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'true','Aura tap keeps mic on');
+ await page.locator('#tmFace').click();
  await page.locator('#tmWakeToggle').click();
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Off',null,{timeout:10000});
  await page.waitForTimeout(300);
@@ -263,6 +267,8 @@ try{
  await acceptedWakeMustPausePlayback();
  assert.equal(await page.evaluate(()=>window.YTStreamerMediaAgent.get_player_state().playback_phase),'paused',
    'a later accepted wake pauses again after explicit playback resume');
+ await page.locator('#tmAura').click();
+ await page.locator('#tmFace').click();
  await page.locator('#tmWakeToggle').click();
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Off',null,{timeout:10000});
  await page.waitForTimeout(300);
