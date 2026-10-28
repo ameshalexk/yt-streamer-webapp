@@ -63,6 +63,9 @@ jobs:
       - name: TeslaMon wake and pause browser regression
         run: node scripts/teslamon-handsfree-browser-check.mjs
         working-directory: webapp
+      - name: TeslaMon Aura fullscreen and feature flag browser regression
+        run: npm run test:teslamon-aura-browser
+        working-directory: webapp
       - name: AI Access sign-in UI browser smoke
         run: npm run test:ai-agent-access-ui
         working-directory: webapp
