@@ -249,7 +249,7 @@ try{
  await page.waitForFunction(()=>{const video=document.querySelector('#video');return video&&!video.paused&&video.readyState>=2&&video.currentTime>0.2;},null,{timeout:10000});
  await acceptedWakeMustPausePlayback();
  assert.equal(await page.locator('#tmAura').isVisible(),true,'wake presents Aura by default');
- await page.locator('#tmAura').tap();
+ await page.locator('#tmAura').click();
  assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'true','Aura tap keeps mic on');
  await page.locator('#tmFace').click();
  await page.locator('#tmWakeToggle').click();
@@ -267,7 +267,7 @@ try{
  await acceptedWakeMustPausePlayback();
  assert.equal(await page.evaluate(()=>window.YTStreamerMediaAgent.get_player_state().playback_phase),'paused',
    'a later accepted wake pauses again after explicit playback resume');
- await page.locator('#tmAura').tap();
+ await page.locator('#tmAura').click();
  await page.locator('#tmFace').click();
  await page.locator('#tmWakeToggle').click();
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Off',null,{timeout:10000});
