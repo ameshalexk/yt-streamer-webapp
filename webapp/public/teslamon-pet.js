@@ -1,4 +1,5 @@
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
+import {createTeslaMonAura} from './teslamon-aura.js?v=20261027-aura1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261025-stt-models1';
@@ -85,6 +86,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           '<span id="tmWakeState" role="status" aria-live="polite">Off</span></div>',
         '<button id="tmWakeToggle" type="button" aria-pressed="false" aria-label="Turn hands-free microphone on">Mic Off</button>',
       '</div>',
+      '<div class="tm-aura-setting" role="group" aria-label="Aura presentation mode">',
+        '<div class="tm-aura-copy"><strong>Aura fullscreen experience</strong>',
+          '<span>Cinematic voice view when a wake phrase is heard.</span></div>',
+        '<label class="tm-aura-switch" for="tmAuraToggle">',
+          '<input id="tmAuraToggle" type="checkbox" role="switch" checked aria-label="Use Aura fullscreen experience" />',
+          '<span id="tmAuraToggleState">On</span></label>',
+        '<button id="tmAuraPreview" type="button">Preview Aura</button>',
+      '</div>',
       '<fieldset class="tm-wake-phrases" id="tmWakePhraseSet">',
         '<legend>Wake phrases</legend>',
         '<div class="tm-wake-options">',
@@ -131,12 +140,32 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     state=$('#tmState'),mic=$('#tmMic'),
     wakeControl=$('#tmWakeControl'),wakeToggle=$('#tmWakeToggle'),wakeState=$('#tmWakeState'),
     wakePhraseSet=$('#tmWakePhraseSet'),wakePhraseHelp=$('#tmWakePhraseHelp'),
+    auraToggle=$('#tmAuraToggle'),auraToggleState=$('#tmAuraToggleState'),auraPreview=$('#tmAuraPreview'),
     sttModelSelect=$('#tmSttModel'),sttModelState=$('#tmSttModelState'),
     input=$('#tmText'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
   const KEY='ytStreamerTeslaMonPetPositionV1';
   const PAW_KEY='ytStreamerTeslaMonPawPositionV1';
   const DISABLED_KEY='ytStreamerTeslaMonDisabledV1';
+  const AURA_KEY='ytStreamerTeslaMonAuraEnabledV1';
+  let auraEnabled=true;
+  try{auraEnabled=localStorage.getItem(AURA_KEY)!=='0';}catch{}
+  const aura=createTeslaMonAura({onDismiss:()=>{
+    // Exiting the presentation layer does not cancel a pending voice command.
+    if(!userDisabled&&!fullscreenActive())pet.hidden=false;
+  }});
+  function setAuraEnabled(value,{persist=true}={}){
+    auraEnabled=Boolean(value);
+    auraToggle.checked=auraEnabled;
+    auraToggleState.textContent=auraEnabled?'On':'Off';
+    auraPreview.disabled=!auraEnabled;
+    if(persist)try{localStorage.setItem(AURA_KEY,auraEnabled?'1':'0');}catch{}
+    if(!auraEnabled){
+      aura.close();
+      if(!userDisabled&&!fullscreenActive())pet.hidden=false;
+    }
+  }
+  setAuraEnabled(auraEnabled,{persist:false});
   let userDisabled=false;
   try{userDisabled=localStorage.getItem(DISABLED_KEY)==='1';}catch{}
   pet.dataset.disabled=String(userDisabled);
@@ -163,7 +192,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
     wakeInputChanged=false,wakeHandled=false,autoWakeWanted=!userDisabled,autoWakeBlocked=false,
-    panelRevision=0,fullscreenSeen=false,dismissedForSuccess=false;
+    panelRevision=0,fullscreenSeen=false,dismissedForSuccess=false,auraVoiceFlow=false;
   const WAKE_KEY='ytStreamerTeslaMonWakePhrasesV1';
   let selectedWakeKeywords=[...TESLAMON_WAKE_KEYWORDS];
   try {
@@ -192,6 +221,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
 
   function status(message,type='info'){
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
+    if(aura.active){
+      if(type==='warn')aura.setPhase('error');
+      aura.setStatus(message,{kind:type});
+    }
   }
   // Keep the puppy seated during passive wake-word scanning; a recognized
   // wake word stands it up, and active work runs it in place.
@@ -243,6 +276,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     const root=document.fullscreenElement||document.webkitFullscreenElement;
     if(root&&!root.contains(pet))root.append(pet);
     else if(!root&&pet.parentElement!==document.body)document.body.append(pet);
+    aura.attachToFullscreen();
     const now=fullscreenActive();
     if(now&&!fullscreenSeen) {
       fullscreenSeen=true;
@@ -253,6 +287,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
   }
   function dismissAfterSuccess(response,tool,requestRevision) {
+    if(aura.active)return; // Aura stays in place until the user's tap or Escape.
     if(!shouldDismissTeslaMon({
       response,tool,requestRevision,panelRevision,
       hasDraft:Boolean(input.value.trim()),panelOpen:opened,fullscreen:fullscreenSeen
@@ -274,7 +309,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   // Never assume input events identify their actual source.
   const autoSend=createTeslaMonAutoSend({
     readText:()=>input.value,
-    canSend:()=>opened&&enabled&&localPlayer.ready&&!modelBusy&&!busy&&!document.hidden,
+    canSend:()=>(opened||auraVoiceFlow)&&enabled&&localPlayer.ready&&!modelBusy&&!busy&&!document.hidden,
     send:text=>{
       // One wake invocation can produce BOTH native keyboard text and a
       // browser-local transcript. The first source to dispatch wins that wake.
@@ -288,6 +323,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         wakeHandled=true;
         if(['recording','processing'].includes(handsFree.state))micEpoch++;
       }
+      auraVoiceFlow=false;
       void interpret(text,{allowClosed:true});
     },
   });
@@ -315,11 +351,18 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     renderSttModelState();
     if(phase==='recording'){
       wakeInputChanged=false;wakeHandled=false;
-      panelRevision++;showPet({focus:true});
+      panelRevision++;
+      if(auraEnabled&&!userDisabled){
+        auraVoiceFlow=true;
+        collapseControls();
+        aura.open({phase:'listening',keyword:keyword?teslaMonWakePhraseLabel(keyword):'Wake phrase'});
+        pet.hidden=true;
+      }else showPet({focus:true});
     }else if((phase==='off'||phase==='error')&&!fullscreenActive()){
       // An unavailable wake listener must never leave an invisible pet.
       pet.hidden=false;dismissedForSuccess=false;
     }
+    if(phase==='processing'&&aura.active)aura.setPhase('transcribing');
     if(phase==='error')status(wakeState.textContent,'warn');
     else if(phase==='recording')status((keyword?`${teslaMonWakePhraseLabel(keyword)} detected`:'Wake phrase detected')+
       (Number.isFinite(score)?` (${Math.round(score*100)}%)`:'')+'. Say one command.','ok');
@@ -381,6 +424,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   });
   updateWakeUI({state:'off',message:'Off'});
   function report(response,action){
+    if(aura.active)aura.setPhase(['observed','accepted'].includes(response?.status)?'complete':'error');
     const phase=response?.playbackPhase;
     if(response?.status==='observed'){
       if(action==='request_fullscreen'||action==='exit_fullscreen'){
@@ -465,6 +509,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(busy){status('Wait for the current command.','warn');return;}
     if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn');return;}
     busy=true;syncPetMotion();renderSttModelState();const epoch=++generation;
+    if(aura.active)aura.setPhase('acting');
     status('Sending command…');
     try{const result=await localPlayer.run(intent,{...context,
       isCurrent:()=>requestRevision===panelRevision&&!document.hidden&&
@@ -503,6 +548,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     if(modelBusy||busy){status('A playback request is already running.','warn');return;}
     modelBusy=true;syncPetMotion();renderSttModelState();
+    if(aura.active){aura.setPhase('thinking');aura.setTranscript(request);}
     const target=selected,epoch=micEpoch,requestRevision=panelRevision;
     status('Codex is understanding your request…');
     try{
@@ -514,6 +560,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           result.tool==='search_and_play'?{originalRequest:request,signal,
             isCurrent:()=>target===selected&&epoch===micEpoch&&requestRevision===panelRevision}:{});
       }else if(result.status==='ha_done'){
+        if(aura.active)aura.setPhase('complete');
         if(input.value.trim()===request)input.value='';
         status(result.action==='light_changed'?
           'Home Assistant light command completed.':'Home Assistant light state checked.','ok');
@@ -544,6 +591,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       autoWakeWanted=false;autoWakeBlocked=true;
       autoSend.cancel();
       handsFree.disable(); // Stops all microphone tracks and wake detection immediately.
+      aura.close();auraVoiceFlow=false;
       cancelMic(); // Cancels push-to-talk and pending transcription or commands.
       localStt.dispose();
       sttModelMessage='';renderSttModelState();
@@ -662,6 +710,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       const command=stripTeslaMonWakePhrasePrefix(result.text);
       if(!command){status('Say a command after the wake phrase.','warn');return;}
       input.value=command;
+      if(aura.active)aura.setTranscript(command);
       autoSend.changed();
       status('Heard “'+command.slice(0,100)+'” · Sending after 2 seconds without edits.','ok');
     }catch(error){
@@ -837,6 +886,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(pet.style.left)setPosition(pet.offsetLeft,pet.offsetTop);
     else alignPanel();
   });
+  auraToggle.addEventListener('change',()=>setAuraEnabled(auraToggle.checked));
+  auraPreview.addEventListener('click',()=>{
+    if(!auraEnabled||userDisabled)return;
+    panelRevision++;
+    collapseControls();
+    aura.open({phase:'standby'});
+    pet.hidden=true;
+  });
   disableButton.addEventListener('click',()=>{
     panelRevision++;
     setUserDisabled(true);
@@ -876,16 +933,19 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       tool:button.dataset.tm,args:{}
     });}));
   window.addEventListener('storage',event=>{
-    if(event.key!==DISABLED_KEY)return;
-    // Disabling on any same-origin tab stops this tab's microphone too.
-    setUserDisabled(event.newValue==='1',{persist:false,armWake:false});
+    if(event.key===AURA_KEY){
+      setAuraEnabled(event.newValue!=='0',{persist:false});
+    }else if(event.key===DISABLED_KEY){
+      // Disabling on any same-origin tab stops this tab's microphone too.
+      setUserDisabled(event.newValue==='1',{persist:false,armWake:false});
+    }
   });
   document.addEventListener('visibilitychange',()=>{
-    if(document.hidden){autoSend.cancel();handsFree.disable();micEpoch++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();}
+    if(document.hidden){aura.close();auraVoiceFlow=false;autoSend.cancel();handsFree.disable();micEpoch++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();}
     else void refresh();
   });
   window.addEventListener('pagehide',()=>{
-    autoSend.dispose();handsFree.disable();micEpoch++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();captureBinding?.dispose();try{speech?.abort();}catch{}
+    aura.destroy();auraVoiceFlow=false;autoSend.dispose();handsFree.disable();micEpoch++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();captureBinding?.dispose();try{speech?.abort();}catch{}
   });
   document.addEventListener('fullscreenchange',monitorFullscreen);
   document.addEventListener('webkitfullscreenchange',monitorFullscreen);
