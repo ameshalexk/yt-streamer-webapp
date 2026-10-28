@@ -67,7 +67,7 @@ try{
       const plans=[];
       page.on('request',req=>{if(new URL(req.url()).pathname==='/api/teslamon/plan')plans.push(req.postDataJSON());});
       await page.goto(origin+'/?ui='+ui,{waitUntil:'domcontentloaded'});
-      await page.locator('#tmAuraToggle').waitFor();
+      await page.locator('#tmAuraToggle').waitFor({state:'attached'});
       assert.equal(await page.locator('#tmAuraToggle').isChecked(),true,'Aura defaults on');
       assert.equal(await page.locator('#tmAura').isHidden(),true,'not shown until wake/preview');
       await page.evaluate(()=>window.__auraWake('hey_jarvis'));
@@ -104,7 +104,7 @@ try{
       assert.equal(await page.locator('#tmAuraPreview').isDisabled(),true);
       assert.equal(await page.locator('#tmAuraToggleState').innerText(),'Off');
       await page.reload({waitUntil:'domcontentloaded'});
-      await page.locator('#tmAuraToggle').waitFor();
+      await page.locator('#tmAuraToggle').waitFor({state:'attached'});
       assert.equal(await page.locator('#tmAuraToggle').isChecked(),false,'flag persisted off');
       await page.evaluate(()=>window.__auraWake('alexa'));
       assert.equal(await page.locator('#tmAura').isHidden(),true,'legacy wake used when Aura off');
