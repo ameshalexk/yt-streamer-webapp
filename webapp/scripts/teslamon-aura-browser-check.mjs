@@ -87,6 +87,9 @@ try{
         ui+' '+width+' Aura not fullscreen '+JSON.stringify(measure));
       assert.ok(measure.inside,ui+' '+width+' header/footer clipped '+JSON.stringify(measure));
       assert.ok(measure.overflow<=2,ui+' '+width+' horizontal overflow '+JSON.stringify(measure));
+      if(process.env.TESLAMON_AURA_SCREENSHOTS==='1'&&ui==='classic'&&[390,844].includes(width)){
+        await page.screenshot({path:'/tmp/teslamon-aura-'+width+'x'+height+'.jpg',type:'jpeg',quality:53});
+      }
       await page.locator('#tmAura').tap({position:{x:width/2,y:height/2}});
       assert.equal(await page.locator('#tmAura').isHidden(),true,'tap exits Aura');
       assert.equal(await page.evaluate(()=>document.querySelector('#tmWakeToggle').getAttribute('aria-pressed')),
