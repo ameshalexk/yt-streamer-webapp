@@ -60,6 +60,9 @@ jobs:
       - name: TeslaMon same-tab responsive browser smoke
         run: npm run test:teslamon-live-browser
         working-directory: webapp
+      - name: TeslaMon wake and pause browser regression
+        run: node scripts/teslamon-handsfree-browser-check.mjs
+        working-directory: webapp
       - name: AI Access sign-in UI browser smoke
         run: npm run test:ai-agent-access-ui
         working-directory: webapp

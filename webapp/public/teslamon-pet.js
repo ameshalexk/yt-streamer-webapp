@@ -3,7 +3,7 @@ import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261025-stt-models1';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
-import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261025-mycroft-rhasspy1';
+import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261027-pause-on-wake1';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
 import {getTeslaMonPetMotion} from './teslamon-pet-motion.js?v=20261024-poses1';
 import {shouldDismissTeslaMon} from './teslamon-presence.js';
@@ -325,21 +325,12 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       (Number.isFinite(score)?` (${Math.round(score*100)}%)`:'')+'. Say one command.','ok');
     else if(phase==='processing')status('Transcribing command locally…');
   }
-  function lowerPlaybackDuringCommand(){
-    const changed=[];
-    for(const media of document.querySelectorAll('video,audio')){
-      try{
-        if(media.paused||media.muted||media.volume<=0)continue;
-        const prior=media.volume,next=Math.min(prior,0.12);
-        media.volume=next;
-        if(Math.abs(media.volume-next)<0.005)changed.push([media,prior,next]);
-      }catch{/* Safari can ignore programmatic media volume changes. */}
-    }
-    return ()=>{
-      for(const [media,prior,temporary] of changed){
-        try{if(Math.abs(media.volume-temporary)<0.005)media.volume=prior;}catch{}
-      }
-    };
+  async function pausePlaybackDuringCommand(){
+    // Use the same-tab player so every playback mode pauses, including
+    // WebCodecs/MJPEG. This is idempotent when the video is already paused.
+    await globalThis.YTStreamerMediaAgent?.execute('pause',{});
+    // Voice cleanup must leave playback paused until an explicit play/resume.
+    return ()=>{};
   }
   const handsFree=createTeslaMonHandsFree({
     getKeywords:()=>[...selectedWakeKeywords],
@@ -361,7 +352,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(name==='NotAllowedError')
         status('Microphone permission denied. Allow access in browser settings.','warn');
     },
-    duckPlayback:lowerPlaybackDuringCommand,
+    duckPlayback:pausePlaybackDuringCommand,
   });
   renderSttModelState();
   sttModelSelect.addEventListener('change',async()=>{

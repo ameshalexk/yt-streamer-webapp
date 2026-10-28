@@ -137,7 +137,7 @@ export function createTeslaMonHandsFree({
     emit('recording',keyword ? `“${teslaMonWakePhraseLabel(keyword)}” detected. Say one command.` : 'Wake phrase detected. Say one command.', {
       keyword, score:Number.isFinite(detection?.score)?detection.score:undefined,
     });
-    try{restorePlayback=duckPlayback()||null;}catch{restorePlayback=null;}
+    try{restorePlayback=await duckPlayback()||null;}catch{restorePlayback=null;}
     if(!current(id)) {restore();return;}
     try {
       recorder=createCapture({

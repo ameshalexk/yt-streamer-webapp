@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import {createTeslaMonHandsFree} from '../public/teslamon-handsfree.js';
 
 const settle = async () => {await new Promise(resolve=>setImmediate(resolve));};
+function deferred() {
+  let resolve,reject;
+  const promise=new Promise((res,rej)=>{resolve=res;reject=rej;});
+  return {promise,resolve,reject};
+}
 function rig(overrides={}) {
   const events=[],uploads=[],captures=[],monitors=[];
   let wake=()=>{},detectorOptions=null,detectorPauses=0,detectorResumes=0,detectorStops=0,asked=0,stopped=0;
@@ -55,6 +60,7 @@ function rig(overrides={}) {
     onAudio:async(blob,ctx)=>{
       uploads.push({blob,ctx});if(overrides.onAudio)await overrides.onAudio(blob,ctx);
     },
+    duckPlayback:overrides.duckPlayback,
     onState:ev=>events.push(ev),
     timers,
     cooldownMs:1500,
@@ -98,6 +104,75 @@ test('one wake creates one bounded command; speech end submits once then resumes
   h.timers.run(1500);
   assert.equal(h.handsfree.state,'listening');
   assert.ok(h.resumed>=1);
+  h.handsfree.disable();
+});
+
+test('wake waits for playback ducking before capture and gates duplicate wakes while pause is pending',async()=>{
+  const pause=deferred(),order=[],cleanups=[];
+  let pauseCalls=0;
+  const h=rig({duckPlayback:()=>{pauseCalls++;order.push('pause-started');return pause.promise;}});
+  await h.handsfree.enable();
+  h.wake();
+  assert.equal(h.handsfree.state,'recording');
+  assert.equal(h.captures.length,0);
+  h.wake();
+  assert.equal(pauseCalls,1);
+  assert.equal(h.captures.length,0);
+
+  pause.resolve(()=>{cleanups.push('cleanup');});
+  await settle();
+  assert.equal(h.captures.length,1);
+  assert.deepEqual(order,['pause-started']);
+  h.monitors[0].opts.onNoSpeech();
+  assert.deepEqual(cleanups,['cleanup']);
+  h.handsfree.disable();
+});
+
+test('each accepted wake pauses playback and runs cleanup before another wake is accepted',async()=>{
+  const events=[];
+  let pauseNumber=0;
+  const h=rig({duckPlayback:async()=>{
+    const index=++pauseNumber;
+    events.push(`paused-${index}`);
+    return ()=>events.push(`cleanup-${index}`);
+  }});
+  await h.handsfree.enable();
+
+  h.wake();await settle();
+  assert.equal(h.captures.length,1);
+  h.monitors[0].opts.onNoSpeech();
+  assert.deepEqual(events,['paused-1','cleanup-1']);
+  h.timers.run(1500);
+  h.wake();await settle();
+  assert.equal(h.captures.length,2);
+  h.monitors[1].opts.onNoSpeech();
+  assert.deepEqual(events,['paused-1','cleanup-1','paused-2','cleanup-2']);
+  h.handsfree.disable();
+});
+
+test('Off while playback pause is pending prevents capture and runs cleanup when pause settles',async()=>{
+  const pause=deferred();
+  let restored=0;
+  const h=rig({duckPlayback:()=>pause.promise});
+  await h.handsfree.enable();
+  h.wake();
+  assert.equal(h.captures.length,0);
+  h.handsfree.disable();
+  assert.equal(h.handsfree.state,'off');
+  pause.resolve(()=>{restored++;});
+  await settle();
+  assert.equal(h.captures.length,0);
+  assert.equal(restored,1);
+  assert.equal(h.handsfree.state,'off');
+});
+
+test('playback pause rejection does not block the accepted voice command',async()=>{
+  const h=rig({duckPlayback:()=>Promise.reject(new Error('player unavailable'))});
+  await h.handsfree.enable();
+  h.wake();await settle();
+  assert.equal(h.captures.length,1);
+  assert.equal(h.captures[0].started,1);
+  assert.equal(h.handsfree.state,'recording');
   h.handsfree.disable();
 });
 

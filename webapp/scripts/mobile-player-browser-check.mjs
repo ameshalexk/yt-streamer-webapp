@@ -11,6 +11,7 @@ const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,"http://127.0.0.1");
  if(url.pathname.startsWith("/api/")){
   res.writeHead(200,{"content-type":"application/json"});
+  if(url.pathname==="/api/playlists"){res.end("[]");return;}
   res.end(JSON.stringify({ok:true,playlists:[],items:[],sessions:[],data:[]}));
   return;
  }
