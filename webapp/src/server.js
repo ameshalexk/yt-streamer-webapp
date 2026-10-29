@@ -1664,6 +1664,9 @@ app.get("/api/retro-tv/channels", asyncH(async (req, res) => {
 app.get("/stream/url", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
+  if (retroHost && req.hostname.toLowerCase() === retroHost && !archiveVideoUrl(url)) {
+    return res.status(403).json({ error: "Retro TV permits Archive.org downloads only" });
+  }
   const params = stream.normalizeParams(req.query);
   const isLive = req.query.live === "1";
   return stream.streamMjpeg(req, res, {
@@ -1807,6 +1810,9 @@ app.get("/stream/audio/item/:itemId", asyncH(async (req, res) => {
 app.get("/stream/audio/url", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
+  if (retroHost && req.hostname.toLowerCase() === retroHost && !archiveVideoUrl(url)) {
+    return res.status(403).json({ error: "Retro TV permits Archive.org downloads only" });
+  }
   return stream.streamAudio(req, res, { input: url, isLive: req.query.live === "1", startAt: req.query.timestamp, userAgent: req.query.ua, referer: req.query.referer });
 }));
 
@@ -1885,6 +1891,9 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
   // Only HTTPS archive.org/download URLs are accepted; arbitrary remote URLs
   // still follow the existing YouTube resolver and cannot become FFmpeg inputs.
   const retroArchive = retroEnabled ? archiveVideoUrl(url) : null;
+  if (retroHost && req.hostname.toLowerCase() === retroHost && !retroArchive) {
+    return res.status(403).json({ error: "Retro TV permits Archive.org downloads only" });
+  }
   const { videoUrl, audioUrl, resolveCache, resolveMs, isLive, duration, title } =
     retroArchive ? { videoUrl: retroArchive, audioUrl: null, resolveCache: "archive", resolveMs: 0,
       isLive: false, duration: null, title: null }
