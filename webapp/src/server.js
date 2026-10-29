@@ -20,7 +20,6 @@ import * as realChromeRenderer from "./lib/real-chrome-renderer.js";
 import * as browserAudioCapture from "./lib/browser-audio-capture.js";
 import * as catalog from "./lib/catalog.js";
 import { archiveVideoUrl, createRetroTvSource } from "./lib/retro-tv-source.js";
-import { retroHostAllows } from "./lib/retro-tv-host.js";
 import * as processedLibrary from "./lib/processed-library.js";
 import * as preparedCache from "./lib/prepared-cache.js";
 import * as youtubeOAuth from "./lib/youtube-oauth.js";
@@ -47,16 +46,9 @@ let storageCleanupInProgress = false;
 const app = express();
 const retroTvSource = createRetroTvSource();
 const retroEnabled = process.env.RETRO_TV_ENABLED === "1";
-app.use("/retro-tv", (_req, res, next) => retroEnabled ? next() : res.status(404).end());
-const retroHost = String(process.env.RETRO_TV_HOST || "").trim().toLowerCase();
-// Optional dedicated URL, e.g. retro.ameshalex.com, without exposing the
-// primary Streamer interface or private APIs on the retro subdomain.
-app.use((req, res, next) => {
-  if (!retroHost || req.hostname.toLowerCase() !== retroHost) return next();
-  if (!retroEnabled || !retroHostAllows(req.method, req.path)) return res.status(404).end();
-  if (req.path === "/") return res.redirect(302, "/retro-tv/");
-  next();
-});
+// Same YT Streamer origin. This is an opt-in route, not a separate service,
+// hostname, or Cloudflare tunnel. Disabled by default until approved release.
+app.use("/retrotv", (_req, res, next) => retroEnabled ? next() : res.status(404).end());
 app.use((req, res, next) => {
   if (storageCleanupInProgress && !req.path.startsWith("/api/storage")
       && (req.path.startsWith("/stream/") || req.method !== "GET")) {
@@ -1664,9 +1656,6 @@ app.get("/api/retro-tv/channels", asyncH(async (req, res) => {
 app.get("/stream/url", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
-  if (retroHost && req.hostname.toLowerCase() === retroHost && !archiveVideoUrl(url)) {
-    return res.status(403).json({ error: "Retro TV permits Archive.org downloads only" });
-  }
   const params = stream.normalizeParams(req.query);
   const isLive = req.query.live === "1";
   return stream.streamMjpeg(req, res, {
@@ -1810,9 +1799,6 @@ app.get("/stream/audio/item/:itemId", asyncH(async (req, res) => {
 app.get("/stream/audio/url", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
-  if (retroHost && req.hostname.toLowerCase() === retroHost && !archiveVideoUrl(url)) {
-    return res.status(403).json({ error: "Retro TV permits Archive.org downloads only" });
-  }
   return stream.streamAudio(req, res, { input: url, isLive: req.query.live === "1", startAt: req.query.timestamp, userAgent: req.query.ua, referer: req.query.referer });
 }));
 
@@ -1891,9 +1877,6 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
   // Only HTTPS archive.org/download URLs are accepted; arbitrary remote URLs
   // still follow the existing YouTube resolver and cannot become FFmpeg inputs.
   const retroArchive = retroEnabled ? archiveVideoUrl(url) : null;
-  if (retroHost && req.hostname.toLowerCase() === retroHost && !retroArchive) {
-    return res.status(403).json({ error: "Retro TV permits Archive.org downloads only" });
-  }
   const { videoUrl, audioUrl, resolveCache, resolveMs, isLive, duration, title } =
     retroArchive ? { videoUrl: retroArchive, audioUrl: null, resolveCache: "archive", resolveMs: 0,
       isLive: false, duration: null, title: null }
