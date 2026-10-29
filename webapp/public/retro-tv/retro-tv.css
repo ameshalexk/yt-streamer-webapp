@@ -1,3 +1,4 @@
+[hidden]{display:none!important}
 :root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#11151b;color:#f0f1ed}
 *{box-sizing:border-box}body{margin:0;min-height:100vh}button{font:inherit;cursor:pointer;border:1px solid #3b4350;background:#202a36;color:#f3f3ee;border-radius:8px;padding:10px 14px;min-height:44px}
 button:disabled{opacity:.4;cursor:default}button:hover:not(:disabled),button:focus-visible{background:#344354;outline-color:#e7ac4c}
