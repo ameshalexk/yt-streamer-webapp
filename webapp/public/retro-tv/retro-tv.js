@@ -171,7 +171,7 @@ async function refreshGuide({ autoAdvance = false } = {}) {
   if (guideLoading) return;
   guideLoading = true;
   try {
-    const response = await fetch("/api/retro-tv/channels", { cache: "no-store" });
+    const response = await fetch("/api/retro-tv/channels" + (autoAdvance ? "?refresh=1" : ""), { cache: "no-store" });
     if (!response.ok) throw new Error("Guide HTTP " + response.status);
     const data = await response.json();
     if (!Array.isArray(data.channels)) throw new Error("Invalid channel list");
@@ -180,8 +180,11 @@ async function refreshGuide({ autoAdvance = false } = {}) {
     $("feedStatus").textContent = guide.channels.length + " channels · " + data.source;
     updateGuide();
     const selected = currentChannel();
-    if (selected && (old?.now?.id !== selected.now.id || (autoAdvance && !active))) {
+    if (selected && old?.now?.id !== selected.now.id) {
       tune(chosenId);
+    } else if (selected && autoAdvance) {
+      stopCurrent();
+      status("Programme finished. Waiting for the next programme…");
     } else if (chosenId && !selected) {
       stopCurrent(); chosenId = null;
       $("screenPlaceholder").hidden = false;
