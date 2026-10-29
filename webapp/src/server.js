@@ -19,6 +19,7 @@ import * as browserRenderer from "./lib/browser-renderer.js";
 import * as realChromeRenderer from "./lib/real-chrome-renderer.js";
 import * as browserAudioCapture from "./lib/browser-audio-capture.js";
 import * as catalog from "./lib/catalog.js";
+import { archiveVideoUrl, createRetroTvSource } from "./lib/retro-tv-source.js";
 import * as processedLibrary from "./lib/processed-library.js";
 import * as preparedCache from "./lib/prepared-cache.js";
 import * as youtubeOAuth from "./lib/youtube-oauth.js";
@@ -43,6 +44,9 @@ import { canUseCastReceiver, redactCastMediaPath } from "./lib/vlc-cast-routing.
 
 let storageCleanupInProgress = false;
 const app = express();
+const retroTvSource = createRetroTvSource();
+const retroEnabled = process.env.RETRO_TV_ENABLED === "1";
+app.use("/retro-tv", (_req, res, next) => retroEnabled ? next() : res.status(404).end());
 app.use((req, res, next) => {
   if (storageCleanupInProgress && !req.path.startsWith("/api/storage")
       && (req.path.startsWith("/stream/") || req.method !== "GET")) {
@@ -1638,6 +1642,14 @@ app.get("/stream/item/:itemId", asyncH(async (req, res) => {
   });
 }));
 
+// Isolated retro TV guide: separate UI and source adapter; no existing playlist changes.
+app.get("/api/retro-tv/channels", asyncH(async (req, res) => {
+  if (!retroEnabled) return res.status(404).json({ error: "Retro TV is disabled" });
+  const guide = await retroTvSource.read({ refresh: req.query.refresh === "1" });
+  res.set("Cache-Control", "no-store");
+  res.json(guide);
+}));
+
 // Stream an ad-hoc m3u8/url passed directly (not yet saved). For the "test/play now" box and catalog.
 app.get("/stream/url", asyncH(async (req, res) => {
   const url = req.query.url;
@@ -1785,7 +1797,7 @@ app.get("/stream/audio/item/:itemId", asyncH(async (req, res) => {
 app.get("/stream/audio/url", asyncH(async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
-  return stream.streamAudio(req, res, { input: url, isLive: req.query.live === "1", userAgent: req.query.ua, referer: req.query.referer });
+  return stream.streamAudio(req, res, { input: url, isLive: req.query.live === "1", startAt: req.query.timestamp, userAgent: req.query.ua, referer: req.query.referer });
 }));
 
 app.get("/stream/audio/youtube", asyncH(async (req, res) => {
@@ -1859,7 +1871,14 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
   const fps = Math.max(5, Math.min(30, Number.parseInt(String(body.fps ?? 30), 10) || 30));
   const playbackRate = Math.max(1, Math.min(4, Number.parseFloat(String(body.playbackRate ?? 1)) || 1));
   const requestedStartAt = Math.max(0, Number.parseFloat(String(body.startAt ?? 0)) || 0);
-  const { videoUrl, audioUrl, resolveCache, resolveMs, isLive, duration, title } = await resolveProxiedYouTubeStreams(url, maxHeight);
+  // Archive.org uses the same established WebCodecs FFmpeg pipeline.
+  // Only HTTPS archive.org/download URLs are accepted; arbitrary remote URLs
+  // still follow the existing YouTube resolver and cannot become FFmpeg inputs.
+  const retroArchive = retroEnabled ? archiveVideoUrl(url) : null;
+  const { videoUrl, audioUrl, resolveCache, resolveMs, isLive, duration, title } =
+    retroArchive ? { videoUrl: retroArchive, audioUrl: null, resolveCache: "archive", resolveMs: 0,
+      isLive: false, duration: null, title: null }
+      : await resolveProxiedYouTubeStreams(url, maxHeight);
   if (isLive) {
     return res.status(409).json({
       error: "Live YouTube streams use MJPEG playback.",
