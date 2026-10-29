@@ -1,10 +1,10 @@
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
-import {createTeslaMonAura} from './teslamon-aura.js?v=20261027-aura1';
+import {createTeslaMonAura} from './teslamon-aura.js?v=20261028-aura-reliable1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261025-stt-models1';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
-import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261027-pause-on-wake1';
+import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261028-aura-reliable1';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
 import {getTeslaMonPetMotion} from './teslamon-pet-motion.js?v=20261024-poses1';
 import {shouldDismissTeslaMon} from './teslamon-presence.js';
@@ -87,10 +87,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<button id="tmWakeToggle" type="button" aria-pressed="false" aria-label="Turn hands-free microphone on">Mic Off</button>',
       '</div>',
       '<div class="tm-aura-setting" role="group" aria-label="Aura presentation mode">',
-        '<div class="tm-aura-copy"><strong>Aura fullscreen experience</strong>',
-          '<span>Cinematic voice view when a wake phrase is heard.</span></div>',
+        '<div class="tm-aura-copy"><strong>Aura overlay</strong>',
+          '<span>Full-screen voice</span></div>',
         '<label class="tm-aura-switch" for="tmAuraToggle">',
-          '<input id="tmAuraToggle" type="checkbox" role="switch" checked aria-label="Use Aura fullscreen experience" />',
+          '<input id="tmAuraToggle" type="checkbox" role="switch" checked aria-label="Use Aura overlay" />',
           '<span id="tmAuraToggleState">On</span></label>',
         '<button id="tmAuraPreview" type="button">Preview Aura</button>',
       '</div>',
@@ -149,20 +149,74 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const DISABLED_KEY='ytStreamerTeslaMonDisabledV1';
   const AURA_KEY='ytStreamerTeslaMonAuraEnabledV1';
   let auraEnabled=true;
+  let activeAuraEntry=null,voiceAuraEntry=null,playbackTimer=null,wakePauseGuard=false;
+  let voiceOwner=0,pendingVoice=null,modelGeneration=0;
+  let activePlannerVoice=false,activeIssueVoice=false;
   try{auraEnabled=localStorage.getItem(AURA_KEY)!=='0';}catch{}
-  const aura=createTeslaMonAura({onDismiss:()=>{
-    // Exiting the presentation layer does not cancel a pending voice command.
-    if(!userDisabled&&!fullscreenActive())pet.hidden=false;
+  const aura=createTeslaMonAura({onDismiss:(entry,reason)=>{
+    // Tap/Escape only suppress this presentation; speech and dispatch continue.
+    if(activeAuraEntry===entry){activeAuraEntry=null;voiceAuraEntry=null;}
+    if(playbackTimer!==null){clearTimeout(playbackTimer);playbackTimer=null;}
+    if(!userDisabled&&!fullscreenActive()){
+      pet.hidden=false;
+      if(reason==='keyboard')try{face.focus({preventScroll:true});}catch{}
+    }
   }});
-  function setAuraEnabled(value,{persist=true}={}){
+  const playerState=()=>{
+    try{return globalThis.YTStreamerMediaAgent?.get_player_state?.()||null;}catch{return null;}
+  };
+  function closeAura(){
+    aura.close();activeAuraEntry=null;voiceAuraEntry=null;
+    if(playbackTimer!==null){clearTimeout(playbackTimer);playbackTimer=null;}
+    if(!userDisabled&&!fullscreenActive())pet.hidden=false;
+  }
+  function observeAuraPlayback(){
+    playbackTimer=null;
+    if(!aura.active||document.hidden)return;
+    const phase=playerState()?.playback_phase;
+    // A wake may begin during playback. Its old playing state must not
+    // immediately dismiss the newly accepted wake while pause is in flight.
+    if(wakePauseGuard&&['paused','idle'].includes(phase))wakePauseGuard=false;
+    if(phase==='playing'&&!wakePauseGuard){
+      closeAura();return;
+    }
+    playbackTimer=setTimeout(observeAuraPlayback,350);
+  }
+  function openAura({phase='standby',message='',fromWake=false}={}){
+    if(!auraEnabled||userDisabled||document.hidden)return null;
+    if(!fromWake&&playerState()?.playback_phase==='playing')return null;
+    wakePauseGuard=fromWake;
+    activeAuraEntry=aura.open({phase,status:message});
+    if(playbackTimer!==null)clearTimeout(playbackTimer);
+    playbackTimer=setTimeout(observeAuraPlayback,350);
+    pet.hidden=true;
+    return activeAuraEntry;
+  }
+  function auraStage(phase,message,{entry=activeAuraEntry,kind='info'}={}){
+    if(entry===null||entry!==activeAuraEntry||!aura.active)return false;
+    aura.setPhase(phase,{entry});
+    aura.setStatus(message,{entry,kind});
+    return true;
+  }
+  function currentVoicePhase(){
+    const phase=handsFree?.state;
+    if(phase==='recording')return ['listening','Recording your command…'];
+    if(phase==='preparing')return ['preparing','Pausing video before recording…'];
+    if(phase==='processing')return ['transcribing','Understanding your request…'];
+    if(phase==='cooldown')return ['standby','Rearming wake detection…'];
+    if(phase==='listening')return ['standby','Say a wake phrase'];
+    return ['standby','Mic off · exit Aura to turn it on'];
+  }
+  function setAuraEnabled(value,{persist=true,local=false}={}){
     auraEnabled=Boolean(value);
     auraToggle.checked=auraEnabled;
     auraToggleState.textContent=auraEnabled?'On':'Off';
     auraPreview.disabled=!auraEnabled;
     if(persist)try{localStorage.setItem(AURA_KEY,auraEnabled?'1':'0');}catch{}
-    if(!auraEnabled){
-      aura.close();
-      if(!userDisabled&&!fullscreenActive())pet.hidden=false;
+    if(!auraEnabled)closeAura();
+    else if(local&&!userDisabled){
+      const [phase,message]=currentVoicePhase();
+      openAura({phase,message});
     }
   }
   let userDisabled=false;
@@ -219,12 +273,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     renderWakePhraseSelection();
   });
 
-  function status(message,type='info'){
+  function status(message,type='info',owner=null){
+    if(owner!==null&&owner!==voiceOwner)return;
     state.textContent=message;state.dataset.kind=type;face.dataset.state=type;
-    if(aura.active){
-      if(type==='warn')aura.setPhase('error');
-      aura.setStatus(message,{kind:type});
-    }
   }
   // Keep the puppy seated during passive wake-word scanning; a recognized
   // wake word stands it up, and active work runs it in place.
@@ -245,9 +296,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     const current=message||`${state.selectedModel.label} selected${state.loaded?' and ready':' · loads locally on the first voice command'}.`;
     sttModelState.textContent=current+(micBusy?' Turn Mic Off and finish any voice or playback request before changing models.':'');
   }
-  function collapseControls({focusFace=false}={}) {
+  function collapseControls({focusFace=false,preserveAutoSend=false}={}) {
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
-    autoSend.cancel();
+    if(!preserveAutoSend)autoSend.cancel();
     if(pet.contains(document.activeElement))document.activeElement.blur?.();
     if(focusFace&&!pet.hidden)face.focus();
   }
@@ -287,7 +338,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
   }
   function dismissAfterSuccess(response,tool,requestRevision) {
-    if(aura.active)return; // Aura stays in place until the user's tap or Escape.
+    if(aura.active)return; // Non-video success retains Aura.
     if(!shouldDismissTeslaMon({
       response,tool,requestRevision,panelRevision,
       hasDraft:Boolean(input.value.trim()),panelOpen:opened,fullscreen:fullscreenSeen
@@ -327,52 +378,112 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       void interpret(text,{allowClosed:true});
     },
   });
+  // A voice transcript owns its two-second grace and subsequent dispatch.
+  // Typing uses the separate, unchanged auto-send scheduler.
+  function cancelPendingVoice({preserveDraft=false}={}){
+    const task=pendingVoice;
+    if(!task)return false;
+    pendingVoice=null;
+    clearTimeout(task.timer);
+    task.signal?.removeEventListener('abort',task.onAbort);
+    if(!preserveDraft&&input.value.trim()===task.text)input.value='';
+    task.resolve(false);
+    return true;
+  }
+  function scheduleVoiceCommand(text,{signal,isCurrent,owner,entry}){
+    cancelPendingVoice({preserveDraft:true});
+    return new Promise(resolve=>{
+      if(signal?.aborted||!isCurrent()){resolve(false);return;}
+      const task={text,signal,resolve,timer:null,onAbort:null};
+      pendingVoice=task;
+      task.onAbort=()=>{if(pendingVoice===task)cancelPendingVoice();};
+      signal?.addEventListener('abort',task.onAbort,{once:true});
+      task.timer=setTimeout(()=>{
+        if(pendingVoice!==task)return;
+        pendingVoice=null;
+        signal?.removeEventListener('abort',task.onAbort);
+        if(signal?.aborted||!isCurrent()||input.value.trim()!==text){
+          resolve(false);return;
+        }
+        wakeHandled=true;auraVoiceFlow=false;
+        auraStage('thinking','Understanding your request…',{entry});
+        void interpret(text,{allowClosed:true,signal,owner,entry,voice:true})
+          .finally(()=>resolve(true));
+      },2000);
+    });
+  }
   // Attempt foreground wake listening on each page load, using ordinary
   // browser microphone permission. Off stays off until re-enabled this visit.
-  function updateWakeUI({state:phase='off',message,keyword,score}={}){
+  function updateWakeUI({state:phase='off',message,keyword,score,invocationId}={}){
     const isOn=handsFree?.enabled??phase==='starting';
     wakeControl.dataset.active=String(isOn);
-    wakeControl.dataset.error=String(phase==='error');
+    wakeControl.dataset.error=String(phase==='error'||phase==='recovering');
     pet.dataset.wake=phase;
     pet.dataset.mic=isOn&&phase!=='error'?'on':'off';
     syncPetMotion();
-    face.setAttribute('aria-description', 'Hands-free microphone: '+(message||phase));
+    face.setAttribute('aria-description','Hands-free microphone: '+(message||phase));
     wakeToggle.textContent=isOn?'Mic On':'Mic Off';
     wakeToggle.setAttribute('aria-pressed',String(isOn));
     wakeToggle.setAttribute('aria-label',isOn?
       'Turn hands-free microphone off':'Turn hands-free microphone on');
     renderWakePhraseSelection();
     wakeState.textContent=message||(
-      phase==='listening'?'Listening for '+selectedWakeKeywords.map(teslaMonWakePhraseLabel).join(', '):
+      phase==='listening'?'Waiting for wake phrase':
       phase==='recording'?'Recording command':
+      phase==='preparing'?'Pausing playback':
       phase==='processing'?'Processing command':
       phase==='starting'?'Requesting microphone permission…':'Off');
-    if(speechMode==='local')mic.disabled=!voiceAvailable||['starting','recording','processing'].includes(phase);
+    if(speechMode==='local')mic.disabled=!voiceAvailable||
+      ['starting','preparing','recording','processing'].includes(phase);
     renderSttModelState();
-    if(phase==='recording'){
-      wakeInputChanged=false;wakeHandled=false;
+    if(phase==='preparing'){
+      voiceOwner=invocationId||voiceOwner+1;
+      wakeInputChanged=Boolean(input.value.trim());wakeHandled=false;
       panelRevision++;
       if(auraEnabled&&!userDisabled){
         auraVoiceFlow=true;
-        collapseControls();
-        aura.open({phase:'listening',keyword:keyword?teslaMonWakePhraseLabel(keyword):'Wake phrase'});
-        pet.hidden=true;
-      }else showPet({focus:true});
-    }else if((phase==='off'||phase==='error')&&!fullscreenActive()){
-      // An unavailable wake listener must never leave an invisible pet.
-      pet.hidden=false;dismissedForSuccess=false;
+        collapseControls({preserveAutoSend:true});
+        voiceAuraEntry=openAura({phase:'preparing',message:'Pausing video before recording…',fromWake:true});
+      }else {
+        voiceAuraEntry=null;
+        showPet({focus:false}); // Wake never requests an on-screen keyboard.
+      }
+    }else if(phase==='recording'){
+      if(['paused','idle'].includes(playerState()?.playback_phase))wakePauseGuard=false;
+      auraStage('listening','Recording your command…',{entry:voiceAuraEntry});
+    }else if(phase==='processing'){
+      auraStage('transcribing','Understanding your request…',{entry:voiceAuraEntry});
+    }else if(phase==='no_speech'){
+      auraStage('error',"Didn't catch that",{entry:voiceAuraEntry,kind:'warn'});
+    }else if(phase==='recovering'){
+      // A failed pause no longer owns the old playing snapshot. If frames
+      // continue, observed playback must be allowed to reveal the player.
+      wakePauseGuard=false;
+      auraStage('error','Could not pause video · try again',{entry:voiceAuraEntry,kind:'warn'});
+      status('Playback pause did not complete. Try the wake phrase again.','warn',voiceOwner);
+    }else if(phase==='cooldown'){
+      const standbyEntry=voiceAuraEntry??activeAuraEntry;
+      if(/no command/i.test(message||''))auraStage('error',"Didn't catch that",{entry:standbyEntry,kind:'warn'});
+      else if(/pause/i.test(message||''))auraStage('error','Could not pause video · try again',{entry:standbyEntry,kind:'warn'});
+      else auraStage('standby','Rearming wake detection…',{entry:standbyEntry});
+    }else if(phase==='listening'){
+      // A newly opened visual can follow the global wake-standby state
+      // without accepting an older invocation's transcript or action result.
+      auraStage('standby','Say a wake phrase',{entry:voiceAuraEntry??activeAuraEntry});
+    }else if(phase==='off'||phase==='error'){
+      closeAura();auraVoiceFlow=false;
+      if(!fullscreenActive())pet.hidden=false;
     }
-    if(phase==='processing'&&aura.active)aura.setPhase('transcribing');
     if(phase==='error')status(wakeState.textContent,'warn');
-    else if(phase==='recording')status((keyword?`${teslaMonWakePhraseLabel(keyword)} detected`:'Wake phrase detected')+
-      (Number.isFinite(score)?` (${Math.round(score*100)}%)`:'')+'. Say one command.','ok');
-    else if(phase==='processing')status('Transcribing command locally…');
   }
-  async function pausePlaybackDuringCommand(){
-    // Use the same-tab player so every playback mode pauses, including
-    // WebCodecs/MJPEG. This is idempotent when the video is already paused.
-    await globalThis.YTStreamerMediaAgent?.execute('pause',{});
-    // Voice cleanup must leave playback paused until an explicit play/resume.
+  async function pausePlaybackDuringCommand({signal}={}){
+    // Priority same-tab pause cannot queue behind an unsettled play/resume.
+    const agent=globalThis.YTStreamerMediaAgent;
+    if(typeof agent?.execute!=='function')throw new Error('Same-tab pause unavailable');
+    const result=await agent.execute('pause_for_voice',{}, {signal});
+    if(signal?.aborted)throw new Error('Playback pause cancelled');
+    if(result?.status!=='completed')throw new Error('Playback pause unavailable');
+    // Cleanup intentionally does NOT resume video.
     return ()=>{};
   }
   const handsFree=createTeslaMonHandsFree({
@@ -387,7 +498,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       ...options, MediaRecorder:window.MediaRecorder,
     }),
     createSilenceMonitor:options=>createTeslaMonSilenceMonitor(options),
-    onAudio:(blob,{signal})=>processCapturedAudio(blob,{allowClosed:true,signal}),
+    onAudio:(blob,{signal,invocationId,isCurrent})=>processCapturedAudio(blob,{allowClosed:true,signal,invocationId,isCurrent}),
     onState:updateWakeUI,
     onError:error=>{
       autoWakeBlocked=true;
@@ -415,7 +526,12 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(handsFree.enabled){
       autoWakeWanted=false;
       handsFree.disable();
-      micEpoch++; // Invalidates any older voice plan before dispatch.
+      cancelPendingVoice();
+      micEpoch++;
+      if(activePlannerVoice){modelGeneration++;modelBusy=false;activePlannerVoice=false;}
+      if(activeIssueVoice){generation++;busy=false;activeIssueVoice=false;}
+      cancelMic({preserveWake:true});
+      closeAura();auraVoiceFlow=false; // Mic Off cancels voice, not typed drafts.
     }else if(voiceAvailable){
       autoWakeWanted=true;autoWakeBlocked=false;
       // getUserMedia is invoked synchronously on this trusted click.
@@ -423,12 +539,19 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
   });
   updateWakeUI({state:'off',message:'Off'});
-  function report(response,action){
-    if(aura.active)aura.setPhase(['observed','accepted'].includes(response?.status)?'complete':'error');
+  function report(response,action,{owner=null,entry=null}={}){
+    // Dispatch acceptance is not evidence of playing frames.
+    if(response?.status==='observed'&&response?.playbackPhase==='playing'){
+      if(entry!==null&&entry===activeAuraEntry)closeAura();
+    }else if(response?.status==='accepted')auraStage('acting','Waiting for playback…',{entry});
+    else if(response?.status==='observed')auraStage('complete','Done · say a wake phrase',{entry});
+    else if(response?.status==='needs_user_gesture')auraStage('error','Use the player control',{entry,kind:'warn'});
+    else auraStage('error','Please try again',{entry,kind:'warn'});
+    const feedback=(message,type='info')=>status(message,type,owner);
     const phase=response?.playbackPhase;
     if(response?.status==='observed'){
       if(action==='request_fullscreen'||action==='exit_fullscreen'){
-        status(response.fullscreenMode==='none'?'Fullscreen exited.':
+        feedback(response.fullscreenMode==='none'?'Fullscreen exited.':
           'Fullscreen enabled in this tab.','ok');return;
       }
       const playback=phase==='playing'?'Playing in this tab':
@@ -436,20 +559,20 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       const fullscreen=response.fullscreenAttempt==='needs_user_gesture'?
         ' Tap Fullscreen directly in this tab.':
         response.fullscreenAttempt==='observed'?' Fullscreen enabled.':'';
-      status(playback+fullscreen,'ok');
+      feedback(playback+fullscreen,'ok');
     }else if(response?.status==='accepted'){
-      status('Command sent. Confirm playback on the player.'+
+      feedback('Command sent. Confirm playback on the player.'+
         (response.fullscreenAttempt==='needs_user_gesture'?
           ' Tap Fullscreen directly in this tab.':''));
     }
-    else if(response?.status==='uncertain')status(
+    else if(response?.status==='uncertain')feedback(
       response.code?.startsWith('candidate_selection_')?
         'I found possible videos but could not confidently choose one, so nothing was played. Try a more specific title.':
         'Result uncertain. Check player before retrying.','warn');
-    else if(response?.status==='needs_user_gesture')status('Tap Fullscreen directly in this tab.','warn');
-    else if(response?.status==='offline')status('This tab player is unavailable. Reload the page.','warn');
+    else if(response?.status==='needs_user_gesture')feedback('Tap Fullscreen directly in this tab.','warn');
+    else if(response?.status==='offline')feedback('This tab player is unavailable. Reload the page.','warn');
     else if(response?.status==='unsupported')
-      status(response.code==='unsupported_voice_command'?
+      feedback(response.code==='unsupported_voice_command'?
         'TeslaMon controls this tab and Home Assistant lights.':'Not supported by this player.','warn');
     else{
       const reasons={
@@ -484,7 +607,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         ha_mcp_not_called:'Codex did not complete a Home Assistant light tool call.',
         home_assistant_unavailable:'Home Assistant light service is unavailable.'
       };
-      status(reasons[response?.code]||('Command failed: '+(response?.code||'unknown')),'warn');
+      feedback(reasons[response?.code]||('Command failed: '+(response?.code||'unknown')),'warn');
     }
   }
   async function post(url,data,contentType='application/json',signal){
@@ -506,68 +629,103 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }catch{return {status:'failed',code:'invalid_server_reply'};}
   }
   async function issue(intent,requestRevision=panelRevision,context={}){
-    if(busy){status('Wait for the current command.','warn');return;}
-    if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn');return;}
-    busy=true;syncPetMotion();renderSttModelState();const epoch=++generation;
-    if(aura.active)aura.setPhase('acting');
-    status('Sending command…');
-    try{const result=await localPlayer.run(intent,{...context,
-      isCurrent:()=>requestRevision===panelRevision&&!document.hidden&&
-        (typeof context.isCurrent!=='function'||context.isCurrent())});
-      if(epoch===generation){
-        report(result,intent.tool);
-        dismissAfterSuccess(result,intent.tool,requestRevision);
-        if(intent.tool==='search_and_play'&&result.status==='accepted'&&result.mediaId){
-          status('Video selected. Waiting for video frames…');
-          void localPlayer.observe(result.mediaId,{isCurrent:()=>epoch===generation&&requestRevision===panelRevision&&!document.hidden})
-            .then(confirmed=>{
-              if(epoch!==generation)return;
-              if(confirmed.status==='observed'){
-                status('Video playing in this tab.','ok');
-                dismissAfterSuccess(confirmed,intent.tool,requestRevision);
-              }
-              else if(confirmed.code==='playback_stream_failed')
-                status('Video stream failed to load. Try another video.','warn');
-              else if(confirmed.code==='playback_not_confirmed')
-                status('Video has not started after 12 seconds. Check the player.','warn');
-            }).catch(()=>{if(epoch===generation)
-              status('Could not confirm video playback.','warn');});
-        }
+    const owner=context.owner??null,entry=context.entry??null;
+    if(busy){status('Wait for the current command.','warn',owner);return false;}
+    if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn',owner);return false;}
+    busy=true;activeIssueVoice=Boolean(context.voice);syncPetMotion();renderSttModelState();
+    const token=++generation;
+    const current=()=>token===generation&&!document.hidden&&
+      !context.signal?.aborted&&(!context.voice||context.epoch===micEpoch)&&
+      (context.voice||requestRevision===panelRevision)&&
+      (typeof context.isCurrent!=='function'||context.isCurrent());
+    auraStage('acting','Sending command…',{entry});
+    status('Sending command…','info',owner);
+    try{
+      const result=await localPlayer.run(intent,{...context,isCurrent:current});
+      if(!current())return false;
+      report(result,intent.tool,{owner,entry});
+      dismissAfterSuccess(result,intent.tool,requestRevision);
+      if(intent.tool==='search_and_play'&&result.status==='accepted'&&result.mediaId){
+        status('Video selected. Waiting for video frames…','info',owner);
+        void localPlayer.observe(result.mediaId,{isCurrent:current})
+          .then(confirmed=>{
+            if(!current())return;
+            if(confirmed.status==='observed'){
+              status('Video playing in this tab.','ok',owner);
+              if(entry===activeAuraEntry)closeAura();
+              dismissAfterSuccess(confirmed,intent.tool,requestRevision);
+            }else if(confirmed.code==='playback_stream_failed'){
+              status('Video stream failed to load. Try another video.','warn',owner);
+              auraStage('error','Video could not start',{entry,kind:'warn'});
+            }else if(confirmed.code==='playback_not_confirmed'){
+              status('Video has not started after 12 seconds. Check the player.','warn',owner);
+              auraStage('error','Could not confirm playback',{entry,kind:'warn'});
+            }
+          }).catch(()=>{
+            if(current()){
+              status('Could not confirm video playback.','warn',owner);
+              auraStage('error','Could not confirm playback',{entry,kind:'warn'});
+            }
+          });
       }
+      return true;
     }catch{
-      if(epoch===generation)status('Playback failed unexpectedly. Check the player.','warn');
-    }finally{busy=false;syncPetMotion();renderSttModelState();autoSend.flush();}
+      if(current()){
+        status('Playback failed unexpectedly. Check the player.','warn',owner);
+        auraStage('error','Playback failed',{entry,kind:'warn'});
+      }
+      return false;
+    }finally{
+      if(token===generation){
+        busy=false;activeIssueVoice=false;syncPetMotion();renderSttModelState();autoSend.flush();
+      }
+    }
   }
-  // Natural language (both typed and browser-local voice transcript) always goes
-  // through the signed Codex CLI planner. Direct buttons skip reasoning.
-  async function interpret(text,{allowClosed=false,signal}={}){
-    if(signal?.aborted)return;
+  // Both typed and voice commands use the existing authenticated planner.
+  // Voice cancellation checks apply before any new player/HA dispatch.
+  async function interpret(text,{allowClosed=false,signal,owner=null,entry=null,voice=false}={}){
+    if(signal?.aborted)return false;
     const request=String(text||'').trim();
     if(request.length<1||request.length>220){
-      status('Enter a playback request under 220 characters.','warn');return;
+      status('Enter a playback request under 220 characters.','warn',owner);return false;
     }
-    if(modelBusy||busy){status('A playback request is already running.','warn');return;}
-    modelBusy=true;syncPetMotion();renderSttModelState();
-    if(aura.active){aura.setPhase('thinking');aura.setTranscript(request);}
-    const target=selected,epoch=micEpoch,requestRevision=panelRevision;
-    status('Codex is understanding your request…');
+    if(modelBusy||busy){status('A playback request is already running.','warn',owner);return false;}
+    modelBusy=true;activePlannerVoice=voice;syncPetMotion();renderSttModelState();
+    const token=++modelGeneration,target=selected,epoch=micEpoch,requestRevision=panelRevision;
+    const current=()=>token===modelGeneration&&!signal?.aborted&&
+      target===selected&&(!voice||epoch===micEpoch)&&(!document.hidden)&&(opened||allowClosed);
+    auraStage('thinking','Understanding your request…',{entry});
+    status('Codex is understanding your request…','info',owner);
     try{
       const result=await post('/api/teslamon/plan',{text:request,session:tabSession},'application/json',signal);
-      if(signal?.aborted||target!==selected||epoch!==micEpoch||(!opened&&!allowClosed))return;
+      if(!current())return false;
       if(result.status==='ok'&&typeof result.tool==='string'){
         if(input.value.trim()===request)input.value='';
-        await issue({tool:result.tool,args:result.args||{}},requestRevision,
-          result.tool==='search_and_play'?{originalRequest:request,signal,
-            isCurrent:()=>target===selected&&epoch===micEpoch&&requestRevision===panelRevision}:{});
-      }else if(result.status==='ha_done'){
-        if(aura.active)aura.setPhase('complete');
+        return await issue({tool:result.tool,args:result.args||{}},requestRevision,{
+          originalRequest:request,signal,owner,entry,voice,epoch,isCurrent:current,
+        });
+      }
+      if(result.status==='ha_done'){
         if(input.value.trim()===request)input.value='';
         status(result.action==='light_changed'?
-          'Home Assistant light command completed.':'Home Assistant light state checked.','ok');
+          'Home Assistant light command completed.':'Home Assistant light state checked.','ok',owner);
+        auraStage('complete','Done · say a wake phrase',{entry});
         dismissAfterSuccess(result,'ha_done',requestRevision);
-      }else report(result);
-    }catch{status('Codex is unavailable. Quick controls still work.','warn');}
-    finally{modelBusy=false;syncPetMotion();renderSttModelState();autoSend.flush();}
+        return true;
+      }
+      report(result,null,{owner,entry});
+      return false;
+    }catch{
+      if(current()){
+        status('Codex is unavailable. Quick controls still work.','warn',owner);
+        auraStage('error','Could not connect · try again',{entry,kind:'warn'});
+      }
+      return false;
+    }finally{
+      if(token===modelGeneration){
+        modelBusy=false;activePlannerVoice=false;syncPetMotion();renderSttModelState();autoSend.flush();
+      }
+    }
   }
   function cancelMic({preserveWake=false}={}){
     if(!preserveWake)micEpoch++;
@@ -589,9 +747,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     restorePositionForMode();
     if(disabled){
       autoWakeWanted=false;autoWakeBlocked=true;
-      autoSend.cancel();
+      autoSend.cancel();cancelPendingVoice();
       handsFree.disable(); // Stops all microphone tracks and wake detection immediately.
-      aura.close();auraVoiceFlow=false;
+      closeAura();auraVoiceFlow=false;
       cancelMic(); // Cancels push-to-talk and pending transcription or commands.
       localStt.dispose();
       sttModelMessage='';renderSttModelState();
@@ -663,12 +821,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   }
   // Hold-to-talk and Hey Jarvis command clips use the SAME browser-local
   // Whisper worker. Only the final text goes to the signed Codex planner.
-  async function processCapturedAudio(blob,{allowClosed=false,signal}={}){
+  async function processCapturedAudio(blob,{allowClosed=false,signal,invocationId,isCurrent}={}){
     if(!localPlayer.ready||signal?.aborted)return;
-    const before=selected,epoch=micEpoch;
+    const before=selected,epoch=micEpoch,owner=invocationId??null;
+    const entry=owner!==null?voiceAuraEntry:null;
     const currentController=new AbortController();
     if(activeTranscript){
-      status('Wait for the previous voice command to finish.','warn');
+      status('Wait for the previous voice command to finish.','warn',owner);
       return;
     }
     activeTranscript=currentController;
@@ -677,48 +836,55 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     signal?.addEventListener('abort',externalAbort,{once:true});
     if(signal?.aborted)currentController.abort();
     const current=()=>!currentController.signal.aborted&&
-      before===selected&&epoch===micEpoch&&(opened||allowClosed);
+      before===selected&&epoch===micEpoch&&(opened||allowClosed)&&
+      (owner===null||owner===voiceOwner)&&
+      (typeof isCurrent!=='function'||isCurrent());
     let elapsedTimer=null;
     const clearElapsed=()=>{clearInterval(elapsedTimer);elapsedTimer=null;};
     const onPhase=step=>{
       if(!current())return;
       clearElapsed();
-      status(step.message||'Preparing local transcription…');
+      status(step.message||'Preparing local transcription…','info',owner);
       sttModelMessage=step.message||'';renderSttModelState(sttModelMessage);
+      auraStage('transcribing','Understanding your request…',{entry});
       if(step.phase==='transcribing'){
         const started=Date.now();
         const tick=()=>{if(current())
-          status('Transcribing this recording locally · '+Math.floor((Date.now()-started)/1000)+'s · Model already loaded.');};
-        tick();
-        elapsedTimer=setInterval(tick,1000);
+          status('Transcribing this recording locally · '+Math.floor((Date.now()-started)/1000)+'s · Model already loaded.','info',owner);};
+        tick();elapsedTimer=setInterval(tick,1000);
       }
     };
     try{
       if(!current())return;
       const result=await localStt.transcribe(blob,{signal:currentController.signal,onPhase});
+      clearElapsed();
       if(!current())return;
       sttModelMessage=`${localStt.getState().selectedModel.label} is warm and ready. Audio stays in this browser.`;
-      // Native keyboard dictation entered during this wake has priority.
+      // Explicit native dictation or typing during a wake has priority.
       if(allowClosed&&(wakeInputChanged||wakeHandled))return;
       if(!result.text){
-        status('No words recognized. Try speaking closer, or type a command.','warn');
+        status('No words recognized. Try speaking closer, or type a command.','warn',owner);
+        auraStage('error',"Didn't catch that",{entry,kind:'warn'});
         return;
       }
-      autoSend.cancel();
-      // The wake prefix is removed only at the transcript start. A standalone
-      // phrase does not contain a command to send to the planner.
       const command=stripTeslaMonWakePhrasePrefix(result.text);
-      if(!command){status('Say a command after the wake phrase.','warn');return;}
+      if(!command){
+        status('Say a command after the wake phrase.','warn',owner);
+        auraStage('error',"Didn't catch that",{entry,kind:'warn'});
+        return;
+      }
+      autoSend.cancel(); // Only the earlier typed timer; voice uses its own owner.
       input.value=command;
-      if(aura.active)aura.setTranscript(command);
-      autoSend.changed();
-      status('Heard “'+command.slice(0,100)+'” · Sending after 2 seconds without edits.','ok');
+      auraStage('transcribing','“'+command.slice(0,110)+'”',{entry});
+      status('Heard “'+command.slice(0,100)+'” · Sending after 2 seconds without edits.','ok',owner);
+      await scheduleVoiceCommand(command,{signal:currentController.signal,isCurrent:current,owner,entry});
     }catch(error){
       if(current()&&!wakeInputChanged&&error?.name!=='AbortError'){
         const detail=String(error?.message||'Local voice unavailable').slice(0,170);
         sttModelMessage=`${localStt.getState().selectedModel.label} could not finish loading or transcribing: ${detail}`;
         renderSttModelState(sttModelMessage);
-        status(detail+' You can still type commands.','warn');
+        status(detail+' You can still type commands.','warn',owner);
+        auraStage('error','Could not understand · try again',{entry,kind:'warn'});
       }
     }finally{
       clearElapsed();
@@ -886,13 +1052,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(pet.style.left)setPosition(pet.offsetLeft,pet.offsetTop);
     else alignPanel();
   });
-  auraToggle.addEventListener('change',()=>setAuraEnabled(auraToggle.checked));
+  auraToggle.addEventListener('change',()=>setAuraEnabled(auraToggle.checked,{local:true}));
   auraPreview.addEventListener('click',()=>{
     if(!auraEnabled||userDisabled)return;
     panelRevision++;
     collapseControls();
-    aura.open({phase:'standby'});
-    pet.hidden=true;
+    const [phase,message]=currentVoicePhase();
+    openAura({phase,message});
   });
   disableButton.addEventListener('click',()=>{
     panelRevision++;
@@ -920,13 +1086,15 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   input.addEventListener('input',()=>{
     panelRevision++;
     if(['recording','processing'].includes(handsFree.state))wakeInputChanged=true;
+    if(pendingVoice&&input.value.trim()!==pendingVoice.text)
+      cancelPendingVoice({preserveDraft:true});
     autoSend.changed();
   });
   input.addEventListener('compositionstart',()=>autoSend.compositionStart());
   input.addEventListener('compositionend',()=>autoSend.compositionEnd());
   // Only the current document can receive TeslaMon playback commands.
   $('#tmForm').addEventListener('submit',event=>{
-    event.preventDefault();autoSend.cancel();cancelMic();void interpret(input.value);
+    event.preventDefault();autoSend.cancel();cancelPendingVoice({preserveDraft:true});cancelMic();void interpret(input.value);
   });
   pet.querySelectorAll('[data-tm]').forEach(button=>
     button.addEventListener('click',()=>{cancelMic();return void issue({
@@ -941,11 +1109,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
   });
   document.addEventListener('visibilitychange',()=>{
-    if(document.hidden){aura.close();auraVoiceFlow=false;autoSend.cancel();handsFree.disable();micEpoch++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();}
+    if(document.hidden){closeAura();auraVoiceFlow=false;autoSend.cancel();cancelPendingVoice();handsFree.disable();micEpoch++;modelGeneration++;modelBusy=false;generation++;busy=false;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();}
     else void refresh();
   });
   window.addEventListener('pagehide',()=>{
-    aura.destroy();auraVoiceFlow=false;autoSend.dispose();handsFree.disable();micEpoch++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();captureBinding?.dispose();try{speech?.abort();}catch{}
+    closeAura();aura.destroy();auraVoiceFlow=false;autoSend.dispose();cancelPendingVoice();handsFree.disable();micEpoch++;modelGeneration++;generation++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();captureBinding?.dispose();try{speech?.abort();}catch{}
   });
   document.addEventListener('fullscreenchange',monitorFullscreen);
   document.addEventListener('webkitfullscreenchange',monitorFullscreen);

@@ -15,6 +15,8 @@
   let lastPlaybackKey = null;
   const clockEvidence = new Map();
   let controlTail = Promise.resolve();
+  let voicePauseEpoch = 0;
+  let voicePauseHeld = false;
   const number = (value, fallback = 0) => Number.isFinite(value) ? Math.max(0, value) : fallback;
   function stateSnapshot() {
     const screen = document.querySelector("#screen");
@@ -117,9 +119,13 @@
       })) } };
     }
     if (action === "play_media") {
+      const operationEpoch = voicePauseEpoch;
       const item = results.get(args.media_id);
       if (!item) return { status: "failed", error: "search_and_select_media_id_first" };
       await streamYoutubeSearchResult(item, [...results.values()]);
+      // A superseding wake may have paused the player while the async play
+      // request was still starting. Never allow its late completion to resume.
+      if (voicePauseHeld && operationEpoch !== voicePauseEpoch) pausePlayback?.();
       return { status: "accepted", state: stateSnapshot() };
     }
     if (!["pause", "resume", "stop"].includes(action)) return { status: "failed", error: "unknown_action" };
@@ -130,16 +136,45 @@
     }
     if (!replayFn || !document.querySelector("#screen")?.classList.contains("playing")) return { status: "failed", error: "no_active_playback" };
     if (action === "pause") pausePlayback?.();
-    else await resumePlayback?.();
+    else {
+      const operationEpoch = voicePauseEpoch;
+      await resumePlayback?.();
+      if (voicePauseHeld && operationEpoch !== voicePauseEpoch) pausePlayback?.();
+    }
     const state = stateSnapshot();
     return { status: state.playback_phase === "paused" ? "completed" : "accepted", state };
   }
-  function execute(action, args = {}) {
+  function execute(action, args = {}, {signal} = {}) {
+    if (action === "pause_for_voice") {
+      // Wake pause is a priority control, never serialized behind a hanging
+      // play/resume. There is no queued stale pause left to fire after timeout.
+      if (signal?.aborted) return Promise.resolve({status:"cancelled"});
+      voicePauseEpoch++;
+      voicePauseHeld=true;
+      try {
+        if (replayFn && document.querySelector("#screen")?.classList.contains("playing")) {
+          if (typeof pausePlayback !== "function") throw new Error("pause_unavailable");
+          pausePlayback();
+        }
+        return Promise.resolve({status:"completed",state:stateSnapshot()});
+      } catch {
+        voicePauseHeld=false;
+        return Promise.resolve({status:"failed",error:"wake_pause_failed"});
+      }
+    }
     if (action === "get_player_state") return executeCommand(action, args);
     if (!["play_media", "pause", "resume", "stop"].includes(action)) return executeCommand(action, args);
-    const run = controlTail.then(() => executeCommand(action, args), () => executeCommand(action, args));
-    controlTail = run.then(() => undefined, () => undefined);
-    return run;
+    const queuedEpoch=voicePauseEpoch;
+    const run=()=> {
+      if (signal?.aborted || queuedEpoch!==voicePauseEpoch) return {status:"cancelled"};
+      // A new explicit play/resume lifts the wake pause; voice cleanup itself
+      // never calls resume and cannot inadvertently lift this fence.
+      if (action==="play_media" || action==="resume") voicePauseHeld=false;
+      return executeCommand(action, args);
+    };
+    const pending=controlTail.then(run,run);
+    controlTail=pending.then(()=>undefined,()=>undefined);
+    return pending;
   }
   globalThis.YTStreamerMediaAgent = { get_player_state: stateSnapshot, execute };
 })();

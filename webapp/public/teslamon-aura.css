@@ -144,3 +144,10 @@
 @media(prefers-reduced-motion:reduce){
   #tmAura .ta-ambient,#tmAura .ta-halo,#tmAura .ta-orb,#tmAura .ta-orb-shine,#tmAura .ta-orb-center,#tmAura .ta-star,#tmAura .ta-wave i{animation:none!important}
 }
+
+/* Persistent, control-free Aura screen: one fixed heading, prompt and status. */
+#tmAura .ta-stage{width:100%;justify-content:center}
+#tmAura .ta-caption{margin-top:clamp(16px,4vh,34px);max-width:min(650px,92vw);min-height:2.7em;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
+#tmAura[data-phase="preparing"] .ta-orb{filter:saturate(.72)}
+#tmAura[data-phase="listening"] .ta-wave i{animation-duration:.8s}
+#tmAura .ta-title,#tmAura .ta-hint{overflow-wrap:anywhere}
