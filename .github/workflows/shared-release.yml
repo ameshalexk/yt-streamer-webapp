@@ -66,6 +66,19 @@ jobs:
       - name: TeslaMon Aura fullscreen and feature flag browser regression
         run: npm run test:teslamon-aura-browser
         working-directory: webapp
+        env:
+          TESLAMON_AURA_SCREENSHOTS: '1'
+      - name: Save synthetic Aura UI evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-ui-${{ matrix.os }}
+          path: |
+            /tmp/teslamon-aura-*.jpg
+            webapp/docs/teslamon-aura-completion-evidence-20261029/layout.json
+          if-no-files-found: error
+      - name: iPhone player responsive browser regression
+        run: node scripts/mobile-player-browser-check.mjs
+        working-directory: webapp
       - name: AI Access sign-in UI browser smoke
         run: npm run test:ai-agent-access-ui
         working-directory: webapp
