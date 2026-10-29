@@ -20,6 +20,7 @@ import * as realChromeRenderer from "./lib/real-chrome-renderer.js";
 import * as browserAudioCapture from "./lib/browser-audio-capture.js";
 import * as catalog from "./lib/catalog.js";
 import { archiveVideoUrl, createRetroTvSource } from "./lib/retro-tv-source.js";
+import { retroHostAllows } from "./lib/retro-tv-host.js";
 import * as processedLibrary from "./lib/processed-library.js";
 import * as preparedCache from "./lib/prepared-cache.js";
 import * as youtubeOAuth from "./lib/youtube-oauth.js";
@@ -47,6 +48,15 @@ const app = express();
 const retroTvSource = createRetroTvSource();
 const retroEnabled = process.env.RETRO_TV_ENABLED === "1";
 app.use("/retro-tv", (_req, res, next) => retroEnabled ? next() : res.status(404).end());
+const retroHost = String(process.env.RETRO_TV_HOST || "").trim().toLowerCase();
+// Optional dedicated URL, e.g. retro.ameshalex.com, without exposing the
+// primary Streamer interface or private APIs on the retro subdomain.
+app.use((req, res, next) => {
+  if (!retroHost || req.hostname.toLowerCase() !== retroHost) return next();
+  if (!retroEnabled || !retroHostAllows(req.method, req.path)) return res.status(404).end();
+  if (req.path === "/") return res.redirect(302, "/retro-tv/");
+  next();
+});
 app.use((req, res, next) => {
   if (storageCleanupInProgress && !req.path.startsWith("/api/storage")
       && (req.path.startsWith("/stream/") || req.method !== "GET")) {
