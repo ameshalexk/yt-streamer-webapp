@@ -1,0 +1,23 @@
+:root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#11151b;color:#f0f1ed}
+*{box-sizing:border-box}body{margin:0;min-height:100vh}button{font:inherit;cursor:pointer;border:1px solid #3b4350;background:#202a36;color:#f3f3ee;border-radius:8px;padding:10px 14px;min-height:44px}
+button:disabled{opacity:.4;cursor:default}button:hover:not(:disabled),button:focus-visible{background:#344354;outline-color:#e7ac4c}
+a{color:#d9b177}.topbar{display:flex;gap:18px;align-items:center;padding:16px 24px;border-bottom:1px solid #2b313b}
+.wordmark{text-decoration:none;color:#faf6eb;font-weight:900;letter-spacing:.12em;font-size:22px}.wordmark span{color:#e4a850}
+.eyebrow,.tag{font-size:11px;letter-spacing:.16em;font-weight:800;color:#a8b1bc;text-transform:uppercase}.tag{margin-left:auto;letter-spacing:.04em;text-transform:none}
+.shell{max-width:1700px;margin:auto;display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:24px;padding:22px}
+.stage,.guide{min-width:0}.screen{background:#050608;position:relative;overflow:hidden;aspect-ratio:16/9;border:1px solid #343a44;border-radius:12px}
+canvas{display:block;object-fit:contain;width:100%;height:100%;background:#07090b}
+.screenPlaceholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:24px;background:radial-gradient(circle at 60% 35%,#263448,#080b10 72%)}
+.screenPlaceholder h1{font-size:clamp(30px,5vw,64px);margin:16px 0 4px;letter-spacing:-.06em}.screenPlaceholder p{color:#acb5c0;max-width:420px;line-height:1.5}
+.broadcast{padding:6px 10px;border:1px solid #e5a64f;border-radius:3px;font-size:12px;letter-spacing:.2em;color:#e5a64f;font-weight:800}
+.bufferIndicator{position:absolute;bottom:20px;left:20px;background:#060708d9;padding:10px 15px;border-radius:5px;font-size:13px}
+.details{display:flex;gap:20px;justify-content:space-between;align-items:center;padding:19px 3px}.details h2{font-size:clamp(22px,3vw,32px);margin:4px 0;letter-spacing:-.04em}.details p{margin:0;color:#9eabba;font-size:13px}
+.transport{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.transport button{white-space:nowrap}.transport button:first-child,.transport button:nth-child(3){font-size:25px;padding:4px 16px}
+.methods{border-top:1px solid #343a44;padding:16px 3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.methods>span:first-child{font-size:11px;font-weight:900;letter-spacing:.13em;color:#adb7c5;margin-right:8px}.methods button.selected{background:#ce9440;border-color:#e5b463;color:#16191d;font-weight:800}
+.methodNote{font-size:11px;color:#9ba6b3;margin-left:auto}.guide{border:1px solid #343a44;border-radius:12px;display:flex;flex-direction:column;max-height:calc(100vh - 120px);overflow:hidden}
+.guideTop{display:flex;justify-content:space-between;align-items:center;padding:20px;border-bottom:1px solid #343a44}.guideTop h2{font-size:28px;margin:2px 0 0}
+.channelList{overflow-y:auto;flex:1;min-height:200px}.channel{display:flex;gap:14px;align-items:center;text-align:left;width:100%;border:0;border-bottom:1px solid #2b323e;border-radius:0;background:none;padding:15px 17px}.channel:hover,.channel:focus-visible{background:#28303e}.channel.active{background:#314051;box-shadow:inset 4px 0 #e6aa50}.number{min-width:34px;font-weight:800;font-size:22px;color:#e1aa58}.channelText{min-width:0}.channel strong{display:block;font-size:14px}.channel small{display:block;margin-top:3px;color:#b1bfcc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.channel em{display:block;font-size:11px;font-style:normal;margin-top:3px;color:#8697a9}
+.guide footer{padding:16px 20px;border-top:1px solid #343a44;display:grid;gap:8px;font-size:11px;color:#93a0ad}
+.loading{padding:20px;color:#afb8c1}
+@media(max-width:950px){.shell{grid-template-columns:1fr}.guide{max-height:440px}.topbar .eyebrow{display:none}.tag{font-size:11px}}
+@media(max-width:550px){.shell{padding:10px;gap:15px}.topbar{padding:12px}.details{display:block}.transport{margin-top:14px}.transport button{flex:1}.methodNote{width:100%;margin:3px 0 0}}
