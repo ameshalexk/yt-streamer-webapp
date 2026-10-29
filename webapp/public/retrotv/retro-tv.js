@@ -130,8 +130,8 @@ function launchMjpeg(channel, offset, token) {
     timestamp: String(Math.round(offset * 1000) / 1000),
   });
   const audio = $("retroAudio");
+  audio.preload = "auto";
   audio.src = "/stream/audio/url?" + audioQuery;
-  audio.load();
   const player = new window.BufferedMjpeg.BufferedMjpegPlayer({
     url: "/stream/url?" + media,
     canvas: $("retroCanvas"), audio, fps: 12,
@@ -150,6 +150,25 @@ function launchMjpeg(channel, offset, token) {
     },
   });
   active = { kind: "mjpeg", player };
+  // BufferedMjpegPlayer waits for the separate MP3 audio stream before it
+  // starts showing frames. Mirror the existing main-player ready-event gate.
+  const markAudioReady = () => {
+    if (token !== sessionId || active?.player !== player) return;
+    if (audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) player.setAudioReady(true);
+  };
+  audio.onloadedmetadata = markAudioReady;
+  audio.onloadeddata = markAudioReady;
+  audio.oncanplay = markAudioReady;
+  audio.oncanplaythrough = markAudioReady;
+  audio.onerror = () => {
+    if (token !== sessionId || active?.player !== player) return;
+    // Archive films with missing/unsupported audio can still show video.
+    audio.muted = true;
+    player.setAudioReady(true, { playable: false });
+    status("Audio unavailable · continuing video-only");
+  };
+  audio.load();
+  markAudioReady();
   void player.start().catch((error) => errorFor(token, error.message));
 }
 function tune(id) {
