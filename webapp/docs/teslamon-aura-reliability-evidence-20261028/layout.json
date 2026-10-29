@@ -1,0 +1,297 @@
+{
+  "recordedAt": "2026-10-29T00:13:03.508Z",
+  "fixture": "isolated Chrome; synthetic STT, no real mic/media/HA",
+  "scenarios": 16,
+  "allNoHorizontalOverflow": true,
+  "bothUiModes": true,
+  "results": [
+    {
+      "ui": "classic",
+      "width": 320,
+      "height": 568,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 320,
+          "height": 568
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "new",
+      "width": 320,
+      "height": 568,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 320,
+          "height": 568
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "classic",
+      "width": 375,
+      "height": 667,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 375,
+          "height": 667
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "new",
+      "width": 375,
+      "height": 667,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 375,
+          "height": 667
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "classic",
+      "width": 390,
+      "height": 844,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 844
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "none"
+      },
+      "plans": 3
+    },
+    {
+      "ui": "new",
+      "width": 390,
+      "height": 844,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 844
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "none"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "classic",
+      "width": 430,
+      "height": 932,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 430,
+          "height": 932
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "new",
+      "width": 430,
+      "height": 932,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 430,
+          "height": 932
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "classic",
+      "width": 768,
+      "height": 1024,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 768,
+          "height": 1024
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "new",
+      "width": 768,
+      "height": 1024,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 768,
+          "height": 1024
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "classic",
+      "width": 844,
+      "height": 390,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 844,
+          "height": 390
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "new",
+      "width": 844,
+      "height": 390,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 844,
+          "height": 390
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "classic",
+      "width": 1280,
+      "height": 800,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "new",
+      "width": 1280,
+      "height": 800,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "classic",
+      "width": 1920,
+      "height": 1080,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    },
+    {
+      "ui": "new",
+      "width": 1920,
+      "height": 1080,
+      "measure": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "titleInside": true,
+        "captionInside": true,
+        "overflow": 0,
+        "reducedMotion": "ta-breathe"
+      },
+      "plans": 1
+    }
+  ]
+}

@@ -100,7 +100,7 @@ test('one wake creates one bounded command; speech end submits once then resumes
   await settle();
   assert.equal(h.captures[0].released,1);
   assert.equal(h.uploads.length,1);
-  assert.equal(h.handsfree.state,'processing');
+  assert.equal(h.handsfree.state,'cooldown');
   h.timers.run(1500);
   assert.equal(h.handsfree.state,'listening');
   assert.ok(h.resumed>=1);
@@ -112,8 +112,8 @@ test('wake waits for playback ducking before capture and gates duplicate wakes w
   let pauseCalls=0;
   const h=rig({duckPlayback:()=>{pauseCalls++;order.push('pause-started');return pause.promise;}});
   await h.handsfree.enable();
-  h.wake();
-  assert.equal(h.handsfree.state,'recording');
+  h.wake();await settle();
+  assert.equal(h.handsfree.state,'preparing');
   assert.equal(h.captures.length,0);
   h.wake();
   assert.equal(pauseCalls,1);
@@ -166,13 +166,14 @@ test('Off while playback pause is pending prevents capture and runs cleanup when
   assert.equal(h.handsfree.state,'off');
 });
 
-test('playback pause rejection does not block the accepted voice command',async()=>{
+test('pause rejection recovers without falsely recording or resuming',async()=>{
   const h=rig({duckPlayback:()=>Promise.reject(new Error('player unavailable'))});
   await h.handsfree.enable();
   h.wake();await settle();
-  assert.equal(h.captures.length,1);
-  assert.equal(h.captures[0].started,1);
-  assert.equal(h.handsfree.state,'recording');
+  assert.equal(h.captures.length,0);
+  assert.equal(h.handsfree.state,'cooldown');
+  h.timers.run(1500);
+  assert.equal(h.handsfree.state,'listening');
   h.handsfree.disable();
 });
 
@@ -260,7 +261,7 @@ test('selected keywords are snapshotted on enable and reported with the detected
   await settle();
   assert.equal(h.captures.length,1);
   assert.deepEqual(h.events.at(-1),{
-    state:'recording',message:'“Hey Mycroft” detected. Say one command.',keyword:'hey_mycroft',score:0.87,
+    state:'recording',message:'“Hey Mycroft” detected. Recording one command.',keyword:'hey_mycroft',score:0.87,invocationId:1,
   });
   h.handsfree.disable();
 });
@@ -283,5 +284,40 @@ test('detector events for keywords outside the enable snapshot are ignored',asyn
   await settle();
   assert.equal(h.captures.length,0);
   assert.equal(h.handsfree.state,'listening');
+  h.handsfree.disable();
+});
+
+test('unsettled pause expires at 2500ms, does not capture, and permits next wake',async()=>{
+  const blocked=deferred();
+  let attempts=0;
+  const h=rig({duckPlayback:()=>++attempts===1?blocked.promise:Promise.resolve(()=>{})});
+  await h.handsfree.enable();
+  h.wake();await settle();
+  assert.equal(h.handsfree.state,'preparing');
+  assert.equal(h.captures.length,0);
+  h.timers.run(2500);await settle();
+  assert.equal(h.handsfree.state,'cooldown');
+  assert.equal(h.captures.length,0);
+  h.timers.run(1500);
+  assert.equal(h.handsfree.state,'listening');
+  h.wake();await settle();
+  assert.equal(h.captures.length,1);
+  assert.equal(h.handsfree.state,'recording');
+  blocked.resolve(()=>{});
+  await settle();
+  assert.equal(h.captures.length,1,'late first pause cannot create a second recorder');
+  h.handsfree.disable();
+});
+
+test('Mic Off during unsettled pause prevents a late recorder and next On works',async()=>{
+  const blocked=deferred();
+  let calls=0;
+  const h=rig({duckPlayback:()=>++calls===1?blocked.promise:Promise.resolve(()=>{})});
+  await h.handsfree.enable();h.wake();await settle();
+  h.handsfree.disable();
+  blocked.resolve(()=>{});await settle();
+  assert.equal(h.captures.length,0);
+  await h.handsfree.enable();h.wake();await settle();
+  assert.equal(h.captures.length,1);
   h.handsfree.disable();
 });
