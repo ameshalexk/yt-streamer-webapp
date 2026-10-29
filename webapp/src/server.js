@@ -45,7 +45,7 @@ import { canUseCastReceiver, redactCastMediaPath } from "./lib/vlc-cast-routing.
 let storageCleanupInProgress = false;
 const app = express();
 const retroTvSource = createRetroTvSource();
-const retroEnabled = process.env.RETRO_TV_ENABLED === "1";
+const retroEnabled = process.env.RETRO_TV_ENABLED !== "0";
 // Same YT Streamer origin. This is an opt-in route, not a separate service,
 // hostname, or Cloudflare tunnel. Disabled by default until approved release.
 app.use("/retrotv", (_req, res, next) => retroEnabled ? next() : res.status(404).end());
