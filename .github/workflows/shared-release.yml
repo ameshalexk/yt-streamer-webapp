@@ -77,7 +77,7 @@ jobs:
             webapp/docs/teslamon-aura-completion-evidence-20261029/layout.json
           if-no-files-found: error
       - name: iPhone player responsive browser regression
-        run: node scripts/mobile-player-browser-check.mjs
+        run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
         working-directory: webapp
       - name: AI Access sign-in UI browser smoke
         run: npm run test:ai-agent-access-ui
