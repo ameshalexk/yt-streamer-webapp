@@ -1,4 +1,5 @@
 import { createCyberdashPlayer } from "/cyberdash-embedded.mjs";
+import { loadFavorites, saveFavorites, toggleFavorite, groupChannels } from "/retrotv/favorites.mjs";
 
 const $ = (id) => document.getElementById(id);
 let guide = { channels: [], fetchedAt: 0 };
@@ -8,6 +9,7 @@ let active = null;
 let sessionId = 0;
 let paused = false;
 let guideLoading = false;
+let favoriteIds = loadFavorites(window.localStorage);
 
 function status(message, error = false) {
   $("status").textContent = message;
@@ -31,23 +33,52 @@ function updateGuide() {
     p.textContent = "No channels available. Refresh the guide to try again.";
     root.append(p); return;
   }
-  for (const channel of guide.channels) {
+  const { favorites, others } = groupChannels(guide.channels, favoriteIds);
+  function heading(label) {
+    const h = document.createElement("h3");
+    h.className = "guideSection";
+    h.textContent = label;
+    root.append(h);
+  }
+  function channelRow(channel) {
+    const entry = document.createElement("div");
+    entry.className = "channelEntry";
+    entry.setAttribute("role", "listitem");
     const button = document.createElement("button");
     button.type = "button"; button.className = "channel";
     if (channel.id === chosenId) button.classList.add("active");
     const number = document.createElement("span"); number.className = "number";
     number.textContent = String(channel.number).padStart(2, "0");
-    const text = document.createElement("span"); text.className = "channelText";
+    const content = document.createElement("span"); content.className = "channelText";
     const name = document.createElement("strong"); name.textContent = channel.name;
     const program = document.createElement("small"); program.textContent = channel.now.title;
-    const next = document.createElement("em");
-    const nextItem = channel.programmes.find((p) => p.title && p.title !== channel.now.title);
-    next.textContent = nextItem ? "Next: " + nextItem.title : "On air now";
-    text.append(name, program, next);
-    button.append(number, text);
+    const upcoming = document.createElement("em");
+    const next = channel.programmes.find((p) => p.title && p.title !== channel.now.title);
+    upcoming.textContent = next ? "Next: " + next.title : "On air now";
+    content.append(name, program, upcoming);
+    button.append(number, content);
     button.addEventListener("click", () => tune(channel.id));
-    root.append(button);
+    const star = document.createElement("button");
+    star.type = "button"; star.className = "favoriteButton";
+    const isFavorite = favoriteIds.includes(channel.id);
+    star.textContent = isFavorite ? "★" : "☆";
+    star.setAttribute("aria-pressed", String(isFavorite));
+    star.setAttribute("aria-label", (isFavorite ? "Remove " : "Add ") + channel.name + (isFavorite ? " from" : " to") + " favorites");
+    star.title = isFavorite ? "Remove favorite" : "Add favorite";
+    star.addEventListener("click", () => {
+      favoriteIds = toggleFavorite(favoriteIds, channel.id);
+      saveFavorites(window.localStorage, favoriteIds);
+      updateGuide();
+    });
+    entry.append(button, star);
+    root.append(entry);
   }
+  if (favorites.length) {
+    heading("★ Favorites");
+    favorites.forEach(channelRow);
+  }
+  heading("All channels");
+  others.forEach(channelRow);
 }
 function stopCurrent() {
   sessionId++;
