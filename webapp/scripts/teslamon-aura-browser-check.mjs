@@ -13,6 +13,7 @@ const fixtureBootstrap=()=>{
   window.__fixtureCalls={search:0,play:0};
   window.__fixtureMicRequests=0;
   window.__fixturePlanResponses=0;
+  window.__fixturePlanRequests=0;
   if(!window.AudioContext&&!window.webkitAudioContext)window.AudioContext=function(){};
   if(!window.AudioWorkletNode)window.AudioWorkletNode=function(){};
   if(!window.MediaRecorder)window.MediaRecorder=function(){};
@@ -32,9 +33,11 @@ const fixtureBootstrap=()=>{
   navigator.mediaDevices.getUserMedia=async()=>{window.__fixtureMicRequests++;throw new Error('Fixture must not request microphone');};
   const nativeFetch=window.fetch.bind(window);
   window.fetch=async(...args)=>{
-    const response=await nativeFetch(...args);
     const url=typeof args[0]==='string'?args[0]:args[0]?.url||'';
-    if(new URL(url,location.href).pathname==='/api/teslamon/plan')window.__fixturePlanResponses++;
+    const isPlan=new URL(url,location.href).pathname==='/api/teslamon/plan';
+    if(isPlan)window.__fixturePlanRequests++;
+    const response=await nativeFetch(...args);
+    if(isPlan)window.__fixturePlanResponses++;
     return response;
   };
 };
@@ -154,15 +157,15 @@ const server=http.createServer(async(req,res)=>{
   if(pathname.startsWith('/api/')){
     res.writeHead(200,{'content-type':'application/json'});
     const payload=pathname==='/api/teslamon/capabilities'?{codexAvailable:true,localTranscription:true}:
-      pathname==='/api/teslamon/plan'?(fixtureScenario==='search_play'?{status:'ok',tool:'search_and_play',args:{query:'fixture video'}}:
-        fixtureScenario==='error'?{status:'failed',code:'codex_unavailable'}:
+      pathname==='/api/teslamon/plan'?(['search_play','slow_play'].includes(fixtureScenario)?{status:'ok',tool:'search_and_play',args:{query:'fixture video'}}:
+        ['error','slow_error'].includes(fixtureScenario)?{status:'failed',code:'codex_unavailable'}:
         fixtureScenario==='uncertain'?{status:'uncertain',code:'invalid_codex_reply'}:
         fixtureScenario==='slow_ha'?{status:'ha_done',action:'light_checked'}:
         fixtureScenario==='no_speech'?{status:'failed',code:'no_speech_detected'}:{status:'ha_done',action:'light_checked'}):
       pathname==='/api/teslamon/select-candidate'?{status:'selected',index:0}:
       pathname==='/api/playlists'?[]:{ok:true,items:[]};
     const respond=()=>res.end(JSON.stringify(payload));
-    if(pathname==='/api/teslamon/plan'&&fixtureScenario==='slow_ha')setTimeout(respond,1800);
+    if(pathname==='/api/teslamon/plan'&&fixtureScenario.startsWith('slow_'))setTimeout(respond,1800);
     else respond();
     return;
   }
@@ -345,20 +348,24 @@ try{
         assert.equal(await page.locator('#tmAura').isHidden(),true,'dismissal leaves wake armed for the next wake');
 
         // A delayed completion for A must not close the fresh B wake screen.
-        await scenario('slow_ha');
-        const completedBeforeA=await page.evaluate(()=>window.__fixturePlanResponses);
-        await submitVoice('turn on hallway lights');
-        await page.waitForFunction(()=>document.querySelector('#tmText')?.value==='turn on hallway lights');
-        await page.waitForFunction(()=>document.querySelector('#tmState')?.textContent?.includes('Codex is understanding'),null,{timeout:7000});
-        const invocationB=await page.evaluate(()=>window.__auraNewInvocation('alexa'));
-        assert.ok(invocationB>0,'fresh B invocation created while A planner response is pending');
-        await page.locator('#tmAura').waitFor({state:'visible'});
-        await page.waitForFunction(count=>window.__fixturePlanResponses>count,completedBeforeA,{timeout:5000});
-        assert.equal(await page.locator('#tmAura').isVisible(),true,'late A terminal event cannot close B wake presentation');
-        assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'listening','B keeps its own phase');
-        await waitForVoiceReady();
-        await page.evaluate(()=>window.__auraStandby());
-        await page.locator('#tmAura').waitFor({state:'hidden',timeout:4000});
+        for(const mode of ['slow_ha','slow_play','slow_error']){
+          await scenario(mode);
+          const beforeA=await page.evaluate(()=>({responses:window.__fixturePlanResponses,
+            requests:window.__fixturePlanRequests,plays:window.__fixtureCalls.play}));
+          await submitVoice('turn on hallway lights');
+          await page.waitForFunction(count=>window.__fixturePlanRequests>count,beforeA.requests,{timeout:7000});
+          const invocationB=await page.evaluate(()=>window.__auraNewInvocation('alexa'));
+          assert.ok(invocationB>0,'fresh B invocation created while A planner response is pending');
+          await page.locator('#tmAura').waitFor({state:'visible'});
+          await page.waitForFunction(count=>window.__fixturePlanResponses>count,beforeA.responses,{timeout:5000});
+          await waitForVoiceReady();
+          assert.equal(await page.locator('#tmAura').isVisible(),true,mode+': late A cannot close B');
+          assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'listening','B keeps its own phase');
+          assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),beforeA.plays,mode+': stale A cannot dispatch playback');
+          assert.equal(await page.locator('#tmText').inputValue(),'turn on hallway lights',mode+': stale A cannot clear the newer same-text draft');
+          await page.evaluate(()=>{window.__auraStandby();document.querySelector('#tmText').value='';});
+          await page.locator('#tmAura').waitFor({state:'hidden',timeout:4000});
+        }
       }
       // Existing playback wins when a local toggle On overlaps real playback.
       await page.evaluate(()=>window.__fixturePlayback='playing');

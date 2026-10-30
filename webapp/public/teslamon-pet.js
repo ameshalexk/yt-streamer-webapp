@@ -701,7 +701,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     modelBusy=true;activePlannerVoice=voice;syncPetMotion();renderSttModelState();
     const token=++modelGeneration,target=selected,epoch=micEpoch,requestRevision=panelRevision;
     const current=()=>token===modelGeneration&&!signal?.aborted&&
-      target===selected&&(!voice||epoch===micEpoch)&&(!document.hidden)&&(opened||allowClosed);
+      target===selected&&(!voice||epoch===micEpoch)&&
+      (!voice||owner===null||owner===voiceOwner)&&(!document.hidden)&&(opened||allowClosed);
     auraStage('thinking','Understanding your request…',{entry});
     status('Codex is understanding your request…','info',owner);
     try{
