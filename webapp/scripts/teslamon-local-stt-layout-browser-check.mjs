@@ -51,6 +51,9 @@ try{
         };
       });
       await page.goto(origin+'/?ui='+mode,{waitUntil:'domcontentloaded'});
+      await page.locator('#tmAura').waitFor({state:'visible',timeout:7000});
+      await page.locator('#tmAura').press('Escape');
+      await page.locator('#tmAura').waitFor({state:'hidden',timeout:3000});
       await page.locator('#tmFace').waitFor({timeout:12000});
       await page.locator('#tmFace').click();
       await page.locator('#tmSttModel').selectOption('whisper-base.en');

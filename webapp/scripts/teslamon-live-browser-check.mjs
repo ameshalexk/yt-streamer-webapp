@@ -75,6 +75,9 @@ const setup=async(viewport,ui,reducedMotion=false,simulateWake=false,hasTouch=fa
  });
  await page.goto(origin+'/?ui='+ui,{waitUntil:'domcontentloaded',timeout:16000});
  await page.locator('#teslamonPet').waitFor({state:'attached',timeout:13000});
+ await page.locator('#tmAura').waitFor({state:'visible',timeout:7000});
+ await page.locator('#tmAura').press('Escape');
+ await page.locator('#tmAura').waitFor({state:'hidden',timeout:3000});
  assert.equal(await page.locator('#tmFace').getAttribute('aria-label'),'TeslaMon puppy — open or close controls',ui+': accessible face name');
  assert.equal(await page.locator('#tmHandle').getAttribute('aria-label'),'Drag TeslaMon to move',ui+': accessible drag handle name');
  const sizes=await page.evaluate(()=>{const f=document.querySelector('#tmFace').getBoundingClientRect(),h=document.querySelector('#tmHandle').getBoundingClientRect();return {face:{width:f.width,height:f.height},handle:{width:h.width,height:h.height},svg:document.querySelectorAll('#tmFace svg.tm-puppy').length};});
@@ -137,6 +140,9 @@ try{
    const saved=JSON.parse(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonPetPositionV1')));
    assert.ok(saved&&Number.isFinite(saved.x)&&Number.isFinite(saved.y),width+'x'+height+': drag position not persisted');
    await page.reload({waitUntil:'domcontentloaded'});await page.locator('#teslamonPet').waitFor({state:'attached'});
+   await page.locator('#tmAura').waitFor({state:'visible',timeout:7000});
+   await page.locator('#tmAura').press('Escape');
+   await page.locator('#tmAura').waitFor({state:'hidden',timeout:3000});
    const restored=await page.locator('#teslamonPet').evaluate(el=>({x:el.offsetLeft,y:el.offsetTop}));
    assert.ok(Math.abs(restored.x-saved.x)<=1&&Math.abs(restored.y-saved.y)<=1,width+'x'+height+': drag position did not restore');
    await page.locator('#tmHandle').focus();
@@ -146,6 +152,9 @@ try{
    const keyboardSaved=JSON.parse(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonPetPositionV1')));
    assert.ok(keyboardSaved&&keyboardSaved.x===afterKeyboard.x&&keyboardSaved.y===afterKeyboard.y,width+'x'+height+': keyboard position was not persisted');
    await page.reload({waitUntil:'domcontentloaded'});await page.locator('#teslamonPet').waitFor({state:'attached'});
+   await page.locator('#tmAura').waitFor({state:'visible',timeout:7000});
+   await page.locator('#tmAura').press('Escape');
+   await page.locator('#tmAura').waitFor({state:'hidden',timeout:3000});
    const keyboardRestored=await page.locator('#teslamonPet').evaluate(el=>({x:el.offsetLeft,y:el.offsetTop}));
    assert.ok(Math.abs(keyboardRestored.x-afterKeyboard.x)<=1&&Math.abs(keyboardRestored.y-afterKeyboard.y)<=1,width+'x'+height+': keyboard position did not restore');
    await clickOpen(page);assertContained(await measure(page),width+'x'+height+' reopened after reload');

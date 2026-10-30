@@ -49,6 +49,13 @@ const browser=await chromium.launch({
  executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
  headless:true,args:['--no-sandbox','--no-first-run','--autoplay-policy=no-user-gesture-required','--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream']
 });
+const dismissStartupAura=async page=>{
+ const aura=page.locator('#tmAura');
+ if(await aura.count()&&await aura.isVisible()){
+  await aura.press('Escape');
+  await aura.waitFor({state:'hidden',timeout:3000});
+ }
+};
 try{
  const context=await browser.newContext({viewport:{width:390,height:844},permissions:['microphone'],serviceWorkers:'block'});
  const page=await context.newPage();
@@ -87,6 +94,8 @@ try{
    catch{return route.abort();}
  });
  await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded',timeout:20000});
+ await page.locator('#tmAura').waitFor({state:'visible',timeout:7000});
+ await dismissStartupAura(page);
  await page.locator('#tmFace').click();
  try{await page.waitForFunction(()=>!document.querySelector('#tmWakeToggle').disabled,null,{timeout:5000});}catch(error){console.error('INIT DEBUG',JSON.stringify(await page.evaluate(()=>({wake:document.querySelector('#tmWakeState')?.textContent,mic:document.querySelector('#tmMic')?.textContent,main:document.querySelector('#tmState')?.textContent,pet:!!document.querySelector('#teslamonPet'),toggleDisabled:document.querySelector('#tmWakeToggle')?.disabled})),null,2),'pageErrors',errors,'api',apiUploads,'unexpected',unexpected);throw error;}
  // Auto-wake is already ON after page load, subject to browser permissions.
@@ -126,6 +135,7 @@ try{
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true);
  // Reload restores only Mycroft and automatic listening uses the persisted choice.
  await page.reload({waitUntil:'domcontentloaded'});
+ await dismissStartupAura(page);
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Listening for Hey Mycroft',null,{timeout:15000});
  await page.locator('#tmFace').click();
  assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true);
@@ -138,6 +148,7 @@ try{
  // Existing Luna-only browser choice must migrate to both replacement phrases.
  await page.evaluate(()=>localStorage.setItem('ytStreamerTeslaMonWakePhrasesV1',JSON.stringify(['hey_luna'])));
  await page.reload({waitUntil:'domcontentloaded'});
+ await dismissStartupAura(page);
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Listening for Hey Mycroft, Hey Rhasspy',null,{timeout:15000});
  await page.locator('#tmFace').click();
  assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true);
@@ -148,6 +159,7 @@ try{
  await page.locator('#tmWakeToggle').click();
  await page.evaluate(()=>localStorage.setItem('ytStreamerTeslaMonSttModelV1','__proto__'));
  await page.reload({waitUntil:'domcontentloaded'});
+ await dismissStartupAura(page);
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
  await page.locator('#tmFace').click();
  assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-tiny.en','invalid saved model falls back to Tiny');
@@ -159,6 +171,7 @@ try{
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
  const other=await context.newPage();
  await other.goto(origin+'/?ui=new',{waitUntil:'domcontentloaded'});
+ await dismissStartupAura(other);
  await other.locator('#tmFace').waitFor({state:'visible'});
  const puppyHandle=await page.locator('#tmHandle').boundingBox();
  await page.mouse.move(puppyHandle.x+22,puppyHandle.y+22);
@@ -191,6 +204,7 @@ try{
  assert.deepEqual(JSON.parse(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonPetPositionV1'))),dogPosition,
    'paw drag cannot overwrite the dog position');
  await page.reload({waitUntil:'domcontentloaded'});
+ await dismissStartupAura(page);
  await page.locator('#tmRestore').waitFor({state:'visible'});
  const afterPawReload=await page.locator('#tmRestore').boundingBox();
  assert.ok(Math.abs(afterPawReload.x-pawSaved.x)<=1&&Math.abs(afterPawReload.y-pawSaved.y)<=1,
@@ -200,6 +214,7 @@ try{
  const pawKeyboardSaved=JSON.parse(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonPawPositionV1')));
  assert.ok(pawKeyboardSaved.y>pawSaved.y,'paw arrow keys move and save position');
  await page.reload({waitUntil:'domcontentloaded'});
+ await dismissStartupAura(page);
  await page.locator('#tmRestore').waitFor({state:'visible'});
  const restoreBox=await page.locator('#tmRestore').boundingBox();
  assert.ok(restoreBox&&restoreBox.width>=44&&restoreBox.height>=44,'restore paw needs 44px touch target');

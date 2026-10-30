@@ -171,6 +171,9 @@ try {
       body:JSON.stringify({status:'failed',code:'unsupported'})});
   });
   await page.goto(origin + '/__teslamon_local_stt_fixture__', { waitUntil:'domcontentloaded' });
+  await page.locator('#tmAura').waitFor({state:'visible',timeout:7000});
+  await page.locator('#tmAura').press('Escape');
+  await page.locator('#tmAura').waitFor({state:'hidden',timeout:3000});
   await page.locator('#tmFace').click();
   try {
     await page.waitForFunction(() => !document.querySelector('#tmMic')?.disabled, null, { timeout:15000 });

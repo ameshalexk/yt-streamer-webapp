@@ -149,12 +149,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const DISABLED_KEY='ytStreamerTeslaMonDisabledV1';
   const AURA_KEY='ytStreamerTeslaMonAuraEnabledV1';
   let auraEnabled=true;
+  let startupAuraEntry=null;
   let activeAuraEntry=null,voiceAuraEntry=null,playbackTimer=null,wakePauseGuard=false;
   let voiceOwner=0,pendingVoice=null,modelGeneration=0;
   let activePlannerVoice=false,activeIssueVoice=false;
   try{auraEnabled=localStorage.getItem(AURA_KEY)!=='0';}catch{}
   const aura=createTeslaMonAura({onDismiss:(entry,reason)=>{
     // Tap/Escape only suppress this presentation; speech and dispatch continue.
+    if(startupAuraEntry===entry)startupAuraEntry=null;
     if(activeAuraEntry===entry){activeAuraEntry=null;voiceAuraEntry=null;}
     if(playbackTimer!==null){clearTimeout(playbackTimer);playbackTimer=null;}
     if(!userDisabled&&!fullscreenActive()){
@@ -166,6 +168,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     try{return globalThis.YTStreamerMediaAgent?.get_player_state?.()||null;}catch{return null;}
   };
   function closeAura(){
+    startupAuraEntry=null;
     aura.close();activeAuraEntry=null;voiceAuraEntry=null;
     if(playbackTimer!==null){clearTimeout(playbackTimer);playbackTimer=null;}
     if(!userDisabled&&!fullscreenActive())pet.hidden=false;
@@ -189,11 +192,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     playbackTimer=setTimeout(observeAuraPlayback,350);
   }
-  function openAura({phase='standby',message='',fromWake=false,preview=false}={}){
+  function openAura({phase='standby',message='',fromWake=false,preview=false,startup=false}={}){
     if(!auraEnabled||userDisabled||document.hidden)return null;
     if(!fromWake&&!preview&&playerState()?.playback_phase==='playing')return null;
+    if(!startup)startupAuraEntry=null;
     wakePauseGuard=fromWake;
     activeAuraEntry=aura.open({phase,status:message});
+    startupAuraEntry=startup?activeAuraEntry:null;
     if(playbackTimer!==null)clearTimeout(playbackTimer);
     playbackTimer=null;
     // A manual visual preview stays available even over an already-playing
@@ -207,6 +212,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     aura.setPhase(phase,{entry});
     aura.setStatus(message,{entry,kind});
     return true;
+  }
+  function updateStartupAuraStatus(message,{error=false}={}){
+    if(!startupAuraEntry||startupAuraEntry!==activeAuraEntry)return false;
+    return auraStage(error?'error':'standby',message,
+      {entry:startupAuraEntry,kind:error?'warn':'info'});
   }
   function setAuraEnabled(value,{persist=true}={}){
     auraEnabled=Boolean(value);
@@ -477,11 +487,22 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       // A newly opened visual can follow the global wake-standby state
       // without accepting an older invocation's transcript or action result.
       auraStage('standby','Say a wake phrase',{entry:voiceAuraEntry??activeAuraEntry});
+    }else if(phase==='starting'){
+      updateStartupAuraStatus(message||'Requesting microphone permission…');
     }else if(phase==='off'||phase==='error'){
-      if(phase==='off')closeAura();
-      else finishVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
-      auraVoiceFlow=false;
-      if(!fullscreenActive())pet.hidden=false;
+      if(startupAuraEntry&&startupAuraEntry===activeAuraEntry&&aura.active){
+        // Bootstrap updates describe startup Aura without dismissing the
+        // presentation or revealing the paw over it.
+        const startupMessage=phase==='off'?'Mic Off · wake listening is off':
+          (message||'Voice unavailable');
+        auraStage(phase==='error'?'error':'standby',startupMessage,
+          {entry:startupAuraEntry,kind:phase==='error'?'warn':'info'});
+      }else{
+        if(phase==='off')closeAura();
+        else finishVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
+        auraVoiceFlow=false;
+        if(!fullscreenActive())pet.hidden=false;
+      }
     }
     if(phase==='error')status(wakeState.textContent,'warn');
   }
@@ -796,6 +817,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       mic.disabled=true;voiceAvailable=false;wakeToggle.disabled=true;
       handsFree.disable();
       status('This page player is loading. Refresh the page if it stays unavailable.','warn');
+      updateStartupAuraStatus('Player is still loading · voice status pending');
       return;
     }
     status('Ready to control this browser tab.','ok');
@@ -809,6 +831,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         mic.disabled=true;mic.textContent='Codex unavailable';
         voiceAvailable=false;wakeToggle.disabled=true;handsFree.disable();
         status('Codex CLI is unavailable. Quick controls still work.','warn');
+        updateStartupAuraStatus('Codex unavailable · voice disabled',{error:true});
         return;
       }
       const localSupported=Boolean(globalThis.Worker&&globalThis.WebAssembly&&
@@ -820,8 +843,16 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         const wakeSupported=Boolean(window.AudioWorkletNode&&
           (window.AudioContext||window.webkitAudioContext)&&navigator.mediaDevices?.getUserMedia);
         wakeToggle.disabled=!voiceAvailable||!wakeSupported;
-        if(!wakeSupported&&voiceAvailable&&!handsFree.enabled)
+        if(!voiceAvailable)
+          updateStartupAuraStatus('Local voice unavailable · type commands',{error:true});
+        else if(!wakeSupported&&!handsFree.enabled)
           updateWakeUI({state:'error',message:'Hands-free wake detection unsupported in this browser'});
+        else if(handsFree.enabled){
+          const wakeState=handsFree.state;
+          updateStartupAuraStatus(wakeState==='starting'?'Requesting microphone permission…':
+            wakeState==='listening'?'Wake listening is on · say a wake phrase':
+            `Microphone active · ${wakeState||'wake listener active'}`);
+        }else updateStartupAuraStatus('Mic Off · wake listening is off');
         if(wakeSupported&&voiceAvailable&&autoWakeWanted&&!autoWakeBlocked&&
            !handsFree.enabled&&!document.hidden)
           void handsFree.enable().then(started=>{if(!started)autoWakeBlocked=true;});
@@ -829,6 +860,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         mic.disabled=true;mic.textContent='Local voice unavailable';
         voiceAvailable=false;wakeToggle.disabled=true;handsFree.disable();
         status('Local voice needs a microphone, MediaRecorder, Web Audio, Workers and WebAssembly. Type commands instead.','warn');
+        updateStartupAuraStatus('Local voice unavailable · type commands',{error:true});
       }
     }catch{
       modelLabel.hidden=true;
@@ -836,6 +868,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       mic.disabled=true;mic.textContent='Voice unavailable';
       voiceAvailable=false;wakeToggle.disabled=true;handsFree.disable();
       status('Could not verify the authenticated command planner. Type commands instead.','warn');
+      updateStartupAuraStatus('Could not verify voice · type commands',{error:true});
     }
   }
   // Hold-to-talk and Hey Jarvis command clips use the SAME browser-local
@@ -1154,6 +1187,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   if(screen)fullscreenObserver.observe(screen,{attributes:true,attributeFilter:['class']});
   window.addEventListener('pagehide',()=>fullscreenObserver.disconnect(),{once:true});
   monitorFullscreen();
+  // Aura preference is a presentation preference: enter once on a fresh
+  // document without requesting microphone access or starting media work.
+  // A hidden load or already-playing video is intentionally not deferred.
+  if(auraEnabled&&!userDisabled)
+    openAura({phase:'standby',message:'Preparing TeslaMon…',startup:true});
   // Wake listening must initialize even when the puppy panel stays closed.
   // This triggers only the browser's normal permission flow, never a bypass.
   void refresh();

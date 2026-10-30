@@ -7,6 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {chromium} from 'playwright-core';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../public');
 let fixtureScenario='ha_done';
+let fixtureCapabilitiesGate=null,releaseFixtureCapabilities=null;
 const fixtureBootstrap=()=>{
   window.__fixturePlayback='idle';
   window.__fixtureSpeechText='turn on office lights';
@@ -14,6 +15,16 @@ const fixtureBootstrap=()=>{
   window.__fixtureMicRequests=0;
   window.__fixturePlanResponses=0;
   window.__fixturePlanRequests=0;
+  window.__fixtureCapabilitiesRequests=0;
+  window.__fixtureCapabilitiesResponses=0;
+  window.__fixtureKeyboardRequests=0;
+  try{
+    const keyboard=navigator.virtualKeyboard;
+    if(keyboard&&typeof keyboard.show==='function'){
+      const nativeShow=keyboard.show.bind(keyboard);
+      keyboard.show=(...args)=>{window.__fixtureKeyboardRequests++;return nativeShow(...args);};
+    }
+  }catch{}
   if(!window.AudioContext&&!window.webkitAudioContext)window.AudioContext=function(){};
   if(!window.AudioWorkletNode)window.AudioWorkletNode=function(){};
   if(!window.MediaRecorder)window.MediaRecorder=function(){};
@@ -37,9 +48,12 @@ const fixtureBootstrap=()=>{
   window.fetch=async(...args)=>{
     const url=typeof args[0]==='string'?args[0]:args[0]?.url||'';
     const isPlan=new URL(url,location.href).pathname==='/api/teslamon/plan';
+    const isCapabilities=new URL(url,location.href).pathname==='/api/teslamon/capabilities';
     if(isPlan)window.__fixturePlanRequests++;
+    if(isCapabilities)window.__fixtureCapabilitiesRequests++;
     const response=await nativeFetch(...args);
     if(isPlan)window.__fixturePlanResponses++;
+    if(isCapabilities)window.__fixtureCapabilitiesResponses++;
     return response;
   };
 };
@@ -74,6 +88,9 @@ export function createTeslaMonHandsFree({onState,onAudio}={}){
     return invocationId;
   };
   globalThis.__auraProcessing=()=>emit({state:'processing',invocationId:invocation,message:'Processing'});
+  // Test-only bootstrap transitions exercise Aura's inline status while the
+  // page is still resolving startup capabilities. No recorder or mic is used.
+  globalThis.__auraStartupState=update=>emit(update);
   globalThis.__auraRecover=()=>{
     emit({state:'recovering',invocationId:invocation,message:'Pause failed'});
     emit({state:'cooldown',invocationId:invocation,message:'Pause timed out · rearming…'});
@@ -124,6 +141,13 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/__fixture/config'&&req.method==='POST'){
     let body='';for await(const chunk of req)body+=chunk;
     try{fixtureScenario=JSON.parse(body).scenario||'ha_done';}catch{fixtureScenario='ha_done';}
+    if(fixtureScenario==='slow_capabilities')
+      fixtureCapabilitiesGate=new Promise(resolve=>{releaseFixtureCapabilities=resolve;});
+    else{fixtureCapabilitiesGate=null;releaseFixtureCapabilities=null;}
+    res.writeHead(204);res.end();return;
+  }
+  if(pathname==='/__fixture/release-capabilities'){
+    releaseFixtureCapabilities?.();releaseFixtureCapabilities=null;
     res.writeHead(204);res.end();return;
   }
   if(pathname==='/__fixture'){
@@ -167,7 +191,10 @@ const server=http.createServer(async(req,res)=>{
       pathname==='/api/teslamon/select-candidate'?{status:'selected',index:0}:
       pathname==='/api/playlists'?[]:{ok:true,items:[]};
     const respond=()=>res.end(JSON.stringify(payload));
-    if(pathname==='/api/teslamon/plan'&&fixtureScenario.startsWith('slow_'))setTimeout(respond,1800);
+    if(pathname==='/api/teslamon/capabilities'&&fixtureScenario==='slow_capabilities'){
+      await fixtureCapabilitiesGate;respond();
+    }
+    else if(pathname==='/api/teslamon/plan'&&fixtureScenario.startsWith('slow_'))setTimeout(respond,1800);
     else respond();
     return;
   }
@@ -215,19 +242,63 @@ try{
       await page.locator('#tmAuraToggle').waitFor({state:'attached'});
       await page.waitForFunction(()=>typeof window.__auraWake==='function');
       assert.equal(await page.locator('#tmAuraToggle').isChecked(),true);
-      assert.equal(await page.locator('#tmAura').isHidden(),true);
-      // Aura preference arms future wakes without taking over the screen.
+      await page.locator('#tmAura').waitFor({state:'visible'});
+      const startupState=await page.evaluate(()=>({mic:window.__fixtureMicRequests,
+        plans:window.__fixturePlanRequests,calls:{...window.__fixtureCalls},playback:window.__fixturePlayback,
+        focused:document.activeElement?.id||'',focusIsEditable:!!document.activeElement?.matches('input,textarea,[contenteditable=true]'),
+        keyboard:window.__fixtureKeyboardRequests||0}));
+      assert.deepEqual({...startupState,focused:'',focusIsEditable:false},
+        {mic:0,plans:0,calls:{search:0,play:0,pause:0,resume:0,commands:0},playback:'idle',focused:'',focusIsEditable:false,keyboard:0},
+        ui+' '+width+' default Aura startup is visual only and does not focus the command editor');
+      assert.equal(startupState.focusIsEditable,false,ui+' '+width+' startup must not focus an editable command control');
+      assert.notEqual(startupState.focused,'tmText',ui+' '+width+' startup must not focus the command editor');
+      const startupMeasure=await page.evaluate(()=>{
+        const root=document.querySelector('#tmAura'),r=root.getBoundingClientRect();
+        return {rect:{x:r.x,y:r.y,width:r.width,height:r.height},
+          overflow:document.documentElement.scrollWidth-innerWidth,
+          focus:document.activeElement?.id||'',titleInside:(()=>{const t=root.querySelector('.ta-title').getBoundingClientRect();return t.left>=-1&&t.right<=innerWidth+1;})(),
+          captionInside:(()=>{const t=root.querySelector('.ta-caption').getBoundingClientRect();return t.left>=-1&&t.right<=innerWidth+1;})()};
+      });
+      assert.ok(Math.abs(startupMeasure.rect.x)<=1&&Math.abs(startupMeasure.rect.y)<=1);
+      assert.ok(Math.abs(startupMeasure.rect.width-width)<=1&&Math.abs(startupMeasure.rect.height-height)<=1,
+        ui+' '+width+' startup overlay is full viewport '+JSON.stringify(startupMeasure));
+      assert.ok(startupMeasure.titleInside&&startupMeasure.captionInside&&startupMeasure.overflow<=2,
+        ui+' '+width+' startup overlay layout '+JSON.stringify(startupMeasure));
+      if(process.env.TESLAMON_AURA_SCREENSHOTS==='1'&&width===390&&ui==='new'){
+        const destination=path.resolve(root,'../docs/teslamon-aura-completion-evidence-20261029/startup-390-new.png');
+        await fs.mkdir(path.dirname(destination),{recursive:true});
+        await page.screenshot({path:destination});
+      }
+      // Explicitly exit startup presentation before editing controls. Escape
+      // must not turn the preference off or invoke voice/media capabilities.
+      await page.locator('#tmAura').press('Escape');
+      await page.locator('#tmAura').waitFor({state:'hidden'});
+      // Saved Off survives a fresh page load and stays closed.
       await page.locator('#tmFace').click();
       if(await page.locator('#tmWakeToggle').getAttribute('aria-pressed')==='true')
         await page.locator('#tmWakeToggle').click();
       assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false');
       await page.locator('#tmAuraToggle').uncheck();
+      await page.reload({waitUntil:'domcontentloaded'});
+      await page.locator('#tmAuraToggle').waitFor({state:'attached'});
+      await page.waitForFunction(()=>typeof window.__auraWake==='function');
+      assert.equal(await page.locator('#tmAura').isHidden(),true,ui+' '+width+' saved Off stays closed after reload');
+      await page.locator('#tmFace').click();
       const preview=page.locator('#tmAuraPreview');
       await preview.waitFor({state:'attached'});
       assert.equal(await preview.isDisabled(),true,'Preview is disabled while Aura preference is Off');
       assert.equal(await page.locator('#tmAura').isHidden(),true,'disabled Preview leaves Aura closed');
       await page.locator('#tmAuraToggle').check();
-      assert.equal(await page.locator('#tmAura').isHidden(),true,'Aura On arms the overlay without taking over the screen');
+      await page.reload({waitUntil:'domcontentloaded'});
+      await page.locator('#tmAuraToggle').waitFor({state:'attached'});
+      await page.waitForFunction(()=>typeof window.__auraWake==='function');
+      await page.locator('#tmAura').waitFor({state:'visible'});
+      assert.equal(await page.locator('#tmAuraToggle').isChecked(),true,'saved On survives reload');
+      await page.locator('#tmAura').press('Escape');
+      await page.locator('#tmAura').waitFor({state:'hidden'});
+      await page.locator('#tmFace').click();
+      if(await page.locator('#tmWakeToggle').getAttribute('aria-pressed')==='true')
+        await page.locator('#tmWakeToggle').click();
       assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false');
       // Preview is a presentation-only manual path. It works with the mic off
       // over existing playback, and must not touch voice, planner, or media.
@@ -416,6 +487,54 @@ try{
       await context.close();
     }
   }
+  // A master-disabled pet must never enter Aura on a fresh document.
+  for(const ui of ['classic','new']){
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    await page.addInitScript(fixtureBootstrap);
+    await page.addInitScript(()=>localStorage.setItem('ytStreamerTeslaMonDisabledV1','1'));
+    await page.goto(origin+'/?ui='+ui,{waitUntil:'domcontentloaded'});
+    await page.locator('#tmAura').waitFor({state:'attached'});
+    await page.waitForTimeout(250);
+    assert.equal(await page.locator('#tmAura').isHidden(),true,ui+': master-disabled TeslaMon stays closed at startup');
+    assert.deepEqual(await page.evaluate(()=>({mic:window.__fixtureMicRequests,plans:window.__fixturePlanRequests,
+      calls:{...window.__fixtureCalls},keyboard:window.__fixtureKeyboardRequests})),
+      {mic:0,plans:0,calls:{search:0,play:0,pause:0,resume:0,commands:0},keyboard:0},
+      ui+': master-disabled startup has no mic, keyboard, planner or media side effects');
+    await context.close();
+  }
+  // Startup Aura is visible while capability discovery is pending. Once the
+  // user dismisses it, late capabilities and visibility events cannot reopen it.
+  await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({scenario:'slow_capabilities'})});
+  const lateContext=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+  const latePage=await lateContext.newPage();
+  await latePage.addInitScript(fixtureBootstrap);
+  await latePage.goto(origin+'/?ui=new',{waitUntil:'domcontentloaded'});
+  await latePage.locator('#tmAura').waitFor({state:'visible'});
+  await latePage.waitForFunction(()=>window.__fixtureCapabilitiesRequests>0&&window.__fixtureCapabilitiesResponses===0,
+    null,{timeout:5000});
+  await latePage.evaluate(()=>window.__auraStartupState({state:'starting',message:'Requesting microphone permission…'}));
+  await latePage.waitForFunction(()=>document.querySelector('#tmAuraDetail')?.textContent.includes('Requesting microphone permission'));
+  await latePage.evaluate(()=>window.__auraStartupState({state:'listening',message:'Listening for the selected wake phrase'}));
+  await latePage.waitForFunction(()=>document.querySelector('#tmAuraDetail')?.textContent.includes('Say a wake phrase'));
+  await latePage.evaluate(()=>window.__auraStartupState({state:'error',message:'Fixture startup error'}));
+  await latePage.waitForFunction(()=>document.querySelector('#tmAuraDetail')?.textContent.includes('Fixture startup error'));
+  assert.equal(await latePage.locator('#tmAura').isVisible(),true,'starting/listening/error bootstrap statuses retain startup Aura');
+  await latePage.locator('#tmAura').press('Escape');
+  await latePage.locator('#tmAura').waitFor({state:'hidden'});
+  await latePage.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+  await fetch(origin+'/__fixture/release-capabilities',{method:'POST'});
+  await latePage.waitForFunction(()=>window.__fixtureCapabilitiesResponses>0,null,{timeout:5000});
+  await latePage.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+  await latePage.waitForTimeout(350);
+  assert.equal(await latePage.locator('#tmAura').isHidden(),true,
+    'late capabilities and visibility changes cannot reopen dismissed startup Aura');
+  assert.deepEqual(await latePage.evaluate(()=>({mic:window.__fixtureMicRequests,plans:window.__fixturePlanRequests,
+    calls:{...window.__fixtureCalls},keyboard:window.__fixtureKeyboardRequests})),
+    {mic:0,plans:0,calls:{search:0,play:0,pause:0,resume:0,commands:0},keyboard:0},
+    'late startup completion remains visual only');
+  await lateContext.close();
+  await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({scenario:'ha_done'})});
   assert.deepEqual(errors,[],'browser errors');
   if(process.env.TESLAMON_AURA_SCREENSHOTS==='1'){
     const destination=path.resolve(root,'../docs/teslamon-aura-completion-evidence-20261029/layout.json');
@@ -423,7 +542,9 @@ try{
     await fs.writeFile(destination,JSON.stringify({
       recordedAt:new Date().toISOString(),fixture:'isolated Chrome; synthetic STT, no real mic/media/HA',
       scenarios:results.length,allNoHorizontalOverflow:results.every(x=>x.measure.overflow<=2),
-      bothUiModes:true,results,
+      bothUiModes:true,automaticStartup:{defaultOn:true,savedOnReload:true,savedOffReload:true,
+        masterDisabledClosed:true,fullViewportAndNoOverflow:true,noMicKeyboardPlannerOrMedia:true,
+        dismissalSurvivesLateCapabilitiesAndVisibilityChange:true},results,
     },null,2)+'\n');
   }
   console.log(JSON.stringify({passed:results.length,results},null,2));
