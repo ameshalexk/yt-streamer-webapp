@@ -50,6 +50,9 @@ try{
         new URL(req.url()).pathname==='/api/teslamon/capabilities',{timeout:6000});
       await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded',timeout:16000});
       await initialCapabilities; // Wake setup must run before the puppy is tapped.
+      await page.locator('#tmAura').waitFor({state:'visible',timeout:7000});
+      await page.locator('#tmAura').press('Escape');
+      await page.locator('#tmAura').waitFor({state:'hidden',timeout:3000});
       await page.locator('#tmFace').click();
       await page.locator('#tmPanel').waitFor({state:'visible'});
       // One paste-like insertion should auto-dispatch through Codex with no Send click.
