@@ -92,6 +92,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<label class="tm-aura-switch" for="tmAuraToggle">',
           '<input id="tmAuraToggle" type="checkbox" role="switch" checked aria-label="Use Aura overlay" />',
           '<span id="tmAuraToggleState">On</span></label>',
+        '<button id="tmAuraPreview" type="button">Preview Aura</button>',
       '</div>',
       '<fieldset class="tm-wake-phrases" id="tmWakePhraseSet">',
         '<legend>Wake phrases</legend>',
@@ -139,7 +140,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     state=$('#tmState'),mic=$('#tmMic'),
     wakeControl=$('#tmWakeControl'),wakeToggle=$('#tmWakeToggle'),wakeState=$('#tmWakeState'),
     wakePhraseSet=$('#tmWakePhraseSet'),wakePhraseHelp=$('#tmWakePhraseHelp'),
-    auraToggle=$('#tmAuraToggle'),auraToggleState=$('#tmAuraToggleState'),
+    auraToggle=$('#tmAuraToggle'),auraToggleState=$('#tmAuraToggleState'),auraPreview=$('#tmAuraPreview'),
     sttModelSelect=$('#tmSttModel'),sttModelState=$('#tmSttModelState'),
     input=$('#tmText'),
     modelLabel=$('#tmModelLabel'),modelOptIn=$('#tmModelOptIn');
@@ -188,13 +189,16 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     playbackTimer=setTimeout(observeAuraPlayback,350);
   }
-  function openAura({phase='standby',message='',fromWake=false}={}){
+  function openAura({phase='standby',message='',fromWake=false,preview=false}={}){
     if(!auraEnabled||userDisabled||document.hidden)return null;
-    if(!fromWake&&playerState()?.playback_phase==='playing')return null;
+    if(!fromWake&&!preview&&playerState()?.playback_phase==='playing')return null;
     wakePauseGuard=fromWake;
     activeAuraEntry=aura.open({phase,status:message});
     if(playbackTimer!==null)clearTimeout(playbackTimer);
-    playbackTimer=setTimeout(observeAuraPlayback,350);
+    playbackTimer=null;
+    // A manual visual preview stays available even over an already-playing
+    // video. It never pauses playback or starts capture; tap/Escape closes it.
+    if(!preview)playbackTimer=setTimeout(observeAuraPlayback,350);
     pet.hidden=true;
     return activeAuraEntry;
   }
@@ -208,6 +212,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     auraEnabled=Boolean(value);
     auraToggle.checked=auraEnabled;
     auraToggleState.textContent=auraEnabled?'On':'Off';
+    auraPreview.disabled=!auraEnabled;
     if(persist)try{localStorage.setItem(AURA_KEY,auraEnabled?'1':'0');}catch{}
     if(!auraEnabled)closeAura();
     // The preference only arms future accepted wake phrases. It never takes
@@ -1079,6 +1084,12 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     else alignPanel();
   });
   auraToggle.addEventListener('change',()=>setAuraEnabled(auraToggle.checked));
+  auraPreview.addEventListener('click',()=>{
+    if(!auraEnabled||userDisabled)return;
+    panelRevision++;
+    collapseControls();
+    openAura({phase:'standby',message:'Preview · tap anywhere to close',preview:true});
+  });
   disableButton.addEventListener('click',()=>{
     panelRevision++;
     setUserDisabled(true);

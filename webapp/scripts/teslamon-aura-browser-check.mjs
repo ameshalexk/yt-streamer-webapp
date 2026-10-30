@@ -10,7 +10,7 @@ let fixtureScenario='ha_done';
 const fixtureBootstrap=()=>{
   window.__fixturePlayback='idle';
   window.__fixtureSpeechText='turn on office lights';
-  window.__fixtureCalls={search:0,play:0};
+  window.__fixtureCalls={search:0,play:0,pause:0,resume:0,commands:0};
   window.__fixtureMicRequests=0;
   window.__fixturePlanResponses=0;
   window.__fixturePlanRequests=0;
@@ -20,10 +20,12 @@ const fixtureBootstrap=()=>{
   if(!window.Worker)window.Worker=function(){};
   window.YTStreamerMediaAgent={
     execute:async(action)=>{
-      if(action==='pause_for_voice'){window.__fixturePlayback='paused';return {status:'completed'};}
+      if(['pause_for_voice','pause_media','resume_media','stop_media','play_media'].includes(action))window.__fixtureCalls.commands++;
+      if(action==='pause_for_voice'){window.__fixtureCalls.pause++;window.__fixturePlayback='paused';return {status:'completed'};}
       if(action==='get_player_state')return {status:'completed',state:{playback_phase:window.__fixturePlayback,fullscreen_kind:'none'}};
       if(action==='search_media'){window.__fixtureCalls.search++;return {status:'completed',result:{results:[{media_id:'abcdefghijk',title:'Fixture video'}]}};}
       if(action==='play_media'){window.__fixtureCalls.play++;window.__fixturePlayback='buffering';return {status:'accepted'};}
+      if(action==='resume_media'){window.__fixtureCalls.resume++;window.__fixturePlayback='playing';return {status:'accepted'};}
       if(action==='request_fullscreen')return {status:'unsupported'};
       return {status:'completed'};
     },
@@ -220,19 +222,52 @@ try{
         await page.locator('#tmWakeToggle').click();
       assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false');
       await page.locator('#tmAuraToggle').uncheck();
+      const preview=page.locator('#tmAuraPreview');
+      await preview.waitFor({state:'attached'});
+      assert.equal(await preview.isDisabled(),true,'Preview is disabled while Aura preference is Off');
+      assert.equal(await page.locator('#tmAura').isHidden(),true,'disabled Preview leaves Aura closed');
       await page.locator('#tmAuraToggle').check();
       assert.equal(await page.locator('#tmAura').isHidden(),true,'Aura On arms the overlay without taking over the screen');
-      if(await page.locator('#tmAuraPreview').count()){
-        await page.locator('#tmAuraPreview').click();
-        assert.equal(await page.locator('#tmAura').isHidden(),true,'only an accepted selected wake may enter Aura');
-      }
       assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false');
+      // Preview is a presentation-only manual path. It works with the mic off
+      // over existing playback, and must not touch voice, planner, or media.
+      await page.evaluate(()=>window.__fixturePlayback='playing');
+      const previewBefore=await page.evaluate(()=>({mic:window.__fixtureMicRequests,
+        plans:window.__fixturePlanRequests,calls:{...window.__fixtureCalls},playback:window.__fixturePlayback}));
+      if(width===390&&ui==='new'){
+        await page.screenshot({path:'/tmp/teslamon-aura-preview-panel-'+ui+'-'+width+'x'+height+'.jpg',type:'jpeg',quality:70});
+      }
+      await preview.click();
+      await page.locator('#tmAura').waitFor({state:'visible'});
+      assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'standby','Preview uses standby phase');
+      assert.match(await page.locator('#tmAura').innerText(),/Preview · tap anywhere to close/,
+        'Preview announces how to dismiss');
+      await page.waitForTimeout(450);
+      assert.equal(await page.locator('#tmAura').isVisible(),true,'playing media does not auto-dismiss Preview');
+      assert.equal(await page.evaluate(()=>window.__fixturePlayback),'playing','Preview preserves existing playback');
+      assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false','Preview works with mic Off');
+      assert.notEqual(await page.evaluate(()=>document.activeElement?.id),'tmText','Preview never focuses command text');
+      await page.locator('#tmAura').tap({position:{x:Math.min(30,width/4),y:Math.min(30,height/4)}});
+      assert.equal(await page.locator('#tmAura').isHidden(),true,'tap closes Preview');
+      if(await page.locator('#tmPanel').isHidden())await page.locator('#tmFace').click();
+      await preview.click();
+      await page.locator('#tmAura').waitFor({state:'visible'});
+      await page.locator('#tmAura').press('Escape');
+      assert.equal(await page.locator('#tmAura').isHidden(),true,'Escape closes Preview');
+      const previewAfter=await page.evaluate(()=>({mic:window.__fixtureMicRequests,
+        plans:window.__fixturePlanRequests,calls:{...window.__fixtureCalls},playback:window.__fixturePlayback}));
+      assert.deepEqual(previewAfter,{...previewBefore},'Preview does not request mic, plan commands, or control media');
+      if(await page.locator('#tmPanel').isHidden())await page.locator('#tmFace').click();
       await page.locator('#tmWakeToggle').click();
       assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'true');
       await page.evaluate(()=>window.__auraWake('unselected_fixture_phrase'));
       assert.equal(await page.locator('#tmAura').isHidden(),true,'unselected wake cannot open Aura');
+      await preview.click();
+      await page.locator('#tmAura').waitFor({state:'visible'});
+      assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'standby','mic-enabled Preview remains manual standby');
       await page.evaluate(()=>window.__auraWake('hey_jarvis'));
       await page.locator('#tmAura').waitFor({state:'visible'});
+      assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'listening','accepted wake takes ownership from Preview');
       assert.notEqual(await page.evaluate(()=>document.activeElement?.id),'tmText','wake takeover never focuses the command field');
       assert.equal(await page.evaluate(()=>window.__fixtureMicRequests),0,'fixture wake uses no browser microphone capture');
       const measure=await page.evaluate(()=>{
@@ -265,12 +300,16 @@ try{
       const controls=await page.evaluate(()=>{
         const wake=document.querySelector('#tmWakeToggle')?.getBoundingClientRect();
         const toggle=document.querySelector('#tmAuraToggle')?.closest('label')?.getBoundingClientRect();
-        if(!wake||!toggle)return {missing:true,html:document.body.innerHTML.slice(0,200)};
-        return {wakeWidth:wake.width,wakeHeight:wake.height,toggleHeight:toggle.height};
+        const preview=document.querySelector('#tmAuraPreview')?.getBoundingClientRect();
+        if(!wake||!toggle||!preview)return {missing:true,html:document.body.innerHTML.slice(0,200)};
+        return {wakeWidth:wake.width,wakeHeight:wake.height,toggleHeight:toggle.height,
+          previewWidth:preview.width,previewHeight:preview.height,
+          previewInside:preview.left>=-1&&preview.right<=innerWidth+1};
       });
       assert.ok(!controls.missing,ui+' '+width+' controls missing '+JSON.stringify(controls));
-      assert.ok(Math.min(controls.wakeWidth,controls.wakeHeight,controls.toggleHeight)>=44,
+      assert.ok(Math.min(controls.wakeWidth,controls.wakeHeight,controls.toggleHeight,controls.previewWidth,controls.previewHeight)>=44,
         ui+' '+width+' control <44px '+JSON.stringify(controls));
+      assert.ok(controls.previewInside,ui+' '+width+' Preview button out of bounds '+JSON.stringify(controls));
       // Storage change from another tab updates preference without opening here.
       await page.evaluate(()=>window.dispatchEvent(new StorageEvent('storage',{
         key:'ytStreamerTeslaMonAuraEnabledV1',newValue:'1'})));
