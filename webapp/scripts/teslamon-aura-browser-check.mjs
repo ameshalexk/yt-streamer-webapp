@@ -57,6 +57,12 @@ const fixtureBootstrap=()=>{
     return response;
   };
 };
+const fixtureHiddenBootstrap=()=>{
+  let hidden=true;
+  Object.defineProperty(document,'hidden',{configurable:true,get:()=>hidden});
+  Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>hidden?'hidden':'visible'});
+  window.__fixtureSetHidden=value=>{hidden=Boolean(value);document.dispatchEvent(new Event('visibilitychange'));};
+};
 const fixtureBootstrapScript='<script>('+fixtureBootstrap.toString()+')();</script>';
 const mime={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript',
   '.css':'text/css','.svg':'image/svg+xml','.json':'application/json','.wasm':'application/wasm'};
@@ -227,6 +233,101 @@ const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/A
 const viewports=process.env.TESLAMON_AURA_FAST==='1'?[[390,844]]:[[320,568],[375,667],[390,844],[430,932],[768,1024],[844,390],[1280,800],[1920,1080]];
 const results=[],errors=[];
 try{
+  // First-visible startup regression: browsers can load a tab in the
+  // background. Startup Aura should appear on its first foreground transition.
+  {
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    page.on('pageerror',error=>errors.push('first-visible-hidden '+error.message));
+    await page.addInitScript(fixtureBootstrap);
+    await page.addInitScript(fixtureHiddenBootstrap);
+    await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded'});
+    await page.locator('#tmAura').waitFor({state:'attached'});
+    await page.waitForFunction(()=>typeof window.__auraWake==='function');
+    assert.equal(await page.locator('#tmAura').isHidden(),true,'hidden initial document defers startup Aura');
+    await page.evaluate(()=>window.__fixtureSetHidden(false));
+    await page.locator('#tmAura').waitFor({state:'visible',timeout:1500});
+    assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'standby');
+    await context.close();
+  }
+  // A playing player wins at the first foreground transition. Startup Aura
+  // does not obscure the video and is not queued until playback later pauses.
+  {
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    page.on('pageerror',error=>errors.push('first-visible-playing '+error.message));
+    await page.addInitScript(fixtureBootstrap);
+    await page.addInitScript(fixtureHiddenBootstrap);
+    await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded'});
+    await page.locator('#tmAura').waitFor({state:'attached'});
+    await page.waitForFunction(()=>typeof window.__auraWake==='function');
+    await page.evaluate(()=>{window.__fixturePlayback='playing';window.__fixtureSetHidden(false);});
+    await page.waitForTimeout(450);
+    assert.equal(await page.locator('#tmAura').isHidden(),true,'playing video remains unobscured on first visible');
+    await page.evaluate(()=>{window.__fixturePlayback='paused';document.dispatchEvent(new Event('visibilitychange'));});
+    await page.waitForTimeout(450);
+    assert.equal(await page.locator('#tmAura').isHidden(),true,'startup is not deferred until playback pauses');
+    await context.close();
+  }
+  // Preference changes after module initialization but before first visible
+  // cancel the pending startup. Controls remain usable after saved Off.
+  for(const preference of ['off','master-disabled']){
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    await page.addInitScript(fixtureBootstrap);
+    await page.addInitScript(fixtureHiddenBootstrap);
+    page.on('pageerror',error=>errors.push('first-visible-'+preference+' '+error.message));
+    await page.goto(origin+'/?ui=new',{waitUntil:'domcontentloaded'});
+    await page.locator('#tmAura').waitFor({state:'attached'});
+    await page.waitForFunction(()=>typeof window.__auraWake==='function');
+    await page.evaluate(preference=>{
+      const key=preference==='off'?'ytStreamerTeslaMonAuraEnabledV1':'ytStreamerTeslaMonDisabledV1';
+      const value=preference==='off'?'0':'1';
+      localStorage.setItem(key,value);
+      window.dispatchEvent(new StorageEvent('storage',{key,newValue:value}));
+    },preference);
+    await page.evaluate(()=>window.__fixtureSetHidden(false));
+    await page.waitForTimeout(350);
+    assert.equal(await page.locator('#tmAura').isHidden(),true,preference+' before first visible remains closed');
+    if(preference==='master-disabled'){
+      await page.locator('#tmRestore').click();
+      assert.equal(await page.locator('#tmRestore').isHidden(),true,'restore re-enables master-disabled TeslaMon');
+    }
+    await page.locator('#tmFace').click();
+    await page.locator('#tmAuraPreview').waitFor({state:'attached'});
+    assert.equal(await page.locator('#tmAuraPreview').isDisabled(),preference==='off',
+      preference+' controls work after hidden startup');
+    if(preference==='off'){
+      await page.locator('#tmAuraToggle').check();
+      assert.equal(await page.locator('#tmAuraToggle').isChecked(),true,'saved Off can be turned on after initialization');
+    }
+    assert.equal(await page.locator('#tmAura').isHidden(),true,preference+' control use does not auto-open Aura');
+    await context.close();
+  }
+  // Once first-visible startup opened and was dismissed, visibility cycles and
+  // delayed capabilities cannot resurrect it.
+  {
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({scenario:'slow_capabilities'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    page.on('pageerror',error=>errors.push('first-visible-dismissal '+error.message));
+    await page.addInitScript(fixtureBootstrap);
+    await page.addInitScript(fixtureHiddenBootstrap);
+    await page.goto(origin+'/?ui=new',{waitUntil:'domcontentloaded'});
+    await page.locator('#tmAura').waitFor({state:'attached'});
+    await page.evaluate(()=>window.__fixtureSetHidden(false));
+    await page.locator('#tmAura').waitFor({state:'visible',timeout:1500});
+    await page.waitForFunction(()=>window.__fixtureCapabilitiesRequests>0&&window.__fixtureCapabilitiesResponses===0,null,{timeout:5000});
+    await page.locator('#tmAura').press('Escape');
+    await page.locator('#tmAura').waitFor({state:'hidden'});
+    await page.evaluate(()=>{window.__fixtureSetHidden(true);window.__fixtureSetHidden(false);});
+    await fetch(origin+'/__fixture/release-capabilities',{method:'POST'});
+    await page.waitForFunction(()=>window.__fixtureCapabilitiesResponses>0,null,{timeout:5000});
+    await page.evaluate(()=>{window.__fixtureSetHidden(true);window.__fixtureSetHidden(false);});
+    await page.waitForTimeout(350);
+    assert.equal(await page.locator('#tmAura').isHidden(),true,'dismissal survives repeated visibility and late capabilities');
+    await context.close();
+  }
   for(const [width,height] of viewports){
     for(const ui of (process.env.TESLAMON_AURA_FAST==='1'?['classic']:['classic','new'])){
       console.log('checking',ui,width,height);

@@ -148,12 +148,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const PAW_KEY='ytStreamerTeslaMonPawPositionV1';
   const DISABLED_KEY='ytStreamerTeslaMonDisabledV1';
   const AURA_KEY='ytStreamerTeslaMonAuraEnabledV1';
-  let auraEnabled=true;
+  let auraEnabled=true,userDisabled=false,startupAuraPending=false;
   let startupAuraEntry=null;
   let activeAuraEntry=null,voiceAuraEntry=null,playbackTimer=null,wakePauseGuard=false;
   let voiceOwner=0,pendingVoice=null,modelGeneration=0;
   let activePlannerVoice=false,activeIssueVoice=false;
   try{auraEnabled=localStorage.getItem(AURA_KEY)!=='0';}catch{}
+  try{userDisabled=localStorage.getItem(DISABLED_KEY)==='1';}catch{}
+  startupAuraPending=auraEnabled&&!userDisabled;
   const aura=createTeslaMonAura({onDismiss:(entry,reason)=>{
     // Tap/Escape only suppress this presentation; speech and dispatch continue.
     if(startupAuraEntry===entry)startupAuraEntry=null;
@@ -195,6 +197,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   function openAura({phase='standby',message='',fromWake=false,preview=false,startup=false}={}){
     if(!auraEnabled||userDisabled||document.hidden)return null;
     if(!fromWake&&!preview&&playerState()?.playback_phase==='playing')return null;
+    startupAuraPending=false;
     if(!startup)startupAuraEntry=null;
     wakePauseGuard=fromWake;
     activeAuraEntry=aura.open({phase,status:message});
@@ -206,6 +209,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(!preview)playbackTimer=setTimeout(observeAuraPlayback,350);
     pet.hidden=true;
     return activeAuraEntry;
+  }
+  function enterStartupAura(){
+    // Mobile browsers can initialize a new document before its tab is visible.
+    // Keep that first entry pending, then consume it once at first foreground.
+    if(!startupAuraPending||document.hidden)return;
+    startupAuraPending=false;
+    openAura({phase:'standby',message:'Preparing TeslaMon…',startup:true});
   }
   function auraStage(phase,message,{entry=activeAuraEntry,kind='info'}={}){
     if(entry===null||entry!==activeAuraEntry||!aura.active)return false;
@@ -224,12 +234,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     auraToggleState.textContent=auraEnabled?'On':'Off';
     auraPreview.disabled=!auraEnabled;
     if(persist)try{localStorage.setItem(AURA_KEY,auraEnabled?'1':'0');}catch{}
-    if(!auraEnabled)closeAura();
+    if(!auraEnabled){startupAuraPending=false;closeAura();}
     // The preference only arms future accepted wake phrases. It never takes
     // over the screen or starts voice capture by itself.
   }
-  let userDisabled=false;
-  try{userDisabled=localStorage.getItem(DISABLED_KEY)==='1';}catch{}
   setAuraEnabled(auraEnabled,{persist:false});
   pet.dataset.disabled=String(userDisabled);
   restoreButton.hidden=!userDisabled;
@@ -786,6 +794,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     restoreButton.hidden=!disabled;
     restorePositionForMode();
     if(disabled){
+      startupAuraPending=false;
       autoWakeWanted=false;autoWakeBlocked=true;
       autoSend.cancel();cancelPendingVoice();
       handsFree.disable(); // Stops all microphone tracks and wake detection immediately.
@@ -1173,9 +1182,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   });
   document.addEventListener('visibilitychange',()=>{
     if(document.hidden){closeAura();auraVoiceFlow=false;autoSend.cancel();cancelPendingVoice();handsFree.disable();micEpoch++;modelGeneration++;modelBusy=false;generation++;busy=false;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();}
-    else void refresh();
+    else {enterStartupAura();void refresh();}
   });
   window.addEventListener('pagehide',()=>{
+    startupAuraPending=false;
     closeAura();aura.destroy();auraVoiceFlow=false;autoSend.dispose();cancelPendingVoice();handsFree.disable();micEpoch++;modelGeneration++;generation++;cancelMic();sttModelMessage='';localStt.dispose();renderSttModelState();captureBinding?.dispose();try{speech?.abort();}catch{}
   });
   document.addEventListener('fullscreenchange',monitorFullscreen);
@@ -1189,9 +1199,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   monitorFullscreen();
   // Aura preference is a presentation preference: enter once on a fresh
   // document without requesting microphone access or starting media work.
-  // A hidden load or already-playing video is intentionally not deferred.
-  if(auraEnabled&&!userDisabled)
-    openAura({phase:'standby',message:'Preparing TeslaMon…',startup:true});
+  // A hidden initial load gets its one entry when first shown. Dismissal or
+  // an already-playing player consumes it; later visibility cannot reopen it.
+  enterStartupAura();
   // Wake listening must initialize even when the puppy panel stays closed.
   // This triggers only the browser's normal permission flow, never a bypass.
   void refresh();
