@@ -22,3 +22,11 @@ canvas{display:block;object-fit:contain;width:100%;height:100%;background:#07090
 .loading{padding:20px;color:#afb8c1}
 @media(max-width:950px){.shell{grid-template-columns:1fr}.guide{max-height:440px}.topbar .eyebrow{display:none}.tag{font-size:11px}}
 @media(max-width:550px){.shell{padding:10px;gap:15px}.topbar{padding:12px}.details{display:block}.transport{margin-top:14px}.transport button{flex:1}.methodNote{width:100%;margin:3px 0 0}}
+
+/* Retro guide favorites: independent tap targets; do not nest interactive buttons. */
+.guideSection{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:#c9b27e;background:#181f29;margin:0;padding:13px 17px 10px;border-bottom:1px solid #303947}
+.channelEntry{display:flex;align-items:stretch;border-bottom:1px solid #2b323e}
+.channelEntry .channel{flex:1;min-width:0;border-bottom:0}
+.favoriteButton{flex:0 0 48px;align-self:stretch;border:0;border-left:1px solid #2b323e;border-radius:0;background:transparent;color:#9aa5b2;font-size:24px;min-height:52px;padding:8px}
+.favoriteButton[aria-pressed="true"]{color:#e2ad57}
+.favoriteButton:hover,.favoriteButton:focus-visible{background:#394454;color:#e2ad57}
