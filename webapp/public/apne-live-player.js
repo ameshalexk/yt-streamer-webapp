@@ -28,7 +28,7 @@
   retryButton.type = 'button';
   retryButton.textContent = 'Retry video';
   retryButton.hidden = true;
-  retryButton.style.cssText = 'display:inline-block;margin:8px 0 0;padding:9px 15px;border-radius:8px;border:1px solid #7192b7;background:#273b55;color:white;cursor:pointer';
+  retryButton.style.cssText = 'display:inline-block;margin:8px 0 0;padding:9px 15px;min-width:44px;min-height:44px;border-radius:8px;border:1px solid #7192b7;background:#273b55;color:white;cursor:pointer';
   status.insertAdjacentElement('afterend', retryButton);
 
   function setStatus(message, allowRetry = false) {
@@ -110,6 +110,7 @@
 
   async function loadSource() {
     clearTimers();
+    retryButton.textContent = 'Retry video';
     if (sourceController) sourceController.abort();
     if (activeHls) { activeHls.destroy(); activeHls = null; }
     if (embedded) {
@@ -138,6 +139,13 @@
     try {
       const response = await fetch(video.dataset.source, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
       if (!response.ok) {
+        // Only trust this first-party error code, never provider HTML or raw errors.
+        const detail = response.status === 502 ? await response.json().catch(() => null) : null;
+        if (detail?.code === 'APNE_UPSTREAM_VIDEO_MISSING') {
+          throw Object.assign(new Error('APNE\'s provider has no playable video for this episode. Check again later.'), {
+            code: 'APNE_UPSTREAM_VIDEO_MISSING', terminal: true,
+          });
+        }
         const error = new Error(response.status === 401 || response.status === 403
           ? 'Cloudflare Access sign-in may have expired. Refresh this page after signing in.'
           : response.status === 404 ? 'This episode was not found.' : 'The APNE video source is temporarily unavailable.');
@@ -154,6 +162,13 @@
     } catch (error) {
       if (id !== requestId) return;
       sourceLoading = false;
+      if (error.code === 'APNE_UPSTREAM_VIDEO_MISSING') {
+        activeFormat = null;
+        video.pause();
+        retryButton.textContent = 'Check again';
+        setStatus(error.message, true);
+        return;
+      }
       const reason = error.name === 'AbortError'
         ? 'The APNE source request timed out.'
         : error.message || 'Could not connect to APNE.';

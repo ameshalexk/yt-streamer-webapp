@@ -56,6 +56,19 @@ const SOURCE_STATUS = {
   error: "Check failed",
 };
 
+export const APNE_UPSTREAM_VIDEO_MISSING = "APNE_UPSTREAM_VIDEO_MISSING";
+
+function isVisibleKnownApneMissingVideoPage(html) {
+  const source = String(html || "");
+  const boxes = [...source.matchAll(/<([a-z][\w:-]*)\b([^>]*class\s*=\s*["'][^"']*\berror-box\b[^"']*["'][^>]*)>([\s\S]*?)<\/\1\s*>/gi)];
+  return boxes.some((match) => {
+    const attrs = match[2];
+    if (/\bhidden\b/i.test(attrs) || /aria-hidden\s*=\s*["']true["']/i.test(attrs) ||
+        /style\s*=\s*["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["']/i.test(attrs)) return false;
+    return /Error:\s*No master-playlist\.m3u8 stream found\./i.test(stripTags(match[3]));
+  });
+}
+
 function rememberEpisodes(show, episodes) {
   const time = Date.now();
   for (const e of episodes) knownEpisodes.set(jobKey(show.id, e.dateKey), { ...e, at: time });
@@ -126,15 +139,18 @@ function dateKeyFromParts(year, month, day) {
 
 export function parseApneDateLabel(label) {
   const clean = stripTags(label).replace(/(\d+)(?:st|nd|rd|th)\b/i, "$1").replace(/\s+/g, " ").trim();
-  const match = clean.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+Episode\s+([1-9]\d{0,5}))?\s+(\d{4})$/i);
+  const match = clean.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{4}))?(?:\s+Episode\s+([1-9]\d{0,5}))?\s+(\d{4})$/i);
   if (!match) return null;
+  // Current APNE labels repeat the year around "Episode N". Keep the
+  // original date/episode identity and reject conflicting year labels.
+  if (match[3] && (!match[4] || match[3] !== match[5])) return null;
   const monthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
   const month = monthNames.indexOf(match[2].toLowerCase()) + 1;
   if (!month) return null;
   const day = Number(match[1]);
-  const year = Number(match[4]);
+  const year = Number(match[5]);
   if (!Number.isInteger(day) || day < 1 || day > 31 || year < 2000) return null;
-  return { label: stripTags(label), key: dateKeyFromParts(year, month, day), year, month, day, ...(match[3] ? { episodeNumber: Number(match[3]) } : {}) };
+  return { label: stripTags(label), key: dateKeyFromParts(year, month, day), year, month, day, ...(match[4] ? { episodeNumber: Number(match[4]) } : {}) };
 }
 
 function todayKey(timeZone = "America/Chicago") {
@@ -620,7 +636,9 @@ export function parseMediagramingHlsFromHtml(html) {
     return validatedApneHlsUrl(decodedUrl);
   }
 
-  throw new Error("Mediagraming HLS source was not found.");
+  const error = new Error("Mediagraming HLS source was not found.");
+  if (isVisibleKnownApneMissingVideoPage(source)) error.code = APNE_UPSTREAM_VIDEO_MISSING;
+  throw error;
 }
 
 export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
@@ -711,6 +729,9 @@ export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
         await log("embedded_source_failed", {error:fallbackError.message});
       }
     }
+    // Keep the original resolver failure (and its stack) while adding a stable
+    // code only when APNE returned this exact known no-video page. Provider
+    // markup/messages are never copied into the public error response.
     await log("resolve_failed", { error: error.message });
     throw error;
   }

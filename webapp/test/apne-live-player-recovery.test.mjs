@@ -78,6 +78,34 @@ test('authorization failure shows sign-in message without automatic retry',async
   assert.match(h.status.textContent,/sign-in may have expired/);
   assert.equal(h.status.retry.hidden,false);
 });
+test('missing provider video stops automatic retries and permits a later manual recheck',async()=>{
+  const h=harness([
+    ()=>({ok:false,status:502,json:async()=>({code:'APNE_UPSTREAM_VIDEO_MISSING',error:'<script>untrusted provider detail</script>'})}),
+    {format:'mp4',src:'/apne/live/mp4/restored'},
+  ]);
+  await h.settle();
+  assert.equal(h.hits.length,1);
+  assert.match(h.status.textContent,/provider has no playable video.*Check again later/);
+  assert.doesNotMatch(h.status.textContent,/untrusted|<script>|Tap Retry/);
+  assert.equal(h.status.retry.textContent,'Check again');
+  assert.equal(h.status.retry.hidden,false);
+  assert.equal(h.video.paused,true);
+  assert.equal(h.timers.size,0);
+  h.clickRetry();await h.settle();
+  assert.equal(h.hits.length,2);
+  assert.equal(h.video.src,'/apne/live/mp4/restored');
+  assert.equal(h.status.retry.hidden,true);
+  assert.equal(h.status.retry.textContent,'Retry video');
+});
+test('unrecognized or non-JSON source errors retain one automatic retry',async()=>{
+  for(const json of [async()=>({code:'UNKNOWN',error:'private upstream URL'}),async()=>{throw new Error('HTML response');}]){
+    const h=harness([()=>({ok:false,status:502,json}),{format:'mp4',src:'/apne/live/mp4/recovered'}]);
+    await h.settle();
+    assert.equal(h.hits.length,2);
+    assert.equal(h.video.src,'/apne/live/mp4/recovered');
+    assert.doesNotMatch(h.status.textContent,/private upstream/);
+  }
+});
 test('startup timeout retries once, then manual retry is possible',async()=>{
   const h=harness([{format:'mp4',src:'/apne/live/mp4/first'},{format:'mp4',src:'/apne/live/mp4/second'}]);
   await h.settle();
