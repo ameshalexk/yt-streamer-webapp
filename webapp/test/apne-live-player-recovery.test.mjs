@@ -80,7 +80,7 @@ test('authorization failure shows sign-in message without automatic retry',async
 });
 test('missing provider video stops automatic retries and permits a later manual recheck',async()=>{
   const h=harness([
-    ()=>({ok:false,status:502,json:async()=>({code:'APNE_UPSTREAM_VIDEO_MISSING',error:'<script>untrusted provider detail</script>'})}),
+    ()=>({ok:false,status:424,json:async()=>({code:'APNE_UPSTREAM_VIDEO_MISSING',error:'<script>untrusted provider detail</script>'})}),
     {format:'mp4',src:'/apne/live/mp4/restored'},
   ]);
   await h.settle();
@@ -98,8 +98,13 @@ test('missing provider video stops automatic retries and permits a later manual 
   assert.equal(h.status.retry.textContent,'Retry video');
 });
 test('unrecognized or non-JSON source errors retain one automatic retry',async()=>{
-  for(const json of [async()=>({code:'UNKNOWN',error:'private upstream URL'}),async()=>{throw new Error('HTML response');}]){
-    const h=harness([()=>({ok:false,status:502,json}),{format:'mp4',src:'/apne/live/mp4/recovered'}]);
+  for(const [status,json] of [
+    [424,async()=>({code:'UNKNOWN',error:'private upstream URL'})],
+    [502,async()=>({code:'UNKNOWN',error:'private upstream URL'})],
+    [502,async()=>{throw new Error('HTML response');}],
+    [503,async()=>({code:'UPSTREAM_BUSY',error:'private upstream URL'})],
+  ]){
+    const h=harness([()=>({ok:false,status,json}),{format:'mp4',src:'/apne/live/mp4/recovered'}]);
     await h.settle();
     assert.equal(h.hits.length,2);
     assert.equal(h.video.src,'/apne/live/mp4/recovered');

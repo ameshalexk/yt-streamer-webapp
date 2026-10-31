@@ -140,7 +140,7 @@
       const response = await fetch(video.dataset.source, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
       if (!response.ok) {
         // Only trust this first-party error code, never provider HTML or raw errors.
-        const detail = response.status === 502 ? await response.json().catch(() => null) : null;
+        const detail = response.status === 424 ? await response.json().catch(() => null) : null;
         if (detail?.code === 'APNE_UPSTREAM_VIDEO_MISSING') {
           throw Object.assign(new Error('APNE\'s provider has no playable video for this episode. Check again later.'), {
             code: 'APNE_UPSTREAM_VIDEO_MISSING', terminal: true,

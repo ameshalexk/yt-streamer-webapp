@@ -59,7 +59,7 @@ Upstream pages can change; this observation was made on October 30, 2026 CDT.
   fails and attach `APNE_UPSTREAM_VIDEO_MISSING` to the original error.
 - Preserve PlayApne and configured YoDesi fallback attempts before returning a
   failure. Preserve source URL allowlists and text-only parsing.
-- Report a static HTTP 502 JSON code/message through the authenticated source
+- Report a static HTTP 424 JSON code/message through the authenticated source
   route and classify it as unavailable in source checks. Never send raw provider
   HTML, internal errors, or upstream media URLs to the player.
 - For this code, pause the empty player, stop automatic retries, and show:
@@ -67,6 +67,14 @@ Upstream pages can change; this observation was made on October 30, 2026 CDT.
   A manual **Check again** remains available with a minimum 44px touch height.
 - Preserve bounded automatic recovery for transient failures and existing
   sign-in, source selection, HLS, MP4, and embedded playback behavior.
+
+Live verification of the first release confirmed the catalog fix and actual
+1280×720 Episode 25 playback. It also found that Cloudflare replaced the origin
+502 JSON error for Episode 1 with its own generic HTML gateway error, preventing
+the player from reading the typed code. The follow-up uses 424 (Failed
+Dependency) only for that known missing-video condition; unknown and gateway
+failures keep the existing retry behavior. This changes no Access, tunnel, or
+provider security policy. Public pass-through must be verified after deployment.
 
 ## Verification
 

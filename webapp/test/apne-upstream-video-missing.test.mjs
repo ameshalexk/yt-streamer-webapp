@@ -132,7 +132,7 @@ test("availability and live source route expose only the static typed-error resp
   const route = vm.runInNewContext(`(async (req, res) => {${body}\n})`, context);
   const result = { statusCode: 200, payload: null, status(code) { this.statusCode = code; return this; }, json(value) { this.payload = value; return this; } };
   await route({ params: { showId: "anupamaa", dateKey: "2026-10-01" }, query: {} }, result);
-  assert.equal(result.statusCode, 502);
+  assert.equal(result.statusCode, 424);
   assert.equal(JSON.stringify(result.payload), JSON.stringify({
     code: "APNE_UPSTREAM_VIDEO_MISSING",
     error: "APNE's provider has no playable video for this episode. Check again later.",
