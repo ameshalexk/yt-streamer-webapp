@@ -1,8 +1,38 @@
-# APNE provider video missing — October 30, 2026
+# APNE episode discovery and missing provider videos — October 30, 2026
 
 The reported episode is **Shayad Yahi Hai Pyaar — September 28, Episode 1**
-(`shayad-yahi-hai-pyaar`, `2026-09-28-e1`). This change improves failure handling;
-it does **not** restore the provider's missing video.
+(`shayad-yahi-hai-pyaar`, `2026-09-28-e1`). This change fixes discovery of newer
+Episodes 21–25 and improves failure handling for the older episode. It does
+**not** restore the provider's missing Episode 1 video.
+
+## Catalog naming regression found from the second screenshot
+
+The live show catalog contains 25 episodes. Its five newest option labels use
+`26th October 2026 Episode 25 2026` (and Episodes 24–21), repeating the year
+before and after the episode number. The old parser only accepted
+`19th October Episode 20 2026`, so it silently skipped all five newer entries
+and selected Episode 20 as latest.
+
+The fixed parser accepts the observed repeated-year format only when both years
+agree and an episode number is present. Existing date keys and upstream IDs are
+preserved: the full captured catalog now returns 25 entries, latest
+`2026-10-26-e25` / upstream ID `287818`; Episode 1 remains
+`2026-09-28-e1` / ID `286829`. Conflicting years and malformed episode numbers
+remain rejected. No episode-name guessing or database migration is involved.
+
+A fresh bounded Episode 25 resolver check returned HLS on `cdn.justfingram.com`,
+and playlist validation succeeded. This proves a reachable manifest, not actual
+decoded playback, audio, or iPhone/Tesla acceptance. The naming problem affects
+new episode discovery; it does not explain the separate Episode 1 player error.
+
+The existing AMESH Chrome profile rendered the corrected 25-episode catalog at
+320/375/390/430 CSS px, iPad and landscape with zero horizontal overflow. Its
+latest link and first five episode links correctly target Episodes 25–21, and
+the latest preview touch target is at least 110×82px. Thumbnails intentionally
+use local placeholders; no upstream media is fetched by this fixture.
+
+Catalog evidence: [responsive measurements](evidence/apne-naming-20261030.json)
+and [390px screenshot](evidence/apne-naming-20261030-390.png).
 
 ## Confirmed cause
 
@@ -41,12 +71,13 @@ Upstream pages can change; this observation was made on October 30, 2026 CDT.
 ## Verification
 
 - `npm run check`: passed.
-- `npm test`: 700 passed, zero failures/skips.
+- `npm test`: 702 passed, zero failures/skips at the combined change.
 - Independent read-only review: no material findings; targeted tests passed.
 - Tests cover the full fixture handoff through the failed player, generic and
   HTTP 503 failures, legacy and XOR HLS parsing, successful PlayApne fallback,
   static route errors, no automatic retry for missing media, manual recheck,
-  and normal recovery/source switching.
+  normal recovery/source switching, both catalog naming formats, preserved
+  episode identities, and rejection of inconsistent repeated-year labels.
 - A fresh fixed-resolver request to the reported upstream episode still returns
   the typed missing-video failure. **No playback restoration is claimed.**
 - Local fixture in the existing **AMESH Google Chrome profile**: checked
@@ -71,8 +102,10 @@ at `0519368fad8d22ddc0767fd376bd60b937b62ab9`; the four affected production
 application files still match that baseline. No runtime data, services,
 authentication, or device settings were changed.
 
-**Playback blocker:** the external provider must restore this exact episode's
-video or offer a verifiable replacement. Deployment of this patch improves the
-message/retry behavior but cannot supply that missing video. Shared CI is
-tracked on the draft PR. Any later release still requires the shared release
+**Episode 1 playback blocker:** the external provider must restore its video or
+offer a verifiable replacement. Episode 25 has a reachable video playlist; the
+catalog fix makes it discoverable. Shared CI for the latest combined commit is
+tracked on the draft PR; an earlier missing-video-only commit passed all shared
+gates, and that result must not be attributed to a newer commit. Any later
+release still requires the shared release
 gate and explicit deployment authorization, then real iPhone/Tesla acceptance.

@@ -139,15 +139,18 @@ function dateKeyFromParts(year, month, day) {
 
 export function parseApneDateLabel(label) {
   const clean = stripTags(label).replace(/(\d+)(?:st|nd|rd|th)\b/i, "$1").replace(/\s+/g, " ").trim();
-  const match = clean.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+Episode\s+([1-9]\d{0,5}))?\s+(\d{4})$/i);
+  const match = clean.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{4}))?(?:\s+Episode\s+([1-9]\d{0,5}))?\s+(\d{4})$/i);
   if (!match) return null;
+  // Current APNE labels repeat the year around "Episode N". Keep the
+  // original date/episode identity and reject conflicting year labels.
+  if (match[3] && (!match[4] || match[3] !== match[5])) return null;
   const monthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
   const month = monthNames.indexOf(match[2].toLowerCase()) + 1;
   if (!month) return null;
   const day = Number(match[1]);
-  const year = Number(match[4]);
+  const year = Number(match[5]);
   if (!Number.isInteger(day) || day < 1 || day > 31 || year < 2000) return null;
-  return { label: stripTags(label), key: dateKeyFromParts(year, month, day), year, month, day, ...(match[3] ? { episodeNumber: Number(match[3]) } : {}) };
+  return { label: stripTags(label), key: dateKeyFromParts(year, month, day), year, month, day, ...(match[4] ? { episodeNumber: Number(match[4]) } : {}) };
 }
 
 function todayKey(timeZone = "America/Chicago") {
