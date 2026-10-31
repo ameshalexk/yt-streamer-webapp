@@ -2249,7 +2249,8 @@ app.get("/apne/live/source/:showId/:dateKey", requireApneNativeAccess, asyncH(as
     resolved = await apneDaily.resolveApneEpisodeByDate(req.params.showId,req.params.dateKey,{provider});
   } catch (error) {
     if (error?.code === "APNE_UPSTREAM_VIDEO_MISSING") {
-      return res.status(502).json({
+      // Cloudflare replaces 502 bodies; keep this media dependency error readable.
+      return res.status(424).json({
         code: "APNE_UPSTREAM_VIDEO_MISSING",
         error: "APNE's provider has no playable video for this episode. Check again later.",
       });

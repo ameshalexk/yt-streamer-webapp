@@ -59,7 +59,7 @@ Upstream pages can change; this observation was made on October 30, 2026 CDT.
   fails and attach `APNE_UPSTREAM_VIDEO_MISSING` to the original error.
 - Preserve PlayApne and configured YoDesi fallback attempts before returning a
   failure. Preserve source URL allowlists and text-only parsing.
-- Report a static HTTP 502 JSON code/message through the authenticated source
+- Report a static HTTP 424 JSON code/message through the authenticated source
   route and classify it as unavailable in source checks. Never send raw provider
   HTML, internal errors, or upstream media URLs to the player.
 - For this code, pause the empty player, stop automatic retries, and show:
@@ -67,6 +67,14 @@ Upstream pages can change; this observation was made on October 30, 2026 CDT.
   A manual **Check again** remains available with a minimum 44px touch height.
 - Preserve bounded automatic recovery for transient failures and existing
   sign-in, source selection, HLS, MP4, and embedded playback behavior.
+
+Live verification of the first release confirmed the catalog fix and actual
+1280×720 Episode 25 playback. It also found that Cloudflare replaced the origin
+502 JSON error for Episode 1 with its own generic HTML gateway error, preventing
+the player from reading the typed code. The follow-up uses 424 (Failed
+Dependency) only for that known missing-video condition; unknown and gateway
+failures keep the existing retry behavior. This changes no Access, tunnel, or
+provider security policy. Public pass-through must be verified after deployment.
 
 ## Verification
 
@@ -95,17 +103,24 @@ Responsive measurements: [JSON](evidence/apne-source-missing-20261030.json).
 
 ## Release state and remaining work
 
-Branch: `fix/apne-source-resolution-20261030`, based on the current shared main.
-This patch applies to both Mac and StreamHA application source. It has not been
-merged, published as a release, installed, or deployed. Mac production remained
-at `0519368fad8d22ddc0767fd376bd60b937b62ab9`; the four affected production
-application files still match that baseline. No runtime data, services,
-authentication, or device settings were changed.
+The user authorized deployment after reviewing the original draft. PR #132 was
+merged and published as `1e6cc290ac2423f2e3fa7b24bd4d72cd7d6cdc97`, then installed
+on both Mac and StreamHA after all shared/native container checks passed. Both
+hosts returned 25 episodes and the correct latest ID. Authenticated Chrome
+verified actual muted Episode 25 playback at 1280×720 on each host, with advancing
+time and decoded frames. Runtime data/private directories, signed Mac audio
+helper, HA options and its persistent data mount were preserved; scoped Mac
+rollback and HA app backup were verified. No Home Assistant core restart or
+authentication changes were made.
+
+The public 502 response-body replacement described above was found during that
+rollout. Its HTTP 424 correction is tracked separately on
+`fix/apne-missing-video-edge-status-20261030`. Consult the pull request and
+immutable release metadata for that follow-up's current gate/install status;
+the canonical project note records exact per-host rollout evidence and rollback.
 
 **Episode 1 playback blocker:** the external provider must restore its video or
 offer a verifiable replacement. Episode 25 has a reachable video playlist; the
-catalog fix makes it discoverable. Shared CI for the latest combined commit is
-tracked on the draft PR; an earlier missing-video-only commit passed all shared
-gates, and that result must not be attributed to a newer commit. Any later
-release still requires the shared release
-gate and explicit deployment authorization, then real iPhone/Tesla acceptance.
+catalog fix makes it discoverable. Every follow-up still requires its own shared
+release gate and published artifact verification. Physical iPhone/Tesla playback
+and audible audio acceptance have not been performed.
