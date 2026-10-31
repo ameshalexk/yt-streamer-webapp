@@ -2244,7 +2244,18 @@ app.get("/apne/live/source/:showId/:dateKey", requireApneNativeAccess, asyncH(as
   // Low-bandwidth fallback must never silently downgrade the user to 192p.
   const provider = req.query.provider || "apne";
   if (!["apne","yodesi"].includes(provider) || Array.isArray(req.query.provider)) return res.status(400).json({error:"Invalid source"});
-  const resolved = await apneDaily.resolveApneEpisodeByDate(req.params.showId,req.params.dateKey,{provider});
+  let resolved;
+  try {
+    resolved = await apneDaily.resolveApneEpisodeByDate(req.params.showId,req.params.dateKey,{provider});
+  } catch (error) {
+    if (error?.code === "APNE_UPSTREAM_VIDEO_MISSING") {
+      return res.status(502).json({
+        code: "APNE_UPSTREAM_VIDEO_MISSING",
+        error: "APNE's provider has no playable video for this episode. Check again later.",
+      });
+    }
+    throw error;
+  }
   if (resolved.embedUrls) return res.json({format:"embed",parts:resolved.embedUrls});
   if (resolved.mp4Url) return res.json({format:"mp4",src:apneMp4Relay.open(resolved)});
   const manifest = await apneLiveRelay.start(resolved);

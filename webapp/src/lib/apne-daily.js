@@ -56,6 +56,19 @@ const SOURCE_STATUS = {
   error: "Check failed",
 };
 
+export const APNE_UPSTREAM_VIDEO_MISSING = "APNE_UPSTREAM_VIDEO_MISSING";
+
+function isVisibleKnownApneMissingVideoPage(html) {
+  const source = String(html || "");
+  const boxes = [...source.matchAll(/<([a-z][\w:-]*)\b([^>]*class\s*=\s*["'][^"']*\berror-box\b[^"']*["'][^>]*)>([\s\S]*?)<\/\1\s*>/gi)];
+  return boxes.some((match) => {
+    const attrs = match[2];
+    if (/\bhidden\b/i.test(attrs) || /aria-hidden\s*=\s*["']true["']/i.test(attrs) ||
+        /style\s*=\s*["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["']/i.test(attrs)) return false;
+    return /Error:\s*No master-playlist\.m3u8 stream found\./i.test(stripTags(match[3]));
+  });
+}
+
 function rememberEpisodes(show, episodes) {
   const time = Date.now();
   for (const e of episodes) knownEpisodes.set(jobKey(show.id, e.dateKey), { ...e, at: time });
@@ -620,7 +633,9 @@ export function parseMediagramingHlsFromHtml(html) {
     return validatedApneHlsUrl(decodedUrl);
   }
 
-  throw new Error("Mediagraming HLS source was not found.");
+  const error = new Error("Mediagraming HLS source was not found.");
+  if (isVisibleKnownApneMissingVideoPage(source)) error.code = APNE_UPSTREAM_VIDEO_MISSING;
+  throw error;
 }
 
 export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
@@ -711,6 +726,9 @@ export async function resolveApneEpisodeDirect(episodeUrl, context = {}) {
         await log("embedded_source_failed", {error:fallbackError.message});
       }
     }
+    // Keep the original resolver failure (and its stack) while adding a stable
+    // code only when APNE returned this exact known no-video page. Provider
+    // markup/messages are never copied into the public error response.
     await log("resolve_failed", { error: error.message });
     throw error;
   }

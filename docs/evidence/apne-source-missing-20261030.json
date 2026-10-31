@@ -1,0 +1,163 @@
+{
+  "episode": [
+    {
+      "height": 568,
+      "message": "APNE's provider has no playable video for this episode. Check again later.",
+      "overflow": 0,
+      "paused": true,
+      "quality": [
+        298,
+        48
+      ],
+      "recheck": [
+        106.109375,
+        44
+      ],
+      "width": 320
+    },
+    {
+      "height": 812,
+      "message": "APNE's provider has no playable video for this episode. Check again later.",
+      "overflow": 0,
+      "paused": true,
+      "quality": [
+        353,
+        48
+      ],
+      "recheck": [
+        106.109375,
+        44
+      ],
+      "width": 375
+    },
+    {
+      "height": 844,
+      "message": "APNE's provider has no playable video for this episode. Check again later.",
+      "overflow": 0,
+      "paused": true,
+      "quality": [
+        368,
+        48
+      ],
+      "recheck": [
+        106.109375,
+        44
+      ],
+      "width": 390
+    },
+    {
+      "height": 932,
+      "message": "APNE's provider has no playable video for this episode. Check again later.",
+      "overflow": 0,
+      "paused": true,
+      "quality": [
+        408,
+        48
+      ],
+      "recheck": [
+        106.109375,
+        44
+      ],
+      "width": 430
+    },
+    {
+      "height": 1024,
+      "message": "APNE's provider has no playable video for this episode. Check again later.",
+      "overflow": 0,
+      "paused": true,
+      "quality": [
+        738,
+        48
+      ],
+      "recheck": [
+        106.109375,
+        44
+      ],
+      "width": 768
+    },
+    {
+      "height": 390,
+      "message": "APNE's provider has no playable video for this episode. Check again later.",
+      "overflow": 0,
+      "paused": true,
+      "quality": [
+        814,
+        48
+      ],
+      "recheck": [
+        106.109375,
+        44
+      ],
+      "width": 844
+    }
+  ],
+  "shell": [
+    {
+      "height": 568,
+      "overflow": 0,
+      "width": 320
+    },
+    {
+      "height": 568,
+      "overflow": 0,
+      "style": "new",
+      "width": 320
+    },
+    {
+      "height": 812,
+      "overflow": 0,
+      "width": 375
+    },
+    {
+      "height": 812,
+      "overflow": 0,
+      "style": "new",
+      "width": 375
+    },
+    {
+      "height": 844,
+      "overflow": 0,
+      "width": 390
+    },
+    {
+      "height": 844,
+      "overflow": 0,
+      "style": "new",
+      "width": 390
+    },
+    {
+      "height": 932,
+      "overflow": 0,
+      "width": 430
+    },
+    {
+      "height": 932,
+      "overflow": 0,
+      "style": "new",
+      "width": 430
+    },
+    {
+      "height": 1024,
+      "overflow": 0,
+      "width": 768
+    },
+    {
+      "height": 1024,
+      "overflow": 0,
+      "style": "new",
+      "width": 768
+    },
+    {
+      "height": 390,
+      "overflow": 0,
+      "width": 844
+    },
+    {
+      "height": 390,
+      "overflow": 0,
+      "style": "new",
+      "width": 844
+    }
+  ],
+  "scope": "Local fixtures in AMESH Chrome; no real iPhone Safari or external playback"
+}

@@ -7,8 +7,12 @@ import path from "node:path";
 const MAX_RECORDS = 300;
 const CACHE_TTL = { link: 4 * 3600000, unavailable: 2 * 3600000, error: 10 * 60000 };
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130.0 Safari/537.36";
+const APNE_UPSTREAM_VIDEO_MISSING = "APNE_UPSTREAM_VIDEO_MISSING";
 
 export function summarizeApneSourceError(error) {
+  if (error?.code === APNE_UPSTREAM_VIDEO_MISSING) {
+    return { state: "unavailable", detail: "APNE's provider has no playable video for this episode. Check again later." };
+  }
   if (/Mediagraming HLS source was not found/i.test(String(error?.message || ""))) {
     return { state: "unavailable", detail: "Source video link missing. Recheck later." };
   }
