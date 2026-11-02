@@ -1,6 +1,6 @@
 /**
  * Moonshine worker adapter matching the TeslaMon Whisper VoiceEngine contract.
- * Experimental and intentionally not wired to the production model picker.
+ * Experimental opt-in model in the shared transcription-model picker.
  */
 function abortError() {
   const error = new Error('Moonshine transcription was canceled.');
@@ -32,7 +32,7 @@ export class MoonshineVoiceEngine {
   _worker() {
     if(this.disposed)throw new Error('Moonshine engine disposed.');
     if(!globalThis.crossOriginIsolated || typeof SharedArrayBuffer==='undefined') {
-      throw new Error('Moonshine WASM needs cross-origin isolation. Use the isolated test page.');
+      throw new Error('Moonshine WASM needs cross-origin isolation. Select Moonshine in the transcription model picker to open isolated mode.');
     }
     if(!this.worker) {
       this.worker=new Worker(new URL('./teslamon-moonshine-worker.js',import.meta.url),{type:'module'});

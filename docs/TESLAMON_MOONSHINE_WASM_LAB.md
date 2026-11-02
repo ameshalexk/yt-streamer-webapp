@@ -1,56 +1,36 @@
-# TeslaMon Moonshine Tiny Streaming (WASM) — experimental branch
+# Moonshine Tiny Streaming in TeslaMon
 
-**Status:** prepared for controlled Tesla browser testing only. Not deployed, merged, or enabled as the production engine.
+Moonshine is an **experimental, opt-in third transcription model** beside Whisper Tiny and Base in the normal TeslaMon player. Whisper Tiny remains the default. The optional standalone lab remains a diagnostic tool; it is no longer the model selector's destination.
 
-## Why this is separate
+## User behavior
 
-- Whisper Base previously crashed the Tesla browser; a smaller downloaded model does not establish low peak RAM.
-- Moonshine's published WASM 0.1.5 uses pthreads / SharedArrayBuffer and therefore needs COOP + COEP headers on the *top-level document*. Adding them to all YT Streamer pages could block third-party media.
-- Only `/teslamon-moonshine-lab.html` has cross-origin-isolation headers. Main YT Streamer routes, player, Aura, wake-word handling and Whisper Tiny default remain unchanged.
-- This branch adds `moonshine-tiny-streaming` to the shared local STT adapter but **does not add it to the production model selector**. The laboratory page alone opts into it.
-- Moonshine is fetched from the pinned package `@moonshine-ai/moonshine-wasm@0.1.5` via jsDelivr; model weights download via `download.moonshine.ai`. Microphone audio is not uploaded. Future production use should self-host, pin and audit all assets.
-- The existing 16-second decoded audio limit is enforced and one transcription runs at a time. Cancel/error/timeout terminates the experiment worker to reclaim memory.
-- Recording is not fed into a second microphone; the lab uses the same TeslaMon `createTeslaMonCapture` and `decodeRecordedAudio` pipeline and passes mono 16 kHz PCM to a Moonshine WASM worker.
+- Select Moonshine from the existing transcription-model picker. The same Classic/New page reloads with `tm_stt_mode=moonshine`, preserving other URL parameters and UI choice.
+- Changing models during passive Mic On releases wake-listening microphone tracks and stops automatic re-arming. Active recording/transcription/commands keep the model picker locked. Tap Mic On explicitly to resume after a change.
+- Moonshine uses the shared local capture, transcription, Aura, PTT, and command pipeline. Audio remains in the browser; transcript text can reach the existing command planner.
+- Switching back to Whisper Tiny/Base reloads the same page without Moonshine mode. Browser Back and stored selection cannot silently activate Moonshine on an ordinary page.
+- **Embedded website players are unavailable in Moonshine mode.** The picker explains this, and trying one shows an actionable error before interrupting current playback or assigning the frame URL. Switch to Whisper Tiny/Base, then reopen the external player. Normal streaming/proxy playback remains available; ordinary Whisper pages retain their existing embed behavior.
 
-## Manual release gate
+## Implementation and limits
 
-1. Serve this branch in a *test environment only*, not the live Cloudflare tunnel. Confirm the lab is cross-origin isolated and that the CDN scripts/model files load under COEP.
-2. Try cold-load, warm-load, cancellation and 10–20 short voice commands on the actual Tesla browser; confirm no page reload/crash.
-3. Measure model transfer bytes, peak browser memory (where available), latency and command accuracy; keep the existing Whisper Tiny baseline for comparison.
-4. Test microphone stop/release, multiple consecutive commands, rapid cancel/restart, background tab, wake-word coexistence, and concurrent 720p playback separately before enabling it in Aura.
-5. Only after successful testing, decide how to provide cross-origin isolation (or a verified single-thread build) without breaking IPTV, MJPEG, video streams or embeds. Do not change global response headers speculatively.
-6. Create a reviewed production PR and an explicit deployment approval. Rollback = switch to Whisper Tiny and remove the experiment flag.
+The pinned `@moonshine-ai/moonshine-wasm@0.1.5` package is loaded from jsDelivr and downloads models from `download.moonshine.ai`. Its threaded WASM requires SharedArrayBuffer. COOP/COEP is therefore applied only to the explicitly selected Moonshine player document and diagnostic lab/worker, never globally to ordinary player pages or assets. This is why embedded websites require returning to Whisper. No cross-origin security policy is weakened to accommodate them.
 
-## References
+Clips are limited to 16 seconds of mono16kHz audio. One transcription runs at a time through the local STT controller; cancellation, error, timeout, and page teardown terminate/dispose the worker. Switching model families invalidates the prior engine/module cache.
 
-- https://github.com/moonshine-ai/moonshine/blob/main/docs/quickstart.md
-- https://www.npmjs.com/package/@moonshine-ai/moonshine-wasm
+Engineering verification covers mocked lifecycle/model switching, actual HTTP header gating, early embedded-player rejection without playback mutation, fullscreen, and responsive controls. Earlier generated-speech WASM verification recognized “Play YouTube.” (3874ms cold setup/decode;192ms inference). **Generated speech and Chrome automation do not establish actual iPhone/Tesla accuracy, peak memory, microphone behavior, or crash stability.** Moonshine remains labeled experimental for those device trials.
 
-This document doubles as the project decision log. Obsidian vault is read-only from the currently connected Obsidian integration.
+For device acceptance, test cold/warm load, cancellation, backgrounding, repeated short commands and simultaneous video playback. Return to Whisper if the browser cannot isolate or is unstable. Returning to Whisper restores ordinary player/embed headers. The old lab is available at `/teslamon-moonshine-lab.html` for diagnosis only.
 
-## Model selector fix and deployment — Nov 2, 2026
+## Integration and release
 
-User reported on iPhone that tapping the transcription model dropdown did nothing while the TeslaMon badge showed **Mic On**. Root cause: `isSttModelLocked()` disabled the selector whenever hands-free was enabled, including passive wake standby.
+Moonshine PR134 is integrated with the fullscreen behavior already merged in PR135. The latest user explicitly authorized completion, merge to main, shared deployment and cleanup, superseding the earlier draft/Mac-only hold. The combined source is reviewed and tested before exact-head shared CI; only a passing immutable main release may be installed. Both hosts retain separate data/options and the Mac signed audio helper identity.
 
-Fix:
-- Allow selection when the hands-free engine is passively `listening`, but keep the selector locked during startup, recording, transcription, pending commands, and other active work.
-- Selecting any model while listening stops the wake detector, releases microphone tracks, and disables automatic re-arming. For Whisper Tiny/Base the selected model persists and the user must tap Mic On to resume.
-- Selecting **Moonshine Tiny — Experimental test page** opens the cross-origin-isolated lab page; Moonshine still does not replace production command execution.
-- Added a synthetic mobile Chrome regression test for Mic On → Whisper model switch → Mic Off and Mic On → Moonshine lab navigation.
+Earlier Mac-only development revisions (aa3c3db selector fix, cfee853 in-page integration) and their rollback notes remain historical evidence. They are not the shared release. The canonical Obsidian YT Streamer App note records final merged/published/installed revisions, backup locations and remaining physical-device acceptance.
 
-Verification: `node scripts/teslamon-handsfree-browser-check.mjs` passed; 13 related local STT tests passed; syntax checks passed. Mac mini runtime revision `aa3c3db6102e250c5b09f99a6f0ef50f95f09729` deployed and HTTP health + source + lab header checks passed. Runtime backup: `~/.cache/ytstreamer-selector-rollback.8txDtf`. Physical Tesla browser transcription remains a manual test.
+### Combined-source verification (2026-11-02)
 
-## In-page selector implementation — deployed Mac, Nov 2, 2026
-
-User requested Moonshine to behave as a **third model choice** in the normal TeslaMon transcription selector, not redirect to a separate lab.
-
-- Selector option is now `moonshine-tiny-streaming`. Selecting it from Whisper turns Mic Off, saves the choice, and reloads the **same YT Streamer page** with `?tm_stt_mode=moonshine`, preserving other query parameters and the New/Classic UI.
-- Server applies `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` **only to the main player HTML** when explicitly in Moonshine mode. Normal Whisper and other routes retain existing headers.
-- On the reloaded page the existing TeslaMon `createTeslaMonLocalStt` engine selects Moonshine, using the same PTT, hands-free, Aura and Codex-command transcription pipeline as Whisper.
-- Selecting Whisper Tiny or Base from Moonshine mode reloads the same page without isolation, restoring normal media embedding behavior. The separate lab URL remains available for diagnostics but is no longer used by the selector.
-- If a browser cannot provide `crossOriginIsolated`, the UI indicates that Moonshine is unavailable and offers the regular Whisper choices.
-- Updated `index.html` TeslaMon module cache version so existing browsers fetch the new selector.
-
-**Validation:** Full local Node suite 704/704 passing; synthetic Chrome UI model-switch test passed for Mic On → Moonshine same-page isolation → Whisper no isolation, with the player and voice controls retained. A real WASM integration test within a simulated normal YT Streamer page using a generated local audio fixture recognized **“Play YouTube.”** (cold/model-load/decoding 3874 ms; inference 192 ms), no JavaScript or model network errors in that test. Actual iPhone/Tesla memory stability and third-party video playback under COEP remain unverified.
-
-**Mac deployment:** Runtime revision `cfee853e961bc0ad759c69dc08785d64440c436e`, health and exact HTTP header/source checks passed. Scope: Mac mini only; existing HA/StreamHA deployment was not changed. Runtime rollback: `~/.cache/ytstreamer-inpage-rollback.QtQdWP`. PR #134 remains draft and unmerged. Because other YT Streamer releases may also be in progress, reconcile host revisions and preserve the Moonshine experiment before any later full-app overwrite.
+- `npm run check` includes the new Moonshine adapter, worker and lab files. Full local suite: **717/717 passed**, no failures/skips.
+- Existing signed-in AMESH Chrome loopback fixture: **14/14** model-switch combinations (Classic/New at320/375/390/430px, iPad768×1024, landscape844×390 and Tesla-sized1280×800). Moonshine retains the normal player and isolates the page; switching to Whisper Base removes isolation and retains UI selection. Model target height44px minimum, no sideways overflow.
+- Real WASM through the shared local STT controller transcribed generated16kHz WAV as **“Play YouTube.”**:3402ms total,2244ms inference. No microphone was used. This is functional generated-speech evidence, not accent, real-device, or peak-memory acceptance.
+- Actual browser confirmed a same-origin frame lacking isolation is blocked too, so the guard rejects **all iframe website players** in Moonshine mode. Browser/VM checks confirm actionable error, no frame URL assignment and unchanged current player state. Whisper mode remains available for embedded players.
+- Independent read-only review found no remaining blocker after that conservative compatibility guard. HTTP tests exercise the real Express routes and verify opt-in headers on root/index/lab/worker, no global isolation, and no ambiguous duplicate-query activation.
+- Fixture screenshots/measurements are under `docs/evidence/moonshine-integration-20261102/`. Its microphone/planner controls are deliberately unavailable; no real command or device actuation is tested there. Proxied-video compatibility in opt-in Moonshine mode is a separate deployed acceptance check.

@@ -2,7 +2,7 @@ import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-c
 import {createTeslaMonAura} from './teslamon-aura.js?v=20261028-aura-reliable1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
-import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261025-stt-models1';
+import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261102-moonshine1';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261028-aura-reliable1';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
@@ -111,7 +111,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           '<option value="whisper-base.en">Whisper Base — Quality (79 MB)</option>',
           '<option value="moonshine-tiny-streaming">Moonshine Tiny Streaming — WASM (experimental)</option>',
         '</select>',
-        '<span id="tmSttModelHelp">English models, browser-local. Moonshine reloads this same page in isolated WASM mode. Base uses more memory.</span>',
+        '<span id="tmSttModelHelp">Audio stays in this browser. Switching Moonshine reloads this page. Embedded website players need Whisper Tiny or Base; reopen the player after switching. Base uses more memory.</span>',
         '<span id="tmSttModelState" role="status" aria-live="polite"></span>',
       '</div>',
       '<div class="tm-target tm-self-target" aria-label="Playback target">',
@@ -327,7 +327,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     sttModelSelect.value=state.selectedModelId;
     if(!state.loaded&&message.includes('warm and ready'))message='';
     if(state.selectedModelId===MOONSHINE_ID&&!globalThis.crossOriginIsolated)
-      message='Moonshine requires browser isolation. Choose Whisper Tiny or Base to return to normal mode.';
+      message='Moonshine requires browser isolation. Embedded website players are unavailable in this mode. Choose Whisper Tiny or Base, then reopen the player.';
     const current=message||`${state.selectedModel.label} selected${state.loaded?' and ready':' · loads locally on the first voice command'}.`;
     const hint=micBusy?' Finish the current voice or playback command before changing models.':
       handsFree?.enabled?' Changing the model turns Mic Off; turn it back on afterward.':'';

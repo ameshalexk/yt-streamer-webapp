@@ -2,7 +2,7 @@
 const MODEL_INFO = Object.freeze({
   'whisper-tiny.en': Object.freeze({ modelId:'whisper-tiny.en', label:'Tiny English', estimatedSizeMB:43, performance:'Faster, uses less memory.' }),
   'whisper-base.en': Object.freeze({ modelId:'whisper-base.en', label:'Base English', estimatedSizeMB:79, performance:'Better transcription quality; slower and uses more memory.' }),
-  // Lab-only: deliberately not exposed by TeslaMon's production model picker.
+  // Explicit opt-in; the normal player uses isolated mode only for this model.
   'moonshine-tiny-streaming': Object.freeze({ modelId:'moonshine-tiny-streaming', label:'Moonshine Tiny Streaming (experimental)', estimatedSizeMB:null, performance:'Requires cross-origin isolation; Tesla compatibility unverified.' })
 });
 const DEFAULT_MODEL='whisper-tiny.en';

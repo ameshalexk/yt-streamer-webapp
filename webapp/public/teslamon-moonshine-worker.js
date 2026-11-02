@@ -16,7 +16,7 @@ async function ensureLoaded(id) {
   if (transcriber) return;
   if (loading) return loading;
   if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
-    throw new Error('Moonshine WASM requires a cross-origin-isolated page. Use the isolated Moonshine test page.');
+    throw new Error('Moonshine WASM requires a cross-origin-isolated page. Select Moonshine in the transcription model picker to open isolated mode.');
   }
   loading = (async () => {
     sdk = await import(SDK_URL);

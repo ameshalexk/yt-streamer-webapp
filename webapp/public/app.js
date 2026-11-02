@@ -2362,6 +2362,10 @@ function parseEmbedIframe(code) {
   return source;
 }
 
+function moonshineBlocksEmbeddedPlayer() {
+  return new URLSearchParams(location.search).get("tm_stt_mode") === "moonshine";
+}
+
 function normalizedEmbedHeight(value) {
   const raw = String(value || "").trim();
   if (!raw) return "70vh";
@@ -2398,6 +2402,9 @@ function requestEmbedAutoplay(source) {
 
 function renderEmbedCode(code, heightValue) {
   const source = parseEmbedIframe(code);
+  if (moonshineBlocksEmbeddedPlayer()) {
+    throw new Error("Embedded website players are unavailable in Moonshine mode. Choose Whisper Tiny or Base, then reopen the player.");
+  }
   requestEmbedAutoplay(source);
   stopDesktopHlsSession();
   stopDesktopAudioHlsSession();

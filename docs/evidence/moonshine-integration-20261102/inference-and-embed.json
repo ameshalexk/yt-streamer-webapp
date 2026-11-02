@@ -1,0 +1,13 @@
+{
+  "generatedSpeech": {
+    "text": "Play YouTube.",
+    "totalMs": 3402,
+    "inferenceMs": 2244,
+    "realMicrophone": false
+  },
+  "embed": {
+    "frameSrc": null,
+    "message": "External embedded players are unavailable in Moonshine mode. Choose Whisper Tiny or Base, then reopen the player.",
+    "playbackUnchanged": true
+  }
+}
