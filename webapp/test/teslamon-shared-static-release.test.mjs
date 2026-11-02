@@ -32,7 +32,7 @@ test('both pages import the same game-owned STT implementation and model URL', a
   const worker = await read('voice-worker.js').then(bytes => bytes.toString('utf8'));
   assert.match(pet, /createTeslaMonLocalStt/);
   assert.doesNotMatch(pet, /post\(['"]\/api\/teslamon\/transcribe/);
-  assert.ok(pet.includes("teslamon-local-stt.js?v=20261025-stt-models1"));
+  assert.ok(pet.includes("teslamon-local-stt.js?v=20261102-moonshine1"));
   assert.ok(adapter.includes("import('./games/voice-engine.js?v=20261025-stt-models1')"));
   assert.ok(adapter.includes("import('./games/recorded-audio.js?v=20261024-shared-stt1')"));
   assert.match(worker, /new URL\('\.\/models\/', import\.meta\.url\)/);

@@ -2,7 +2,7 @@ import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-c
 import {createTeslaMonAura} from './teslamon-aura.js?v=20261028-aura-reliable1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
-import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261025-stt-models1';
+import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261102-moonshine1';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
 import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261028-aura-reliable1';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
@@ -109,8 +109,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<select id="tmSttModel" aria-describedby="tmSttModelHelp tmSttModelState">',
           '<option value="whisper-tiny.en">Whisper Tiny — Fast (43 MB)</option>',
           '<option value="whisper-base.en">Whisper Base — Quality (79 MB)</option>',
+          '<option value="moonshine-tiny-streaming">Moonshine Tiny Streaming — WASM (experimental)</option>',
         '</select>',
-        '<span id="tmSttModelHelp">English models. Audio stays in this browser. Base is slower and uses more memory.</span>',
+        '<span id="tmSttModelHelp">Audio stays in this browser. Switching Moonshine reloads this page. Embedded website players need Whisper Tiny or Base; reopen the player after switching. Base uses more memory.</span>',
         '<span id="tmSttModelState" role="status" aria-live="polite"></span>',
       '</div>',
       '<div class="tm-target tm-self-target" aria-label="Playback target">',
@@ -254,12 +255,22 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     return answer;
   }});
   const STT_MODEL_KEY='ytStreamerTeslaMonSttModelV1';
-  const validSttModel=id=>['whisper-tiny.en','whisper-base.en'].includes(id);
-  let initialSttModel='whisper-tiny.en';
-  try{const stored=localStorage.getItem(STT_MODEL_KEY);if(validSttModel(stored))initialSttModel=stored;}catch{}
+  const MOONSHINE_ID='moonshine-tiny-streaming';
+  const STT_PAGE_MODE_KEY='tm_stt_mode';
+  const isMoonshinePage=new URLSearchParams(location.search).get(STT_PAGE_MODE_KEY)==='moonshine';
+  const validSttModel=id=>['whisper-tiny.en','whisper-base.en',MOONSHINE_ID].includes(id);
+  // The page URL decides whether the full UI is isolated. Storage picks the
+  // Whisper model only for ordinary pages, so browser Back cannot strand WASM
+  // on a non-isolated page or silently leave it running on video pages.
+  let initialSttModel=isMoonshinePage?MOONSHINE_ID:'whisper-tiny.en';
+  if(!isMoonshinePage)try{
+    const stored=localStorage.getItem(STT_MODEL_KEY);
+    if(stored==='whisper-tiny.en'||stored==='whisper-base.en')initialSttModel=stored;
+  }catch{}
   const localStt=createTeslaMonLocalStt({modelId:initialSttModel});
   sttModelSelect.value=initialSttModel;
-  let activeTranscript=null,captureActive=false,sttModelMessage='';
+  let activeTranscript=null,captureActive=false,sttModelMessage=isMoonshinePage&&!globalThis.crossOriginIsolated?
+    'Moonshine WASM is unsupported in this browser security context. Select Whisper Tiny to leave isolated mode.':'';
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
     wakeInputChanged=false,wakeHandled=false,autoWakeWanted=!userDisabled,autoWakeBlocked=false,
@@ -302,16 +313,25 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     });
   }
   function isSttModelLocked(){
-    return captureActive||Boolean(activeTranscript)||Boolean(handsFree?.enabled)||
-      Boolean(handsFree&&handsFree.state!=='off'&&handsFree.state!=='error')||busy||modelBusy;
+    // A passive wake-word listener is not an active transcription. Allow the
+    // user to choose a model while listening; the change handler stops its mic
+    // first so no wake worker competes with the new engine.
+    const phase=handsFree?.state;
+    return captureActive||Boolean(activeTranscript)||Boolean(pendingVoice)||busy||modelBusy||
+      Boolean(handsFree?.enabled&&phase!=='listening')||
+      Boolean(handsFree&&!['off','error','listening'].includes(phase));
   }
   function renderSttModelState(message=sttModelMessage){
     const state=localStt.getState(),micBusy=isSttModelLocked();
     sttModelSelect.disabled=micBusy;
     sttModelSelect.value=state.selectedModelId;
     if(!state.loaded&&message.includes('warm and ready'))message='';
+    if(state.selectedModelId===MOONSHINE_ID&&!globalThis.crossOriginIsolated)
+      message='Moonshine requires browser isolation. Embedded website players are unavailable in this mode. Choose Whisper Tiny or Base, then reopen the player.';
     const current=message||`${state.selectedModel.label} selected${state.loaded?' and ready':' · loads locally on the first voice command'}.`;
-    sttModelState.textContent=current+(micBusy?' Turn Mic Off and finish any voice or playback request before changing models.':'');
+    const hint=micBusy?' Finish the current voice or playback command before changing models.':
+      handsFree?.enabled?' Changing the model turns Mic Off; turn it back on afterward.':'';
+    sttModelState.textContent=current+hint;
   }
   function collapseControls({focusFace=false,preserveAutoSend=false}={}) {
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
@@ -549,12 +569,36 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   renderSttModelState();
   sttModelSelect.addEventListener('change',async()=>{
     const requested=sttModelSelect.value;
-    if(!validSttModel(requested)||isSttModelLocked()){renderSttModelState();return;}
+    if(!validSttModel(requested)||isSttModelLocked()){
+      renderSttModelState('Finish the current voice or playback command before changing models.');
+      return;
+    }
+    if(requested===localStt.getState().selectedModelId)return;
+    const stoppedWake=Boolean(handsFree.enabled);
+    if(stoppedWake){
+      // Release microphone tracks and the wake detector before any model
+      // replacement or page navigation; do not silently reactivate recording.
+      autoWakeWanted=false;autoWakeBlocked=true;
+      handsFree.disable();
+      closeAura();auraVoiceFlow=false;
+    }
     try{
+      if(requested===MOONSHINE_ID||isMoonshinePage){
+        // Moonshine's published WASM bundle needs SharedArrayBuffer; only the
+        // explicitly selected main page gets COOP/COEP. Keep current UI and URL
+        // parameters, and return to ordinary media headers for Whisper modes.
+        try{localStorage.setItem(STT_MODEL_KEY,requested);}catch{}
+        const url=new URL(location.href);
+        if(requested===MOONSHINE_ID)url.searchParams.set(STT_PAGE_MODE_KEY,'moonshine');
+        else url.searchParams.delete(STT_PAGE_MODE_KEY);
+        window.location.assign(url.href);
+        return;
+      }
       await localStt.setModel(requested);
       try{localStorage.setItem(STT_MODEL_KEY,requested);}catch{}
       const label=requested==='whisper-base.en'?'Base English':'Tiny English';
-      sttModelMessage=`${label} selected · about ${requested==='whisper-base.en'?79:43} MB model download loads locally on the first voice command. Audio stays in this browser.`;
+      sttModelMessage=`${label} selected · about ${requested==='whisper-base.en'?79:43} MB model loads locally on the first voice command. Audio stays in this browser.`+
+        (stoppedWake?' Mic Off — tap Mic On to resume wake listening.':'');
     }catch(error){sttModelMessage=String(error?.message||'Could not change the local transcription model.');}
     renderSttModelState();
   });

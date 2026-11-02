@@ -2433,6 +2433,29 @@ app.use((req, res, next) => {
 app.use("/api/retro-pc/remote",createRetroRemoteHTTP({authenticate:castAuth}));
 app.get("/retro-pc/media/xp-pro-sp3-x86.iso", createXPMediaHandler({root:config.root,authenticate:castAuth}));
 app.get("/retro-pc/media/blank-hdd.img", createBlankDiskHandler());
+// The optional diagnostic lab always uses Moonshine isolation.
+app.get('/teslamon-moonshine-lab.html', (_req,res)=>{
+  res.set('Cross-Origin-Opener-Policy','same-origin');
+  res.set('Cross-Origin-Embedder-Policy','require-corp');
+  res.set('Cache-Control','no-store');
+  res.sendFile(path.join(config.publicDir,'teslamon-moonshine-lab.html'));
+});
+// Keep Moonshine's inference worker inside the lab's isolated security context.
+app.get('/teslamon-moonshine-worker.js', (_req,res)=>{
+  res.set('Cross-Origin-Embedder-Policy','require-corp');
+  res.set('Cache-Control','no-store');
+  res.type('text/javascript').sendFile(path.join(config.publicDir,'teslamon-moonshine-worker.js'));
+});
+// Moonshine's default WASM build needs SharedArrayBuffer. Apply isolation
+// ONLY to the normal player page when Moonshine is selected in TeslaMon.
+// Other YT Streamer pages preserve their existing media/embed behavior.
+app.get(['/', '/index.html'], (req,res,next)=>{
+  if(req.query.tm_stt_mode!=='moonshine')return next();
+  res.set('Cross-Origin-Opener-Policy','same-origin');
+  res.set('Cross-Origin-Embedder-Policy','require-corp');
+  res.set('Cache-Control','no-store');
+  res.sendFile(path.join(config.publicDir,'index.html'));
+});
 app.use(express.static(config.publicDir, { extensions: ["html"] }));
 app.get("*", (req, res) => res.sendFile(path.join(config.publicDir, "index.html")));
 

@@ -1,0 +1,8 @@
+{
+  "initialUnisolatedSameOriginFrameBlockedByBrowser": true,
+  "guard": {
+    "frameSrc": null,
+    "message": "Embedded website players are unavailable in Moonshine mode. Choose Whisper Tiny or Base, then reopen the player.",
+    "playbackUnchanged": true
+  }
+}

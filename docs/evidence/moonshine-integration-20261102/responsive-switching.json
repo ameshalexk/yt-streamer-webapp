@@ -1,0 +1,278 @@
+{
+  "scope": "Existing AMESH Chrome, loopback fixture, microphone disabled",
+  "results": [
+    {
+      "width": 320,
+      "height": 568,
+      "style": "classic",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 252
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en"
+      }
+    },
+    {
+      "width": 320,
+      "height": 568,
+      "style": "new",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 252
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en",
+        "ui": "new"
+      }
+    },
+    {
+      "width": 375,
+      "height": 812,
+      "style": "classic",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 307
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en"
+      }
+    },
+    {
+      "width": 375,
+      "height": 812,
+      "style": "new",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 307
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en",
+        "ui": "new"
+      }
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "style": "classic",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 322
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en"
+      }
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "style": "new",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 322
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en",
+        "ui": "new"
+      }
+    },
+    {
+      "width": 430,
+      "height": 932,
+      "style": "classic",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 284
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en"
+      }
+    },
+    {
+      "width": 430,
+      "height": 932,
+      "style": "new",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 284
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en",
+        "ui": "new"
+      }
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "style": "classic",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 284
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en"
+      }
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "style": "new",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 284
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en",
+        "ui": "new"
+      }
+    },
+    {
+      "width": 844,
+      "height": 390,
+      "style": "classic",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 284
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en"
+      }
+    },
+    {
+      "width": 844,
+      "height": 390,
+      "style": "new",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 284
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en",
+        "ui": "new"
+      }
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "style": "classic",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 284
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en"
+      }
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "style": "new",
+      "moonshine": {
+        "isolated": true,
+        "model": "moonshine-tiny-streaming",
+        "modelTarget": {
+          "height": 44,
+          "width": 284
+        },
+        "overflow": 0,
+        "playerPresent": true
+      },
+      "whisper": {
+        "isolated": false,
+        "model": "whisper-base.en",
+        "ui": "new"
+      }
+    }
+  ]
+}

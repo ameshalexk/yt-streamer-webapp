@@ -39,7 +39,12 @@ const server=http.createServer(async(req,res)=>{
    }
    bytes=Buffer.from(html.replace('</head>','<style>#aiAgentDevPanel{display:none!important}</style></head>'));
   }
-  res.writeHead(200,{'content-type':mime[path.extname(full)]||'application/octet-stream'});res.end(bytes);
+  const headers={'content-type':mime[path.extname(full)]||'application/octet-stream'};
+  if((pathname==='/'||pathname==='/index.html')&&requested.searchParams.get('tm_stt_mode')==='moonshine'){
+    headers['Cross-Origin-Opener-Policy']='same-origin';
+    headers['Cross-Origin-Embedder-Policy']='require-corp';
+  }
+  res.writeHead(200,headers);res.end(bytes);
  }
  catch{res.writeHead(404);res.end();}
 });
@@ -104,12 +109,17 @@ try{
  assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'true');
  assert.match(await page.locator('#tmWakeState').innerText(),/Hey Jarvis, Alexa, Hey Mycroft, Hey Rhasspy/);
  assert.equal(await page.locator('#tmWakePhraseSet').evaluate(fieldset=>fieldset.disabled),true,'phrase changes locked while listening');
- assert.equal(await page.locator('#tmSttModel').isDisabled(),true,'model choice locked while Mic On');
+ assert.equal(await page.locator('#tmSttModel').isDisabled(),false,'model choice works during passive Mic On');
+ assert.match(await page.locator('#tmSttModelState').innerText(),/Changing the model turns Mic Off/);
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),1,'page load obtains one mic stream');
  assert.equal(await page.locator('#teslamonPet').getAttribute('data-mic'),'on');
  assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('#tmFace'),'::after').content),'"MIC ON"');
- await page.locator('#tmWakeToggle').click();
+ // Mobile selector switching must automatically release the mic instead of
+ // trapping the user in a disabled model picker.
+ await page.locator('#tmSttModel').selectOption('whisper-base.en');
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Off',null,{timeout:10000});
+ assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-base.en','model switched directly while wake listening');
+ assert.match(await page.locator('#tmSttModelState').innerText(),/Mic Off — tap Mic On/);
  assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false');
  assert.equal(await page.locator('#teslamonPet').getAttribute('data-mic'),'off');
  assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('#tmFace'),'::after').content),'"MIC OFF"');
@@ -312,4 +322,29 @@ try{
  assert.deepEqual(unexpected,[],'no third-party network calls');
  assert.deepEqual(errors,[],'no page JS errors');
  console.log('PASS Chrome synthetic auto Mic On -> Off -> On -> Off with persistent badge; tracks stopped, no ambient upload');
+ // Moonshine is a third transcription engine in the SAME YT Streamer UI,
+ // not a separate lab page. Selecting it isolates only the next main-page
+ // response. Leaving Moonshine restores the ordinary media page headers.
+ await page.evaluate(()=>localStorage.clear());
+ await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded'});
+ await dismissStartupAura(page);
+ await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
+ await page.locator('#tmFace').click();
+ assert.equal(await page.locator('#tmSttModel').isDisabled(),false,'Moonshine entry clickable during wake standby');
+ await page.locator('#tmSttModel').selectOption('moonshine-tiny-streaming');
+ await page.waitForURL(url=>url.pathname==='/'&&url.searchParams.get('tm_stt_mode')==='moonshine',{timeout:12000});
+ await dismissStartupAura(page);
+ await page.locator('#tmFace').click();
+ assert.equal(await page.locator('#tmSttModel').inputValue(),'moonshine-tiny-streaming');
+ assert.equal(await page.evaluate(()=>crossOriginIsolated),true,'WASM mode isolates the normal player document');
+ assert.equal(await page.evaluate(()=>typeof SharedArrayBuffer==='function'),true,'Moonshine WASM has shared memory');
+ assert.equal(await page.locator('#screen').count(),1,'YT Streamer player remains visible in Moonshine mode');
+ assert.equal(await page.locator('#tmMic').count(),1,'normal voice command controls remain available');
+ await page.locator('#tmSttModel').selectOption('whisper-tiny.en');
+ await page.waitForURL(url=>url.pathname==='/'&&!url.searchParams.has('tm_stt_mode'),{timeout:12000});
+ await dismissStartupAura(page);
+ await page.locator('#tmFace').click();
+ assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-tiny.en');
+ assert.equal(await page.evaluate(()=>crossOriginIsolated),false,'Whisper mode restores ordinary media headers');
+ console.log('PASS Moonshine works as an in-page STT option with isolated load and Whisper restoration');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

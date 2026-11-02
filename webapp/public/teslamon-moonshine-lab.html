@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>TeslaMon Moonshine WASM lab</title>
+  <style>
+    body{font:16px system-ui,-apple-system,sans-serif;max-width:650px;margin:24px auto;padding:0 18px;line-height:1.5}
+    button{font:inherit;padding:12px 18px;margin:5px 5px 5px 0;border-radius:9px}
+    output,pre{display:block;white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f2f2;padding:12px;border-radius:8px;min-height:30px}
+    @media(prefers-color-scheme:dark){body{background:#171717;color:white}output,pre{background:#303030}}
+  </style>
+</head>
+<body>
+  <h1>Moonshine Tiny Streaming — experimental WASM</h1>
+  <p>Separate Tesla browser memory/latency test. This is not the YT Streamer production voice engine. Microphone audio stays in this browser. Model assets are downloaded from the Moonshine CDN.</p>
+  <p id="support">Checking browser support…</p>
+  <button id="start" disabled>Start recording</button>
+  <button id="stop" disabled>Stop and transcribe</button>
+  <button id="cancel" disabled>Cancel</button>
+  <p><strong>Status</strong></p><output id="status" aria-live="polite">Idle</output>
+  <p><strong>Transcript</strong></p><pre id="transcript">Not recorded.</pre>
+  <p>Test 10–20 short commands including “play YouTube”, “pause the video”, and “open Netflix”. If the page reloads or crashes, do not enable Moonshine in production.</p>
+  <script type="module" src="./teslamon-moonshine-lab.js?v=20261101-lab1"></script>
+</body>
+</html>
