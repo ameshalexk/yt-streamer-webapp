@@ -104,12 +104,17 @@ try{
  assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'true');
  assert.match(await page.locator('#tmWakeState').innerText(),/Hey Jarvis, Alexa, Hey Mycroft, Hey Rhasspy/);
  assert.equal(await page.locator('#tmWakePhraseSet').evaluate(fieldset=>fieldset.disabled),true,'phrase changes locked while listening');
- assert.equal(await page.locator('#tmSttModel').isDisabled(),true,'model choice locked while Mic On');
+ assert.equal(await page.locator('#tmSttModel').isDisabled(),false,'model choice works during passive Mic On');
+ assert.match(await page.locator('#tmSttModelState').innerText(),/Changing the model turns Mic Off/);
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),1,'page load obtains one mic stream');
  assert.equal(await page.locator('#teslamonPet').getAttribute('data-mic'),'on');
  assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('#tmFace'),'::after').content),'"MIC ON"');
- await page.locator('#tmWakeToggle').click();
+ // Mobile selector switching must automatically release the mic instead of
+ // trapping the user in a disabled model picker.
+ await page.locator('#tmSttModel').selectOption('whisper-base.en');
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Off',null,{timeout:10000});
+ assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-base.en','model switched directly while wake listening');
+ assert.match(await page.locator('#tmSttModelState').innerText(),/Mic Off — tap Mic On/);
  assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false');
  assert.equal(await page.locator('#teslamonPet').getAttribute('data-mic'),'off');
  assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('#tmFace'),'::after').content),'"MIC OFF"');
