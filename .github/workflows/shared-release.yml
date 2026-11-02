@@ -63,6 +63,9 @@ jobs:
       - name: TeslaMon wake and pause browser regression
         run: node scripts/teslamon-handsfree-browser-check.mjs
         working-directory: webapp
+      - name: TeslaMon wake to voice playback without Codex (Whisper and Moonshine)
+        run: node scripts/teslamon-voice-playback-browser-check.mjs
+        working-directory: webapp
       - name: TeslaMon Aura fullscreen and feature flag browser regression
         run: npm run test:teslamon-aura-browser
         working-directory: webapp

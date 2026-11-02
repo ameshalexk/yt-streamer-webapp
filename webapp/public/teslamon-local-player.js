@@ -10,6 +10,23 @@ const VIDEO=/^[a-zA-Z0-9_-]{11}$/;
 const PHASES=new Set(['idle','playing','paused','buffering','ended','failed','needs_user_gesture']);
 const MODES=new Set(['native','in_page','none','unknown']);
 const plain=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+// Only explicit, locally parsed "play <title>" commands may skip Codex
+// candidate selection. Require a strong literal match to the FIRST ranked
+// result; ambiguous titles, generic searches, and assistant-generated plans
+// continue through the existing selector rather than silently choosing media.
+export function directRankedCandidate(query,candidates){
+  if(typeof query!=='string'||!Array.isArray(candidates)||!candidates.length)return null;
+  const tokens=text=>String(text).normalize('NFKC').toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim().split(/\s+/u).filter(Boolean);
+  const ignored=new Set(['the','a','an','of','and','in','to','on','for','youtube','video','videos','movie','movies','song','songs','official','please','me','some']);
+  const words=tokens(query).filter(token=>!ignored.has(token));
+  if(!words.length||words.join('').length<4)return null;
+  const first=candidates[0];
+  if(!plain(first)||!VIDEO.test(first.media_id||''))return null;
+  const title=tokens(first.title||'');
+  if(!words.every(token=>title.includes(token)))return null;
+  return 0;
+}
 const fail=(code,status='failed')=>({status,code});
 const supported=(intent)=>{
   if(!plain(intent)||!ACTIONS.has(intent.tool)||!plain(intent.args))return false;
@@ -53,7 +70,7 @@ export function createTeslaMonLocalPlayer({
       return fail('player_state_unavailable','uncertain');
     return stateResult(result.state);
   }
-  async function run(intent,{originalRequest='',signal,isCurrent=()=>true}={}){
+  async function run(intent,{originalRequest='',signal,isCurrent=()=>true,explicitLocalPlay=false}={}){
     if(!supported(intent))return fail('invalid_local_playback_intent');
     if(busy)return fail('target_busy');
     const player=getPlayer();
@@ -82,8 +99,13 @@ export function createTeslaMonLocalPlayer({
               item.duration_seconds<=86400?item.duration_seconds:null
           }));
         if(!candidates.length)return fail('no_results');
+        // The user's own bounded "play <title>" request can choose a strong
+        // first-ranked literal title match without waiting on Codex quota.
+        // All other search results retain the existing cautious AI selector.
+        const directIndex=explicitLocalPlay?(latestMkbhd?0:directRankedCandidate(query,candidates)):null;
         let selection;
-        try{selection=await selectCandidate({originalRequest:String(originalRequest).slice(0,220),query,
+        if(directIndex!==null)selection={status:'selected',index:directIndex};
+        else try{selection=await selectCandidate({originalRequest:String(originalRequest).slice(0,220),query,
           candidates,signal});}catch{return fail('candidate_selection_uncertain','uncertain');}
         if(signal?.aborted||!isCurrent())return fail('candidate_selection_uncertain','uncertain');
         if(!selection||selection.status!=='selected'||!Number.isInteger(selection.index)||
