@@ -10,7 +10,7 @@
   width: auto;
   max-width: calc(100% - 130px);
   min-width: 102px;
-  min-height: 42px;
+  min-height: 44px;
   padding: 8px 12px;
   border: 1px solid rgba(255,255,255,.40);
   border-radius: 11px;
@@ -85,6 +85,12 @@
   border-radius: 10px;
 }
 body.screen-fullscreen .player-quality-panel { display: none !important; }
+body.screen-fullscreen.fullscreen-controls-idle .screen > .player-quality-trigger {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.screen > .player-quality-trigger { transition: opacity .24s ease, visibility .24s ease; }
 
 @media (max-width: 900px) {
   html { scroll-padding-top: max(10px, env(safe-area-inset-top)); }

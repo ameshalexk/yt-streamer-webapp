@@ -1,0 +1,282 @@
+[
+  {
+    "width": 320,
+    "height": 568,
+    "style": "classic",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 97.5625,
+      "x": 215.4375,
+      "y": 7
+    }
+  },
+  {
+    "width": 320,
+    "height": 568,
+    "style": "new",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 103.671875,
+      "x": 209.328125,
+      "y": 7
+    }
+  },
+  {
+    "width": 375,
+    "height": 812,
+    "style": "classic",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 97.5625,
+      "x": 270.4375,
+      "y": 7
+    }
+  },
+  {
+    "width": 375,
+    "height": 812,
+    "style": "new",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 103.671875,
+      "x": 264.328125,
+      "y": 7
+    }
+  },
+  {
+    "width": 390,
+    "height": 844,
+    "style": "classic",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 97.5625,
+      "x": 285.4375,
+      "y": 7
+    }
+  },
+  {
+    "width": 390,
+    "height": 844,
+    "style": "new",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 103.671875,
+      "x": 279.328125,
+      "y": 7
+    }
+  },
+  {
+    "width": 430,
+    "height": 932,
+    "style": "classic",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 97.5625,
+      "x": 325.4375,
+      "y": 7
+    }
+  },
+  {
+    "width": 430,
+    "height": 932,
+    "style": "new",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 103.671875,
+      "x": 319.328125,
+      "y": 7
+    }
+  },
+  {
+    "width": 768,
+    "height": 1024,
+    "style": "classic",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 110.03125,
+      "x": 648.96875,
+      "y": 9
+    }
+  },
+  {
+    "width": 768,
+    "height": 1024,
+    "style": "new",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 115.578125,
+      "x": 643.421875,
+      "y": 9
+    }
+  },
+  {
+    "width": 844,
+    "height": 390,
+    "style": "classic",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 110.03125,
+      "x": 724.96875,
+      "y": 9
+    }
+  },
+  {
+    "width": 844,
+    "height": 390,
+    "style": "new",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 115.578125,
+      "x": 719.421875,
+      "y": 9
+    }
+  },
+  {
+    "width": 1280,
+    "height": 800,
+    "style": "classic",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 110.03125,
+      "x": 1160.96875,
+      "y": 9
+    }
+  },
+  {
+    "width": 1280,
+    "height": 800,
+    "style": "new",
+    "close": {
+      "h": 58,
+      "w": 58,
+      "x": 16,
+      "y": 16
+    },
+    "inBounds": true,
+    "overflow": 0,
+    "overlap": false,
+    "quality": {
+      "h": 44,
+      "w": 115.578125,
+      "x": 1155.421875,
+      "y": 9
+    }
+  }
+]
