@@ -1,0 +1,91 @@
+{
+  "browser": "Existing signed-in AMESH Google Chrome",
+  "nativeFullscreen": "simulated in fixture; real button used expanded fallback",
+  "physicalDeviceTested": false,
+  "results": [
+    {
+      "width": 768,
+      "height": 1024,
+      "style": "classic",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":110.03125,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":52,\"h\":52,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: classic\nFixture viewport: 768x1024"
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "style": "new",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":115.578125,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":52,\"h\":52,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: new\nFixture viewport: 768x1024"
+    },
+    {
+      "width": 844,
+      "height": 390,
+      "style": "classic",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":110.03125,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":52,\"h\":52,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: classic\nFixture viewport: 844x390"
+    },
+    {
+      "width": 844,
+      "height": 390,
+      "style": "new",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":115.578125,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":52,\"h\":52,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: new\nFixture viewport: 844x390"
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "style": "classic",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":110.03125,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":52,\"h\":52,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: classic\nFixture viewport: 1280x800"
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "style": "new",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":115.578125,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":52,\"h\":52,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: new\nFixture viewport: 1280x800"
+    },
+    {
+      "width": 320,
+      "height": 568,
+      "style": "classic",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":97.5625,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":46,\"h\":44,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: classic\nFixture viewport: 320x568"
+    },
+    {
+      "width": 320,
+      "height": 568,
+      "style": "new",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":103.671875,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":46,\"h\":44,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: new\nFixture viewport: 320x568"
+    },
+    {
+      "width": 375,
+      "height": 812,
+      "style": "classic",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":97.5625,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":46,\"h\":44,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: classic\nFixture viewport: 375x812"
+    },
+    {
+      "width": 375,
+      "height": 812,
+      "style": "new",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":103.671875,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":46,\"h\":44,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: new\nFixture viewport: 375x812"
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "style": "classic",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":97.5625,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":46,\"h\":44,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: classic\nFixture viewport: 390x844"
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "style": "new",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":103.671875,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":46,\"h\":44,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: new\nFixture viewport: 390x844"
+    },
+    {
+      "width": 430,
+      "height": 932,
+      "style": "classic",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":97.5625,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":46,\"h\":44,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: classic\nFixture viewport: 430x932"
+    },
+    {
+      "width": 430,
+      "height": 932,
+      "style": "new",
+      "result": "PASS\n✓ five-second AI auto-hide and one-tap reopen work with the real timer\n✓ native fullscreen passes navigationUI hide and suppresses both AI controls\n✓ native exit restores the expanded AI panel\n✓ rejected native request enters truthfully labelled expanded player\n✓ expanded-player exit restores the expanded AI panel\n✓ unsupported native fullscreen enters truthfully labelled expanded player\n✓ idle popup close hides and player interaction reveals it\n✓ playing Quality, Exit, and popup close controls retain 44px targets\nTargets: [{\"id\":\"playerQualityBtn\",\"w\":103.671875,\"h\":44,\"display\":\"block\"},{\"id\":\"fullscreenBtn\",\"w\":46,\"h\":44,\"display\":\"flex\"},{\"id\":\"browserClosePopupBtn\",\"w\":58,\"h\":58,\"display\":\"flex\"}]\nUI: new\nFixture viewport: 430x932"
+    }
+  ]
+}

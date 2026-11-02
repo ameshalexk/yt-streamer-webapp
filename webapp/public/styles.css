@@ -636,7 +636,25 @@ body.fullscreen-controls-idle .video-controls-overlay {
 }
 .browser-close-popup:active { background: rgba(127,29,29,.95); }
 .browser-close-popup[hidden] { display: none !important; }
+body.screen-fullscreen .browser-close-popup {
+  top: max(16px, env(safe-area-inset-top));
+  left: max(16px, env(safe-area-inset-left));
+  right: auto;
+}
 body.fullscreen-controls-idle .video-controls-overlay .video-controls-panel { pointer-events: none; }
+body.screen-fullscreen.fullscreen-controls-idle .browser-close-popup {
+  opacity: 0; visibility: hidden; pointer-events: none;
+}
+.browser-close-popup { transition: opacity .24s ease, visibility .24s ease; }
+.fullscreen-fallback-notice {
+  position: absolute; top: max(16px, env(safe-area-inset-top)); left: 50%; z-index: 48;
+  transform: translateX(-50%); max-width: calc(100vw - 32px); padding: 8px 12px;
+  border-radius: 9px; background: rgba(11,13,16,.82); color: #fff;
+  font-size: 13px; text-align: center; pointer-events: none;
+}
+.fullscreen-fallback-notice[hidden] { display: none !important; }
+body.screen-fullscreen #aiMediaProductionPanel,
+body.screen-fullscreen #aiMediaProductionReopen { display: none !important; }
 .screen:not(.playing) .video-controls-overlay { background: none; }
 .screen:not(.playing) #pauseBtn,
 .screen:not(.playing) #muteBtn,
