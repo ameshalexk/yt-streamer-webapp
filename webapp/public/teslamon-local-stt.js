@@ -1,17 +1,24 @@
-/** One browser-local Whisper engine shared by PTT and wake command clips. */
+/** One browser-local STT controller shared by PTT and wake command clips. */
 const MODEL_INFO = Object.freeze({
   'whisper-tiny.en': Object.freeze({ modelId:'whisper-tiny.en', label:'Tiny English', estimatedSizeMB:43, performance:'Faster, uses less memory.' }),
-  'whisper-base.en': Object.freeze({ modelId:'whisper-base.en', label:'Base English', estimatedSizeMB:79, performance:'Better transcription quality; slower and uses more memory.' })
+  'whisper-base.en': Object.freeze({ modelId:'whisper-base.en', label:'Base English', estimatedSizeMB:79, performance:'Better transcription quality; slower and uses more memory.' }),
+  // Lab-only: deliberately not exposed by TeslaMon's production model picker.
+  'moonshine-tiny-streaming': Object.freeze({ modelId:'moonshine-tiny-streaming', label:'Moonshine Tiny Streaming (experimental)', estimatedSizeMB:null, performance:'Requires cross-origin isolation; Tesla compatibility unverified.' })
 });
 const DEFAULT_MODEL='whisper-tiny.en';
 const hasModel=id=>typeof id==='string'&&Object.hasOwn(MODEL_INFO,id);
 
-async function loadDefaultImplementation() {
-  const [{ VoiceEngine }, { decodeRecordedAudio }] = await Promise.all([
-    import('./games/voice-engine.js?v=20261025-stt-models1'),
+async function loadDefaultImplementation(requestedModelId) {
+  const [engineModule,{decodeRecordedAudio}] = await Promise.all([
+    requestedModelId==='moonshine-tiny-streaming'
+      ? import('./teslamon-moonshine-engine.js?v=20261101-moonshine-lab1')
+      : import('./games/voice-engine.js?v=20261025-stt-models1'),
     import('./games/recorded-audio.js?v=20261024-shared-stt1')
   ]);
-  return { VoiceEngine, decodeRecordedAudio };
+  return {
+    VoiceEngine:engineModule.MoonshineVoiceEngine||engineModule.VoiceEngine,
+    decodeRecordedAudio
+  };
 }
 function aborted() { const error=new Error('Local transcription was canceled.');error.name='AbortError';return error; }
 function withAbort(promise,signal) {
@@ -30,7 +37,7 @@ export function createTeslaMonLocalStt({ modelId=DEFAULT_MODEL, loadImplementati
   let selectedModelId=modelId,implementationPromise=null,engine=null,busy=false,activeController=null,selectionVersion=0;
 
   async function implementation(version,requestedModelId) {
-    if(!implementationPromise)implementationPromise=Promise.resolve().then(loadImplementation)
+    if(!implementationPromise)implementationPromise=Promise.resolve().then(()=>loadImplementation(requestedModelId))
       .catch(error=>{implementationPromise=null;throw error;});
     const module=await implementationPromise;
     if(version!==selectionVersion||requestedModelId!==selectedModelId)throw aborted();
@@ -85,6 +92,7 @@ export function createTeslaMonLocalStt({ modelId=DEFAULT_MODEL, loadImplementati
     if(nextModelId===selectedModelId)return Promise.resolve(getState());
     disposeEngine();
     selectedModelId=nextModelId;
+    implementationPromise=null; // Reload the correct engine module after a model-family switch.
     return Promise.resolve(getState());
   }
   function getState(){return {loaded:Boolean(engine?.loaded),busy,modelInfo:engine?.modelInfo||null,

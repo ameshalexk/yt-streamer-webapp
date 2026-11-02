@@ -2433,6 +2433,13 @@ app.use((req, res, next) => {
 app.use("/api/retro-pc/remote",createRetroRemoteHTTP({authenticate:castAuth}));
 app.get("/retro-pc/media/xp-pro-sp3-x86.iso", createXPMediaHandler({root:config.root,authenticate:castAuth}));
 app.get("/retro-pc/media/blank-hdd.img", createBlankDiskHandler());
+// Isolate only the opt-in Moonshine WASM lab, never the production media UI.
+app.get('/teslamon-moonshine-lab.html', (_req,res)=>{
+  res.set('Cross-Origin-Opener-Policy','same-origin');
+  res.set('Cross-Origin-Embedder-Policy','require-corp');
+  res.set('Cache-Control','no-store');
+  res.sendFile(path.join(config.publicDir,'teslamon-moonshine-lab.html'));
+});
 app.use(express.static(config.publicDir, { extensions: ["html"] }));
 app.get("*", (req, res) => res.sendFile(path.join(config.publicDir, "index.html")));
 
