@@ -1,4 +1,5 @@
-import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
+import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261102-direct-voice1';
+import {interpretTeslaMon} from './teslamon-intent.js';
 import {createTeslaMonAura} from './teslamon-aura.js?v=20261028-aura-reliable1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
@@ -784,6 +785,18 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     auraStage('thinking','Understanding your request…',{entry});
     status('Codex is understanding your request…','info',owner);
     try{
+      // A bounded playback request needs no Codex call. This fixes the
+      // shared failure when Codex has exhausted its usage allowance, while
+      // retaining the authenticated planner for natural/lighting requests.
+      const direct=interpretTeslaMon(request);
+      if(!direct.error){
+        if(!current())return false;
+        if(input.value.trim()===request)input.value='';
+        return await issue(direct,requestRevision,{
+          originalRequest:request,signal,owner,entry,voice,epoch,isCurrent:current,
+          explicitLocalPlay:direct.tool==='search_and_play'
+        });
+      }
       const result=await post('/api/teslamon/plan',{text:request,session:tabSession},'application/json',signal);
       if(!current())return false;
       if(result.status==='ok'&&typeof result.tool==='string'){
