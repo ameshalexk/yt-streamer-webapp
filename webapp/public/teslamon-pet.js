@@ -109,6 +109,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<select id="tmSttModel" aria-describedby="tmSttModelHelp tmSttModelState">',
           '<option value="whisper-tiny.en">Whisper Tiny — Fast (43 MB)</option>',
           '<option value="whisper-base.en">Whisper Base — Quality (79 MB)</option>',
+          '<option value="moonshine-lab">Moonshine Tiny — Experimental test page</option>',
         '</select>',
         '<span id="tmSttModelHelp">English models. Audio stays in this browser. Base is slower and uses more memory.</span>',
         '<span id="tmSttModelState" role="status" aria-live="polite"></span>',
@@ -549,6 +550,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   renderSttModelState();
   sttModelSelect.addEventListener('change',async()=>{
     const requested=sttModelSelect.value;
+    if(requested==='moonshine-lab'){
+      // The stock Moonshine WASM build requires COOP/COEP, which can block
+      // third-party video. Open the isolated test page, not the media UI.
+      sttModelSelect.value=localStt.getState().selectedModelId;
+      if(isSttModelLocked()){renderSttModelState('Finish your current voice command before testing Moonshine.');return;}
+      window.location.assign('/teslamon-moonshine-lab.html');
+      return;
+    }
     if(!validSttModel(requested)||isSttModelLocked()){renderSttModelState();return;}
     try{
       await localStt.setModel(requested);
