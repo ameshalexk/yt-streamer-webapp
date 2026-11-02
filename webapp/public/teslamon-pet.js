@@ -326,11 +326,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     sttModelSelect.disabled=micBusy;
     sttModelSelect.value=state.selectedModelId;
     if(!state.loaded&&message.includes('warm and ready'))message='';
+    if(state.selectedModelId===MOONSHINE_ID&&!globalThis.crossOriginIsolated)
+      message='Moonshine requires browser isolation. Choose Whisper Tiny or Base to return to normal mode.';
     const current=message||`${state.selectedModel.label} selected${state.loaded?' and ready':' · loads locally on the first voice command'}.`;
     const hint=micBusy?' Finish the current voice or playback command before changing models.':
       handsFree?.enabled?' Changing the model turns Mic Off; turn it back on afterward.':'';
-    if(state.selectedModelId===MOONSHINE_ID&&!globalThis.crossOriginIsolated)
-      message='Moonshine requires browser isolation. Choose Whisper Tiny or Base to return to normal mode.';
     sttModelState.textContent=current+hint;
   }
   function collapseControls({focusFace=false,preserveAutoSend=false}={}) {
