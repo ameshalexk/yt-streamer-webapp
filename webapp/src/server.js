@@ -2440,6 +2440,12 @@ app.get('/teslamon-moonshine-lab.html', (_req,res)=>{
   res.set('Cache-Control','no-store');
   res.sendFile(path.join(config.publicDir,'teslamon-moonshine-lab.html'));
 });
+// Keep Moonshine's inference worker inside the lab's isolated security context.
+app.get('/teslamon-moonshine-worker.js', (_req,res)=>{
+  res.set('Cross-Origin-Embedder-Policy','require-corp');
+  res.set('Cache-Control','no-store');
+  res.type('text/javascript').sendFile(path.join(config.publicDir,'teslamon-moonshine-worker.js'));
+});
 app.use(express.static(config.publicDir, { extensions: ["html"] }));
 app.get("*", (req, res) => res.sendFile(path.join(config.publicDir, "index.html")));
 
