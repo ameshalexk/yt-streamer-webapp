@@ -965,6 +965,9 @@ function setBrowserStreamActive(active) {
 }
 
 let syntheticFullscreen = false;
+let fullscreenKeyboardModality = false;
+let fullscreenRequestSerial = 0;
+let fullscreenExitRequested = false;
 let activeEmbedCode = "";
 let activeEmbedHeight = "";
 let streamAttempt = 0;
@@ -1773,6 +1776,13 @@ function clearFullscreenOverlayHide() {
   document.body.classList.remove("fullscreen-controls-idle");
 }
 
+function fullscreenKeyboardFocusIsVisible(screen) {
+  const active = document.activeElement;
+  if (!screen?.contains(active)) return false;
+  try { return active.matches(":focus-visible"); }
+  catch { return fullscreenKeyboardModality; }
+}
+
 function scheduleFullscreenOverlayHide() {
   clearTimeout(fullscreenOverlayHideTimer);
   if (!canAutoHideScreenOverlays()) {
@@ -1781,7 +1791,11 @@ function scheduleFullscreenOverlayHide() {
   }
   fullscreenOverlayHideTimer = setTimeout(() => {
     fullscreenOverlayHideTimer = null;
-    if (canAutoHideScreenOverlays()) document.body.classList.add("fullscreen-controls-idle");
+    const screen = $("#screen");
+    const keyboardFocused = fullscreenKeyboardFocusIsVisible(screen);
+    if (canAutoHideScreenOverlays() && !keyboardFocused) {
+      document.body.classList.add("fullscreen-controls-idle");
+    }
   }, FULLSCREEN_OVERLAY_HIDE_MS);
 }
 
@@ -4119,7 +4133,7 @@ function updateFullscreenButton() {
   }
   if (!btn) return;
   btn.classList.toggle("is-exit", active);
-  btn.title = active ? "Exit full screen" : "Full screen";
+  btn.title = active ? (syntheticFullscreen ? "Exit expanded player" : "Exit full screen") : "Full screen";
   btn.setAttribute("aria-label", btn.title);
 }
 
@@ -4129,20 +4143,82 @@ function setSyntheticFullscreen(enabled) {
   updateFullscreenButton();
 }
 
+function hideFullscreenFallbackNotice() {
+  const notice = $("#fullscreenFallbackNotice");
+  if (!notice) return;
+  notice.hidden = true;
+  clearTimeout(notice._hideTimer);
+  notice._hideTimer = null;
+}
+
+function handleObservedFullscreenChange() {
+  const screen = $("#screen");
+  if (fullscreenElement() === screen) {
+    hideFullscreenFallbackNotice();
+    if (fullscreenExitRequested) {
+      try {
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        const result = exit?.call(document);
+        result?.catch?.(() => {});
+      } catch {}
+      return;
+    }
+  }
+  setSyntheticFullscreen(false);
+  updateFullscreenButton();
+}
+
 async function enterScreenFullscreen() {
   const screen = $("#screen");
+  const fallbackNotice = $("#fullscreenFallbackNotice");
+  const requestToken = ++fullscreenRequestSerial;
+  fullscreenExitRequested = false;
+  hideFullscreenFallbackNotice();
+  const announceFallback = () => {
+    if (!fallbackNotice) return;
+    fallbackNotice.hidden = false;
+    clearTimeout(fallbackNotice._hideTimer);
+    fallbackNotice._hideTimer = setTimeout(() => { fallbackNotice.hidden = true; }, 4200);
+  };
   try {
-    if (screen.requestFullscreen) await screen.requestFullscreen();
-    else if (screen.webkitRequestFullscreen) screen.webkitRequestFullscreen();
-    else setSyntheticFullscreen(true);
+    if (screen.requestFullscreen) {
+      await screen.requestFullscreen({ navigationUI: "hide" });
+    } else if (screen.webkitRequestFullscreen) {
+      let finishObservation;
+      const observed = new Promise((resolve) => { finishObservation = resolve; });
+      const onChange = () => finishObservation();
+      const observationTimer = setTimeout(onChange, 300);
+      const cleanup = () => {
+        clearTimeout(observationTimer);
+        document.removeEventListener("fullscreenchange", onChange);
+        document.removeEventListener("webkitfullscreenchange", onChange);
+      };
+      document.addEventListener("fullscreenchange", onChange, { once: true });
+      document.addEventListener("webkitfullscreenchange", onChange, { once: true });
+      try {
+        const result = screen.webkitRequestFullscreen();
+        if (result?.then) await result;
+        if (fullscreenElement() !== screen) await observed;
+      } finally { cleanup(); }
+    }
+    if (requestToken !== fullscreenRequestSerial) return;
+    if (fullscreenElement() !== screen) {
+      setSyntheticFullscreen(true);
+      announceFallback();
+    }
   } catch {
+    if (requestToken !== fullscreenRequestSerial) return;
     setSyntheticFullscreen(true);
+    announceFallback();
   } finally {
     updateFullscreenButton();
   }
 }
 
 async function exitScreenFullscreen() {
+  fullscreenRequestSerial += 1;
+  fullscreenExitRequested = true;
+  hideFullscreenFallbackNotice();
   if (syntheticFullscreen) {
     setSyntheticFullscreen(false);
     return;
@@ -9914,6 +9990,10 @@ function handleDesktopPanPointerUp(e) {
   let fullscreenTapRevealOnly = false;
   let controlsRevealOnlyUntil = 0;
 
+  document.addEventListener("keydown", () => { fullscreenKeyboardModality = true; }, true);
+  screen.addEventListener("pointerdown", () => { fullscreenKeyboardModality = false; }, true);
+  screen.addEventListener("touchstart", () => { fullscreenKeyboardModality = false; }, { capture: true, passive: true });
+
   function canTogglePlaybackFromTap(target) {
     if (!screen.classList.contains("playing") || screen.classList.contains("embed-mode")) return false;
     if ($("#pauseBtn")?.disabled) return false;
@@ -9944,6 +10024,10 @@ function handleDesktopPanPointerUp(e) {
     return false;
   }
 
+  screen.addEventListener("focusin", () => showFullscreenOverlays());
+  screen.addEventListener("focusout", () => setTimeout(() => {
+    if (canAutoHideScreenOverlays()) scheduleFullscreenOverlayHide();
+  }, 0));
   if (window.PointerEvent) {
     screen.addEventListener("pointerdown", (e) => {
       retryBufferedAudioFromGesture();
@@ -10023,8 +10107,8 @@ function handleDesktopPanPointerUp(e) {
     e.preventDefault();
     toggleScreenFullscreen();
   });
-  document.addEventListener("fullscreenchange", () => { setSyntheticFullscreen(false); updateFullscreenButton(); renderDesktopZoomUi(); renderBrowserZoomUi(); });
-  document.addEventListener("webkitfullscreenchange", () => { setSyntheticFullscreen(false); updateFullscreenButton(); renderDesktopZoomUi(); renderBrowserZoomUi(); });
+  document.addEventListener("fullscreenchange", () => { handleObservedFullscreenChange(); renderDesktopZoomUi(); renderBrowserZoomUi(); });
+  document.addEventListener("webkitfullscreenchange", () => { handleObservedFullscreenChange(); renderDesktopZoomUi(); renderBrowserZoomUi(); });
 }
 
 $("#quickPlayBtn").onclick = async () => {

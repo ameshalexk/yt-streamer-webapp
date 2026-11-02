@@ -1,0 +1,25 @@
+{
+  "idle": {
+    "ai": "none",
+    "focus": "fullscreenBtn",
+    "focusVisible": false,
+    "idle": true,
+    "kind": "in_page",
+    "overlay": "0",
+    "popup": "hidden",
+    "quality": "hidden"
+  },
+  "keyboardCheck": {
+    "focus": "playerQualityBtn",
+    "focusVisible": true,
+    "idle": false,
+    "quality": "visible"
+  },
+  "qualityEnter": {
+    "expanded": true,
+    "kind": "none",
+    "panelVisible": true,
+    "paused": false
+  },
+  "scope": "Local fixture, no real media or physical device"
+}
