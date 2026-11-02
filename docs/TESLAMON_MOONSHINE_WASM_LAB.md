@@ -39,3 +39,18 @@ Fix:
 - Added a synthetic mobile Chrome regression test for Mic On → Whisper model switch → Mic Off and Mic On → Moonshine lab navigation.
 
 Verification: `node scripts/teslamon-handsfree-browser-check.mjs` passed; 13 related local STT tests passed; syntax checks passed. Mac mini runtime revision `aa3c3db6102e250c5b09f99a6f0ef50f95f09729` deployed and HTTP health + source + lab header checks passed. Runtime backup: `~/.cache/ytstreamer-selector-rollback.8txDtf`. Physical Tesla browser transcription remains a manual test.
+
+## In-page selector implementation — deployed Mac, Nov 2, 2026
+
+User requested Moonshine to behave as a **third model choice** in the normal TeslaMon transcription selector, not redirect to a separate lab.
+
+- Selector option is now `moonshine-tiny-streaming`. Selecting it from Whisper turns Mic Off, saves the choice, and reloads the **same YT Streamer page** with `?tm_stt_mode=moonshine`, preserving other query parameters and the New/Classic UI.
+- Server applies `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` **only to the main player HTML** when explicitly in Moonshine mode. Normal Whisper and other routes retain existing headers.
+- On the reloaded page the existing TeslaMon `createTeslaMonLocalStt` engine selects Moonshine, using the same PTT, hands-free, Aura and Codex-command transcription pipeline as Whisper.
+- Selecting Whisper Tiny or Base from Moonshine mode reloads the same page without isolation, restoring normal media embedding behavior. The separate lab URL remains available for diagnostics but is no longer used by the selector.
+- If a browser cannot provide `crossOriginIsolated`, the UI indicates that Moonshine is unavailable and offers the regular Whisper choices.
+- Updated `index.html` TeslaMon module cache version so existing browsers fetch the new selector.
+
+**Validation:** Full local Node suite 704/704 passing; synthetic Chrome UI model-switch test passed for Mic On → Moonshine same-page isolation → Whisper no isolation, with the player and voice controls retained. A real WASM integration test within a simulated normal YT Streamer page using a generated local audio fixture recognized **“Play YouTube.”** (cold/model-load/decoding 3874 ms; inference 192 ms), no JavaScript or model network errors in that test. Actual iPhone/Tesla memory stability and third-party video playback under COEP remain unverified.
+
+**Mac deployment:** Runtime revision `cfee853e961bc0ad759c69dc08785d64440c436e`, health and exact HTTP header/source checks passed. Scope: Mac mini only; existing HA/StreamHA deployment was not changed. Runtime rollback: `~/.cache/ytstreamer-inpage-rollback.QtQdWP`. PR #134 remains draft and unmerged. Because other YT Streamer releases may also be in progress, reconcile host revisions and preserve the Moonshine experiment before any later full-app overwrite.
