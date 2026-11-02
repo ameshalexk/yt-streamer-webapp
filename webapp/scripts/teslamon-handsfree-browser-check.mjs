@@ -317,4 +317,16 @@ try{
  assert.deepEqual(unexpected,[],'no third-party network calls');
  assert.deepEqual(errors,[],'no page JS errors');
  console.log('PASS Chrome synthetic auto Mic On -> Off -> On -> Off with persistent badge; tracks stopped, no ambient upload');
+ // Regression for Tesla/iPhone screenshot: the experimental entry must be
+ // selectable while Mic On and navigate to the isolated Moonshine lab.
+ await page.evaluate(()=>localStorage.clear());
+ await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded'});
+ await dismissStartupAura(page);
+ await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
+ await page.locator('#tmFace').click();
+ assert.equal(await page.locator('#tmSttModel').isDisabled(),false,'Moonshine entry is clickable during wake standby');
+ await page.locator('#tmSttModel').selectOption('moonshine-lab');
+ await page.waitForURL(url=>url.pathname==='/teslamon-moonshine-lab.html',{timeout:10000});
+ assert.match(await page.locator('h1').innerText(),/Moonshine Tiny Streaming/);
+ console.log('PASS Moonshine selector navigates from Mic On directly to isolated test page');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
