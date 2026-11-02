@@ -27,3 +27,15 @@
 - https://www.npmjs.com/package/@moonshine-ai/moonshine-wasm
 
 This document doubles as the project decision log. Obsidian vault is read-only from the currently connected Obsidian integration.
+
+## Model selector fix and deployment — Nov 2, 2026
+
+User reported on iPhone that tapping the transcription model dropdown did nothing while the TeslaMon badge showed **Mic On**. Root cause: `isSttModelLocked()` disabled the selector whenever hands-free was enabled, including passive wake standby.
+
+Fix:
+- Allow selection when the hands-free engine is passively `listening`, but keep the selector locked during startup, recording, transcription, pending commands, and other active work.
+- Selecting any model while listening stops the wake detector, releases microphone tracks, and disables automatic re-arming. For Whisper Tiny/Base the selected model persists and the user must tap Mic On to resume.
+- Selecting **Moonshine Tiny — Experimental test page** opens the cross-origin-isolated lab page; Moonshine still does not replace production command execution.
+- Added a synthetic mobile Chrome regression test for Mic On → Whisper model switch → Mic Off and Mic On → Moonshine lab navigation.
+
+Verification: `node scripts/teslamon-handsfree-browser-check.mjs` passed; 13 related local STT tests passed; syntax checks passed. Mac mini runtime revision `aa3c3db6102e250c5b09f99a6f0ef50f95f09729` deployed and HTTP health + source + lab header checks passed. Runtime backup: `~/.cache/ytstreamer-selector-rollback.8txDtf`. Physical Tesla browser transcription remains a manual test.
