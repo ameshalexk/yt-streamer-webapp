@@ -533,7 +533,7 @@ try{
         if(process.env.TESLAMON_AURA_SCREENSHOTS==='1')
           await page.screenshot({path:'/tmp/teslamon-aura-handoff-buffering.jpg',type:'jpeg',quality:70});
         await page.waitForTimeout(2200);
-        assert.equal(plans.length,2,'accepted handoff does not duplicate planner request');
+        assert.equal(plans.length,1,'bounded direct video request does not invoke the Codex planner');
         assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),1,'buffering observation does not replay media');
         await waitForVoiceReady();
 
