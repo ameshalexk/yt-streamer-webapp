@@ -303,8 +303,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     });
   }
   function isSttModelLocked(){
-    return captureActive||Boolean(activeTranscript)||Boolean(handsFree?.enabled)||
-      Boolean(handsFree&&handsFree.state!=='off'&&handsFree.state!=='error')||busy||modelBusy;
+    // A passive wake-word listener is not an active transcription. Allow the
+    // user to choose a model while listening; the change handler stops its mic
+    // first so no wake worker competes with the new engine.
+    const phase=handsFree?.state;
+    return captureActive||Boolean(activeTranscript)||Boolean(pendingVoice)||busy||modelBusy||
+      Boolean(handsFree?.enabled&&phase!=='listening')||
+      Boolean(handsFree&&!['off','error','listening'].includes(phase));
   }
   function renderSttModelState(message=sttModelMessage){
     const state=localStt.getState(),micBusy=isSttModelLocked();
@@ -312,7 +317,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     sttModelSelect.value=state.selectedModelId;
     if(!state.loaded&&message.includes('warm and ready'))message='';
     const current=message||`${state.selectedModel.label} selected${state.loaded?' and ready':' · loads locally on the first voice command'}.`;
-    sttModelState.textContent=current+(micBusy?' Turn Mic Off and finish any voice or playback request before changing models.':'');
+    const hint=micBusy?' Finish the current voice or playback command before changing models.':
+      handsFree?.enabled?' Changing the model turns Mic Off; turn it back on afterward.':'';
+    sttModelState.textContent=current+hint;
   }
   function collapseControls({focusFace=false,preserveAutoSend=false}={}) {
     opened=false;panel.hidden=true;face.setAttribute('aria-expanded','false');
@@ -550,20 +557,29 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   renderSttModelState();
   sttModelSelect.addEventListener('change',async()=>{
     const requested=sttModelSelect.value;
+    if((requested!=='moonshine-lab'&&!validSttModel(requested))||isSttModelLocked()){
+      renderSttModelState('Finish the current voice or playback command before changing models.');
+      return;
+    }
+    // Stop passive wake scanning before changing the STT model or navigating to
+    // the cross-origin-isolated lab. Do not silently rearm the microphone.
+    const stoppedWake=Boolean(handsFree.enabled);
+    if(stoppedWake){
+      autoWakeWanted=false;autoWakeBlocked=true;
+      handsFree.disable(); // releases all microphone tracks and wake resources
+      closeAura();auraVoiceFlow=false;
+    }
     if(requested==='moonshine-lab'){
-      // The stock Moonshine WASM build requires COOP/COEP, which can block
-      // third-party video. Open the isolated test page, not the media UI.
-      sttModelSelect.value=localStt.getState().selectedModelId;
-      if(isSttModelLocked()){renderSttModelState('Finish your current voice command before testing Moonshine.');return;}
+      // Moonshine's WASM build needs COOP/COEP. Keep those headers off media UI.
       window.location.assign('/teslamon-moonshine-lab.html');
       return;
     }
-    if(!validSttModel(requested)||isSttModelLocked()){renderSttModelState();return;}
     try{
       await localStt.setModel(requested);
       try{localStorage.setItem(STT_MODEL_KEY,requested);}catch{}
       const label=requested==='whisper-base.en'?'Base English':'Tiny English';
-      sttModelMessage=`${label} selected · about ${requested==='whisper-base.en'?79:43} MB model download loads locally on the first voice command. Audio stays in this browser.`;
+      sttModelMessage=`${label} selected · about ${requested==='whisper-base.en'?79:43} MB model loads locally on the first voice command. Audio stays in this browser.`+
+        (stoppedWake?' Mic Off — tap Mic On to resume wake listening.':'');
     }catch(error){sttModelMessage=String(error?.message||'Could not change the local transcription model.');}
     renderSttModelState();
   });
