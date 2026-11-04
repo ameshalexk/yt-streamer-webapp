@@ -1476,6 +1476,10 @@ function showStreamNotice(kind, title, detail) {
   n.className = "stream-notice " + kind;
   $("#streamNoticeTitle").textContent = title;
   $("#streamNoticeDetail").textContent = detail;
+  const lower = $("#streamLowerBtn");
+  if (lower) lower.hidden = !canLowerPlaybackSettings();
+  const actions = n.querySelector(".notice-actions");
+  if (actions) actions.hidden = !lower || lower.hidden;
   showFullscreenOverlays();
 }
 
@@ -1647,8 +1651,8 @@ function streamErrorDetail(reason) {
   if (/403|forbidden|denied|access/i.test(s)) return "The source denied the request. VPN/geo blocking or a missing referer/user-agent is likely.";
   if (/404|not found/i.test(s)) return "The stream URL was not found. The channel may have moved or gone offline.";
   if (/429|too many/i.test(s)) return "Too many streams are active. Stop the current stream and retry.";
-  if (/network|timeout|timed out|stalled/i.test(s)) return "The app could not get video data from the source fast enough. Try Retry, Lower quality, or another channel.";
-  return s || "The app did not receive playable video. Try Retry, Lower quality, or another channel.";
+  if (/network|timeout|timed out|stalled/i.test(s)) return "The app could not get video data fast enough. Playback will reconnect automatically.";
+  return s || "The app did not receive playable video. Playback will reconnect automatically.";
 }
 
 function formatMpegtsError(type, detail, info) {
@@ -1930,8 +1934,6 @@ function failStreamAttempt(attempt, title, detail) {
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
   void stopCyberdashPlayback();
   screen.classList.remove("loading", "mjpeg-buffered-mode", "cyberdash-mode", "startup-preview");
-  setBadge("error", "Stream failed");
-  showStreamNotice("error", title, detail);
   try { video.pause(); } catch {}
   video.removeAttribute("src");
   try { video.load(); } catch {}
@@ -1950,11 +1952,13 @@ function failStreamAttempt(attempt, title, detail) {
   activeCompat = null;
   updateBufferedMjpegDebug(null);
   resetPauseControl(true);
-  if (retrying) {
-    setBadge("reconnecting", "Reconnecting playback…");
-    showStreamNotice("warning", "Reconnecting", "Your playback position and sound setting are kept.");
+  if (retrying || navigator.onLine === false || document.hidden) {
+    setBadge("reconnecting", navigator.onLine === false ? "Waiting for network…" : "Reconnecting playback…");
+    // Recovery needs no tap. A large notice must never cover the video.
+    clearStreamNotice();
   } else {
-    if (playbackRecovery?.exhausted) showStreamNotice("error", "Recovery stopped after 3 attempts", "Try Retry, lower quality, or a saved download.");
+    setBadge("error", "Stream failed");
+    showStreamNotice("error", title, detail);
     toast(title, true);
   }
 }
@@ -2126,11 +2130,8 @@ function armStreamWatchdog(watchdog) {
       if (playbackPaused) return suspendStreamWatchdog();
       watchdog.warned = true;
       setBadge("reconnecting", "Still connecting...");
-      showStreamNotice(
-        "warning",
-        "Still connecting",
-        `${watchdog.mode} has not delivered a video frame yet. Waiting a bit longer before marking it failed.`
-      );
+      // A first-frame wait is not an actionable error. Keep the video visible.
+      clearStreamNotice();
     }, watchdog.warnRemaining);
   }
   streamFailTimer = setTimeout(() => {
@@ -2139,7 +2140,7 @@ function armStreamWatchdog(watchdog) {
     failStreamAttempt(
       watchdog.attempt,
       "No video frames received",
-      `No playable video frames arrived during ${Math.round(watchdog.failMs / 1000)} seconds of active loading. Try Retry or another video if this continues.`
+      `No playable video frames arrived during ${Math.round(watchdog.failMs / 1000)} seconds of active loading. Playback will reconnect automatically.`
     );
   }, watchdog.failRemaining);
 }
@@ -4555,10 +4556,21 @@ function updateBwHint() {
   $("#bwHint").textContent = risky ? `~${est} Mbps est. · risky` : `~${est} Mbps est.`;
 }
 
+function canLowerPlaybackSettings() {
+  // Existing downloaded/embedded streams do not necessarily expose another
+  // rendition. Offer the one-click action only for a configurable stream.
+  if (!replayFn || !qualityProfilesAvailableForCurrentMode() || legacy.playing) return false;
+  const { height, fps, quality } = streamSettingsSnapshot();
+  return height === "0" || Number(height) > 360 || Number(fps) > 12 || Number(quality) < 12;
+}
+
 function lowerPlaybackSettings() {
+  if (!canLowerPlaybackSettings()) return false;
   const height = $("#ctlHeight");
   const fps = $("#ctlFps");
   const quality = $("#ctlQuality");
+  // Do not allow Auto to immediately override the user's chosen lower settings.
+  setStreamQualitySelection(null, { persist: false });
   if (parseInt(height.value, 10) > 360 || height.value === "0") height.value = "360";
   if (parseInt(fps.value, 10) > 12) fps.value = "12";
   if (parseInt(quality.value, 10) < 12) quality.value = "12";
@@ -4566,6 +4578,7 @@ function lowerPlaybackSettings() {
   renderQuickQuality();
   renderSettingOptions();
   updateBwHint();
+  return true;
 }
 
 // ---- Modals ----
@@ -9054,18 +9067,12 @@ $("#playerRetryAudioBtn").onclick = () => {
     toast("Audio retry failed: " + (error?.message || "unavailable"), true);
   });
 };
-$("#streamRetryBtn").onclick = () => {
-  playbackRecovery?.reset();
-  if (!replayFn) return;
-  toast("Retrying stream");
-  replayFn(streamSeek.seekable ? streamReplayTime() : undefined);
-};
 $("#streamLowerBtn").onclick = () => {
+  if (!replayFn || !lowerPlaybackSettings()) return;
   playbackRecovery?.reset();
-  if (!replayFn) return;
-  lowerPlaybackSettings();
-  toast("Retrying at " + currentSettingsLabel());
-  replayFn(streamSeek.seekable ? streamReplayTime() : undefined);
+  const resumeAt = streamSeek.seekable ? streamReplayTime() : undefined;
+  toast("Switching to " + currentSettingsLabel());
+  replayFn(resumeAt);
 };
 $("#slowBufferApplyBtn").onclick = applySlowBufferSuggestion;
 $("#slowBufferDismissBtn").onclick = () => {
@@ -10292,18 +10299,27 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
 });
 
 // Playback recovery keeps media transport and watch-progress identity intact.
+const playbackRecoverySourceKeys = new WeakMap();
+let playbackRecoverySourceSequence = 0;
 function playbackRecoverySample() {
-  if (!replayFn || !$('#screen')?.classList.contains('playing')) return null;
+  if (typeof replayFn !== 'function' || !$('#screen')?.classList.contains('playing')) return null;
   const stats = activeCompat?.bufferedPlayer?.getStats?.();
   const audio = $('#audio');
-  const source = activeCompat?.mjpegUrl || activeYoutubeSourceUrl || '';
-  let key = source;
-  try {
-    const parsed = new URL(source, location.origin);
-    for (const name of ['timestamp', '_', 'height', 'fps', 'quality', 'buffered', 'eautoSession', 'videoDelay']) parsed.searchParams.delete(name);
-    key = parsed.pathname + '?' + parsed.searchParams.toString();
-  } catch {}
-  if (!source) return null;
+  // Resolve identity once per replay callback. Teardown may remove activeCompat,
+  // but recovery must still have a key for TS-only and other live URLs.
+  let key = playbackRecoverySourceKeys.get(replayFn);
+  if (!key) {
+    const source = activeYoutubeSourceUrl || activeCompat?.mjpegUrl || '';
+    key = source || 'replay:' + (++playbackRecoverySourceSequence);
+    if (source) {
+      try {
+        const parsed = new URL(source, location.origin);
+        for (const name of ['timestamp', '_', 'height', 'fps', 'quality', 'buffered', 'eautoSession', 'videoDelay']) parsed.searchParams.delete(name);
+        key = parsed.pathname + '?' + parsed.searchParams.toString();
+      } catch {}
+    }
+    playbackRecoverySourceKeys.set(replayFn, key);
+  }
   return {
     key, attempt: streamAttempt, replay: replayFn, position: getStreamCurrentTime(),
     paused: playbackPaused, hidden: document.hidden, offline: navigator.onLine === false,
@@ -10339,10 +10355,8 @@ const playbackRecovery = window.PlaybackRecovery ? new window.PlaybackRecovery.M
   recover: recoverPlayback,
   notify: (event) => {
     if (event.state === 'recovering') {
-      setBadge('reconnecting', `Recovering ${event.audioOnly ? 'audio' : 'playback'} · ${event.attempt}/3`);
-      showStreamNotice('warning', 'Reconnecting', 'Your playback position and sound setting are kept.');
-    } else if (event.state === 'exhausted') {
-      showStreamNotice('error', 'Recovery stopped after 3 attempts', 'Try Retry, lower quality, or a saved download.');
+      setBadge('reconnecting', `Reconnecting ${event.audioOnly ? 'audio' : 'playback'} automatically…`);
+      clearStreamNotice();
     }
     reportPlaybackEvent('recovery_' + event.state, { reason: event.reason, message: String(event.attempt) });
   },
@@ -10440,8 +10454,19 @@ function initEverydayControls() {
   document.addEventListener("pointerdown", retryBrowserAudioFromGesture, true);
   document.addEventListener("keydown", retryBrowserAudioFromGesture, true);
   window.addEventListener("offline", () => playbackRecovery?.hold());
+  function resumeInterruptedRecovery() {
+    if (playbackPaused || document.hidden || navigator.onLine === false) return;
+    const sample = playbackRecoverySample() || playbackRecovery?.last;
+    if (!sample || sample.replay !== replayFn || sample.ended || sample.blocked) return;
+    if (!playbackRecovery?.resume(sample) && !playbackRecovery?.pending
+        && $("#streamBadge")?.classList.contains("reconnecting") && !activeCompat) {
+      playbackRecovery?.request("connection-restored", { ...sample, offline: false, hidden: false });
+    }
+  }
+  window.addEventListener("online", resumeInterruptedRecovery);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) playbackRecovery?.hold();
+    else resumeInterruptedRecovery();
     if (document.hidden) void watchProgress.save({ keepalive: true });
     activeCompat?.bufferedPlayer?.setVisible?.(!document.hidden);
   });
