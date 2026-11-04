@@ -1254,20 +1254,31 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   // Wake listening must initialize even when the puppy panel stays closed.
   // This triggers only the browser's normal permission flow, never a bypass.
   void refresh();
-  if(urlVideoCommand&&!userDisabled){
-    // This navigation is explicit; it does not need a microphone or open panel.
+  if(urlVideoCommand){
+    // A deliberate navigation works even when the puppy/microphone was disabled.
     // The existing same-tab Codex -> search -> player path performs the action.
     closeAura();
-    void (async()=>{
-      for(let attempt=0;attempt<48&&!document.hidden;attempt++){
-        if(localPlayer.ready){
-          enabled=true;selected='this_tab';
-          await interpret(urlVideoCommand,{allowClosed:true,videoOnly:true});
-          return;
+    let commandDispatched=false,commandWaiting=false;
+    async function runUrlCommandOnceVisible(){
+      if(commandDispatched||commandWaiting||document.hidden)return;
+      commandWaiting=true;
+      try{
+        for(let attempt=0;attempt<48;attempt++){
+          if(document.hidden)return;
+          if(localPlayer.ready){
+            commandDispatched=true;
+            enabled=true;selected='this_tab';
+            await interpret(urlVideoCommand,{allowClosed:true,videoOnly:true});
+            return;
+          }
+          await new Promise(resolve=>setTimeout(resolve,250));
         }
-        await new Promise(resolve=>setTimeout(resolve,250));
-      }
-      status('The player did not become ready for the URL command.','warn');
-    })();
+        status('The player did not become ready for the URL command.','warn');
+      }finally{commandWaiting=false;}
+    }
+    document.addEventListener('visibilitychange',()=>{
+      if(!document.hidden)void runUrlCommandOnceVisible();
+    });
+    void runUrlCommandOnceVisible();
   }
 }
