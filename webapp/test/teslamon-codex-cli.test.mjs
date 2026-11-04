@@ -213,3 +213,20 @@ test('Caller cancellation is logged separately from the 45-second deadline',asyn
   assert.equal(events.find(e=>e.phase==='termination_requested')?.reason,
     'request_cancelled');
 });
+
+
+test('URL video mode allows only video search and never configures Home Assistant MCP',async()=>{
+  const calls=[];
+  const t=client([{tool:'search_and_play',query:'latest MKBHD video'}],calls);
+  const result=await t.plan('playthelatestMKBSTvideo',SESSION,ID,{videoOnly:true});
+  assert.deepEqual(result,{status:'ok',tool:'search_and_play',args:{query:'latest MKBHD video'}});
+  const args=calls[0].args.join(' ');
+  assert.doesNotMatch(args,/teslamon_lights|Mac_Control|Home_Assistant/);
+  assert.match(args,/read-only/);
+});
+test('URL video mode rejects even valid non-video plans and all MCP use',async()=>{
+  const pause=client([{tool:'pause',query:''}],[]);
+  assert.equal((await pause.plan('pause',SESSION,ID,{videoOnly:true})).code,'video_only_command');
+  const lights=client([{tool:'ha_done',query:'',mcp:{tool:'set_light'}}],[]);
+  assert.equal((await lights.plan('turnoffbedroomlights',SESSION,ID,{videoOnly:true})).code,'codex_disallowed_tool');
+});

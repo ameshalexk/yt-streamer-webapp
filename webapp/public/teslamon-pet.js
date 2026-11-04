@@ -1,4 +1,5 @@
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
+import {parseTeslaMonVideoUrl} from './teslamon-video-url.js';
 import {createTeslaMonAura} from './teslamon-aura.js?v=20261028-aura-reliable1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
@@ -11,6 +12,8 @@ import {shouldDismissTeslaMon} from './teslamon-presence.js';
 import {TESLAMON_WAKE_KEYWORDS, normalizeTeslaMonWakeKeywords, restoreTeslaMonWakeKeywords, stripTeslaMonWakePhrasePrefix, teslaMonWakePhraseLabel} from './teslamon-wake-phrases.js?v=20261025-mycroft-rhasspy1';
 
 if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
+  const urlVideoCommand=parseTeslaMonVideoUrl(location.pathname);
+  if(urlVideoCommand)try{history.replaceState(history.state,'','/'+location.search+location.hash);}catch{}
   const pet=document.createElement('aside');
   pet.id='teslamonPet';
   pet.setAttribute('aria-label','TeslaMon playback assistant');
@@ -156,7 +159,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   let activePlannerVoice=false,activeIssueVoice=false;
   try{auraEnabled=localStorage.getItem(AURA_KEY)!=='0';}catch{}
   try{userDisabled=localStorage.getItem(DISABLED_KEY)==='1';}catch{}
-  startupAuraPending=auraEnabled&&!userDisabled;
+  startupAuraPending=auraEnabled&&!userDisabled&&!urlVideoCommand;
   const aura=createTeslaMonAura({onDismiss:(entry,reason)=>{
     // Tap/Escape only suppress this presentation; speech and dispatch continue.
     if(startupAuraEntry===entry)startupAuraEntry=null;
@@ -273,7 +276,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     'Moonshine WASM is unsupported in this browser security context. Select Whisper Tiny to leave isolated mode.':'';
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
-    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=!userDisabled,autoWakeBlocked=false,
+    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=!userDisabled&&!urlVideoCommand,autoWakeBlocked=false,
     panelRevision=0,fullscreenSeen=false,dismissedForSuccess=false,auraVoiceFlow=false;
   const WAKE_KEY='ytStreamerTeslaMonWakePhrasesV1';
   let selectedWakeKeywords=[...TESLAMON_WAKE_KEYWORDS];
@@ -769,7 +772,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   }
   // Both typed and voice commands use the existing authenticated planner.
   // Voice cancellation checks apply before any new player/HA dispatch.
-  async function interpret(text,{allowClosed=false,signal,owner=null,entry=null,voice=false}={}){
+  async function interpret(text,{allowClosed=false,signal,owner=null,entry=null,voice=false,videoOnly=false}={}){
     if(signal?.aborted){finishVoiceAura(owner,entry);return false;}
     const request=String(text||'').trim();
     if(request.length<1||request.length>220){
@@ -784,9 +787,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     auraStage('thinking','Understanding your request…',{entry});
     status('Codex is understanding your request…','info',owner);
     try{
-      const result=await post('/api/teslamon/plan',{text:request,session:tabSession},'application/json',signal);
+      const endpoint=videoOnly?'/api/teslamon/url-video-plan':'/api/teslamon/plan';
+      const result=await post(endpoint,{text:request,session:tabSession},'application/json',signal);
       if(!current())return false;
-      if(result.status==='ok'&&typeof result.tool==='string'){
+      if(result.status==='ok'&&typeof result.tool==='string'&&
+         (!videoOnly||result.tool==='search_and_play')){
         if(input.value.trim()===request)input.value='';
         return await issue({tool:result.tool,args:result.args||{}},requestRevision,{
           originalRequest:request,signal,owner,entry,voice,epoch,isCurrent:current,
@@ -1249,4 +1254,20 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   // Wake listening must initialize even when the puppy panel stays closed.
   // This triggers only the browser's normal permission flow, never a bypass.
   void refresh();
+  if(urlVideoCommand&&!userDisabled){
+    // This navigation is explicit; it does not need a microphone or open panel.
+    // The existing same-tab Codex -> search -> player path performs the action.
+    closeAura();
+    void (async()=>{
+      for(let attempt=0;attempt<48&&!document.hidden;attempt++){
+        if(localPlayer.ready){
+          enabled=true;selected='this_tab';
+          await interpret(urlVideoCommand,{allowClosed:true,videoOnly:true});
+          return;
+        }
+        await new Promise(resolve=>setTimeout(resolve,250));
+      }
+      status('The player did not become ready for the URL command.','warn');
+    })();
+  }
 }
