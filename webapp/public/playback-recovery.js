@@ -1,12 +1,14 @@
 (function (root) {
   'use strict';
-  // One bounded budget follows a source across reconnects. Only sustained
-  // healthy playback or an explicit user action gives it a fresh budget.
+  // Keep retrying the same media with capped backoff. A real, sustained
+  // playback recovery resets the delay. Stop/Pause/source changes cancel
+  // pending timers, and offline/hidden holds resume on return.
   class Monitor {
     constructor({ recover, notify = () => {}, now = () => Date.now(),
       schedule = (...args) => setTimeout(...args), cancel = (...args) => clearTimeout(...args),
-      stallMs = 15000, audioStallMs = 8000, stableMs = 60000, maxAttempts = 3 } = {}) {
-      Object.assign(this, { recover, notify, now, schedule, cancel, stallMs, audioStallMs, stableMs, maxAttempts });
+      stallMs = 15000, audioStallMs = 8000, stableMs = 60000,
+      retryDelays = [1000, 3000, 8000, 15000, 30000, 60000] } = {}) {
+      Object.assign(this, { recover, notify, now, schedule, cancel, stallMs, audioStallMs, stableMs, retryDelays });
       this.generation = 0;
       this.reset();
     }
@@ -18,22 +20,37 @@
       this.attempts = 0;
       this.audioAttempts = 0;
       this.pending = false;
+      this.inFlight = false;
+      this.queued = null;
       this.last = null;
+      this.recoveryActive = false;
+      this.interrupted = false;
       this.videoAt = this.audioAt = this.healthyAt = this.now();
       this.driftAt = null;
-      this.exhausted = false;
     }
     hold() {
-      if (this.timer != null) {
-        this.cancel(this.timer);
+      if (this.pending) {
+        this.interrupted = true;
+        const timerWasQueued = this.timer != null;
+        if (timerWasQueued) this.cancel(this.timer);
         this.timer = null;
         this.generation++;
         this.pending = false;
-        this.attempts = Math.max(0, this.attempts - 1);
-        if (this.pendingAudioOnly) this.audioAttempts = Math.max(0, this.audioAttempts - 1);
+        this.inFlight = false;
+        this.queued = null;
+        // A cancelled timer was never attempted; don't increase its backoff.
+        if (timerWasQueued) {
+          this.attempts = Math.max(0, this.attempts - 1);
+          if (this.pendingAudioOnly) this.audioAttempts = Math.max(0, this.audioAttempts - 1);
+        }
       }
       this.videoAt = this.audioAt = this.healthyAt = this.now();
       this.driftAt = null;
+    }
+    resume(sample = this.last) {
+      if (!this.interrupted || this.pending || !sample) return false;
+      this.interrupted = false;
+      return this.request('resume', { ...sample, hidden: false, offline: false });
     }
     observe(sample) {
       if (!sample?.key) return;
@@ -52,9 +69,20 @@
         if (progressed) this.videoAt = now;
         if (!sample.audioEnabled || audioProgressed) this.audioAt = now;
         if (progressed && (!sample.audioEnabled || audioProgressed)) {
+          this.interrupted = false;
+          // Playback may resume on its own before the queued retry fires.
+          // Never interrupt a healthy stream just to spend a retry.
+          if (this.timer != null) {
+            this.cancel(this.timer);
+            this.timer = null;
+            this.generation++;
+            this.pending = false;
+            this.attempts = Math.max(0, this.attempts - 1);
+            if (this.pendingAudioOnly) this.audioAttempts = Math.max(0, this.audioAttempts - 1);
+          }
           if (now - this.healthyAt >= this.stableMs) {
             this.attempts = this.audioAttempts = 0;
-            this.exhausted = false;
+            this.recoveryActive = false;
           }
         } else this.healthyAt = now;
         const drifted = sample.audioEnabled && Math.abs(sample.driftMs || 0) > 1500;
@@ -73,30 +101,41 @@
     request(reason, sample = this.last) {
       if (!sample?.key || sample.paused || sample.hidden || sample.blocked || sample.offline || sample.ended) return false;
       if (sample.key !== this.key) { this.reset(); this.key = sample.key; }
-      if (this.pending) return true;
-      if (this.attempts >= this.maxAttempts) {
-        if (!this.exhausted) this.notify({ state: 'exhausted', reason, attempt: this.attempts });
-        this.exhausted = true;
-        return false;
+      if (this.pending) {
+        // Failures can fire synchronously while replay() is still rebuilding
+        // media. Requeue after it settles instead of dropping the only error.
+        if (this.inFlight) this.queued = { reason, sample };
+        return true;
       }
       this.attempts++;
+      this.recoveryActive = true;
       const audioOnly = reason === 'audio' && sample.canRepairAudio && this.audioAttempts < 1;
       if (audioOnly) this.audioAttempts++;
       this.pendingAudioOnly = audioOnly;
       const generation = this.generation;
       this.pending = true;
-      this.notify({ state: 'recovering', reason, audioOnly, attempt: this.attempts });
-      const delay = [1000, 3000, 8000][this.attempts - 1] || 8000;
+      const attempt = this.attempts;
+      const delay = this.retryDelays[Math.min(attempt - 1, this.retryDelays.length - 1)];
+      this.notify({ state: 'recovering', reason, audioOnly, attempt, delay });
       this.timer = this.schedule(async () => {
         this.timer = null;
         if (generation !== this.generation) return;
-        try { await this.recover({ ...sample, reason, audioOnly, recoveryAttempt: this.attempts }); }
-        catch { if (generation === this.generation) this.notify({ state: 'failed', reason, attempt: this.attempts }); }
-        finally {
+        this.inFlight = true;
+        let failed = false;
+        try { await this.recover({ ...sample, reason, audioOnly, recoveryAttempt: attempt }); }
+        catch {
+          failed = true;
+          if (generation === this.generation) this.notify({ state: 'failed', reason, attempt });
+        } finally {
           if (generation === this.generation) {
+            this.inFlight = false;
             this.pending = false;
             this.videoAt = this.audioAt = this.healthyAt = this.now();
             this.driftAt = null;
+            const queued = this.queued;
+            this.queued = null;
+            if (queued) this.request(queued.reason, queued.sample);
+            else if (failed) this.request('failure', sample);
           }
         }
       }, delay);

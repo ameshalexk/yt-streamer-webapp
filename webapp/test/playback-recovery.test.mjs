@@ -15,13 +15,20 @@ function fixture(options = {}) {
   return { monitor, sample, events, recoveries, advance: (ms, changes = {}) => { now += ms; monitor.observe({ ...sample, ...changes }); },
     run: async () => { const task = scheduled; scheduled = null; await task.fn(); }, get task() { return scheduled; } };
 }
-test('freeze recovery preserves position, delays retries and exhausts one budget across attempts', async () => {
-  const f = fixture(); f.advance(0); f.advance(16000);
-  assert.equal(f.task.delay, 1000); await f.run(); assert.equal(f.recoveries[0].position, 42);
-  f.advance(0, { attempt: 2 }); f.advance(16000, { attempt: 2 }); assert.equal(f.task.delay, 3000); await f.run();
-  f.advance(0, { attempt: 3 }); f.advance(16000, { attempt: 3 }); assert.equal(f.task.delay, 8000); await f.run();
-  f.advance(0, { attempt: 4 }); f.advance(16000, { attempt: 4 });
-  assert.equal(f.task, null); assert.equal(f.monitor.attempts, 3); assert.equal(f.events.at(-1).state, 'exhausted');
+test('freeze recovery preserves position and keeps retrying with capped backoff after attempt three', async () => {
+  const f = fixture();
+  const expectedDelays = [1000, 3000, 8000, 15000, 30000, 60000, 60000];
+  for (let i = 0; i < expectedDelays.length; i++) {
+    const attempt = i + 1;
+    f.advance(0, { attempt });
+    f.advance(16000, { attempt });
+    assert.equal(f.task.delay, expectedDelays[i]);
+    await f.run();
+    assert.equal(f.recoveries.at(-1).position, 42);
+  }
+  assert.equal(f.monitor.attempts, 7);
+  assert.equal(f.events.filter(e => e.state === 'exhausted').length, 0);
+  assert.equal(f.monitor.recoveryActive, true);
 });
 test('paused, hidden, autoplay-blocked, offline and finished playback never trigger recovery', () => {
   for (const condition of ['paused', 'hidden', 'blocked', 'offline', 'ended']) {
@@ -82,4 +89,101 @@ test('near-end clock/seek updates do not record processed completion; natural en
 test('explicit hold cancels retries even when media has already failed and no sample remains', async () => {
   const f = fixture(); f.monitor.request('failure', f.sample); const callback = f.task.fn;
   f.monitor.hold(); await callback(); assert.equal(f.recoveries.length,0); assert.equal(f.monitor.attempts,0);
+});
+
+test('rejected reconnect requeues automatically without a button press', async () => {
+  let failed = 0;
+  const f = fixture({ recover: async () => { failed++; throw new Error('network unreachable'); } });
+  f.monitor.request('failure', f.sample);
+  assert.equal(f.task.delay, 1000);
+  await f.run();
+  assert.equal(failed, 1);
+  assert.equal(f.task.delay, 3000);
+  await f.run();
+  assert.equal(failed, 2);
+  assert.equal(f.task.delay, 8000);
+});
+
+test('a failure during an in-flight replay queues another attempt instead of getting lost', async () => {
+  let finish;
+  const gate = new Promise(resolve => { finish = resolve; });
+  const f = fixture({ recover: async () => gate });
+  f.monitor.request('failure', f.sample);
+  const running = f.task.fn();
+  assert.equal(f.monitor.inFlight, true);
+  assert.equal(f.monitor.request('failure', f.sample), true);
+  finish();
+  await running;
+  assert.equal(f.task.delay, 3000);
+});
+
+test('pause while replay is in flight prevents a queued follow-up retry', async () => {
+  let finish;
+  const gate = new Promise(resolve => { finish = resolve; });
+  const f = fixture({ recover: async () => gate });
+  f.monitor.request('failure', f.sample);
+  const running = f.task.fn();
+  f.monitor.request('failure', f.sample);
+  f.monitor.hold();
+  finish();
+  await running;
+  assert.equal(f.monitor.pending, false);
+  assert.equal(f.monitor.queued, null);
+});
+
+test('network return resumes interrupted recovery without another user action', async () => {
+  const f = fixture();
+  f.monitor.request('failure', f.sample);
+  f.monitor.hold();
+  assert.equal(f.task, null);
+  assert.equal(f.monitor.recoveryActive, true);
+  assert.equal(f.monitor.resume({ ...f.sample, offline: false }), true);
+  assert.equal(f.task.delay, 1000);
+  await f.run();
+  assert.equal(f.recoveries.length, 1);
+});
+
+test('lowest quality hides the one-click quality action; higher setting lowers and disables Auto', async () => {
+  const app = await fs.readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /id="streamRetryBtn"/);
+  assert.match(app, /if \(lower\) lower.hidden = !canLowerPlaybackSettings\(\)/);
+  const controls = { '#ctlHeight': { value: '360' }, '#ctlFps': { value: '12' }, '#ctlQuality': { value: '12' } };
+  const events = [];
+  const ctx = vm.createContext({
+    replayFn: () => {}, qualityProfilesAvailableForCurrentMode: () => true,
+    legacy: { playing: null }, $: selector => controls[selector],
+    streamSettingsSnapshot: () => ({
+      height: controls['#ctlHeight'].value, fps: controls['#ctlFps'].value, quality: controls['#ctlQuality'].value }),
+    setStreamQualitySelection: (value, options) => events.push([value, options.persist]),
+    renderFpsPresets: () => {}, renderQuickQuality: () => {},
+    renderSettingOptions: () => {}, updateBwHint: () => {},
+  });
+  const start = app.indexOf('function canLowerPlaybackSettings()');
+  const end = app.indexOf('\n// ---- Modals', start);
+  vm.runInContext(app.slice(start, end), ctx);
+  assert.equal(ctx.canLowerPlaybackSettings(), false);
+  assert.equal(ctx.lowerPlaybackSettings(), false);
+  controls['#ctlHeight'].value = '480';
+  controls['#ctlFps'].value = '24';
+  controls['#ctlQuality'].value = '7';
+  assert.equal(ctx.canLowerPlaybackSettings(), true);
+  assert.equal(ctx.lowerPlaybackSettings(), true);
+  assert.deepEqual([controls['#ctlHeight'].value, controls['#ctlFps'].value, controls['#ctlQuality'].value], ['360','12','12']);
+  assert.deepEqual(events, [[null, false]]);
+  assert.equal(ctx.canLowerPlaybackSettings(), false);
+});
+
+test('healthy frames cancel a queued retry and do not reconnect after returning to the tab', () => {
+  const f = fixture();
+  f.advance(0);
+  f.monitor.request('failure', f.sample);
+  const retry = f.task;
+  f.monitor.hold();
+  assert.equal(f.monitor.resume({ ...f.sample, paused: false }), true);
+  assert.equal(f.task.delay, retry.delay);
+  f.advance(1000, { videoProgress: 11 });
+  assert.equal(f.task, null);
+  f.monitor.hold();
+  assert.equal(f.monitor.resume(f.sample), false);
 });
