@@ -13,6 +13,9 @@ test('existing app, assets and unsafe paths never become automatic commands',()=
   for(const path of ['','/','/index.html','/api/teslamon/plan','/stream/youtube',
     '/apne/watch/123','/retrotv','/games/','/vendor/x.js','/teslamon-pet.js',
     '/favicon.ico','/robots.txt','/_next/foo','/assets/photo.jpg',
+    '/retro','/retro/','/retrotv/','/retro-pc/','/tesla','/tesla/live',
+    '/experimental/','/icons/logo.svg','/teslamon-wake-assets/model',
+    '/download','/episodes/current','/check-source','/mark-watched',
     '/play%0Avideo','/%ZZ','/play?foo','/go#section','/']){
     assert.equal(parseTeslaMonVideoUrl(path),null,path);
   }
