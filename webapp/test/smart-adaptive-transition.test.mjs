@@ -13,6 +13,7 @@ function fixture() {
   const replay = () => {};
   const context = vm.createContext({
     replayFn: replay, streamAttempt: 4, streamSeek: { seekable: true }, soundOn: true, activeCompat: null,
+    activeYoutubeSourceUrl: "https://www.youtube.com/watch?v=fixture",
     playbackPaused: false, pendingQualityRestore: null, queuedAutoQuality: null, qualitySwitchTimer: null,
     qualitySwitchGeneration: 0, diagnosticsQualityReason: null, document: { hidden: false },
     navigator: { onLine: true }, performance: { now: () => 5000 }, awaitingRecoveredFrame: null,
@@ -48,6 +49,7 @@ test("a deferred switch uses the latest position and cannot be replaced by a sec
   f.context.position = 10.2;
   f.run();
   assert.deepEqual(f.calls.filter(([kind]) => kind !== "auto_quality_switch"), [["apply", "high"], ["replay", 10.2]]);
+  assert.equal(f.calls.find(([kind]) => kind === "auto_quality_switch")?.[1].streamUrl, f.context.activeYoutubeSourceUrl);
 });
 
 test("a seek, pause, offline transition or pending video recovery prevents a queued quality replay", () => {

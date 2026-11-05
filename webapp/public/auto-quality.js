@@ -34,18 +34,27 @@
   const nextTier = (tier, delta) => TIER_ORDER[TIER_ORDER.indexOf(tier) + delta];
 
   function metricsFor(stats = {}, policy = BUFFER_POLICIES.medium) {
-    const fps = positive(stats.fps) || 15;
+    const webcodecs = stats.transport === "webcodecs";
+    const rate = webcodecs ? Math.max(1, positive(stats.playbackRate) || 1) : 1;
+    const fps = (positive(stats.fps) || 15) * rate;
+    const sourceSpeed = number(stats.producerSpeed);
+    const sourceTarget = positive(stats.queueTargetSeconds);
     return {
       fps,
+      rate,
       renderedFrames: number(stats.renderedFrames) ?? 0,
       droppedFrames: number(stats.droppedFrames) ?? 0,
-      queueSeconds: Math.max(0, number(stats.queueSeconds) ?? 0),
-      target: positive(stats.queueTargetSeconds) || (stats.transport === "webcodecs" ? 0.35 : policy.rebufferSeconds),
-      producerSpeed: number(stats.producerSpeed) ?? (number(stats.receiveFps) == null ? null : stats.receiveFps / fps),
+      // WebCodecs reports source time. Compare the buffer and frame cadence
+      // in wall time so a 2× session needs twice as many frames per second.
+      queueSeconds: Math.max(0, number(stats.queueSeconds) ?? 0) / rate,
+      target: sourceTarget == null ? (webcodecs ? 0.35 : policy.rebufferSeconds) : sourceTarget / rate,
+      producerSpeed: sourceSpeed == null
+        ? (number(stats.receiveFps) == null ? null : stats.receiveFps / fps)
+        : sourceSpeed / rate,
       renderedFps: number(stats.renderedFps),
       averageDecodeMs: number(stats.averageDecodeMs),
       decoderQueueSize: number(stats.decoderQueueSize),
-      driftMs: Math.abs(number(stats.lastAvDriftMs) ?? 0),
+      driftMs: Math.abs(number(stats.lastAvDriftMs) ?? 0) / rate,
       deliveryBps: positive(stats.deliveryBps) || (positive(stats.receiveBytesPerSecond) || 0) * 8,
       capacityBps: positive(stats.capacityBps),
       mediaBps: positive(stats.mediaBps),
@@ -188,7 +197,7 @@
       if (!from) return null;
       const upper = nextTier(this.tier, 1);
       const candidate = profiles[upper];
-      const rate = positive(stats.playbackRate) || 1;
+      const rate = m.rate;
       const audioBps = stats.audioMuted ? 0 : 160000;
       if (m.deliveryBps > 0) {
         this.delivery.sample(m.deliveryBps, dt);
