@@ -79,6 +79,17 @@ jobs:
       - name: iPhone player responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
         working-directory: webapp
+      - name: Playback speed menu responsive browser regression
+        run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/playback-speed-menu-browser-check.mjs
+        working-directory: webapp
+      # GitHub-hosted Ubuntu Chrome can report a closed WebCodecs decoder in
+      # its headless media environment despite valid fixture media. Exercise
+      # actual WebCodecs A/V playback on macOS (a deployment target), while
+      # retaining UI, Node/FFmpeg and packaging checks on both runners.
+      - name: Playback speed real-media Chrome regression (macOS)
+        if: runner.os == 'macOS'
+        run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/playback-speed-browser-check.mjs
+        working-directory: webapp
       - name: AI Access sign-in UI browser smoke
         run: npm run test:ai-agent-access-ui
         working-directory: webapp

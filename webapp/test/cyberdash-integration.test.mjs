@@ -180,7 +180,7 @@ test("WebCodecs restart preserves user activation by avoiding awaited old-player
   assert.doesNotMatch(playerBlock, /await stopCyberdashPlayback/);
   assert.match(playerBlock, /cleanupMedia\(Boolean\(meta\.watchHistoryKey[\s\S]*?\)\)/);
   assert.match(playerBlock, /const module = cyberdashModule \|\| await ensureCyberdashModule\(\)/);
-  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20261007-prefetch-v11"\)/);
+  assert.match(app, /cyberdashModulePromise = import\("\/cyberdash-embedded\.mjs\?v=20261104-speed-startup-v12"\)/);
 });
 
 test("WebCodecs playback rate is forwarded to the server and expands source-time buffer headroom", () => {
@@ -241,12 +241,11 @@ test("WebCodecs telemetry records the actual requested adaptive FPS", () => {
 });
 
 
-test("fast WebCodecs playback waits for a real startup buffer instead of three frames", () => {
+test("fast WebCodecs playback gates startup on time coverage and completed tails", () => {
   assert.match(embedded, /fastPlaybackBufferTargets/);
-  assert.match(embedded, /const startupWallSec = Math\.min\(4, 1\.5 \+ \(\(rate - 1\) \* 2\.5\)\)/);
-  assert.match(embedded, /state\.decodedVideo\.length >= targets\.startupVideoFrames/);
-  assert.match(embedded, /videoSourceSec >= targets\.startupVideoSourceSec/);
-  assert.match(embedded, /audioWallSec >= targets\.startupAudioWallSec/);
+  assert.match(embedded, /if \(playbackStartupReady\(\{/);
+  assert.match(embedded, /videoFeedDone: state\.videoFeedDone/);
+  assert.match(embedded, /audioFeedDone: state\.audioFeedDone/);
   assert.match(embedded, /startupVideoBufferSec = decodedVideoAheadSec/);
   assert.match(embedded, /startupAudioBufferSec = state\.externalAudioElement \? null : pendingAudioBufferedSec/);
 });
