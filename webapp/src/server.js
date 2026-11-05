@@ -126,6 +126,7 @@ function playbackStats(value) {
     "audioMediaPaused", "audioMediaTimeSec", "playbackPositionSec",
     "audioEndPtsSec", "audioEndSourceSec", "videoEndPtsSec", "knownVideoEndSourceSec",
     "sourceDurationSec", "playbackRate",
+    "audioStatus", "audioBufferedSeconds", "audioErrorCode", "audioLoadElapsedMs",
   ];
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
 }
@@ -1811,7 +1812,14 @@ app.get("/stream/audio/youtube", asyncH(async (req, res) => {
   const { videoUrl, audioUrl, resolveCache, resolveMs } = await resolveProxiedYouTubeStreams(url, maxHeight);
   res.set("X-YT-Resolve-Ms", String(Math.max(0, Math.round(resolveMs))));
   res.set("X-YT-Resolve-Cache", resolveCache);
-  return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
+  return stream.streamAudio(req, res, {
+    input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS,
+    onTelemetry: (telemetry) => appendPlaybackEvent({
+      at: new Date().toISOString(), event: "server_audio_summary",
+      youtubeId: youtubeIdFromPlaybackUrl(url), serverInstanceId: SERVER_INSTANCE_ID,
+      serverTelemetry: telemetry, timing: { resolveMs, resolveCache },
+    }),
+  });
 }));
 
 app.get("/stream/audio/prepared/:id", asyncH(async (req, res) => {

@@ -674,15 +674,24 @@
       this._maybeStartOrResume();
     }
 
-    beginAudioRecovery(clockOffset = this.audioClockOffset) {
+    beginAudioRecovery(clockOffset = this.audioClockOffset, mediaTime = null) {
       if (!this._active() || this.userPaused || this.hidden) return false;
-      this.playing = false;
-      this.buffering = true;
+      const current = Number.isFinite(mediaTime) ? Math.max(0, mediaTime) : this.currentTime();
       this.audioReady = false;
       this.audioClockOffset = clockOffset;
-      this._cancelRaf();
+      // Keep rendering from the monotonic video clock while audio reconnects.
+      // A transport repair must not blank or repeatedly freeze useful frames.
+      this.monotonicAnchor = { media: current, perf: performance.now() };
       try { this.audio?.pause(); } catch {}
-      this._setState('buffering', { reason: 'audio' });
+      if (this.playbackStarted) {
+        this.playing = true;
+        this.buffering = false;
+        this._setState('playing', { reason: 'audio-recovery', audioRecovering: true });
+        this._scheduleRender();
+      } else {
+        this._setState('buffering', { reason: 'audio-recovery', audioRecovering: true });
+        this._maybeStartOrResume();
+      }
       return true;
     }
 
@@ -1194,11 +1203,18 @@
         try { this.audio?.pause(); } catch {}
         this.monotonicAnchor = { media: current, perf: performance.now() };
         if (!this.userPaused && !this.hidden) {
-          this.playing = true;
-          this.buffering = false;
-          this.recovery.onPlaybackStable();
-          this._setState("playing", { audioDisabled: true, recoveryTargetSeconds: this.recovery.update() });
-          this._scheduleRender();
+          if (this.playbackStarted) {
+            this.playing = true;
+            this.buffering = false;
+            this.recovery.onPlaybackStable();
+            this._setState("playing", { audioDisabled: true, recoveryTargetSeconds: this.recovery.update() });
+            this._scheduleRender();
+          } else {
+            // Before the first video frame, let the normal queue gate decide
+            // when playback has genuinely started; do not report zero-frame
+            // audio timeout as successful video playback.
+            this._maybeStartOrResume();
+          }
         }
       }
     }

@@ -81,6 +81,23 @@ jobs:
       - name: iPhone player responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
         working-directory: webapp
+      # Hosted headless Chrome on either OS may load MP3 successfully but
+      # have no output audio clock (readyState=4, currentTime remains zero).
+      # CI gates real HTTP MJPEG frames + audio HTTP failure retries, video
+      # continuity, reconnect and responsive UI. Audio clock alignment and
+      # pause/visibility paths are unit-tested here and the full decoded audio
+      # fixture passed 32/32 on the physical Mac mini before this release.
+      - name: Buffered MJPEG transport recovery browser regression (CI)
+        run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mjpeg-audio-coordination-browser-check.mjs --automated --ci-transport
+        working-directory: webapp
+        timeout-minutes: 8
+      - name: Save MJPEG recovery fixture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mjpeg-audio-recovery-${{ matrix.os }}
+          path: docs/evidence/mjpeg-audio-coordination-20261104.json
+          if-no-files-found: warn
       - name: Playback speed menu responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/playback-speed-menu-browser-check.mjs
         working-directory: webapp

@@ -41,10 +41,35 @@ test('source switch and stop cancel a queued retry; stale callbacks cannot repla
   f.advance(1, { key: 'video-b' }); await callback(); assert.equal(f.recoveries.length, 0);
   f.monitor.request('failure', { ...f.sample, key: 'video-b' }); f.monitor.reset(); assert.equal(f.task, null);
 });
-test('audio stalls first repair audio then escalate to a full reconnect within the same budget', async () => {
+test('recurrent audio stalls stay on the audio path without rebuilding useful video', async () => {
   const f = fixture(); f.advance(0, { audioEnabled: true });
   f.advance(9000, { audioEnabled: true, videoProgress: 50 }); await f.run(); assert.equal(f.recoveries[0].audioOnly, true);
-  f.advance(9000, { audioEnabled: true, videoProgress: 100 }); await f.run(); assert.equal(f.recoveries[1].audioOnly, false);
+  f.advance(9000, { audioEnabled: true, videoProgress: 100 }); await f.run(); assert.equal(f.recoveries[1].audioOnly, true);
+});
+test('audio loading and browser gesture denial suppress competing audio repairs', () => {
+  for (const audioStatus of ['retrying', 'gesture-required']) {
+    const f = fixture(); f.advance(0, { audioEnabled: true, audioStatus });
+    f.advance(9000, { audioEnabled: true, audioStatus, audioError: true, videoProgress: 50 });
+    assert.equal(f.task, undefined, audioStatus);
+  }
+});
+test('video reader failure still rebuilds video even when an audio repair callback exists', async () => {
+  const f = fixture();
+  assert.equal(f.monitor.request('failure', f.sample), true);
+  await f.run();
+  assert.equal(f.recoveries[0].audioOnly, false);
+  assert.equal(f.recoveries[0].position, 42);
+});
+test('failed audio repairs keep capped backoff and audio-only routing', async () => {
+  const calls = [];
+  const f = fixture({ recover: async sample => { calls.push(sample); throw new Error('fixture audio unavailable'); } });
+  f.monitor.request('audio', { ...f.sample, audioEnabled: true });
+  for (const delay of [1000, 3000, 8000, 15000, 30000, 60000, 60000]) {
+    assert.equal(f.task.delay, delay);
+    await f.run();
+    assert.equal(calls.at(-1).audioOnly, true);
+  }
+  f.monitor.reset();
 });
 test('persistent drift needs five seconds and stable playback restores the budget', async () => {
   const f = fixture({ stableMs: 6000 }); f.advance(0, { audioEnabled: true });
