@@ -5,7 +5,7 @@ const RESERVED=new Set([
   'games','money','assets','public','index.html','robots.txt','favicon.ico',
   // Existing routes, UI aliases, and static directories also take precedence.
   'retro','tesla','experimental','icons','teslamon-wake-assets',
-  'download','episodes','check-source','mark-watched','ha'
+  'download','episodes','check-source','mark-watched','ha','mac'
 ]);
 // URL paths arrive with different escaping depending on Grok/Tesla/browser:
 // %20, +, raw Unicode, percent-encoded Unicode and occasionally nested %25.

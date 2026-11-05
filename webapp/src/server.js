@@ -11,6 +11,7 @@ import {createTeslaMonTranscriber} from "./lib/teslamon-transcribe.js";
 import {createTeslaMonCodex,createTeslaMonCodexSelector} from "./lib/teslamon-codex-cli.js";
 import {createDevicePlanner} from "./lib/teslamon-device-plan.js";
 import {createHACommandService} from "./lib/teslamon-device-mcp.js";
+import {createMacCommandService} from "./lib/teslamon-mac-mcp.js";
 import * as store from "./lib/store.js";
 import * as storageManager from "./lib/storage-manager.js";
 import { findSavedPlayback } from "./lib/saved-playback.js";
@@ -2334,6 +2335,7 @@ const teslamonCodex=createTeslaMonCodex({
 });
 const teslamonCodexSelector=createTeslaMonCodexSelector();
 const teslamonHACommands=createHACommandService({planner:createDevicePlanner()});
+const teslamonMacCommands=createMacCommandService({planner:createDevicePlanner({provider:'mac'})});
 // Stage durations only: never log speech, queries, identities, or credentials.
 function logTeslaMonLatency(stage,started,status){
   console.info('[teslamon-latency]',JSON.stringify({stage,ms:Date.now()-started,status}));
@@ -2441,6 +2443,35 @@ app.post('/api/teslamon/ha-confirm',verifyTeslaMonVoiceRequest,async(req,res)=>{
   catch{return res.status(503).json({status:'unavailable',code:'home_assistant_unavailable'});}
 });
 
+// Separate signed Mac Control namespace and local MCP allowlist. No device
+// commands are accepted through the unprefixed, video-only Grok URL path.
+app.post('/api/teslamon/mac-plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  if(!validatedDeviceRequest(req,['session','text'])||
+     typeof req.body.text!=='string'||req.body.text.length<2||req.body.text.length>220||
+     /[\x00-\x1f\x7f]/.test(req.body.text))
+    return res.status(400).json({status:'failed',code:'invalid_device_request'});
+  const identity=deviceIdentity(req);
+  if(!identity)return res.status(401).json({status:'failed',code:'signed_access_required'});
+  const started=Date.now(),controller=new AbortController();
+  const onClose=()=>{if(!res.writableEnded)controller.abort()};
+  res.once('close',onClose);
+  try{
+    const result=await teslamonMacCommands.plan(req.body.text,req.body.session,identity,
+      {signal:controller.signal});
+    console.info('[teslamon-mac]',JSON.stringify({outcome:result.status,ms:Date.now()-started}));
+    return res.status(result.status==='unavailable'?503:200).json(result);
+  }catch{return res.status(503).json({status:'unavailable',code:'mac_control_unavailable'});}
+  finally{res.removeListener('close',onClose);}
+});
+app.post('/api/teslamon/mac-confirm',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  if(!validatedDeviceRequest(req,['id','session'])||
+    typeof req.body.id!=='string'||! /^[a-f0-9]{48}$/.test(req.body.id))
+    return res.status(400).json({status:'failed',code:'invalid_confirmation'});
+  const identity=deviceIdentity(req);
+  if(!identity)return res.status(401).json({status:'failed',code:'signed_access_required'});
+  try{return res.json(await teslamonMacCommands.confirm(req.body.id,req.body.session,identity));}
+  catch{return res.status(503).json({status:'unavailable',code:'mac_control_unavailable'});}
+});
 app.post('/api/teslamon/select-candidate',verifyTeslaMonVoiceRequest,async(req,res)=>{
   const body=req.body;
   if(!body||Object.getPrototypeOf(body)!==Object.prototype||
