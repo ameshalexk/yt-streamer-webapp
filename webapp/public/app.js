@@ -66,7 +66,8 @@ function reportPeriodicPlaybackSample({ attempt, method, label, streamUrl, stats
     streamUrl,
     message: method,
     reason: streamQualitySelection || "auto",
-    stats,
+    stats: streamQualitySelection === AUTO_STREAM_QUALITY_ID && stats.adaptiveEligible !== false
+      ? { ...stats, ...autoQualityController?.getTelemetry() } : stats,
   });
 }
 
@@ -717,6 +718,8 @@ function playbackDiagnosticsSnapshot() {
   })();
   const audioBufferedSeconds = Math.max(0, audioBufferedEnd - Number(mediaAudio.currentTime || 0));
   const stats = diagnosticsStats ? { ...diagnosticsStats,
+    ...(playing && streamQualitySelection === AUTO_STREAM_QUALITY_ID && diagnosticsStats.adaptiveEligible !== false
+      && ["mjpeg", "webcodecs"].includes(diagnosticsStats.transport) ? autoQualityController?.getTelemetry() : {}),
     audioMediaReadyState: Number(mediaAudio.readyState || 0),
     audioMediaNetworkState: Number(mediaAudio.networkState || 0),
     audioMediaPaused: Boolean(mediaAudio.paused),
@@ -836,7 +839,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261104-controls-speed-audio1")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261105-adaptive-v3")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -1000,6 +1003,47 @@ let restreamTimer = null;
 let qualitySwitchTimer = null;
 let qualitySwitchGeneration = 0;
 let pendingQualityRestore = null;
+let queuedAutoQuality = null;
+let recoveryReplay = null;
+let failedRecoveryPosition = null;
+let awaitingRecoveredFrame = null;
+
+function cancelAutoQualityTransition(outcome = "canceled") {
+  if (queuedAutoQuality) {
+    clearTimeout(qualitySwitchTimer);
+    qualitySwitchTimer = null;
+    autoQualityController?.cancelSwitch(queuedAutoQuality.decision);
+    queuedAutoQuality = null;
+  }
+  if (pendingQualityRestore?.adaptive) finishAutoQualityTransition(outcome);
+}
+
+function finishAutoQualityTransition(outcome, attempt = streamAttempt) {
+  const pending = pendingQualityRestore;
+  if (!pending?.adaptive || (outcome === "playing" && (!currentAttempt(attempt)
+      || attempt < pending.minAttempt || replayFn !== pending.replay))) return;
+  pendingQualityRestore = null;
+  reportPlaybackEvent("auto_quality_transition", {
+    reason: pending.decision.reason,
+    message: pending.decision.from + "->" + pending.decision.to + "; " + outcome,
+    stats: { ...autoQualityController.getTelemetry(),
+      switchInterruptionMs: Math.round(performance.now() - pending.startedAt) },
+  });
+  if (outcome === "failed" && pending.replay === replayFn && streamQualitySelection === AUTO_STREAM_QUALITY_ID) {
+    autoQualityController.rejectSwitch(pending.decision);
+    applyQualityProfileSettings(pending.decision.from, { selection: AUTO_STREAM_QUALITY_ID });
+  }
+  if (outcome === "playing" && pending.pause && !playbackPaused) {
+    requestAnimationFrame(() => { if (currentAttempt(attempt) && !playbackPaused) pausePlayback(); });
+  }
+}
+
+function noteRecoveredFrame(attempt) {
+  const pending = awaitingRecoveredFrame;
+  if (!pending || !currentAttempt(attempt) || attempt <= pending.previousAttempt || pending.replay !== replayFn) return;
+  awaitingRecoveredFrame = null;
+  reportPlaybackEvent("recovery_playing", { reason: pending.reason, message: String(pending.number) });
+}
 let autoplayEnabled = localStorage.getItem(AUTOPLAY_KEY) === "true";
 let autoplayContext = null;
 let autoplayAdvancing = false;
@@ -1373,6 +1417,9 @@ function resetStreamSettings({ persist = true } = {}) {
 
 function beginNewPlaybackQuality() {
   scheduleMobilePlayerReveal();
+  cancelAutoQualityTransition();
+  awaitingRecoveredFrame = failedRecoveryPosition = null;
+  autoQualityController?.resetSession();
   if (typeof playbackRecovery !== "undefined") playbackRecovery?.reset();
   resetStreamSettings({ persist: true });
   renderFpsPresets();
@@ -1646,6 +1693,7 @@ function scheduleSlowBufferSuggestion(attempt, { reason = "startup", label = "",
 }
 
 function applySlowBufferSuggestion() {
+  cancelAutoQualityTransition();
   if (!replayFn) return hideSlowBufferSuggestion();
   const resumeAt = streamSeek.seekable ? streamReplayTime() : undefined;
   const attempt = streamAttempt;
@@ -1699,7 +1747,7 @@ function handleVideoPlayRejection(attempt, error) {
 
 function maybeRestorePlaybackAfterQualitySwitch(attempt) {
   const pending = pendingQualityRestore;
-  if (!pending
+  if (!pending || pending.adaptive
       || pending.generation !== qualitySwitchGeneration
       || attempt < pending.minAttempt
       || !currentAttempt(attempt)) return;
@@ -1712,6 +1760,7 @@ function maybeRestorePlaybackAfterQualitySwitch(attempt) {
 
 function markStreamLive(attempt) {
   if (!currentAttempt(attempt)) return;
+  noteRecoveredFrame(attempt);
   clearStreamTimers();
   clearStreamNotice();
   $("#screen").classList.remove("loading");
@@ -1941,6 +1990,8 @@ function configureStreamSeek(meta = {}, startAt = 0) {
 }
 
 function seekStreamTo(time) {
+  cancelAutoQualityTransition();
+  awaitingRecoveredFrame = failedRecoveryPosition = null;
   playbackRecovery?.reset();
   if (!streamSeek.seekable || !replayFn) return;
   const target = streamSeekTarget(time);
@@ -1956,8 +2007,11 @@ function failStreamAttempt(attempt, title, detail) {
   diagnosticsMethod = playbackDiagnosticsSnapshot().method;
   diagnosticsError = "playback-failed";
   diagnosticsStats = null;
+  cancelAutoQualityTransition("failed");
+  awaitingRecoveredFrame = null;
   const recovery = playbackRecoverySample();
-  const retrying = playbackRecovery?.request("failure", recovery);
+  if (recovery) failedRecoveryPosition = { replay: replayFn, position: recovery.position };
+  const retrying = playbackRecovery?.request("failure", recovery && { ...recovery, transitioning: false });
   const keepLastBufferedFrame = Boolean(retrying && activeCompat?.buffered
     && Number(activeCompat?.bufferedPlayer?.getStats?.().renderedFrames || 0) > 0);
   if (keepLastBufferedFrame) {
@@ -2051,6 +2105,9 @@ function freezeMjpegFrame() {
 }
 
 function pausePlayback() {
+  autoQualityController?.hold();
+  if (queuedAutoQuality) cancelAutoQualityTransition();
+  if (pendingQualityRestore?.adaptive) pendingQualityRestore.pause = true;
   playbackRecovery?.hold();
   if (playbackPaused || $("#pauseBtn")?.disabled) return;
   suspendBufferedAudioRepairForHold();
@@ -2112,6 +2169,7 @@ function pausePlayback() {
 }
 
 async function resumePlayback() {
+  if (pendingQualityRestore?.adaptive) pendingQualityRestore.pause = false;
   if (!playbackPaused) return;
   const screen = $("#screen");
   if (screen.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
@@ -2148,6 +2206,7 @@ async function resumePlayback() {
     if (result?.catch) result.catch((e) => toast(e.message, true));
     return;
   }
+  if (pendingQualityRestore?.adaptive && screen.classList.contains("cyberdash-mode")) return;
   const video = $("#video");
   const audio = $("#audio");
   const attempt = streamAttempt;
@@ -2337,7 +2396,11 @@ function canTryMpegts() {
 }
 
 function cleanupMedia(keepWatchProgress = false) {
-  playbackRecovery?.reset();
+  const qualityTransition = pendingQualityRestore?.adaptive && pendingQualityRestore.replay === replayFn
+    ? pendingQualityRestore : null;
+  if (!qualityTransition && (!recoveryReplay || recoveryReplay !== replayFn)) playbackRecovery?.reset();
+  if (pendingQualityRestore?.adaptive && !qualityTransition) cancelAutoQualityTransition();
+  if (queuedAutoQuality) cancelAutoQualityTransition();
   diagnosticsStats = null;
   diagnosticsMethod = null;
   diagnosticsError = null;
@@ -2351,12 +2414,15 @@ function cleanupMedia(keepWatchProgress = false) {
   setBrowserStreamActive(false);
   try { activeCompat?.cancelAudioRecovery?.(); } catch {}
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
-  const preserveBufferedCanvas = preserveBufferedCanvasUntilFrame && replayFn === preserveBufferedCanvasReplayFn;
+  const preserveBufferedCanvas = qualityTransition?.transport === "mjpeg"
+    || (preserveBufferedCanvasUntilFrame && replayFn === preserveBufferedCanvasReplayFn);
+  const preserveCyberdashCanvas = qualityTransition?.transport === "webcodecs";
   if (preserveBufferedCanvasUntilFrame && !preserveBufferedCanvas) {
     preserveBufferedCanvasUntilFrame = false;
     preserveBufferedCanvasReplayFn = null;
   }
-  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "cyberdash-mode", "startup-preview");
+  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "startup-preview");
+  if (!preserveCyberdashCanvas) screen.classList.remove("cyberdash-mode");
   if (!preserveBufferedCanvas) screen.classList.remove("mjpeg-buffered-mode");
   streamAttempt++;
   clearStreamTimers();
@@ -2384,7 +2450,7 @@ function cleanupMedia(keepWatchProgress = false) {
     const context = canvas.getContext("2d");
     context?.clearRect(0, 0, canvas.width, canvas.height);
   }
-  if (cyberdashCanvas) {
+  if (cyberdashCanvas && !preserveCyberdashCanvas) {
     const context = cyberdashCanvas.getContext("2d");
     context?.clearRect(0, 0, cyberdashCanvas.width, cyberdashCanvas.height);
   }
@@ -3282,10 +3348,12 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (Number(stats.renderedFrames || 0) > 0) {
         preserveBufferedCanvasUntilFrame = false;
         preserveBufferedCanvasReplayFn = null;
+        finishAutoQualityTransition("playing", attempt);
+        noteRecoveredFrame(attempt);
       }
       updateBufferedMjpegDebug(stats);
       reportPeriodicPlaybackSample({ attempt, method: "mjpeg", label, streamUrl: bufferedUrl, stats });
-      if (maybeAdaptAutoQuality(stats)) return;
+      if (!meta.experimentalJxl && maybeAdaptAutoQuality(stats)) return;
       if (stats.state === "buffering") {
         const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || bufferPolicy.rebufferSeconds) : bufferPolicy.startupSeconds;
         if (playbackPaused) {
@@ -3846,6 +3914,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       canvas,
       onPlaying() {
         if (!currentAttempt(attempt)) return;
+        finishAutoQualityTransition("playing", attempt);
         markStreamLive(attempt);
         setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×", { revealControls: !quietTransition });
       },
@@ -3855,6 +3924,9 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       onStatus(status, detail = {}) {
         if (!currentAttempt(attempt)) return;
         if (playbackPaused) {
+          // A tap can land before the new WebCodecs session exists. Apply
+          // that intent once its AudioContext is ready, before drawing.
+          if (status === "resolving" && pendingQualityRestore?.adaptive) void player.pause().catch(() => {});
           setBadge("paused", "Ⅱ PAUSED · WebCodecs", { revealControls: false });
           return;
         }
@@ -4103,6 +4175,8 @@ async function playItem(item) {
 }
 
 function stopPlayback() {
+  cancelAutoQualityTransition();
+  awaitingRecoveredFrame = failedRecoveryPosition = null;
   preserveBufferedCanvasUntilFrame = false;
   preserveBufferedCanvasReplayFn = null;
   mobilePlayerRevealPending = false;
@@ -4155,6 +4229,8 @@ function stopPlayback() {
 }
 
 function restreamPlayback() {
+  cancelAutoQualityTransition();
+  awaitingRecoveredFrame = failedRecoveryPosition = null;
   playbackRecovery?.reset();
   if (!replayFn) return;
   const replay = replayFn;
@@ -4552,6 +4628,11 @@ function performQualityProfileSwitch(transition) {
     resumeAt: transition.resumeAt,
     minAttempt: beforeAttempt + 1,
     silent: Boolean(transition.silentToast),
+    adaptive: Boolean(transition.decision),
+    decision: transition.decision,
+    transport: transition.transport,
+    replay: transition.replay,
+    startedAt: performance.now(),
   };
   const fallback = transition.fallback
     ? " · " + transition.fallback.requested + "p unavailable, using " + transition.fallback.height + "p"
@@ -4568,16 +4649,18 @@ function performQualityProfileSwitch(transition) {
     const result = transition.replay(transition.seekable ? transition.resumeAt : undefined);
     if (result?.catch) {
       result.catch((error) => {
-        if (transition.generation === qualitySwitchGeneration) {
-          pendingQualityRestore = null;
-          toast(error.message, true);
+        if (pendingQualityRestore?.generation === transition.generation) {
+          if (transition.decision) {
+            failStreamAttempt(streamAttempt, "Quality change could not start", streamErrorDetail(error?.message));
+          }
+          else { pendingQualityRestore = null; toast(error.message, true); }
         }
       });
     }
   } catch (error) {
     if (transition.generation === qualitySwitchGeneration) {
-      pendingQualityRestore = null;
-      toast(error.message, true);
+      if (transition.decision) failStreamAttempt(streamAttempt, "Quality change could not start", streamErrorDetail(error?.message));
+      else { pendingQualityRestore = null; toast(error.message, true); }
     }
   }
 }
@@ -4608,6 +4691,7 @@ function requestAutoQualityMode() {
   const isLive = Boolean(streamSeek.isLive && !seekable);
   const replay = replayFn;
   const previousProfile = streamQualityProfileForSettings();
+  cancelAutoQualityTransition();
   const generation = ++qualitySwitchGeneration;
   clearTimeout(qualitySwitchTimer);
   qualitySwitchTimer = null;
@@ -4649,58 +4733,67 @@ function requestAutoQualityMode() {
   qualitySwitchTimer = setTimeout(() => performQualityProfileSwitch(transition), STREAM_QUALITY_SWITCH_DELAY_MS);
 }
 
-function requestAutoQualityTier(decision, stats = null) {
-  if (!decision || decision.action !== "switch"
-      || streamQualitySelection !== AUTO_STREAM_QUALITY_ID
-      || !autoQualityController?.enabled) return false;
+function adaptiveQualityAllowed(stats) {
+  return Boolean(replayFn && qualityProfilesAvailableForCurrentMode() && streamSeek.seekable
+    && !isStreamAtEnd() && stats.adaptiveEligible !== false && !stats.sourceEnded && !stats.eof
+    && !playbackPaused && !document.hidden && navigator.onLine !== false
+    && !pendingQualityRestore && !queuedAutoQuality && !playbackRecovery?.isVideoRecoveryPending()
+    && (!soundOn || !["retrying", "gesture-required", "silent"].includes(activeCompat?.audioStatus)));
+}
+
+function requestAutoQualityTier(decision, stats) {
   const profile = STREAM_QUALITY_PROFILES[decision.to];
-  if (!profile) return false;
-
-  const resumeAt = qualitySwitchResumeAt();
-  const pause = qualitySwitchPauseIntent();
-  const seekable = streamSeek.seekable;
-  const isLive = Boolean(streamSeek.isLive && !seekable);
-  const replay = replayFn;
-  const generation = ++qualitySwitchGeneration;
-  clearTimeout(qualitySwitchTimer);
-  qualitySwitchTimer = null;
-  pendingQualityRestore = null;
-
-  const applied = applyQualityProfileSettings(decision.to, {
-    selection: AUTO_STREAM_QUALITY_ID,
-  });
-  if (!applied) return false;
-
-  reportPlaybackEvent("auto_quality_switch", {
-    streamUrl: activeCompat?.mjpegUrl || "",
-    reason: decision.reason,
-    message: `${decision.from}->${decision.to}; ${autoQualityReasonLabel(decision.reason)}`,
-    stats: stats || decision.metrics,
-  });
-  diagnosticsQualityReason = decision.reason;
-
-  if (!replay || !qualityProfilesAvailableForCurrentMode()) return true;
-  const transition = {
-    generation,
-    replay,
-    profile,
-    statusLabel: "Auto · " + profile.label,
-    seekable,
-    resumeAt,
-    pause,
-    isLive,
-    silentToast: true,
-    fallback: applied.fallback ? { requested: applied.requested, height: applied.height } : null,
-  };
-  qualitySwitchTimer = setTimeout(() => performQualityProfileSwitch(transition), STREAM_QUALITY_SWITCH_DELAY_MS);
+  if (!profile || !adaptiveQualityAllowed(stats)) {
+    autoQualityController.cancelSwitch(decision);
+    return false;
+  }
+  const planned = { decision, replay: replayFn, attempt: streamAttempt };
+  queuedAutoQuality = planned;
+  // Leave the engine's stats/render callback before destroying its player.
+  qualitySwitchTimer = setTimeout(() => {
+    if (queuedAutoQuality !== planned) return;
+    queuedAutoQuality = null;
+    qualitySwitchTimer = null;
+    if (!currentAttempt(planned.attempt) || replayFn !== planned.replay || !adaptiveQualityAllowed(stats)
+        || streamQualitySelection !== AUTO_STREAM_QUALITY_ID) {
+      autoQualityController.cancelSwitch(decision);
+      return;
+    }
+    const resumeAt = qualitySwitchResumeAt();
+    const applied = applyQualityProfileSettings(decision.to, { selection: AUTO_STREAM_QUALITY_ID });
+    if (!applied) {
+      autoQualityController.cancelSwitch(decision);
+      return;
+    }
+    const generation = ++qualitySwitchGeneration;
+    diagnosticsQualityReason = decision.reason;
+    reportPlaybackEvent("auto_quality_switch", {
+      reason: decision.reason,
+      message: `${decision.from}->${decision.to}; ${autoQualityReasonLabel(decision.reason)}`,
+      stats: { ...stats, ...decision.metrics },
+    });
+    performQualityProfileSwitch({
+      generation, replay: planned.replay, profile, seekable: true, resumeAt, pause: false,
+      silentToast: true, decision, transport: stats.transport,
+    });
+  }, 0);
   return true;
 }
 
 function maybeAdaptAutoQuality(stats) {
   if (streamQualitySelection !== AUTO_STREAM_QUALITY_ID || !autoQualityController?.enabled) return false;
-  const decision = autoQualityController.observe(stats);
-  if (!decision) return false;
-  return requestAutoQualityTier(decision, stats);
+  if (!adaptiveQualityAllowed(stats) || stats.audioOnlyPressure || stats.renderedFrames < 1
+      || !["playing", "buffering", "syncing"].includes(stats.state)) {
+    autoQualityController.hold();
+    return false;
+  }
+  if (!autoQualityController.readyForSample()) return false;
+  const profiles = Object.fromEntries(Object.entries(STREAM_QUALITY_PROFILES).map(([tier, profile]) => [
+    tier, { ...profile, height: Number(legacyProfileHeightFallback(profile.height).height),
+      fps: stats.transport === "webcodecs" ? adaptiveCyberdashFps(profile.fps) : Number(profile.fps) },
+  ]));
+  const decision = autoQualityController.observe({ ...stats, audioMuted: !soundOn, profiles });
+  return decision ? requestAutoQualityTier(decision, stats) : false;
 }
 
 function requestQualityProfile(profileId) {
@@ -4717,6 +4810,7 @@ function requestQualityProfile(profileId) {
   const isLive = Boolean(streamSeek.isLive && !seekable);
   const replay = replayFn;
   const previousProfile = streamQualityProfileForSettings();
+  cancelAutoQualityTransition();
   const generation = ++qualitySwitchGeneration;
   clearTimeout(qualitySwitchTimer);
   qualitySwitchTimer = null;
@@ -4754,6 +4848,7 @@ function requestQualityProfile(profileId) {
 
 // Re-apply controls live: restart whatever is currently playing with new params.
 function reapplyControls() {
+  cancelAutoQualityTransition();
   diagnosticsQualityReason = null;
   if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) {
     setStreamQualitySelection(null);
@@ -5927,8 +6022,10 @@ function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = nu
   setDownloadsDrawerOpen(false);
   if (isMobileMode()) setPlayerDropdownOpen(true);
 
-  replayFn = (resumeAt = getStreamCurrentTime() || startAt || 0) =>
-    playLegacyItem(item, legacy.resolution, resumeAt, autoplayQueue, { skipHistory: true });
+  if (!options.skipHistory) {
+    replayFn = (resumeAt = getStreamCurrentTime() || startAt || 0) =>
+      playLegacyItem(item, legacy.resolution, resumeAt, autoplayQueue, { skipHistory: true });
+  }
 
   const autoplayContext = {
     kind: "library",
@@ -9645,6 +9742,7 @@ $("#playbackMethodToggle")?.addEventListener("click", async (event) => {
   const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
   const restorePause = playbackPaused;
   const beforeAttempt = streamAttempt;
+  cancelAutoQualityTransition();
   youtubePlaybackMethod = next;
   // Explicit opt-in only: a reload cannot silently re-enable experimental JXL.
   if (next === "jxl") localStorage.removeItem(YOUTUBE_PLAYBACK_METHOD_KEY);
@@ -9668,6 +9766,7 @@ $("#playbackSpeedSelect")?.addEventListener("change", (event) => {
   const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
   const restorePause = playbackPaused;
   const beforeAttempt = streamAttempt;
+  cancelAutoQualityTransition();
   youtubePlaybackRate = next;
   localStorage.setItem(YOUTUBE_PLAYBACK_RATE_KEY, String(youtubePlaybackRate));
   renderYoutubePlaybackRate();
@@ -10581,9 +10680,10 @@ function playbackRecoverySample() {
     key, attempt: streamAttempt, replay: replayFn, position: getStreamCurrentTime(),
     paused: playbackPaused, hidden: document.hidden, offline: navigator.onLine === false,
     ended: stats?.state === 'ended' || isStreamAtEnd(), blocked: stats?.state === 'autoplay-blocked',
-    started: Boolean(activeCompat?.playbackStarted || cyberdashPlayer),
+    transitioning: Boolean(pendingQualityRestore?.adaptive),
+    started: Boolean(activeCompat?.playbackStarted || (cyberdashPlayer && diagnosticsStats?.renderedFrames > 0)),
     canMeasureVideo: Boolean(stats || cyberdashPlayer),
-    videoProgress: stats ? Number(stats.renderedFrames || 0) : Number(cyberdashPlayer?.currentTime?.() || 0),
+    videoProgress: Number(stats?.renderedFrames ?? diagnosticsStats?.renderedFrames ?? 0),
     videoAvailable: Boolean(stats ? stats.queueSeconds > 0.5 || stats.receiveFps > 0 : activeCompat?.videoReady),
     audioEnabled: Boolean(soundOn && activeCompat?.audioUrl && !activeCompat?.browserPcm),
     audioStatus: activeCompat?.audioStatus || "source",
@@ -10594,19 +10694,41 @@ function playbackRecoverySample() {
 }
 
 async function recoverPlayback(sample) {
-  if (!replayFn || replayFn !== sample.replay || playbackPaused || document.hidden || navigator.onLine === false) return;
-  if (sample.audioOnly && activeCompat?.repairAudio === sample.repairAudio) {
-    await sample.repairAudio();
-    return;
+  const current = () => replayFn === sample.replay && !playbackPaused && !document.hidden
+    && navigator.onLine !== false && !pendingQualityRestore?.adaptive;
+  if (!current()) return { status: "canceled" };
+  if (sample.audioOnly) {
+    if (activeCompat?.repairAudio !== sample.repairAudio) return { status: "canceled" };
+    const repaired = await sample.repairAudio();
+    return { status: repaired ? "playing" : "noop" };
   }
-  const resumeAt = streamSeek.seekable ? clampStreamSeekTime(sample.position) : undefined;
+  const before = streamAttempt;
+  if (sample.attempt !== before && failedRecoveryPosition?.replay !== sample.replay) return { status: "canceled" };
+  const fresh = playbackRecoverySample();
+  if (fresh?.ended || fresh?.blocked || (fresh?.attempt === sample.attempt && fresh?.started
+      && sample.reason === "video" && fresh.videoProgress > sample.videoProgress)) return { status: "noop" };
+  const resumeAt = streamSeek.seekable ? clampStreamSeekTime(
+    failedRecoveryPosition?.replay === replayFn ? failedRecoveryPosition.position : fresh?.position ?? sample.position) : undefined;
   void watchProgress.save();
-  // Stop both active paths, including Mac desktop audio, before rebuilding.
   await stopDesktopAudioHlsSession();
-  if (replayFn !== sample.replay || playbackPaused || document.hidden || navigator.onLine === false) return;
+  if (!current() || streamAttempt !== before) return { status: "canceled" };
   clearBrowserAudioRetry();
-  cleanupMedia(true);
-  await sample.replay(resumeAt);
+  failedRecoveryPosition = null;
+  awaitingRecoveredFrame = { replay: sample.replay, previousAttempt: before,
+    reason: sample.reason, number: sample.recoveryAttempt };
+  recoveryReplay = sample.replay;
+  try {
+    // Player startup and later failures are handled by their attempt-scoped
+    // callbacks; WebCodecs play() itself lasts until end of playback.
+    const result = sample.replay(resumeAt);
+    result?.catch?.(() => {
+      if (replayFn === sample.replay && streamAttempt === before) {
+        const failed = playbackRecoverySample();
+        if (failed) playbackRecovery?.request("failure", failed);
+      }
+    });
+  } finally { recoveryReplay = null; }
+  return { status: "started" };
 }
 
 const playbackRecovery = window.PlaybackRecovery ? new window.PlaybackRecovery.Monitor({
@@ -10718,7 +10840,10 @@ function initEverydayControls() {
   });
   document.addEventListener("pointerdown", retryBrowserAudioFromGesture, true);
   document.addEventListener("keydown", retryBrowserAudioFromGesture, true);
-  window.addEventListener("offline", () => playbackRecovery?.hold());
+  window.addEventListener("offline", () => {
+    autoQualityController?.hold();
+    playbackRecovery?.hold();
+  });
   function resumeInterruptedRecovery() {
     if (playbackPaused || document.hidden || navigator.onLine === false) return;
     const sample = playbackRecoverySample() || playbackRecovery?.last;
@@ -10737,6 +10862,7 @@ function initEverydayControls() {
   window.addEventListener("online", resumeInterruptedRecovery);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
+      autoQualityController?.hold();
       playbackRecovery?.hold();
       suspendBufferedAudioRepairForHold();
     }

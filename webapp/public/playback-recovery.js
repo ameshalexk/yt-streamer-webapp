@@ -62,6 +62,21 @@
       this.videoAt = this.audioAt = this.healthyAt = this.now();
       this.driftAt = null;
     }
+    cancelForTransition() {
+      if (!this.pending) return;
+      const timerWasQueued = this.timer != null;
+      if (timerWasQueued) this.cancel(this.timer);
+      this.timer = null;
+      this.generation++;
+      this.pending = false;
+      this.inFlight = false;
+      this.queued = null;
+      // A transition can make a scheduled retry stale. Preserve its attempt
+      // number so a flapping source cannot continually regain the first delay.
+    }
+    isVideoRecoveryPending() {
+      return this.pending && !this.pendingAudioOnly;
+    }
     resume(sample = this.last) {
       if (!this.interrupted || this.pending || !sample) return false;
       this.interrupted = false;
@@ -75,7 +90,11 @@
       const changedAttempt = prior?.attempt !== sample.attempt;
       const held = sample.paused || sample.hidden || sample.blocked || sample.offline || sample.ended;
       if (held) this.hold();
-      if (changedAttempt || held || !sample.started) {
+      if (sample.transitioning && !held) {
+        this.cancelForTransition();
+        this.videoAt = this.audioAt = this.healthyAt = now;
+        this.driftAt = null;
+      } else if (changedAttempt || held || !sample.started) {
         this.videoAt = this.audioAt = this.healthyAt = now;
         this.driftAt = null;
       } else {
@@ -115,20 +134,28 @@
       this.last = { ...sample };
     }
     request(reason, sample = this.last) {
-      if (!sample?.key || sample.paused || sample.hidden || sample.blocked || sample.offline || sample.ended) return false;
+      if (!sample?.key || sample.paused || sample.hidden || sample.blocked || sample.offline || sample.ended || sample.transitioning) return false;
       if (sample.key !== this.key) { this.reset(); this.key = sample.key; }
+      // A buffered audio transport has its own current-position repair path.
+      // Only an independent video failure can preempt its scheduled retry.
+      const audioOnly = reason === 'audio' && sample.canRepairAudio;
+      if (this.pending && this.pendingAudioOnly && !audioOnly && this.timer != null) {
+        this.cancel(this.timer);
+        this.timer = null;
+        this.generation++;
+        this.pending = false;
+        this.attempts = Math.max(0, this.attempts - 1);
+        this.audioAttempts = Math.max(0, this.audioAttempts - 1);
+      }
       if (this.pending) {
-        // Failures can fire synchronously while replay() is still rebuilding
-        // media. Requeue after it settles instead of dropping the only error.
-        if (this.inFlight) this.queued = { reason, sample };
+        // A video failure cannot be replaced by an audio-only follow-up.
+        if (this.inFlight && (!audioOnly || !this.queued || this.queued.reason === 'audio')) {
+          this.queued = { reason, sample };
+        }
         return true;
       }
       this.attempts++;
       this.recoveryActive = true;
-      // A buffered audio transport has its own current-position repair path.
-      // Keep every retry on that path; never turn repeated audio failures into
-      // whole-player replays that can interrupt the live video queue.
-      const audioOnly = reason === 'audio' && sample.canRepairAudio;
       if (audioOnly) this.audioAttempts++;
       this.pendingAudioOnly = audioOnly;
       const generation = this.generation;
@@ -141,7 +168,28 @@
         if (generation !== this.generation) return;
         this.inFlight = true;
         let failed = false;
-        try { await this.recover({ ...sample, reason, audioOnly, recoveryAttempt: attempt }); }
+        try {
+          const result = await this.recover({ ...sample, reason, audioOnly, recoveryAttempt: attempt });
+          if (generation === this.generation) {
+            const status = result?.status;
+            if (status === 'failed' || result?.ok === false) {
+              failed = true;
+              this.notify({ state: 'failed', reason, attempt });
+            } else if (status === 'canceled' || result?.canceled === true) {
+              this.notify({ state: 'canceled', reason, attempt });
+            } else if (status === 'noop' || result?.noop === true) {
+              this.notify({ state: 'noop', reason, attempt });
+            } else if (status === 'playing' || result?.playing === true || result === true) {
+              this.notify({ state: 'playing', reason, attempt });
+            } else if (status === 'started') {
+              this.notify({ state: 'started', reason, attempt });
+            } else {
+              // Legacy recovery callbacks return undefined. They completed,
+              // but that is not proof that media actually started playing.
+              this.notify({ state: 'noop', reason, attempt });
+            }
+          }
+        }
         catch {
           failed = true;
           if (generation === this.generation) this.notify({ state: 'failed', reason, attempt });

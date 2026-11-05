@@ -2,102 +2,161 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
+await import("../public/e-auto.js");
 await import("../public/auto-quality.js");
 
 const { AutoQualityController, BUFFER_POLICIES } = globalThis.YtAutoQuality;
 const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 
-function strongStats({ fps = 15, queueSeconds = 4, renderedFrames = 180 } = {}) {
+function harness({ tier = "medium", transport = "webcodecs" } = {}) {
+  let now = 0, frames = 0, drops = 0;
+  const controller = new AutoQualityController({ now: () => now });
+  controller.enable({ tier });
   return {
-    state: "playing",
-    fps,
-    receiveFps: fps * 1.2,
-    renderedFps: fps,
-    producerSpeed: 1.2,
-    renderedFrames,
-    receivedFrames: renderedFrames + fps * 3,
-    droppedFrames: 0,
-    averageDecodeMs: 8,
-    lastAvDriftMs: 40,
-    queueSeconds,
-    queueTrend: "growing",
-    rebufferCount: 0,
+    controller,
+    step(overrides = {}, seconds = 1) {
+      now += seconds * 1000;
+      const fps = ({ low: 12, medium: 15, high: 24 })[controller.tier];
+      frames += overrides.frames ?? fps;
+      drops += overrides.drops ?? 0;
+      return controller.observe({
+        transport, state: "playing", fps, renderedFrames: frames, droppedFrames: drops,
+        averageDecodeMs: 5, decoderQueueSize: 0, queueSeconds: transport === "webcodecs" ? 0.34 : 3,
+        queueTargetSeconds: transport === "webcodecs" ? 0.30 : 2,
+        producerSpeed: 1, capacityBps: transport === "webcodecs" ? 6e6 : null, mediaBps: 850000,
+        deliveryBps: 860000, latencyMs: 25, rebufferCount: 0, rebufferDurationMs: 0,
+        ...overrides,
+      });
+    },
   };
 }
 
-test("v2.1 Auto exposes dedicated buffer policies for all quality tiers", () => {
+function run(h, seconds, sample) {
+  const decisions = [];
+  for (let n = 0; n < seconds; n++) {
+    const result = h.step(typeof sample === "function" ? sample(n) : sample);
+    if (result) {
+      decisions.push(result);
+      h.controller.beginAttempt();
+    }
+  }
+  return decisions;
+}
+
+test("Auto keeps the existing transport buffer policies and starts at Medium", () => {
+  assert.equal(harness().controller.tier, "medium");
   assert.deepEqual(BUFFER_POLICIES.low, {
-    id: "auto-low",
-    startupSeconds: 3.5,
-    rebufferSeconds: 2.25,
-    maxQueueSeconds: 7,
+    id: "auto-low", startupSeconds: 3.5, rebufferSeconds: 2.25, maxQueueSeconds: 7,
   });
   assert.equal(BUFFER_POLICIES.medium.maxQueueSeconds, 6);
   assert.equal(BUFFER_POLICIES.high.maxQueueSeconds, 8);
 });
 
-test("Auto starts at Medium and upgrades only after sustained headroom", () => {
-  let now = 0;
-  const controller = new AutoQualityController({ now: () => now });
-  controller.enable();
-  assert.equal(controller.tier, "medium");
-
-  assert.equal(controller.observe(strongStats()), null);
-  now = 17_000;
-  assert.equal(controller.observe(strongStats()), null);
-  now = 18_100;
-  const decision = controller.observe(strongStats());
-  assert.equal(decision?.from, "medium");
-  assert.equal(decision?.to, "high");
-  assert.equal(decision?.reason, "stable-headroom");
+test("WebCodecs can upgrade with a healthy short decoded queue and paced production", () => {
+  const h = harness();
+  assert.equal(run(h, 20).length, 0);
+  const [decision] = run(h, 10);
+  assert.deepEqual([decision?.from, decision?.to, decision?.reason], ["medium", "high", "stable-headroom"]);
+  assert.ok(decision.metrics.sustainableBps > decision.metrics.candidateBps);
 });
 
-test("Auto does not restart on a single rebuffer, but downgrades after repeated confirmed stalls", () => {
-  let now = 1000;
-  const controller = new AutoQualityController({ now: () => now });
-  controller.enable({ tier: "high" });
-  const stats = { ...strongStats({ fps: 24, queueSeconds: 0.5 }), state: "buffering" };
-  assert.equal(controller.observe({ ...stats, rebufferCount: 1 }), null);
-  now = 8000;
-  const decision = controller.observe({ ...stats, rebufferCount: 2 });
-  assert.equal(decision?.from, "high");
-  assert.equal(decision?.to, "medium");
-  assert.equal(decision?.reason, "rebuffer");
+test("normal frame quantization and small buffer dips do not reset a healthy WebCodecs dwell", () => {
+  const h = harness();
+  const decisions = run(h, 31, (n) => ({
+    frames: n % 6 === 1 ? 14 : n % 6 === 2 ? 16 : 15,
+    queueSeconds: n % 6 === 1 ? 0.20 : 0.34,
+    queueTargetSeconds: 0.45,
+  }));
+  assert.equal(decisions[0]?.to, "high");
 });
 
-test("Auto ignores a brief low-FPS sample and downgrades after sustained delivery pressure", () => {
-  let now = 1000;
-  const controller = new AutoQualityController({ now: () => now });
-  controller.enable({ tier: "medium" });
-  const slow = {
-    state: "playing", fps: 15, receiveFps: 10, renderedFps: 14.8,
-    producerSpeed: 0.67, renderedFrames: 100, receivedFrames: 100,
-    droppedFrames: 0, averageDecodeMs: 8, lastAvDriftMs: 30,
-    queueSeconds: 0.6, queueTrend: "shrinking", rebufferCount: 0,
-  };
-  assert.equal(controller.observe(slow), null);
-  now = 8000;
-  assert.equal(controller.observe(slow), null);
-  now = 13100;
-  const decision = controller.observe(slow);
-  assert.equal(decision?.to, "low");
-  assert.equal(decision?.reason, "delivery-slow");
+test("capacity disappearance and long callback gaps cannot finish an upgrade dwell", () => {
+  const h = harness();
+  assert.equal(run(h, 18).length, 0);
+  assert.equal(h.step({ capacityBps: null }, 80), null);
+  assert.equal(run(h, 20, { capacityBps: null }).length, 0);
+  assert.equal(h.controller.tier, "medium");
 });
 
-test("Auto clears delivery pressure after healthy sample instead of restarting later", () => {
-  let now = 1000;
-  const controller = new AutoQualityController({ now: () => now });
-  controller.enable();
-  const slow = { ...strongStats(), receiveFps: 5, producerSpeed: 0.33, queueSeconds: 0.3, queueTrend: "shrinking" };
-  assert.equal(controller.observe(slow), null);
-  now = 7000;
-  assert.equal(controller.observe(strongStats()), null);
-  now = 15000;
-  assert.equal(controller.observe(slow), null);
-  now = 19000;
-  assert.equal(controller.observe(slow), null);
-  assert.equal(controller.tier, "medium");
+test("sustained collapse downshifts and later headroom restores quality after rebuffers", () => {
+  const h = harness({ tier: "high" });
+  run(h, 12);
+  const collapse = { frames: 5, producerSpeed: 0.4, queueSeconds: 0.02, capacityBps: 250000, deliveryBps: 240000 };
+  assert.equal(run(h, 2, collapse).length, 0);
+  const down = run(h, 10, (i) => ({ ...collapse, state: "buffering", rebufferCount: i > 1 ? 2 : 1,
+    rebufferDurationMs: i * 1000 }));
+  assert.ok(down.length >= 1);
+  assert.equal(down[0].to, "low", "severe collapse skips an intermediate restart");
+  const up = run(h, 125, { capacityBps: 8e6, rebufferCount: 2, rebufferDurationMs: 2000 });
+  assert.equal(up.at(-1)?.to, "high");
+  assert.ok(h.controller.getTelemetry().adaptiveRebuffers >= 2);
+  assert.ok(h.controller.getTelemetry().adaptiveRebufferMs >= 2000);
+});
+
+test("a video stall needs delivery evidence and a fresh burst does not oscillate", () => {
+  const h = harness();
+  const weak = { frames: 10, producerSpeed: 0.55, queueSeconds: 0.09, capacityBps: 700000 };
+  const good = { capacityBps: 2200000 };
+  assert.deepEqual(run(h, 72, (n) => n % 6 === 1 ? weak : good), []);
+  assert.deepEqual(run(h, 12, { state: "buffering", frames: 0, rebufferCount: 4, capacityBps: null,
+    queueSeconds: 0.3, producerSpeed: 1 }), []);
+});
+
+test("moderate delivery pressure still downshifts one tier", () => {
+  const h = harness({ tier: "high" });
+  run(h, 12, { capacityBps: 2e6 });
+  const [down] = run(h, 14, { frames: 15, producerSpeed: 0.68, queueSeconds: 0.12,
+    mediaBps: 1.4e6, capacityBps: 1e6 });
+  assert.equal(down?.to, "medium");
+});
+
+test("available input plus decoder pressure downshifts independently of network", () => {
+  const h = harness({ tier: "high" });
+  const down = run(h, 16, { frames: 11, drops: 7, decoderQueueSize: 8, queueSeconds: 0.65 });
+  assert.equal(down[0]?.reason, "device-overload");
+  assert.equal(down[0]?.to, "medium");
+});
+
+test("upstream and audio failures, startup, pause, offline and background do not train pressure", () => {
+  const h = harness();
+  const weak = { frames: 2, producerSpeed: 0.2, queueSeconds: 0, capacityBps: 150000 };
+  for (const flags of [{ sourceFailure: true }, { audioOnlyPressure: true }, { hidden: true },
+    { paused: true }, { offline: true }, { sourceEnded: true }, { transitioning: true },
+    { state: "buffering", renderedFrames: 0 }, { adaptiveEligible: false }]) {
+    assert.deepEqual(run(h, 12, { ...weak, ...flags }), []);
+  }
+  assert.equal(h.controller.tier, "medium");
+  assert.equal(run(h, 10).length, 0);
+});
+
+test("MJPEG only tries a paced upgrade after prolonged health and projected decode headroom", () => {
+  const h = harness({ transport: "mjpeg" });
+  assert.deepEqual(run(h, 100), [], "paced delivery cannot justify an initial blind upgrade");
+  const down = run(h, 12, { producerSpeed: 0.4, queueSeconds: 0.2, frames: 8 });
+  assert.equal(down[0]?.to, "low");
+  assert.deepEqual(run(h, 90, { averageDecodeMs: 28 }), []);
+  assert.deepEqual(run(h, 55), []);
+  const upgrade = run(h, 20).at(-1);
+  assert.equal(upgrade?.to, "medium");
+  assert.equal(upgrade?.reason, "paced-delivery-trial");
+  assert.equal(upgrade?.metrics.sustainableBps, null);
+});
+
+test("missing next rendition or an unchanged WebCodecs rendition does not restart playback", () => {
+  const h = harness();
+  const medium = { height: 480, fps: 15, quality: 7 };
+  assert.deepEqual(run(h, 40, { profiles: { medium } }), []);
+  assert.deepEqual(run(h, 40, { profiles: { medium, high: { ...medium, quality: 4 } } }), []);
+});
+
+test("an uncommitted app switch can be canceled without counting a quality change", () => {
+  const h = harness();
+  let decision;
+  while (!decision) decision = h.step();
+  h.controller.cancelSwitch(decision);
+  assert.equal(h.controller.tier, "medium");
+  assert.equal(h.controller.getTelemetry().adaptiveUpgrades, 0);
 });
 
 test("Auto UI is separate from Low Medium High and is persisted as a mode", () => {

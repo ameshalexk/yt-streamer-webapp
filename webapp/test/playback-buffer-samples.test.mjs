@@ -18,6 +18,8 @@ function harness() {
     document: { get hidden() { return hidden; } },
     get playbackPaused() { return paused; },
     streamQualitySelection: "auto",
+    AUTO_STREAM_QUALITY_ID: "auto",
+    autoQualityController: { getTelemetry: () => ({ adaptiveTier: "medium" }) },
     currentAttempt: (value) => value === attempt,
     reportPlaybackEvent: (...args) => emitted.push(args),
   };
@@ -45,6 +47,7 @@ test("records active buffer stats at most every 15 seconds per attempt", () => {
   assert.equal(h.emitted.length, 1);
   assert.equal(h.emitted[0][0], "playback_buffer_sample");
   assert.equal(h.emitted[0][1].stats.queueSeconds, 1.5);
+  assert.equal(h.emitted[0][1].stats.adaptiveTier, "medium");
   h.advance(1);
   h.report({ queueSeconds: 0.2, queueTrend: "shrinking" });
   assert.equal(h.emitted.length, 2);
@@ -67,6 +70,6 @@ test("does not log pause, hidden tab, initial buffering, or inactive playback", 
 });
 
 test("both MJPEG and WebCodecs report stats ahead of Auto tier switches", () => {
-  assert.match(app, /reportPeriodicPlaybackSample\(\{ attempt, method: "mjpeg"[\s\S]*?if \(maybeAdaptAutoQuality\(stats\)\)/);
+  assert.match(app, /reportPeriodicPlaybackSample\(\{ attempt, method: "mjpeg"[\s\S]*?if \(!meta\.experimentalJxl && maybeAdaptAutoQuality\(stats\)\)/);
   assert.match(app, /method: "webcodecs"[\s\S]*?maybeAdaptAutoQuality\(stats\)/);
 });

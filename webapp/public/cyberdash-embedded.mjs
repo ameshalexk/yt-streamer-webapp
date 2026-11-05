@@ -30,13 +30,26 @@ async function fetchJson(url, options = {}, timeoutMs = 15000) {
   }
 }
 
-async function fetchBytes(url, timeoutMs = 12000, cacheMode = "no-store") {
+// A short completion provides a conservative lower bound rather than
+// disqualifying fast links. Ignore tiny bodies dominated by framing overhead.
+export function videoCapacitySample(bytes, elapsedMs) {
+  if (!Number.isFinite(bytes) || bytes < 16 * 1024 || !Number.isFinite(elapsedMs) || elapsedMs < 0) return null;
+  return Math.round(bytes * 8000 / Math.max(35, elapsedMs));
+}
+
+async function fetchBytes(url, timeoutMs = 12000, cacheMode = "no-store", onTiming = null) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = performance.now();
   try {
     const res = await fetch(url, { cache: cacheMode, signal: controller.signal });
+    const headersAt = performance.now();
     if (!res.ok) throw new Error(`${url} HTTP ${res.status}`);
-    return await res.arrayBuffer();
+    const value = await res.arrayBuffer();
+    if (typeof onTiming === "function") {
+      onTiming({ bytes: value.byteLength, ttfbMs: headersAt - startedAt, elapsedMs: performance.now() - startedAt });
+    }
+    return value;
   } finally {
     clearTimeout(timer);
   }
@@ -540,8 +553,10 @@ async function feedTrack(state, MP4Box, kind, initName) {
     }
   };
 
+  let trackReceivedBytes = 0;
   const appendBuffer = (ab) => {
     state.receivedBytes += ab.byteLength;
+    trackReceivedBytes += ab.byteLength;
     ab.fileStart = offset;
     offset += ab.byteLength;
     file.appendBuffer(ab);
@@ -556,7 +571,24 @@ async function feedTrack(state, MP4Box, kind, initName) {
       appendBuffer(ab);
       return;
     }
-    const ab = await fetchBytes(`/stream/experimental/cyberdash/${state.sessionId}/${encodeURIComponent(name)}?t=${Date.now()}`);
+    const isInit = name === initName;
+    let timing = null;
+    const ab = await fetchBytes(
+      `/stream/experimental/cyberdash/${state.sessionId}/${encodeURIComponent(name)}?t=${Date.now()}`,
+      12000,
+      "no-store",
+      isInit ? null : (sample) => { timing = sample; },
+    );
+    if (!isInit && timing && kind === "video") {
+      state.deliveryBytes = (state.deliveryBytes || 0) + ab.byteLength;
+      state.latencyMs = round(timing.ttfbMs, 1);
+      state.latencyAt = performance.now();
+      const capacityBps = videoCapacitySample(ab.byteLength, timing.elapsedMs);
+      if (capacityBps != null) {
+        state.capacityBps = capacityBps;
+        state.capacityAt = performance.now();
+      }
+    }
     appendBuffer(ab);
   };
 
@@ -646,10 +678,21 @@ async function feedTrack(state, MP4Box, kind, initName) {
 
     for (const name of available) {
       if (fed.has(name)) continue;
+      if (kind === "video") state.videoProducerWaiting = false;
       await holdIfTooFarAhead(state, lastPtsSec, kind);
+      const segmentStartPts = lastPtsSec;
+      const segmentStartBytes = trackReceivedBytes;
       await appendFile(name);
       fed.add(name);
       await processPending();
+      if (kind === "video" && !state.preparedStatic) {
+        const mediaSeconds = lastPtsSec - segmentStartPts;
+        const segmentBytes = trackReceivedBytes - segmentStartBytes;
+        if (mediaSeconds >= 0.25 && segmentBytes >= 16 * 1024) {
+          state.mediaBps = Math.round(segmentBytes * 8 / mediaSeconds);
+          state.mediaAt = performance.now();
+        }
+      }
       progressed = true;
     }
 
@@ -658,7 +701,10 @@ async function feedTrack(state, MP4Box, kind, initName) {
       await processPending();
       return finishTrack();
     }
-    if (!progressed) await sleep(120);
+    if (!progressed) {
+      if (kind === "video") state.videoProducerWaiting = true;
+      await sleep(120);
+    }
   }
 
   throw new Error("Stopped");
@@ -677,6 +723,8 @@ function startRenderLoop(state) {
     let lastStatsAt = performance.now();
     let lastStatsRenderedFrames = state.renderedFrames;
     let lastStatsReceivedFrames = state.renderedFrames + state.droppedFrames + state.decodedVideo.length;
+    let lastStatsDroppedFrames = state.droppedFrames;
+    let lastStatsDeliveryBytes = state.deliveryBytes || 0;
     let lastStatsQueueSeconds = 0;
 
     const emitStats = (now = performance.now()) => {
@@ -690,29 +738,68 @@ function startRenderLoop(state) {
       const deltaSec = Math.max(0.001, (now - lastStatsAt) / 1000);
       const renderedFps = Math.max(0, (state.renderedFrames - lastStatsRenderedFrames) / deltaSec);
       const receiveFps = Math.max(0, (receivedFrames - lastStatsReceivedFrames) / deltaSec);
+      const deliveryBytes = state.deliveryBytes || 0;
+      const deliveryBps = state.preparedStatic ? null : Math.round(Math.max(0, deliveryBytes - lastStatsDeliveryBytes) * 8 / deltaSec);
+      const recentCapacity = !state.preparedStatic && state.capacityAt != null && now - state.capacityAt <= 3500;
+      const recentLatency = !state.preparedStatic && state.latencyAt != null && now - state.latencyAt <= 3500;
+      const recentMedia = state.mediaAt != null && now - state.mediaAt <= 3500;
       const queueDelta = queueSeconds - lastStatsQueueSeconds;
       const queueTrend = queueDelta > 0.12 ? "growing" : (queueDelta < -0.12 ? "shrinking" : "stable");
       const lastDriftMs = state.drifts.length ? state.drifts[state.drifts.length - 1] : 0;
       auditAudioHealth(state, now, state.renderedFrames > state.audioDiagnosticLastFrames);
       state.audioDiagnosticLastFrames = state.renderedFrames;
       state.onStats({
+        transport: "webcodecs",
+        adaptiveEligible: !state.preparedStatic,
         fps: state.requestedFps,
+        effectiveFps: renderedFps,
+        effectiveWidth: state.effectiveWidth || null,
+        effectiveHeight: state.effectiveHeight || null,
         renderedFps,
         receiveFps,
+        deliveryBps,
+        capacityBps: recentCapacity ? state.capacityBps : null,
+        capacitySampleAt: recentCapacity ? state.capacityAt : null,
+        sourceWaiting: Boolean(state.videoProducerWaiting),
+        latencyMs: recentLatency ? state.latencyMs : null,
+        mediaBps: recentMedia ? state.mediaBps : null,
         producerSpeed: receiveFps / Math.max(1, state.requestedFps),
         renderedFrames: state.renderedFrames,
         receivedFrames,
         droppedFrames: state.droppedFrames,
+        droppedFramesDelta: Math.max(0, state.droppedFrames - lastStatsDroppedFrames),
         decoderQueueSize: state.videoDecoder?.decodeQueueSize ?? null,
         queueSeconds,
+        queueTargetSeconds: state.firstPictureMs == null
+          ? Math.max(
+            Number(state.bufferTargets?.startupVideoSourceSec || 0),
+            Number(state.bufferTargets?.startupVideoFrames || 0) / Math.max(1, Number(state.requestedFps) || 30),
+          )
+          : Number(state.bufferTargets?.rebufferHighVideoSourceSec || 0),
         queueTrend,
         rebufferCount: state.rebufferCount,
+        rebufferDurationMs: Math.max(0, state.rebufferMs + (state.rebuffering
+          ? now - (state.rebufferStartedAt || now)
+          : 0)),
+        playbackRate: normalizePlaybackRate(state.playbackRate),
+        audioMuted: Boolean(state.requestedMuted),
+        audioOnlyPressure: state.rebuffering && !state.audioFeedDone
+          && (state.videoFeedDone || queueSeconds >= targets.rebufferHighVideoSourceSec)
+          && scheduledAudioAheadSec(state) < targets.rebufferHighWallSec,
+        audioStatus: state.requestedMuted
+          ? "muted"
+          : (state.externalAudioElement
+            ? (state.externalAudioElement.readyState >= 3 ? "ready" : "waiting")
+            : (state.audioFeedDone ? "ended" : (state.audioCtx?.state === "running" ? "ready" : `context-${state.audioCtx?.state || "missing"}`))),
+        sourceEnded: Boolean(state.videoFeedDone),
         lastAvDriftMs: lastDriftMs,
         state: state.paused ? "paused" : (state.rebuffering ? "buffering" : "playing"),
       });
       lastStatsAt = now;
       lastStatsRenderedFrames = state.renderedFrames;
       lastStatsReceivedFrames = receivedFrames;
+      lastStatsDroppedFrames = state.droppedFrames;
+      lastStatsDeliveryBytes = deliveryBytes;
       lastStatsQueueSeconds = queueSeconds;
     };
 
@@ -888,6 +975,8 @@ function startRenderLoop(state) {
             state.canvas.width = frame.displayWidth;
             state.canvas.height = frame.displayHeight;
           }
+          state.effectiveWidth = Number(frame.displayWidth) > 0 ? Number(frame.displayWidth) : null;
+          state.effectiveHeight = Number(frame.displayHeight) > 0 ? Number(frame.displayHeight) : null;
           ctx.drawImage(frame, 0, 0, state.canvas.width, state.canvas.height);
           state.lastVideoFrameAt = performance.now();
           const videoPts = (frame.timestamp || 0) / 1e6;
@@ -1266,6 +1355,15 @@ export function createCyberdashPlayer({
       audioDiagnosticGapReason: null,
       audioDiagnosticReported: false,
       receivedBytes: 0,
+      deliveryBytes: 0,
+      capacityBps: null,
+      capacityAt: null,
+      latencyMs: null,
+      latencyAt: null,
+      mediaBps: null,
+      mediaAt: null,
+      effectiveWidth: null,
+      effectiveHeight: null,
       compressedPrefetchSourceSec: 0,
       compressedPrefetchBytesMax: 0,
       drifts: [],
