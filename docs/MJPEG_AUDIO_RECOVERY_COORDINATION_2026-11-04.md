@@ -106,3 +106,22 @@ The full audio fixture was separately run on the physical Mac mini and passed
 **32/32**, with all source hashes held constant. A real iPhone Safari audio
 acceptance test is still needed after the controlled rollout. No production
 source was relaxed for CI.
+
+## CI clock-independent transport regression
+
+The third PR run `41970203221` showed Ubuntu hosted headless Chrome can also
+return `readyState=4` without advancing `currentTime` (same as the macOS
+runner). This is a limitation of the hosted browser audio output clock, not
+a reliable indicator of end-user audible playback. The CI browser gate now
+uses `--automated --ci-transport`, checking actual generated MJPEG frames,
+repeated HTTP 503 audio retries, independent video recovery, and both UI
+layouts without requiring an operating-system sound sink. It distinguishes
+a video reader stall that legitimately warrants a separate video reconnect
+from an audio-only repair that must never replay video.
+
+The original full `--automated` fixture remains available and was verified
+**32/32** on the actual Mac mini, with decoded MP3 audio clock advancing.
+The hosted CI still includes the full Node lifecycle/alignment tests, all
+existing browser player checks, native helper build and HA release gates.
+No production recovery logic was relaxed to make the tests pass. Physical
+iPhone Safari audio remains a post-release acceptance check.

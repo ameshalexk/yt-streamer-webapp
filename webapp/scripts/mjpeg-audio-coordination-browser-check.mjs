@@ -32,6 +32,7 @@ const runner=`<!doctype html><meta charset="utf-8"><meta name="viewport" content
 <h1>Buffered MJPEG audio recovery</h1><p>Local generated audio/video fixtures only. Opens the real app in an iframe. Press Run in the existing signed-in Chrome window.</p><button id="run">Run browser checks</button> <span id="state">Ready</span><pre id="out"></pre><iframe id="app" title="YT Streamer local test app"></iframe>
 <script>
 const QUICK_DEEP=${process.argv.includes('--deep-only') ? 'true' : 'false'};
+const CI_TRANSPORT=${process.argv.includes('--ci-transport') ? 'true' : 'false'};
 const frame=document.querySelector('#app'),out=document.querySelector('#out'),state=document.querySelector('#state');
 const browserErrors=[];window.addEventListener('message',e=>{if(e.origin===location.origin&&e.data?.mjpegBrowserError)browserErrors.push(e.data.mjpegBrowserError)});
 function assertNoBrowserErrors(){if(browserErrors.length)throw Error('Unexpected app browser errors: '+browserErrors.join(' | '))}
@@ -63,7 +64,34 @@ async function deep(ui){const {w,d}=await app(390,ui);const all=[];
  // explicit stop and replacement. Check request totals after a quiet window.
  for(const action of ['pause','hidden','stop','replace']){x=await start(w,'stall');const key=new URL(x.audio,location.href).searchParams.get('n');await wait(async()=>{const s=await get();const attempts=s.audioRequests.filter(q=>q.key===key);return attempts.length>=2&&attempts.at(-1).completedAt==null},18000,'in-flight audio repair before '+action);if(action==='pause'){const b=d.querySelector('#pauseBtn');if(!b)throw Error('Pause control missing');b.click();await wait(()=>w.eval('playbackPaused')===true,3000,'playback pause state')}else if(action==='hidden'){Object.defineProperty(d,'hidden',{configurable:true,value:true});d.dispatchEvent(new Event('visibilitychange'))}else if(action==='stop'){d.querySelector('#stopBtn')?.click();await wait(()=>!d.querySelector('#screen')?.classList.contains('playing'),3000,'playback stop state')}else await start(w,'good');const n=(await get()).audioRequests.filter(q=>q.key===key).length;await sleep(3500);const n2=(await get()).audioRequests.filter(q=>q.key===key).length;if(n2>n)throw Error('In-flight repair was not cancelled after '+action+': '+n+' -> '+n2);all.push({name:'cancel-inflight-'+action,requestsBeforeQuiet:n,requestsAfterQuiet:n2});if(action==='hidden'){Object.defineProperty(d,'hidden',{configurable:true,value:false});d.dispatchEvent(new Event('visibilitychange'))}}
  assertNoBrowserErrors();return all}
-document.querySelector('#run').onclick=async()=>{const b=document.querySelector('#run');b.disabled=true;try{const results=[];if(!QUICK_DEEP)for(const width of [320,375,390,430,768,844])for(const ui of ['classic','new']){const height=width===768?1024:width===844?390:844;state.textContent='Responsive delayed recovery '+width+'x'+height+' '+ui;results.push(await layout(width,ui,height));}for(const ui of (QUICK_DEEP?['classic']:['classic','new'])){state.textContent='Deep recovery cases 390x844 '+ui;results.push(...await deep(ui));}assertNoBrowserErrors();const final={passed:true,completedAt:new Date().toISOString(),checks:results};out.textContent=JSON.stringify(final,null,2);state.textContent='PASS — '+results.length+' checks';await record({...final,complete:true});}catch(e){const failed={passed:false,completedAt:new Date().toISOString(),error:e.stack||String(e),browserErrors};out.textContent=JSON.stringify(failed,null,2);state.textContent='FAILED';await record({...failed,complete:true});}finally{b.disabled=false}};
+async function ciLayout(width,ui,height=844){
+ const {w,d}=await app(width,ui,height);await start(w,'fail');
+ await wait(()=>stats(w).renderedFrames>=5,18000,'video during audio outage');
+ const z=snap(d,w),doc=d.documentElement,r=d.querySelector('#playerQualityBtn')?.getBoundingClientRect();
+ const info={name:'video-survives-audio-offline',ui,width,height,frames:z.frames,videoVisible:z.videoVisible,qualityWidth:r?.width,qualityHeight:r?.height};
+ if(!z.videoVisible||doc.scrollWidth>doc.clientWidth+1||!r||r.width<44||r.height<44)throw Error('Offline-video responsive failure: '+JSON.stringify(info));
+ assertNoBrowserErrors();await record(info);return info;
+}
+async function ciDeep(ui){
+ const {w,d}=await app(390,ui),results=[];w.eval('window.__transportEvents=[];const oldTransportReporter=reportPlaybackEvent;reportPlaybackEvent=function(name,detail){if(/^(recovery_|buffered_error|buffered_audio_failed)/.test(name))window.__transportEvents.push({name,reason:detail?.reason,message:detail?.message,at:Date.now()});return oldTransportReporter(name,detail)}');let x=await start(w,'fail');w.eval('window.__transportRecoveries=[];const previousTransportRecover=playbackRecovery.recover;playbackRecovery.recover=async function(sample){window.__transportRecoveries.push({reason:sample.reason,audioOnly:sample.audioOnly});return previousTransportRecover(sample)}');
+ const audioKey=new URL(x.audio,location.href).searchParams.get('n'),videoKey=new URL(x.video,location.href).searchParams.get('n');
+ await wait(async()=>{const r=await get();return r.audioRequests.filter(q=>q.key===audioKey).length>=5},35000,'five autonomous audio retries');
+ await wait(()=>stats(w).renderedFrames>=10,16000,'video frames after repeated audio retries');
+ let r=await get(),attempts=r.audioRequests.filter(q=>q.key===audioKey).length,v=r.videoRequests.filter(q=>q.url.includes(videoKey)).length,z=snap(d,w);
+ const recoveries=w.__transportRecoveries||[],events=w.__transportEvents||[];
+ const audioTriggeredReplay=recoveries.some(x=>x.reason==='audio'&&!x.audioOnly);
+ const independentVideoRecovery=recoveries.some(x=>!x.audioOnly&&x.reason!=='audio')||events.some(x=>x.name==='buffered_error');
+ if(attempts<5||audioTriggeredReplay||(v>1&&!independentVideoRecovery)||z.frames<10||!z.videoVisible||!d.querySelector('#playerRetryAudioBtn')?.hidden)
+  throw Error('Audio outage interrupted video: '+JSON.stringify({attempts,v,z,recoveries,events:events.slice(-30)}));
+ results.push({name:'audio-retries-preserve-video',ui,attempts,videoConnections:v,renderedFrames:z.frames,independentVideoRecovery});
+ x=await start(w,'fail','cut');await wait(()=>stats(w).renderedFrames>=5,16000,'video before forced disconnect');const old=stats(w).renderedFrames;
+ await wait(async()=>{const state=await get();return state.videoRequests.filter(q=>q.url.includes(new URL(x.video,location.href).searchParams.get('n'))).length>=2},25000,'automatic video reconnect');
+ await wait(()=>stats(w).renderedFrames>old,16000,'new video frames');r=await get();v=r.videoRequests.filter(q=>q.url.includes(new URL(x.video,location.href).searchParams.get('n'))).length;z=snap(d,w);
+ if(v<2||z.frames<=old||!z.videoVisible)throw Error('Video reconnect did not restore rendered frames: '+JSON.stringify({v,z,old}));
+ results.push({name:'video-reconnect-independent-of-audio',ui,connections:v,framesBefore:old,framesAfter:z.frames});
+ assertNoBrowserErrors();return results;
+}
+document.querySelector('#run').onclick=async()=>{const b=document.querySelector('#run');b.disabled=true;try{const results=[];if(CI_TRANSPORT){if(!QUICK_DEEP)for(const width of [320,375,390,430,768,844])for(const ui of ['classic','new']){const height=width===768?1024:width===844?390:844;state.textContent='Audio outage responsive '+width+' '+ui;results.push(await ciLayout(width,ui,height));}for(const ui of (QUICK_DEEP?['classic']:['classic','new'])){state.textContent='Audio transport recovery '+ui;results.push(...await ciDeep(ui));}}else{if(!QUICK_DEEP)for(const width of [320,375,390,430,768,844])for(const ui of ['classic','new']){const height=width===768?1024:width===844?390:844;state.textContent='Responsive delayed recovery '+width+'x'+height+' '+ui;results.push(await layout(width,ui,height));}for(const ui of (QUICK_DEEP?['classic']:['classic','new'])){state.textContent='Deep recovery cases 390x844 '+ui;results.push(...await deep(ui));}}assertNoBrowserErrors();const final={passed:true,completedAt:new Date().toISOString(),checks:results};out.textContent=JSON.stringify(final,null,2);state.textContent='PASS — '+results.length+' checks';await record({...final,complete:true});}catch(e){const failed={passed:false,completedAt:new Date().toISOString(),error:e.stack||String(e),browserErrors};out.textContent=JSON.stringify(failed,null,2);state.textContent='FAILED';await record({...failed,complete:true});}finally{b.disabled=false}};
 </script>`;
 
 const server=http.createServer(async(req,res)=>{const u=new URL(req.url,"http://127.0.0.1");
