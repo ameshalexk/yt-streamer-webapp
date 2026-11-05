@@ -81,3 +81,14 @@ release. After an approved future deployment, verify at least fifteen minutes
 of audible playback, audio reconnect, video reconnect, Pause/Resume and source
 switch on physical iPhone/Tesla. Reuse scoped per-host rollback procedures and
 preserve each host's data and native helper.
+
+## GitHub CI follow-up
+
+The first draft-PR CI run `41967862780` found an environment-sensitive
+background/Resume race on Ubuntu and a slow Chrome audio-readiness case on
+macOS. The local pause/visibility handler now also suspends a *queued*
+audio retry when there is no in-flight media promise, and foreground return
+normalizes that state to an audio-only retry rather than replaying the video.
+An explicit regression test covers this case; the browser fixture records
+more readiness diagnostics and allows slower CI media startup. Do not merge
+until the full updated shared CI is green.

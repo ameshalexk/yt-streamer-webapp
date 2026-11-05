@@ -2158,10 +2158,16 @@ async function resumePlayback() {
 }
 
 function suspendBufferedAudioRepairForHold() {
-  if (activeCompat?.bufferedPlayer && activeCompat.audioStatus === "retrying") {
-    return Boolean(activeCompat.cancelAudioRecovery?.());
+  if (!activeCompat?.bufferedPlayer || activeCompat.audioStatus !== "retrying") return false;
+  // The shared scheduler may be waiting between attempts while there is no
+  // active local media promise to cancel. In that case cancelAudioRecovery()
+  // returns false; nevertheless the held player must not remain "retrying".
+  const canceled = Boolean(activeCompat.cancelAudioRecovery?.());
+  if (!canceled && activeCompat?.bufferedPlayer && activeCompat.audioStatus === "retrying") {
+    activeCompat.audioStatus = "silent";
+    updateActivePlaybackStatus();
   }
-  return false;
+  return true;
 }
 
 function resumeSilentBufferedAudioRepair() {
@@ -10717,6 +10723,11 @@ function initEverydayControls() {
     if (playbackPaused || document.hidden || navigator.onLine === false) return;
     const sample = playbackRecoverySample() || playbackRecovery?.last;
     if (!sample || sample.replay !== replayFn || sample.ended || sample.blocked) return;
+    // Returning from background must never convert a held audio-only retry
+    // into a full stream replay. A scheduler status can remain retrying even
+    // after its local in-flight promise was canceled by visibility change.
+    if (activeCompat?.buffered && activeCompat?.bufferedPlayer
+        && activeCompat.audioStatus === "retrying") suspendBufferedAudioRepairForHold();
     if (resumeSilentBufferedAudioRepair()) return;
     if (!playbackRecovery?.resume(sample) && !playbackRecovery?.pending
         && $("#streamBadge")?.classList.contains("reconnecting") && !activeCompat) {

@@ -75,6 +75,18 @@ test("Pause or hidden hold cancels an in-flight repair and Resume requests a fre
   assert.equal(context.resumeSilentBufferedAudioRepair(), false);
 });
 
+test("a queued retry with no local promise is suspended to silent and resumed as audio only", () => {
+  const activeCompat = { bufferedPlayer: {}, buffered: true, audioStatus: "retrying" };
+  let updates = 0;
+  const context = vm.createContext({ activeCompat,
+    updateActivePlaybackStatus: () => { updates += 1; },
+  });
+  vm.runInContext(`${extractFunction("suspendBufferedAudioRepairForHold")};`, context);
+  assert.equal(context.suspendBufferedAudioRepairForHold(), true);
+  assert.equal(activeCompat.audioStatus, "silent");
+  assert.equal(updates, 1);
+});
+
 test("Pause and visibility handlers use the cancellation and resume paths", () => {
   const pauseStart = source.indexOf("function pausePlayback()");
   const pauseEnd = source.indexOf("\nasync function resumePlayback", pauseStart);
@@ -87,5 +99,6 @@ test("Pause and visibility handlers use the cancellation and resume paths", () =
   assert.match(source.slice(pauseStart, pauseEnd), /playbackRecovery\?\.hold\(\);[\s\S]*?suspendBufferedAudioRepairForHold\(\)/);
   assert.match(source.slice(resumeStart, resumeEnd), /resumeSilentBufferedAudioRepair\(\)/);
   assert.match(source.slice(visibilityStart, visibilityEnd), /suspendBufferedAudioRepairForHold\(\)/);
+  assert.match(source.slice(interruptedStart, interruptedEnd), /suspendBufferedAudioRepairForHold\(\)/);
   assert.match(source.slice(interruptedStart, interruptedEnd), /resumeSilentBufferedAudioRepair\(\)/);
 });
