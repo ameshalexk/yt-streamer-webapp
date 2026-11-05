@@ -39,3 +39,12 @@ export function parseTeslaMonVideoUrl(pathname){
   if(/[?#\\]/.test(decoded))return null;
   return decoded;
 }
+
+// A device action in an unprefixed URL is never executed implicitly.
+// This conservative hint only improves the error UI; /ha/ still requires
+// its own signed, explicitly confirmed device-command flow.
+export function isTeslaMonUnprefixedLightCommand(text){
+  if(typeof text!=='string')return false;
+  const compact=text.normalize('NFKC').toLowerCase().replace(/[\s_-]+/g,'');
+  return /^(?:turn|switch|toggle|set)[a-z0-9]*(?:lights?|lamps?|bulbs?)$/.test(compact);
+}
