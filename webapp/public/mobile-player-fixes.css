@@ -85,12 +85,15 @@
   border-radius: 10px;
 }
 body.screen-fullscreen .player-quality-panel { display: none !important; }
-body.screen-fullscreen.fullscreen-controls-idle .screen > .player-quality-trigger {
+body.fullscreen-controls-idle .screen > .player-quality-trigger {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
 }
-.screen > .player-quality-trigger { transition: opacity .24s ease, visibility .24s ease; }
+body.fullscreen-controls-idle .player-quality-panel { display: none !important; }
+/* Visibility must switch immediately at the idle boundary; a delayed
+   visibility transition left Quality visually present after the timeout. */
+.screen > .player-quality-trigger { transition: opacity .24s ease; }
 
 @media (max-width: 900px) {
   html { scroll-padding-top: max(10px, env(safe-area-inset-top)); }
