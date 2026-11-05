@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { advanceAudioHealthIncident, classifyAudioSchedule, fastPlaybackBufferTargets, normalSpeedNeedsRebuffer, normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
+import { advanceAudioHealthIncident, classifyAudioSchedule, detectPrematureAudioEnd, fastPlaybackBufferTargets, normalSpeedNeedsRebuffer, normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
 
 const FRAME = 1024 / 48000;
 
@@ -148,4 +148,77 @@ test("audio diagnostics require persistent gaps, report once and record recovery
     event: "cyberdash_audio_recovered", reason: "audio_schedule_empty",
   });
   assert.equal(advanceAudioHealthIncident(state, 4200, null), null);
+});
+
+const terminalBase = {
+  playing: true, hasFirstPicture: true, audioFeedDone: true,
+  audioEndPtsSec: 569.6, videoEndPtsSec: 666.5, startAt: 113.83,
+  knownVideoEndSec: 779, currentSourceSec: 686,
+};
+
+test("premature audio exhaustion catches the confirmed late-video EOF and clearly short completed feeds", () => {
+  const failure = detectPrematureAudioEnd(terminalBase);
+  assert.ok(failure);
+  assert.ok(Math.abs(failure.audioEndSourceSec - 683.43) < 1e-9);
+  assert.ok(Math.abs(failure.evidenceEndSourceSec - 780.33) < 1e-9);
+  assert.ok(Math.abs(failure.remainingSourceSec - 94.33) < 1e-9);
+  assert.ok(detectPrematureAudioEnd({
+    ...terminalBase, videoEndPtsSec: 666.5, knownVideoEndSec: null,
+  }));
+});
+
+test("premature audio exhaustion waits for playback to reach the true audio end", () => {
+  assert.equal(detectPrematureAudioEnd({ ...terminalBase, currentSourceSec: 680.44 }), null);
+  assert.equal(detectPrematureAudioEnd({
+    ...terminalBase, currentSourceSec: 571.59, audioAheadSec: 0,
+    startAt: 0, videoEndPtsSec: 571.5, knownVideoEndSec: 572,
+  }), null);
+  assert.equal(detectPrematureAudioEnd({
+    ...terminalBase, currentSourceSec: 571.61, audioAheadSec: 0,
+    startAt: 0, videoEndPtsSec: 571.5, knownVideoEndSec: 572,
+  }), null);
+});
+
+test("premature audio exhaustion aligns seek offsets and rate-scaled audio PTS", () => {
+  const prepared = detectPrematureAudioEnd({
+    ...terminalBase,
+    startAt: 600,
+    segmentOffsetSourceSec: 0.75,
+    audioEndPtsSec: 10,
+    videoEndPtsSec: 80,
+    knownVideoEndSec: 700,
+    currentSourceSec: 623,
+    playbackRate: 2,
+  });
+  assert.ok(prepared);
+  assert.equal(prepared.audioEndSourceSec, 620.75);
+  assert.equal(prepared.evidenceEndSourceSec, 700);
+  assert.equal(prepared.remainingSourceSec, 77);
+  // Prepared video PTS is already segmentStartAt-relative, so the within-
+  // segment audio offset must not be added to its endpoint a second time.
+  assert.equal(detectPrematureAudioEnd({
+    ...terminalBase,
+    startAt: 600,
+    segmentOffsetSourceSec: 0.75,
+    audioEndPtsSec: 10,
+    videoEndPtsSec: 11.5,
+    knownVideoEndSec: null,
+    currentSourceSec: 625,
+    playbackRate: 2,
+  }), null);
+});
+
+test("premature audio exhaustion excludes startup, pause, mute, stop, and external audio", () => {
+  for (const override of [
+    { playing: false },
+    { hasFirstPicture: false },
+    { paused: true },
+    { stopped: true },
+    { muted: true },
+    { externalAudio: true },
+    { audioFeedDone: false },
+    { audioAheadSec: 0.051 },
+  ]) {
+    assert.equal(detectPrematureAudioEnd({ ...terminalBase, ...override }), null, JSON.stringify(override));
+  }
 });

@@ -124,6 +124,8 @@ function playbackStats(value) {
     "audioContinuityCorrections", "audioMaxScheduleSlipMs", "audioFeedDone",
     "videoFeedDone", "audioMuted", "audioMediaReadyState", "audioMediaNetworkState",
     "audioMediaPaused", "audioMediaTimeSec", "playbackPositionSec",
+    "audioEndPtsSec", "audioEndSourceSec", "videoEndPtsSec", "knownVideoEndSourceSec",
+    "sourceDurationSec", "playbackRate",
   ];
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
 }
