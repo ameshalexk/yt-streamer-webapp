@@ -20,7 +20,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-26]
+        # macos-26 was being canceled without assignment on 2026-11-04.
+        # Use the generally available stable macOS runner until it recovers.
+        os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:

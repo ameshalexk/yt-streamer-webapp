@@ -2337,7 +2337,7 @@ app.post('/api/teslamon/capabilities',verifyTeslaMonVoiceRequest,(req,res)=>{
 });
 // Codex selects ONE strict playback command. No model output is executed on
 // the Mac: the authenticated requesting browser tab performs its own action.
-app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
+async function handleTeslaMonPlan(req,res,{videoOnly=false}={}){
   if(!req.body||Object.getPrototypeOf(req.body)!==Object.prototype||
      Object.keys(req.body).sort().join(',')!=='session,text'||
      typeof req.body.session!=='string'||typeof req.body.text!=='string'||
@@ -2353,7 +2353,7 @@ app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
   const identity=crypto.createHash('sha256').update(principal.issuer+'\n'+principal.subject).digest('hex');
   const started=Date.now();
   try{
-    const outcome=await teslamonCodex.plan(req.body.text,req.body.session,identity);
+    const outcome=await teslamonCodex.plan(req.body.text,req.body.session,identity,{videoOnly});
     logTeslaMonLatency('codex_plan',started,outcome.status);
     res.set('Server-Timing',`codex;dur=${Date.now()-started}`);
     return res.status(outcome.status==='unavailable'?503:outcome.status==='failed'?422:200)
@@ -2362,7 +2362,12 @@ app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
     logTeslaMonLatency('codex_plan',started,'unavailable');
     return res.status(503).json({status:'unavailable',code:'codex_unavailable'});
   }
-});
+}
+app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,
+  (req,res)=>handleTeslaMonPlan(req,res));
+// Separate signed, origin-bound planner: URL navigation cannot trigger HA MCPs.
+app.post('/api/teslamon/url-video-plan',verifyTeslaMonVoiceRequest,
+  (req,res)=>handleTeslaMonPlan(req,res,{videoOnly:true}));
 app.post('/api/teslamon/select-candidate',verifyTeslaMonVoiceRequest,async(req,res)=>{
   const body=req.body;
   if(!body||Object.getPrototypeOf(body)!==Object.prototype||
