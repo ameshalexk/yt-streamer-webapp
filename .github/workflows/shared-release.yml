@@ -62,7 +62,13 @@ jobs:
       - name: Smart Adaptive quality switch fixture (baseline and candidate)
         run: |
           git fetch --depth=1 origin dfc719cf50d22c794e700d9e514d2fba546520ca
-          MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/smart-adaptive-browser-check.mjs
+          # Match the existing real-media gate: hosted Linux Chrome's hardware
+          # H.264 WebCodecs decoder rejects the baseline fixture configuration.
+          if [ "$RUNNER_OS" = Linux ]; then
+            MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/smart-adaptive-browser-check.mjs --mjpeg-only
+          else
+            MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/smart-adaptive-browser-check.mjs
+          fi
         working-directory: webapp
         timeout-minutes: 3
       - name: TeslaMon same-tab responsive browser smoke

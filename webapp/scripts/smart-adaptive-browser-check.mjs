@@ -21,6 +21,7 @@ const variants = ["app.js", "index.html", "auto-quality.js", "buffered-mjpeg.js"
 const old = new Map(variants.map(file => [file,
   execFileSync("git", ["show", base + ":webapp/public/" + file], { cwd: root })]));
 const starts = [], sessions = new Map();
+const engines = process.argv.includes("--mjpeg-only") ? ["mjpeg"] : ["mjpeg", "webcodecs"];
 let nextId = 0;
 const mime = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css" };
 const reply = (res, data, type = "application/json") => {
@@ -34,7 +35,7 @@ try {
   ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
     "-t", "15", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", input);
   const dash = new Map();
-  for (const fps of [15, 24]) {
+  for (const fps of engines.includes("webcodecs") ? [15, 24] : []) {
     const dir = path.join(temp, String(fps));
     await fs.mkdir(dir);
     const manifestPath = path.join(dir, "manifest.mpd");
@@ -119,7 +120,7 @@ try {
     headless: true, args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"],
   });
   const results = [];
-  for (const engine of ["mjpeg", "webcodecs"]) {
+  for (const engine of engines) {
     for (const baseline of [true, false]) {
       const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
       await context.addCookies([{ name: "fixtureBaseline", value: baseline ? "1" : "0", url: origin }]);
@@ -140,7 +141,7 @@ try {
           if (fixtureEvents.length < 32) fixtureEvents.push([event.event, event.reason, event.message, event.errorName]);
         }
       });
-      await page.goto(origin + "/?ui=" + (baseline ? "classic" : "new"), { waitUntil: "domcontentloaded" });
+      await page.goto(origin + "/?ui=classic", { waitUntil: "domcontentloaded" });
       await page.waitForFunction(() => typeof stopPlayback === "function" && window.YtAutoQuality);
       await page.evaluate((engine) => {
         beginNewPlaybackQuality();

@@ -35,6 +35,15 @@ node scripts/smart-adaptive-benchmark.mjs
 node scripts/smart-adaptive-benchmark.mjs --json
 ```
 
-The deterministic model compares the exact production controller and candidate under the same inputs and transport/restart assumptions; it cannot establish real playback, network, CPU, memory, or sync performance. The shared release workflow also runs a loopback Chrome fixture with local FFmpeg media and a delayed replacement to compare blank frames and position continuity. It is muted and measures an intentionally triggered switch, so it does not certify live network ABR or audible sync. Physical iPhone Safari, Tesla, HA runtime, and matched sustained CPU/RSS and A/V acceptance remain deployment gates.
+The deterministic model compares the exact production controller and candidate under the same inputs and transport/restart assumptions; it cannot establish real playback, network, CPU, memory, or sync performance. Selected baseline → v3 results:
+
+| Scenario | Rebuffer time | Switch/restart unavailable | Playable | Final tier |
+| --- | ---: | ---: | ---: | --- |
+| MJPEG collapse and gradual recovery | 72 → 1s | 0 → 68s | 70.00 → 72.08% | Medium → Medium (v3 recovers from Low) |
+| WebCodecs collapse and gradual recovery | 3 → 2s | 3 → 12s | 97.92 → 95.83% | Low → High |
+| WebCodecs stable fast | 0 → 0s | 0 → 3s | 100 → 99.33% | Medium → High |
+| Both stable slow | 0 → 0s | 0 → 0s | 100 → 100% | Medium → Medium |
+
+The model counts rebuffer and switch startup separately; a long switch startup can offset lower rebuffer time. Other traces include latency/jitter/loss, source outage and saturation, decoder overload and a 15-minute session with pause, seek, background and audio holds. The shared release workflow also runs a loopback Chrome fixture with local FFmpeg media and a delayed replacement to compare blank frames and position continuity. It is muted and measures an intentionally triggered switch (MJPEG on both hosts, WebCodecs on macOS because hosted Linux rejects the existing hardware decode configuration), so it does not certify live network ABR or audible sync. Physical iPhone Safari, Tesla, HA runtime, and matched sustained CPU/RSS and A/V acceptance remain deployment gates.
 
 The draft does not publish a release. Before any installation, reconcile open draft PRs #138–#141 and obtain explicit approval. To roll back an eventual installation, restore the previously verified release for each host using the existing rollback procedure, retaining live data, HA options, and the signed Mac audio helper; verify the revision and playback on both hosts. If only the code has merged, revert the PR in source; this alone does not change any installed runtime.
