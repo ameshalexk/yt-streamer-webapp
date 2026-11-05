@@ -3,7 +3,8 @@
   // One bounded budget follows a source across reconnects. Only sustained
   // healthy playback or an explicit user action gives it a fresh budget.
   class Monitor {
-    constructor({ recover, notify = () => {}, now = () => Date.now(), schedule = setTimeout, cancel = clearTimeout,
+    constructor({ recover, notify = () => {}, now = () => Date.now(),
+      schedule = (...args) => setTimeout(...args), cancel = (...args) => clearTimeout(...args),
       stallMs = 15000, audioStallMs = 8000, stableMs = 60000, maxAttempts = 3 } = {}) {
       Object.assign(this, { recover, notify, now, schedule, cancel, stallMs, audioStallMs, stableMs, maxAttempts });
       this.generation = 0;
