@@ -282,6 +282,24 @@ try{
     assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),1,'frame observation never replays media');
     await context.close();
   }
+  // An unprefixed smart-home request must not call a video planner or
+  // mutate a device; the original request and the correct route stay visible.
+  {
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario:'url_play'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    const videoPlannerPosts=[];
+    page.on('request',req=>{if(new URL(req.url()).pathname==='/api/teslamon/url-video-plan')videoPlannerPosts.push(req.url());});
+    await page.addInitScript(fixtureBootstrap);
+    await page.goto(origin+'/turnonnthegameroomlights?fixture=1');
+    await page.waitForFunction(()=>document.querySelector('#tmAura')?.dataset.phase==='error');
+    assert.equal(await page.locator('#tmAuraTranscript').textContent(),'turnonnthegameroomlights');
+    assert.match(await page.locator('#tmAuraDetail').textContent(),/only plays videos/i);
+    assert.equal(videoPlannerPosts.length,0,'device URL never submitted to Codex video planner');
+    assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),0);
+    await context.close();
+  }
   // A Codex usage-limit reply stays visible instead of collapsing into Mic Off.
   {
     await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
