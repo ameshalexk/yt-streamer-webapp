@@ -675,6 +675,15 @@ const YOUTUBE_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 3, 4];
 // JXL must be explicitly opted into on each page visit, never restored from storage.
 let youtubePlaybackMethod = ["mjpeg", "webcodecs"].includes(localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY))
   ? localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY) : "mjpeg";
+// One-shot transfer to video-first MJPEG when browser policy blocks Web Audio
+// during a hands-free WebCodecs start. Never persist this fallback as a choice.
+let pendingWebAudioFallbackUrl = null;
+function isBlockedWebAudioStartup(error) {
+  const name = String(error?.name || "");
+  const message = String(error?.message || error || "");
+  return name === "NotAllowedError"
+    || /AudioContext (?:resume timed out|did not enter running state)/i.test(message);
+}
 // Only instantiated after an explicit JXL Experimental button press.
 let jxlWasmDecoder = null;
 let jxlModeSelectionTicket = 0;
@@ -3105,12 +3114,16 @@ function retryBufferedAudioFromGesture() {
 function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   globalThis.ytStreamerVlcCast?.setSource({mjpegUrl,audioUrl},meta);
   if (!bufferedMjpegSupported()) {
-    playCompatStream({ mjpegUrl, audioUrl }, label, meta);
-    showStreamNotice(
-      "warning",
-      "Buffered playback unavailable",
-      "This browser cannot use streaming fetch + canvas playback, so YT Streamer is using the legacy MJPEG player."
-    );
+    playCompatStream({ mjpegUrl, audioUrl }, label, {
+      ...meta, looseAudioSync: Boolean(meta.silentAudioAutoplayFallback || meta.looseAudioSync),
+    });
+    if (!meta.silentAudioAutoplayFallback) {
+      showStreamNotice(
+        "warning",
+        "Buffered playback unavailable",
+        "This browser cannot use streaming fetch + canvas playback, so YT Streamer is using the legacy MJPEG player."
+      );
+    }
     return;
   }
 
@@ -3455,7 +3468,12 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       player.setAudioDisabled(true, player.currentTime());
       player.setAudioReady(true, { playable: false });
       updateActivePlaybackStatus();
-      showStreamNotice("warning", "Tap to start audio", "Your browser requires a tap before audio can play. Tap Retry audio when ready.");
+      // A hands-free URL playback must keep its video visible without an
+      // interrupting audio-permission dialog. The audio retry affordance remains
+      // available in the player after the next user gesture.
+      if (!meta.silentAudioAutoplayFallback) {
+        showStreamNotice("warning", "Tap to start audio", "Your browser requires a tap before audio can play. Tap Retry audio when ready.");
+      }
       settleAudioRepair();
       return;
     }
@@ -3958,6 +3976,30 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       onError(error) {
         if (!currentAttempt(attempt)) return;
         fatalHandled = true;
+        if (isBlockedWebAudioStartup(error) && replayFn && youtubePlaybackMethod === "webcodecs") {
+          // Safari can refuse to start Web Audio without a user gesture. More
+          // WebCodecs retries cannot grant permission; hand off to buffered
+          // MJPEG which runs video without audio and can repair audio later.
+          const restorePause = playbackPaused;
+          const fallbackAt = Math.max(0, Number(meta.startAt) || 0);
+          youtubePlaybackMethod = "mjpeg";
+          renderYoutubePlaybackMethod();
+          reportPlaybackEvent("webcodecs_audio_autoplay_fallback", {
+            message: String(error?.message || error).slice(0, 100),
+            reason: "video_first_mjpeg",
+          });
+          pendingWebAudioFallbackUrl = youtubeUrl;
+          if (restorePause) {
+            pendingPlaybackMethodRestore = { minAttempt: attempt + 1, replay: replayFn };
+          }
+          try {
+            const result = replayFn(fallbackAt);
+            if (result?.catch) result.catch((fallbackError) => toast(fallbackError.message, true));
+          } finally {
+            pendingWebAudioFallbackUrl = null;
+          }
+          return;
+        }
         if (error?.body?.fallback === "mjpeg" && replayFn) {
           youtubePlaybackMethod = "mjpeg";
           localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
@@ -4002,7 +4044,14 @@ async function playStream(sources, label, meta = {}) {
   if (youtubeUrl && youtubePlaybackMethod === "jxl" && !meta.isLive && mjpegUrl) {
     return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, { ...meta, experimentalJxl: true });
   }
-  if (meta.bufferedMjpeg && mjpegUrl) return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta);
+  if (meta.bufferedMjpeg && mjpegUrl) {
+    const silentAudioAutoplayFallback = Boolean(
+      pendingWebAudioFallbackUrl && pendingWebAudioFallbackUrl === youtubeUrl
+    );
+    return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, {
+      ...meta, silentAudioAutoplayFallback,
+    });
+  }
   const screen = $("#screen"), video = $("#video");
   if (legacy.playing) {
     state.legacyPlayingId = null;
