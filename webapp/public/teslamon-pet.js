@@ -1,6 +1,6 @@
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
-import {parseTeslaMonVideoUrl} from './teslamon-video-url.js';
-import {createTeslaMonAura} from './teslamon-aura.js?v=20261028-aura-reliable1';
+import {parseTeslaMonVideoUrl} from './teslamon-video-url.js?v=20261105-unicode1';
+import {createTeslaMonAura} from './teslamon-aura.js?v=20261105-url-preview1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261102-moonshine1';
@@ -154,7 +154,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const AURA_KEY='ytStreamerTeslaMonAuraEnabledV1';
   let auraEnabled=true,userDisabled=false,startupAuraPending=false;
   let startupAuraEntry=null;
-  let activeAuraEntry=null,voiceAuraEntry=null,playbackTimer=null,wakePauseGuard=false;
+  let activeAuraEntry=null,voiceAuraEntry=null,urlAuraEntry=null,urlAuraDismissed=false,
+    playbackTimer=null,wakePauseGuard=false;
   let voiceOwner=0,pendingVoice=null,modelGeneration=0;
   let activePlannerVoice=false,activeIssueVoice=false;
   try{auraEnabled=localStorage.getItem(AURA_KEY)!=='0';}catch{}
@@ -163,6 +164,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const aura=createTeslaMonAura({onDismiss:(entry,reason)=>{
     // Tap/Escape only suppress this presentation; speech and dispatch continue.
     if(startupAuraEntry===entry)startupAuraEntry=null;
+    if(urlAuraEntry===entry){urlAuraEntry=null;urlAuraDismissed=true;}
     if(activeAuraEntry===entry){activeAuraEntry=null;voiceAuraEntry=null;}
     if(playbackTimer!==null){clearTimeout(playbackTimer);playbackTimer=null;}
     if(!userDisabled&&!fullscreenActive()){
@@ -174,7 +176,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     try{return globalThis.YTStreamerMediaAgent?.get_player_state?.()||null;}catch{return null;}
   };
   function closeAura(){
-    startupAuraEntry=null;
+    startupAuraEntry=null;urlAuraEntry=null;
     aura.close();activeAuraEntry=null;voiceAuraEntry=null;
     if(playbackTimer!==null){clearTimeout(playbackTimer);playbackTimer=null;}
     if(!userDisabled&&!fullscreenActive())pet.hidden=false;
@@ -198,19 +200,23 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     playbackTimer=setTimeout(observeAuraPlayback,350);
   }
-  function openAura({phase='standby',message='',fromWake=false,preview=false,startup=false}={}){
+  function openAura({phase='standby',message='',fromWake=false,preview=false,startup=false,
+    holdForFrames=false}={}){
     if(!auraEnabled||userDisabled||document.hidden)return null;
-    if(!fromWake&&!preview&&playerState()?.playback_phase==='playing')return null;
+    if(!fromWake&&!preview&&!holdForFrames&&playerState()?.playback_phase==='playing')return null;
     startupAuraPending=false;
     if(!startup)startupAuraEntry=null;
     wakePauseGuard=fromWake;
     activeAuraEntry=aura.open({phase,status:message});
+    urlAuraEntry=holdForFrames?activeAuraEntry:null;
     startupAuraEntry=startup?activeAuraEntry:null;
     if(playbackTimer!==null)clearTimeout(playbackTimer);
     playbackTimer=null;
     // A manual visual preview stays available even over an already-playing
     // video. It never pauses playback or starts capture; tap/Escape closes it.
-    if(!preview)playbackTimer=setTimeout(observeAuraPlayback,350);
+    // A URL command must not close on stale/optimistic playing state.
+    // Its own media observation closes the overlay after rendered frames.
+    if(!preview&&!holdForFrames)playbackTimer=setTimeout(observeAuraPlayback,350);
     pet.hidden=true;
     return activeAuraEntry;
   }
@@ -521,7 +527,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }else if(phase==='starting'){
       updateStartupAuraStatus(message||'Requesting microphone permission…');
     }else if(phase==='off'||phase==='error'){
-      if(startupAuraEntry&&startupAuraEntry===activeAuraEntry&&aura.active){
+      if(urlAuraEntry&&urlAuraEntry===activeAuraEntry&&aura.active){
+        // URL playback is independent of mic status: an "Off" event must not
+        // hide its received request, planner progress or frame wait.
+      }else if(startupAuraEntry&&startupAuraEntry===activeAuraEntry&&aura.active){
         // Bootstrap updates describe startup Aura without dismissing the
         // presentation or revealing the paw over it.
         const startupMessage=phase==='off'?'Mic Off · wake listening is off':
@@ -627,7 +636,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   function report(response,action,{owner=null,entry=null}={}){
     // Dispatch acceptance is not evidence of playing frames.
     if(response?.status==='observed'&&response?.playbackPhase==='playing'){
-      if(entry!==null&&entry===activeAuraEntry)closeAura();
+      if(entry!==null&&entry===activeAuraEntry&&entry!==urlAuraEntry)closeAura();
     }else if(response?.status==='accepted')auraStage('acting','Waiting for playback…',{entry});
     else if(response?.status==='observed')auraStage('complete','Done · say a wake phrase',{entry});
     else if(response?.status==='needs_user_gesture')auraStage('error','Use the player control',{entry,kind:'warn'});
@@ -715,6 +724,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   }
   async function issue(intent,requestRevision=panelRevision,context={}){
     const owner=context.owner??null,entry=context.entry??null;
+    const urlPlayback=entry!==null&&entry===urlAuraEntry&&intent.tool==='search_and_play';
     if(busy){status('Wait for the current command.','warn',owner);finishVoiceAura(owner,entry);return false;}
     if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn',owner);finishVoiceAura(owner,entry);return false;}
     busy=true;activeIssueVoice=Boolean(context.voice);syncPetMotion();renderSttModelState();
@@ -728,14 +738,18 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     try{
       const result=await localPlayer.run(intent,{...context,isCurrent:current});
       if(!current())return false;
-      report(result,intent.tool,{owner,entry});
+      // Player acceptance, including an optimistic "playing" snapshot, is
+      // not proof that new video frames have appeared for this URL request.
+      report(urlPlayback&&result.mediaId&&result.status==='observed'?
+        {...result,status:'accepted'}:result,intent.tool,{owner,entry});
       dismissAfterSuccess(result,intent.tool,requestRevision);
       // An accepted play handoff is the end of the voice task. Do not keep
       // the listening surface over a buffering or paused player.
       if(context.voice)finishVoiceAura(owner,entry);
-      if(intent.tool==='search_and_play'&&result.status==='accepted'&&result.mediaId){
+      if(intent.tool==='search_and_play'&&['accepted','observed'].includes(result.status)&&result.mediaId){
         status('Video selected. Waiting for video frames…','info',owner);
-        void localPlayer.observe(result.mediaId,{isCurrent:current})
+        auraStage('acting','Video selected · waiting for video frames…',{entry});
+        void localPlayer.observe(result.mediaId,{isCurrent:current,attempts:urlPlayback?90:12})
           .then(confirmed=>{
             if(!current())return;
             if(confirmed.status==='observed'){
@@ -808,6 +822,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       }
       if(voice&&input.value.trim()===request)input.value='';
       report(result,null,{owner,entry});
+      if(videoOnly&&result.code==='codex_usage_limit')
+        auraStage('error','Codex usage limit reached · retry after reset',{entry,kind:'warn'});
+      else if(videoOnly&&result.code==='codex_busy')
+        auraStage('error','Codex is busy · try again shortly',{entry,kind:'warn'});
       if(voice)finishVoiceAura(owner,entry);
       return false;
     }catch{
@@ -1255,26 +1273,45 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   // This triggers only the browser's normal permission flow, never a bypass.
   void refresh();
   if(urlVideoCommand){
-    // A deliberate navigation works even when the puppy/microphone was disabled.
-    // The existing same-tab Codex -> search -> player path performs the action.
-    closeAura();
-    let commandDispatched=false,commandWaiting=false;
+    // URL navigation is a visual command even with the microphone off.
+    // Do not accidentally request mic access or dismiss Aura on dispatch.
+    let commandDispatched=false,commandWaiting=false,commandTimedOut=false,retryOnVisible=false;
+    function showUrlAura(){
+      if(document.hidden||commandDispatched||urlAuraDismissed||!auraEnabled||userDisabled)return null;
+      if(urlAuraEntry&&aura.active)return urlAuraEntry;
+      // User dismissal is presentation-only: it must not cancel Codex.
+      const entry=openAura({phase:'preparing',message:'Command received · preparing the player…',
+        holdForFrames:true});
+      if(entry!==null)aura.setTranscript(urlVideoCommand,{entry});
+      return entry;
+    }
     async function runUrlCommandOnceVisible(){
-      if(commandDispatched||commandWaiting||document.hidden)return;
+      if(commandDispatched||commandTimedOut||document.hidden)return;
+      if(commandWaiting){retryOnVisible=true;return;}
       commandWaiting=true;
+      const entry=showUrlAura();
       try{
         for(let attempt=0;attempt<48;attempt++){
           if(document.hidden)return;
           if(localPlayer.ready){
             commandDispatched=true;
             enabled=true;selected='this_tab';
-            await interpret(urlVideoCommand,{allowClosed:true,videoOnly:true});
+            auraStage('thinking','Sending your request to Codex…',{entry});
+            await interpret(urlVideoCommand,{allowClosed:true,videoOnly:true,entry});
             return;
           }
           await new Promise(resolve=>setTimeout(resolve,250));
         }
+        commandTimedOut=true;
         status('The player did not become ready for the URL command.','warn');
-      }finally{commandWaiting=false;}
+        auraStage('error','The player did not become ready',{entry,kind:'warn'});
+      }finally{
+        commandWaiting=false;
+        if(retryOnVisible&&!document.hidden&&!commandDispatched&&!commandTimedOut){
+          retryOnVisible=false;
+          void runUrlCommandOnceVisible();
+        }
+      }
     }
     document.addEventListener('visibilitychange',()=>{
       if(!document.hidden)void runUrlCommandOnceVisible();

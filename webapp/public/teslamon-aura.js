@@ -31,18 +31,50 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
     </div>`;
   doc.body.append(root);
   const detail=root.querySelector('#tmAuraDetail');
+  const title=root.querySelector('.ta-title');
+  const hint=root.querySelector('.ta-hint');
+  let requestCard=null;
+  const headings={
+    standby:['TeslaMon Aura','Ready for a command'],
+    preparing:['Getting ready','Preparing your request'],
+    listening:['I am listening','What would you like me to do?'],
+    transcribing:['Understanding your request','Processing your words'],
+    thinking:['Working on your request','Searching for the right video'],
+    acting:['Starting playback','Waiting for the player'],
+    complete:['Request complete',''],
+    error:['Request could not finish','You can retry your request'],
+  };
   let mode='standby',entry=0,pointer=null,ignoreMouseClick=false,touchDismissTimer=null;
   function owned(token){return token===undefined||token===entry;}
   function setPhase(next,{entry:token}={}){
     if(!owned(token))return false;
     mode=PHASES.has(next)?next:'standby';
     root.dataset.phase=mode;
+    [title.textContent,hint.textContent]=headings[mode];
     return true;
   }
   function setStatus(value,{kind='info',entry:token}={}){
     if(!owned(token))return false;
     detail.textContent=String(value||'').slice(0,140);
     detail.dataset.kind=kind==='warn'?'warn':'info';
+    return true;
+  }
+  function setTranscript(value,{entry:token}={}){
+    if(!owned(token))return false;
+    const text=String(value||'').trim().slice(0,220);
+    if(!text){requestCard?.remove();requestCard=null;return true;}
+    if(!requestCard){
+      requestCard=doc.createElement('div');
+      requestCard.className='ta-transcript';
+      const label=doc.createElement('span');
+      label.textContent='RECEIVED REQUEST';
+      const received=doc.createElement('p');
+      received.id='tmAuraTranscript';
+      requestCard.append(label,received);
+      detail.before(requestCard);
+    }
+    // Never interpret URL text as markup.
+    requestCard.querySelector('p').textContent=text;
     return true;
   }
   function attachToFullscreen(){
@@ -52,6 +84,7 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
   function open({phase='standby',status=''}={}){
     attachToFullscreen();
     entry++;
+    setTranscript('',{entry});
     ignoreMouseClick=false;
     root.hidden=false;
     setPhase(phase);
@@ -62,6 +95,7 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
   function close(){
     if(root.hidden)return;
     root.hidden=true;
+    setTranscript('');
     if(doc.activeElement===root)try{root.blur();}catch{}
     pointer=null;
     if(touchDismissTimer!==null){clearTimeout(touchDismissTimer);touchDismissTimer=null;}
@@ -103,8 +137,7 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
   });
   setPhase('standby');
   return Object.freeze({
-    open,close,setPhase,setStatus,attachToFullscreen,
-    setTranscript(){}, // compatibility: no separate transcript card in Aura
+    open,close,setPhase,setStatus,setTranscript,attachToFullscreen,
     get active(){return !root.hidden;},
     get phase(){return mode;},
     get entry(){return entry;},
