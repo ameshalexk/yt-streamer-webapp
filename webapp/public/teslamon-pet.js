@@ -1285,16 +1285,16 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   // Wake listening must initialize even when the puppy panel stays closed.
   // This triggers only the browser's normal permission flow, never a bypass.
   void refresh();
-  // Both explicit /ha/ or /mac/ and a general Codex-routed device request
-  // use the same signed planner and ONE-TIME click-confirmation path.
+  // Explicit /ha/ and /mac/ and general routed device requests use signed
+  // planners. HA actions execute hands-free; Mac actions require a click.
   async function runDeviceCommand(request,entry=null){
     const providerName=request.provider==='mac'?'Mac Control':'Home Assistant';
     auraStage('thinking','Checking '+providerName+'…',{entry});
     try{
       const result=await post('/api/teslamon/'+request.provider+'-plan',
         {text:request.text,session:tabSession});
-      if(result.status==='confirm_required'&&typeof result.id==='string'){
-        // No mutation from navigation; the user must press Confirm.
+      if(request.provider==='mac'&&result.status==='confirm_required'&&typeof result.id==='string'){
+        // Mac actions retain the separate human approval requirement.
         if(entry!==null&&entry===activeAuraEntry)closeAura();
         showDeviceConfirmation(request,result);
       }else if(result.status==='ok'){
@@ -1386,8 +1386,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           if(document.hidden)return;
         }
         if(route?.status==='ok'&&['ha','mac'].includes(route.route)){
-          // Device writes still become time-limited proposals, never actions
-          // until an actual browser click confirms the plan.
+          // HA writes are authenticated and allowlisted, then applied without
+          // a second tap. Mac writes still require browser approval.
           await runDeviceCommand({provider:route.route,text:route.text},entry);
           return;
         }

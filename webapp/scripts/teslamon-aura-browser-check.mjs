@@ -212,8 +212,10 @@ const server=http.createServer(async(req,res)=>{
       pathname==='/api/teslamon/url-video-plan'?
         (fixtureScenario==='url_pause'?{status:'ok',tool:'pause',args:{}}:
           {status:'ok',tool:'search_and_play',args:{query:'fixture video'}}):
-      pathname==='/api/teslamon/ha-plan'||pathname==='/api/teslamon/mac-plan'?
-        {status:'confirm_required',id:'a'.repeat(48),message:fixtureScenario==='url_mac'?'Open Safari?':'Turn on game room lights?'}:
+      pathname==='/api/teslamon/ha-plan'?
+        {status:'ok',message:'Turn on game room lights — completed'}:
+      pathname==='/api/teslamon/mac-plan'?
+        {status:'confirm_required',id:'a'.repeat(48),message:'Open Safari?'}:
       pathname==='/api/teslamon/ha-confirm'||pathname==='/api/teslamon/mac-confirm'?
         {status:'ok',message:'Confirmed action complete'}:
       pathname==='/api/teslamon/plan'?(['search_play','slow_play'].includes(fixtureScenario)?{status:'ok',tool:'search_and_play',args:{query:'fixture video'}}:
@@ -302,30 +304,27 @@ try{
     assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),1,'frame observation never replays media');
     await context.close();
   }
-  // General path is interpreted once and a lighting mutation is never
-  // executed by navigation or by the router's model output.
+  // A trusted general URL routes to one HA plan POST, with no click dialog
+  // or separate confirm POST. Navigation is never a generic MCP call.
   {
     await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({scenario:'url_light'})});
     const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
     const page=await context.newPage();
-    // Bootstrap is already injected by the fixture HTML; avoid double-wrapping fetch.
     await page.goto(origin+'/turnonnthegameroomlights?fixture=1');
-    await page.locator('#tmDeviceApproval').waitFor({state:'visible',timeout:7000});
+    await page.waitForFunction(()=>window.__fixtureDevicePlans===1);
+    await page.waitForFunction(()=>document.querySelector('#tmAuraDetail')?.textContent.includes('completed'));
     assert.equal(await page.evaluate(()=>window.__fixtureRouteRequests),1);
     assert.equal(await page.evaluate(()=>window.__fixtureDevicePlans),1);
-    assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0,'GET or model routing cannot change lights');
-    assert.equal(await page.evaluate(()=>window.__fixtureUrlPlanRequests),0,'video model is not called for device commands');
+    assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0);
+    assert.equal(await page.locator('#tmDeviceApproval').count(),0,'HA must never show approval dialog');
+    assert.equal(await page.evaluate(()=>window.__fixtureUrlPlanRequests),0);
     assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),0);
-    assert.match(await page.locator('#tmDeviceApproval').textContent(),/Turn on game room lights/i);
-    await page.getByRole('button',{name:'Confirm',exact:true}).click();
-    await page.waitForFunction(()=>window.__fixtureConfirmRequests===1);
     assert.equal(await page.evaluate(()=>location.pathname),'/', 'command pathname cleared');
     await page.reload();
-    assert.equal(await page.evaluate(()=>window.__fixtureRouteRequests),0,
-      'reloading after a confirmed action never replays the URL command');
-    assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0,
-      'reload does not reconfirm a prior device change');
+    assert.equal(await page.evaluate(()=>window.__fixtureRouteRequests),0,'reload never replays the URL command');
+    assert.equal(await page.evaluate(()=>window.__fixtureDevicePlans),0,'reload never re-executes HA');
+    assert.equal(await page.locator('#tmDeviceApproval').count(),0);
     await context.close();
   }
   // Mac changes follow the same one-use human confirmation path.
@@ -342,17 +341,18 @@ try{
     assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0);
     await context.close();
   }
-  // Existing explicit device namespaces still bypass the general router.
+  // /ha/ uses the same hands-free HA path and bypasses generic routing.
   {
     await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({scenario:'url_light'})});
     const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
     const page=await context.newPage();
     await page.goto(origin+'/ha/turnonnthegameroomlights?fixture=1');
-    await page.locator('#tmDeviceApproval').waitFor({state:'visible',timeout:7000});
-    assert.equal(await page.evaluate(()=>window.__fixtureRouteRequests),0,'explicit HA path skips generic routing');
+    await page.waitForFunction(()=>window.__fixtureDevicePlans===1);
+    assert.equal(await page.evaluate(()=>window.__fixtureRouteRequests),0);
     assert.equal(await page.evaluate(()=>window.__fixtureDevicePlans),1);
     assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0);
+    assert.equal(await page.locator('#tmDeviceApproval').count(),0);
     await context.close();
   }
   // Answer and unsupported requests remain in Aura and never trigger tools.

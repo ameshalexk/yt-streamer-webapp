@@ -1,10 +1,9 @@
-// Authenticated, narrow MCP command adapter. A Grok URL is only a request
-// to plan; it can never mutate Home Assistant until an authenticated user
-// clicks Confirm. No arbitrary MCP tool names or arguments are forwarded.
+// Authenticated, narrow Home Assistant MCP command adapter. Signed,
+// allowlisted intent can execute immediately; no generic MCP tool names or
+// arguments are ever forwarded. Mac Control retains click confirmation.
 import {createRequire} from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import {randomBytes} from 'node:crypto';
 
 const SDK_PARENT=path.join(os.homedir(),'Documents/Codex/2026-09-22/home-assistant-ai-agnostic/package.json');
 const ENTITY=/^[a-z0-9_]{1,40}\.[a-z0-9_]{1,100}$/;
@@ -48,13 +47,8 @@ export async function callHA(name,args,{transportFactory}={}){
     return parsed;
   }finally{try{await c?.close()}catch{}}
 }
-export function createHACommandService({planner,call=callHA,now=Date.now}={}){
+export function createHACommandService({planner,call=callHA}={}){
   if(!planner?.plan||typeof call!=='function')throw Error('service_requires_planner');
-  const pending=new Map();
-  const prune=()=>{
-    for(const [id,entry] of pending)if(entry.expires<=now())pending.delete(id);
-    while(pending.size>30)pending.delete(pending.keys().next().value);
-  };
   async function findEntity(target,domain,{allowAmbiguous=false}={}){
     const exact=ENTITY.test(target)?target.toLowerCase():null;
     if(exact){if(domain && !exact.startsWith(domain+'.'))return {error:'invalid_entity_domain'};
@@ -117,25 +111,15 @@ export function createHACommandService({planner,call=callHA,now=Date.now}={}){
         name='control_climate';targetSummary=match.name||match.id;
         args={entity_id:match.id,action:'set_temperature',temperature:result.value};
       }else return {status:'unsupported',code:'unsupported_device_command'};
-      prune();
-      const id=randomBytes(24).toString('hex');
       const label=result.op==='thermostat_temp'?`Set ${targetSummary} to ${result.value}°F`:
         `${args.action==='turn_on'?'Turn on':'Turn off'} ${targetSummary}`;
-      pending.set(id,{identity,session,name,args,expires:now()+90000,label});
-      prune();
-      return {status:'confirm_required',id,message:label,expiresInSeconds:90};
+      // The upstream HA MCP still requires confirm:true, but owner consent
+      // is given by the authenticated, narrowly scoped hands-free command.
+      // Do not create a browser approval token or wait for an extra tap.
+      const applied=await call(name,{...args,confirm:true});
+      if(applied?.success===false)return {status:'failed',code:'device_change_not_confirmed'};
+      return {status:'ok',message:`${label} — completed`};
     }catch{return {status:'unavailable',code:'home_assistant_unavailable'};}
   }
-  async function confirm(id,session,identity){
-    if(typeof id!=='string'||! /^[a-f0-9]{48}$/.test(id)||!SESSION.test(session)||!IDENTITY.test(identity))
-      return {status:'failed',code:'invalid_confirmation'};
-    prune();const cmd=pending.get(id);pending.delete(id); // One use, including on failure.
-    if(!cmd||cmd.session!==session||cmd.identity!==identity||cmd.expires<=now())
-      return {status:'failed',code:'confirmation_expired'};
-    try{
-      const res=await call(cmd.name,{...cmd.args,confirm:true});
-      return {status:'ok',message:res.success===false?'Device did not confirm change':`${cmd.label} — completed`};
-    }catch{return {status:'unavailable',code:'home_assistant_unavailable'};}
-  }
-  return Object.freeze({plan,confirm});
+  return Object.freeze({plan});
 }

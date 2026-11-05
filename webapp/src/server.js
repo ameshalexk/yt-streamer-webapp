@@ -2474,9 +2474,9 @@ app.post('/api/teslamon/url-route',verifyTeslaMonVoiceRequest,async(req,res)=>{
   }catch{return res.status(503).json({status:'unavailable',code:'codex_unavailable'});}
   finally{res.removeListener('close',onClose);}
 });
-// Device URLs use explicit /ha/ namespace and signed POSTs. A GET never
-// executes a mutation. Even an authenticated model-created plan only creates
-// a short-lived proposal; a human click is required to use the MCP write tool.
+// Device URLs use explicit /ha/ namespace and signed POSTs. A GET by itself
+// never calls MCP. Signed HA plans execute allowlisted actions hands-free;
+// Mac Control plans still require separate, one-use human confirmation.
 function validatedDeviceRequest(req,keys){
   const body=req.body;
   return body&&Object.getPrototypeOf(body)===Object.prototype&&
@@ -2508,16 +2508,6 @@ app.post('/api/teslamon/ha-plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
   }catch{return res.status(503).json({status:'unavailable',code:'home_assistant_unavailable'});}
   finally{res.removeListener('close',onClose);}
 });
-app.post('/api/teslamon/ha-confirm',verifyTeslaMonVoiceRequest,async(req,res)=>{
-  if(!validatedDeviceRequest(req,['id','session'])||
-     typeof req.body.id!=='string'||! /^[a-f0-9]{48}$/.test(req.body.id))
-    return res.status(400).json({status:'failed',code:'invalid_confirmation'});
-  const identity=deviceIdentity(req);
-  if(!identity)return res.status(401).json({status:'failed',code:'signed_access_required'});
-  try{return res.json(await teslamonHACommands.confirm(req.body.id,req.body.session,identity));}
-  catch{return res.status(503).json({status:'unavailable',code:'home_assistant_unavailable'});}
-});
-
 // Separate signed Mac Control namespace and local MCP allowlist. No device
 // commands are accepted through the unprefixed, video-only Grok URL path.
 app.post('/api/teslamon/mac-plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
