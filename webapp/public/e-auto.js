@@ -113,7 +113,7 @@
     sample(value, durationMs = 50) {
       if (!Number.isFinite(value) || value < 0) return this.estimate;
       const duration = Math.max(50, finite(durationMs, 50));
-      const alpha = 1 - Math.exp(-duration / (this.halfLife * 1000));
+      const alpha = 1 - Math.exp(-Math.LN2 * duration / (this.halfLife * 1000));
       this.estimate = this.estimate == null ? value : alpha * value + (1 - alpha) * this.estimate;
       this.weight += alpha;
       return this.estimate;

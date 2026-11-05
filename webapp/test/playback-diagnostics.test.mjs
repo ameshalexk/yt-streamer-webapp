@@ -8,10 +8,12 @@ const { normalize, report, render } = globalThis.PlaybackDiagnostics;
 test('normalizes allowlisted numeric metrics and known aliases', () => {
   const result = normalize({ method: 'webcodecs', state: 'playing', quality: 'high', qualityReason: 'stable-headroom', audioStatus: 'synced', errorCategory: 'playback-failed', stats: {
     queueSeconds: 2.34, receiveFps: 30.26, renderedFps: 29, droppedFrames: 0, rebufferCount: 2,
+    effectiveHeight: 480, deliveryBps: 2200000, sustainableBps: 3100000, adaptiveRebufferMs: 1234,
     lastAvDriftMs: -12, averageDecodeMs: 4.26, receiveBytesPerSecond: 524288, decoderQueueSize: 3, fps: 30,
   } });
   assert.deepEqual(result.metrics, {
     queueSeconds: 2.3, receiveFps: 30.3, renderedFps: 29, droppedFrames: 0, rebufferCount: 2,
+    effectiveHeight: 480, deliveryBps: 2200000, sustainableBps: 3100000, adaptiveRebufferMs: 1234,
     latestAvDriftMs: -12, decodeMs: 4.3, receiveBytesPerSecond: 524288, decoderQueueSize: 3, fps: 30,
   });
   assert.equal(result.method, 'WebCodecs');

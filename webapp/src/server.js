@@ -128,7 +128,23 @@ function playbackStats(value) {
     "sourceDurationSec", "playbackRate",
     "audioStatus", "audioBufferedSeconds", "audioErrorCode", "audioLoadElapsedMs",
   ];
-  return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
+  const sanitized = Object.fromEntries(keys.filter((key) => source[key] !== undefined)
+    .map((key) => [key, source[key]]));
+  const adaptiveNumbers = [
+    "deliveryBps", "capacityBps", "sustainableBps", "deliveryFloorBps", "mediaBps", "candidateBps",
+    "capacityFastBps", "capacitySlowBps", "deliveryFastBps", "deliverySlowBps", "latencyMs",
+    "queueTargetSeconds", "queueDepletion", "decodeLoad", "decodePressure", "decoderQueueSize", "effectiveWidth", "effectiveHeight", "effectiveFps",
+    "adaptiveUpgrades", "adaptiveDowngrades", "adaptiveLowMs", "adaptiveMediumMs", "adaptiveHighMs",
+    "adaptiveRebuffers", "adaptiveRebufferMs", "rebufferDurationMs", "switchInterruptionMs",
+  ];
+  for (const key of adaptiveNumbers) {
+    const value = source[key];
+    if (typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1e12) sanitized[key] = value;
+  }
+  if (["low", "medium", "high"].includes(source.adaptiveTier)) sanitized.adaptiveTier = source.adaptiveTier;
+  if (["network", "delivery", "device", "healthy"].includes(source.adaptiveSignal)) sanitized.adaptiveSignal = source.adaptiveSignal;
+  if (["mjpeg", "webcodecs"].includes(source.transport)) sanitized.transport = source.transport;
+  return sanitized;
 }
 
 function playbackTiming(value) {

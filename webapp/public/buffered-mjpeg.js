@@ -544,17 +544,30 @@
       this.onEnded = onEnded;
       this.firstByteAt = null;
       this.firstRenderedAt = null;
+      this.lastTelemetryAt = null;
+      this.lastTelemetryBytes = 0;
+      this.lastTelemetryFrameBytes = 0;
+      this.lastTelemetryFrames = 0;
+      this.rebufferStartedAt = null;
+      this.rebufferDurationTotalMs = 0;
+      this.audioWaiting = false;
       this.decodeTotalMs = 0;
       this.decodeCount = 0;
       this.workerDecodeCount = 0;
       this.workerDecodeTotalMs = 0;
       this.stats = {
         state: "idle",
+        transport: "mjpeg",
+        adaptiveEligible: true,
         fps: this.fps,
+        effectiveFps: null,
+        effectiveWidth: null,
+        effectiveHeight: null,
         receivedFrames: 0,
         renderedFrames: 0,
         droppedFrames: 0,
         receivedBytes: 0,
+        receivedFrameBytes: 0,
         queueSeconds: 0,
         queueBytes: 0,
         maxQueueSeconds: 0,
@@ -562,6 +575,16 @@
         queueTrend: "unknown",
         queueTrendFps: null,
         receiveBytesPerSecond: null,
+        deliveryBps: null,
+        capacityBps: null,
+        mediaBps: null,
+        latencyMs: null,
+        queueTargetSeconds: this.policy.startupSeconds,
+        rebufferDurationMs: 0,
+        audioOnlyPressure: false,
+        decodePressure: null,
+        audioStatus: "unavailable",
+        sourceEnded: false,
         receiveFps: null,
         renderedFps: null,
         producerSpeed: null,
@@ -590,6 +613,7 @@
         eof: false,
       };
       this.startedAt = performance.now();
+      this.lastTelemetryAt = this.startedAt;
       this._boundAudioWaiting = () => this._handleAudioWaiting();
       this._boundAudioPlaying = () => this._handleAudioPlaying();
       this._boundAudioEnded = () => this._handleAudioEnded();
@@ -628,11 +652,45 @@
       }
       if (this.decodeCount > 0) {
         this.stats.averageDecodeMs = Math.round((this.decodeTotalMs / this.decodeCount) * 10) / 10;
+        this.stats.decodePressure = Math.round((this.stats.averageDecodeMs / (1000 / Math.max(1, this.fps))) * 100) / 100;
       }
+      const windowElapsed = Math.max(0, (now - this.lastTelemetryAt) / 1000);
+      if (windowElapsed >= 0.5) {
+        const byteDelta = Math.max(0, this.stats.receivedBytes - this.lastTelemetryBytes);
+        const frameDelta = Math.max(0, this.stats.receivedFrames - this.lastTelemetryFrames);
+        const frameByteDelta = Math.max(0, this.stats.receivedFrameBytes - this.lastTelemetryFrameBytes);
+        this.stats.deliveryBps = Math.round((byteDelta * 8) / windowElapsed);
+        this.stats.mediaBps = frameDelta >= 2
+          ? Math.round((frameByteDelta / frameDelta) * this.fps * 8)
+          : null;
+        this.stats.effectiveFps = this.stats.renderedFps;
+        this.lastTelemetryAt = now;
+        this.lastTelemetryBytes = this.stats.receivedBytes;
+        this.lastTelemetryFrameBytes = this.stats.receivedFrameBytes;
+        this.lastTelemetryFrames = this.stats.receivedFrames;
+      }
+      this.stats.effectiveWidth = this.canvas?.width > 0 ? this.canvas.width : null;
+      this.stats.effectiveHeight = this.canvas?.height > 0 ? this.canvas.height : null;
+      this.stats.queueTargetSeconds = this.playbackStarted ? this.recovery.targetSeconds : this.policy.startupSeconds;
+      this.stats.rebufferDurationMs = Math.max(0, Math.round(this.rebufferDurationTotalMs
+        + (this.rebufferStartedAt == null ? 0 : now - this.rebufferStartedAt)));
+      this.stats.audioStatus = !this.audio
+        ? "unavailable"
+        : (this.audioEnded ? "ended" : (this.audioWaiting ? "waiting" : (this.audio.paused ? "paused" : "ready")));
+      this.stats.audioOnlyPressure = Boolean(this.audioWaiting
+        && this.stats.queueSeconds >= this.stats.queueTargetSeconds * 0.75);
+      this.stats.sourceEnded = Boolean(this.eof);
     }
 
     _setState(state, detail = {}) {
       if (!this._active()) return;
+      const now = performance.now();
+      if (state === "buffering" && this.playbackStarted) {
+        this.rebufferStartedAt ??= now;
+      } else if (state !== "buffering" && this.rebufferStartedAt != null) {
+        this.rebufferDurationTotalMs += Math.max(0, now - this.rebufferStartedAt);
+        this.rebufferStartedAt = null;
+      }
       this.stats.state = state;
       this.onState(state, { ...detail, stats: this.getStats() });
       this._emitStats();
@@ -805,6 +863,7 @@
       };
       this.queue.push(frame);
       this.stats.receivedFrames += 1;
+      this.stats.receivedFrameBytes += bytes.byteLength;
       if (this.stats.firstFrameReceivedMs == null) {
         this.stats.firstFrameReceivedMs = Math.round(performance.now() - this.startedAt);
         this._milestone("first-frame-received");
@@ -874,6 +933,7 @@
       this.autoplayBlocked = false;
       this.buffering = false;
       this.playing = true;
+      this.audioWaiting = false;
       if (!this.playbackStarted) {
         this.playbackStarted = true;
         this.stats.startupMs = Math.round(performance.now() - this.startedAt);
@@ -1075,6 +1135,7 @@
       if (!this._active() || this.buffering) return;
       this.buffering = true;
       this.playing = false;
+      this.rebufferStartedAt ??= performance.now();
       const recoveryTargetSeconds = this.recovery.onRebuffer();
       this.stats.rebufferCount += 1;
       this.stats.recoveryTargetSeconds = recoveryTargetSeconds;
@@ -1097,6 +1158,8 @@
       if (!this._active() || !this.playbackStarted || this.userPaused || this.hidden || !this._needsAudio()) return;
       this.playing = false;
       this.buffering = true;
+      this.audioWaiting = true;
+      this.rebufferStartedAt ??= performance.now();
       this.recovery.onPlaybackInterrupted();
       this._cancelRaf();
       this._setState("buffering", {
@@ -1108,6 +1171,7 @@
 
     _handleAudioPlaying() {
       if (!this._active() || this.userPaused || this.hidden || !this._needsAudio()) return;
+      this.audioWaiting = false;
       if (this._bufferReady(false)) {
         this.buffering = false;
         this.playing = true;
@@ -1121,6 +1185,7 @@
       if (!this._active()) return;
       const audioTime = Math.max(0, (Number(this.audio?.currentTime) || 0) - this.audioClockOffset || this.lastRenderedTime || 0);
       this.audioEnded = true;
+      this.audioWaiting = false;
       this.monotonicAnchor = { media: audioTime, perf: performance.now() };
       if (this.eof && this.queue.length === 0) {
         this._finish();
@@ -1223,6 +1288,7 @@
       if (!this._active()) return;
       this.playing = false;
       this.buffering = false;
+      this.stats.sourceEnded = true;
       this._cancelRaf();
       this._setState("ended");
       this.onEnded();
