@@ -813,7 +813,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261007-prefetch-v11")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261104-speed-startup-v12")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -3604,7 +3604,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) autoQualityController?.beginAttempt();
   screen.classList.remove("video-mode", "mjpeg-mode", "mjpeg-buffered-mode");
   screen.classList.add("playing", "loading", "cyberdash-mode");
-  if (!quietTransition) setBadge("reconnecting", "↻ WebCodecs…");
+  if (!quietTransition) setBadge("reconnecting", `↻ WebCodecs · ${youtubePlaybackRate}×…`);
   startStreamWatchdog(attempt, "WebCodecs playback", { warnMs: 18000, failMs: 40000, silent: quietTransition });
 
   // WebCodecs audio stays inside the DASH session. FFmpeg applies pitch-preserving
@@ -9450,6 +9450,7 @@ $("#playbackSpeedSelect")?.addEventListener("change", (event) => {
     pendingPlaybackMethodRestore = restorePause
       ? { minAttempt: beforeAttempt + 1, replay: replayFn }
       : null;
+    toast("Switching to " + youtubePlaybackRate + "×…");
     const result = replayFn(resumeAt);
     if (result?.catch) result.catch((error) => toast(error.message, true));
   } else {

@@ -81,6 +81,11 @@ jobs:
       - name: iPhone player responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
         working-directory: webapp
+      - name: Playback speed menu and local media regression
+        run: |
+          MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/playback-speed-menu-browser-check.mjs
+          MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/playback-speed-browser-check.mjs
+        working-directory: webapp
       - name: AI Access sign-in UI browser smoke
         run: npm run test:ai-agent-access-ui
         working-directory: webapp
