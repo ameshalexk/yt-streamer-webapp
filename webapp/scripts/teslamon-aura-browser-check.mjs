@@ -5,11 +5,15 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
 import {chromium} from 'playwright-core';
+import {parseTeslaMonVideoUrl} from '../public/teslamon-video-url.js';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../public');
 let fixtureScenario='ha_done';
 let fixtureCapabilitiesGate=null,releaseFixtureCapabilities=null;
 const fixtureBootstrap=()=>{
   window.__fixturePlayback='idle';
+  window.__fixtureRenderedFrames=0;
+  window.__fixtureUrl=/^\/play/i.test(location.pathname);
+  window.__fixtureUrlPlanRequests=0;
   window.__fixtureSpeechText='turn on office lights';
   window.__fixtureCalls={search:0,play:0,pause:0,resume:0,commands:0};
   window.__fixtureMicRequests=0;
@@ -41,7 +45,8 @@ const fixtureBootstrap=()=>{
       return {status:'completed'};
     },
     get_player_state:()=>({playback_phase:window.__fixturePlayback,fullscreen_kind:'none',
-      media_id:'abcdefghijk',rendered_frames:0,mode:'native'}),
+      media_id:'abcdefghijk',rendered_frames:window.__fixtureRenderedFrames,
+      mode:window.__fixtureUrl?'buffered_mjpeg':'native'}),
   };
   navigator.mediaDevices.getUserMedia=async()=>{window.__fixtureMicRequests++;throw new Error('Fixture must not request microphone');};
   const nativeFetch=window.fetch.bind(window);
@@ -50,6 +55,7 @@ const fixtureBootstrap=()=>{
     const isPlan=new URL(url,location.href).pathname==='/api/teslamon/plan';
     const isCapabilities=new URL(url,location.href).pathname==='/api/teslamon/capabilities';
     if(isPlan)window.__fixturePlanRequests++;
+    if(new URL(url,location.href).pathname==='/api/teslamon/url-video-plan')window.__fixtureUrlPlanRequests++;
     if(isCapabilities)window.__fixtureCapabilitiesRequests++;
     const response=await nativeFetch(...args);
     if(isPlan)window.__fixturePlanResponses++;
@@ -189,6 +195,9 @@ const server=http.createServer(async(req,res)=>{
   if(pathname.startsWith('/api/')){
     res.writeHead(200,{'content-type':'application/json'});
     const payload=pathname==='/api/teslamon/capabilities'?{codexAvailable:true,localTranscription:true}:
+      pathname==='/api/teslamon/url-video-plan'?
+        (fixtureScenario==='url_limit'?{status:'failed',code:'codex_usage_limit'}:
+          {status:'ok',tool:'search_and_play',args:{query:'fixture video'}}):
       pathname==='/api/teslamon/plan'?(['search_play','slow_play'].includes(fixtureScenario)?{status:'ok',tool:'search_and_play',args:{query:'fixture video'}}:
         ['error','slow_error'].includes(fixtureScenario)?{status:'failed',code:'codex_unavailable'}:
         fixtureScenario==='uncertain'?{status:'uncertain',code:'invalid_codex_reply'}:
@@ -204,11 +213,14 @@ const server=http.createServer(async(req,res)=>{
     else respond();
     return;
   }
-  const target=path.resolve(root,decodeURIComponent(pathname==='/'?'index.html':pathname.slice(1)));
+  // Mirror production SPA fallback for eligible video commands. Ordinary
+  // routes and assets are never interpreted as Codex requests.
+  const urlCommand=parseTeslaMonVideoUrl(pathname);
+  const target=path.resolve(root,decodeURIComponent(pathname==='/'||urlCommand?'index.html':pathname.slice(1)));
   if(!target.startsWith(root+path.sep)){res.writeHead(403);res.end();return;}
   try{
     let bytes=await fs.readFile(target);
-    if((pathname==='/'||pathname==='/index.html')&&requestUrl.searchParams.get('fixture')==='1')
+    if((pathname==='/'||pathname==='/index.html'||urlCommand)&&requestUrl.searchParams.get('fixture')==='1')
       bytes=Buffer.from(bytes.toString('utf8').replace('</head>',fixtureBootstrapScript+'</head>'));
     if(pathname==='/teslamon-pet.js')bytes=Buffer.from(bytes.toString('utf8').replace(
       "['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'",
@@ -233,6 +245,58 @@ const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/A
 const viewports=process.env.TESLAMON_AURA_FAST==='1'?[[390,844]]:[[320,568],[375,667],[390,844],[430,932],[768,1024],[844,390],[1280,800],[1920,1080]];
 const results=[],errors=[];
 try{
+  // URL command must show the original request, survive Mic Off and buffering,
+  // and close only once the selected media has ADVANCING rendered frames.
+  for(const [urlPath,expected] of [
+    ['/play%20Kalyanraman%20Malayalam','play Kalyanraman Malayalam'],
+    ['/play%20%E0%B4%AE%E0%B4%B2%E0%B4%AF%E0%B4%BE%E0%B4%B3%E0%B4%82','play മലയാളം'],
+    ['/play%2520MKBHD%2520greatest%2520video','play MKBHD greatest video'],
+    ['/play+MKBHD+50%25+video','play MKBHD 50% video']
+  ]){
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario:'url_play'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    page.on('pageerror',error=>errors.push('url-preview '+urlPath+' '+error.message));
+    const urlPosts=[];
+    page.on('request',req=>{if(new URL(req.url()).pathname==='/api/teslamon/url-video-plan')urlPosts.push({method:req.method(),body:req.postData()});});
+    await page.addInitScript(fixtureBootstrap);
+    await page.goto(origin+urlPath+'?fixture=1',{waitUntil:'domcontentloaded'});
+    await page.locator('#tmAura').waitFor({state:'visible',timeout:5000});
+    await page.locator('#tmAuraTranscript').waitFor({state:'visible',timeout:5000});
+    assert.equal(await page.locator('#tmAuraTranscript').textContent(),expected);
+    assert.equal(await page.evaluate(()=>location.pathname),'/','command path cleared after capture');
+    await page.waitForFunction(()=>window.__fixtureCalls.play===1,null,{timeout:7000});
+    assert.equal(await page.locator('#tmAura').isVisible(),true,'overlay survives accepted stream buffering');
+    assert.match(await page.locator('#tmAuraDetail').textContent(),/waiting for video frames/i);
+    assert.equal(urlPosts.length,1,'exactly one network planner POST '+JSON.stringify(urlPosts));
+    assert.equal(await page.evaluate(()=>window.__fixturePlanRequests),0,'normal planner not used');
+    assert.equal(await page.evaluate(()=>window.__fixtureMicRequests),0,'URL navigation does not request microphone');
+    // An optimistic playing flag alone does not establish video frames.
+    await page.evaluate(()=>{window.__fixturePlayback='playing';window.__fixtureRenderedFrames=0;});
+    await page.waitForTimeout(1150);
+    assert.equal(await page.locator('#tmAura').isVisible(),true,'playing without frames cannot dismiss Aura');
+    // Transition from 0 to a newly rendered frame confirms real playback.
+    await page.evaluate(()=>window.__fixtureRenderedFrames=1);
+    await page.locator('#tmAura').waitFor({state:'hidden',timeout:3000});
+    assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),1,'frame observation never replays media');
+    await context.close();
+  }
+  // A Codex usage-limit reply stays visible instead of collapsing into Mic Off.
+  {
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario:'url_limit'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    await page.addInitScript(fixtureBootstrap);
+    await page.goto(origin+'/play%20Kalyanraman?fixture=1');
+    await page.locator('#tmAura').waitFor({state:'visible'});
+    await page.waitForFunction(()=>document.querySelector('#tmAura')?.dataset.phase==='error');
+    assert.equal(await page.locator('#tmAuraTranscript').textContent(),'play Kalyanraman');
+    assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),0);
+    assert.equal(await page.locator('#tmAura').isVisible(),true);
+    await context.close();
+  }
   // First-visible startup regression: browsers can load a tab in the
   // background. Startup Aura should appear on its first foreground transition.
   {
