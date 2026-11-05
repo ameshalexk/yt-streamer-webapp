@@ -68,6 +68,26 @@ function round(value, digits = 1) {
   return Math.round(value * f) / f;
 }
 
+export function measureServerThroughput(previous, current) {
+  const elapsedMs = current?.elapsedMs - previous?.elapsedMs;
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 3000) return null;
+  const perSecond = (key) => {
+    const start = previous?.[key];
+    const end = current?.[key];
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+    return (end - start) * 1000 / elapsedMs;
+  };
+  const mbps = (key) => {
+    const bytesPerSecond = perSecond(key);
+    return bytesPerSecond == null ? null : round(bytesPerSecond * 8 / 1e6, 2);
+  };
+  return {
+    serverVideoSpeed: round(perSecond("outputVideoSeconds"), 2),
+    sourceVideoMbps: mbps("sourceVideoBytes"),
+    sourceAudioMbps: mbps("sourceAudioBytes"),
+  };
+}
+
 function avcDescription(MP4Box, sample) {
   const avcC = sample?.description?.avcC;
   if (!avcC) throw new Error("fMP4 video sample is missing AVC decoder configuration");
@@ -673,6 +693,14 @@ async function feedTrack(state, MP4Box, kind, initName) {
   while (!state.stopRequested) {
     const status = await fetchJson(`/api/experimental/cyberdash/${state.sessionId}/status`, {}, 5000);
     if (status.error) throw new Error(status.error);
+    if (kind === "video" && status.throughput && !status.done) {
+      state.serverThroughputBaseline ??= status.throughput;
+      const measured = measureServerThroughput(state.serverThroughputBaseline, status.throughput);
+      if (measured) {
+        state.serverThroughput = measured;
+        state.serverThroughputBaseline = status.throughput;
+      }
+    }
     const available = status.available?.[kind] || [];
     let progressed = false;
 
@@ -752,6 +780,7 @@ function startRenderLoop(state) {
         transport: "webcodecs",
         adaptiveEligible: !state.preparedStatic,
         fps: state.requestedFps,
+        ...state.serverThroughput,
         effectiveFps: renderedFps,
         effectiveWidth: state.effectiveWidth || null,
         effectiveHeight: state.effectiveHeight || null,
@@ -1188,6 +1217,7 @@ async function sendSummary(state, result, message = "") {
           droppedFrames: state.droppedFrames,
           receivedBytes: state.receivedBytes,
           rebufferCount: state.rebufferCount,
+          ...state.serverThroughput,
           lastAvDriftMs: round(lastDrift, 1),
           audioLateBlocks: state.audioLateBlocks,
           audioOverlapPrevented: state.audioOverlapPrevented,

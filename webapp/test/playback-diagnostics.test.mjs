@@ -15,6 +15,7 @@ test('normalizes allowlisted numeric metrics and known aliases', () => {
     queueSeconds: 2.3, receiveFps: 30.3, renderedFps: 29, droppedFrames: 0, rebufferCount: 2,
     effectiveHeight: 480, deliveryBps: 2200000, sustainableBps: 3100000, adaptiveRebufferMs: 1234,
     latestAvDriftMs: -12, decodeMs: 4.3, receiveBytesPerSecond: 524288, decoderQueueSize: 3, fps: 30,
+    serverVideoSpeed: 'Unavailable', sourceVideoMbps: 'Unavailable', sourceAudioMbps: 'Unavailable',
   });
   assert.equal(result.method, 'WebCodecs');
   assert.equal(result.qualityReason, 'Stable playback');
@@ -59,6 +60,20 @@ test('buffering hints are cautious and require relevant measurements', () => {
   assert.equal(normalize({ state: 'buffering', stats: { fps: 15, renderedFps: 4, queueSeconds: 2 } }).hint, 'Device rendering may be behind');
   assert.equal(normalize({ state: 'buffering', stats: { fps: 15 } }).hint, 'Not enough evidence');
   assert.equal(normalize({ state: 'playing', stats: {} }).hint, 'No current buffering');
+});
+
+test('WebCodecs 2x diagnostics distinguish server production from client delivery', () => {
+  const snapshot = { method: 'webcodecs', state: 'buffering',
+    stats: { fps: 30, playbackRate: 2, receiveFps: 30, queueSeconds: 1.3,
+      serverVideoSpeed: 1, sourceVideoMbps: 0.8, sourceAudioMbps: 0.15 } };
+  assert.equal(normalize(snapshot).hint, 'Server video production is behind');
+  assert.equal(normalize(snapshot).metrics.fps, 60);
+  assert.equal(normalize(snapshot).metrics.queueSeconds, 0.7);
+  assert.match(report(snapshot), /Server video pace: 1 ×/);
+  assert.match(report(snapshot), /Source video read: 0.8 Mbps/);
+  snapshot.stats.serverVideoSpeed = 2.5;
+  assert.equal(normalize(snapshot).hint, 'Possible slow stream delivery');
+  assert.doesNotMatch(report({ method: 'mjpeg', stats: {} }), /Server video pace/);
 });
 
 test('render uses textContent and never interpolates snapshot strings as markup', () => {

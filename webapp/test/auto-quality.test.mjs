@@ -5,7 +5,7 @@ import fs from "node:fs";
 await import("../public/e-auto.js");
 await import("../public/auto-quality.js");
 
-const { AutoQualityController, BUFFER_POLICIES } = globalThis.YtAutoQuality;
+const { AutoQualityController, BUFFER_POLICIES, metricsFor } = globalThis.YtAutoQuality;
 const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 
@@ -59,6 +59,27 @@ test("WebCodecs can upgrade with a healthy short decoded queue and paced product
   const [decision] = run(h, 10);
   assert.deepEqual([decision?.from, decision?.to, decision?.reason], ["medium", "high", "stable-headroom"]);
   assert.ok(decision.metrics.sustainableBps > decision.metrics.candidateBps);
+});
+
+test("WebCodecs at 2x normalizes media queue and producer cadence to wall time", () => {
+  const stats = {
+    transport: "webcodecs", fps: 15, playbackRate: 2,
+    queueSeconds: 4, queueTargetSeconds: 5, producerSpeed: 1.6, lastAvDriftMs: 40,
+  };
+  const metrics = metricsFor(stats);
+  assert.deepEqual([metrics.fps, metrics.queueSeconds, metrics.target, metrics.producerSpeed, metrics.driftMs],
+    [30, 2, 2.5, 0.8, 20]);
+  assert.equal(metricsFor({ ...stats, producerSpeed: null, receiveFps: 24 }).producerSpeed, 0.8);
+  assert.equal(metricsFor({ ...stats, transport: "mjpeg" }).queueSeconds, 4);
+});
+
+test("WebCodecs at 2x treats production that only supports 1.6x as delivery pressure", () => {
+  const h = harness();
+  const fast = { playbackRate: 2, frames: 30, queueSeconds: 1.1, queueTargetSeconds: 5 };
+  assert.deepEqual(run(h, 10, { ...fast, producerSpeed: 2 }), []);
+  const [decision] = run(h, 12, { ...fast, frames: 24, producerSpeed: 1.6 });
+  assert.equal(decision?.to, "low");
+  assert.equal(decision?.reason, "delivery-slow");
 });
 
 test("normal frame quantization and small buffer dips do not reset a healthy WebCodecs dwell", () => {

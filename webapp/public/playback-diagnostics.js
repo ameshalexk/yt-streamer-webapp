@@ -22,6 +22,11 @@
     ["sustainableBps", "Estimated sustainable bandwidth", 0, 1e10, 0],
     ["adaptiveRebufferMs", "Time rebuffering", 0, 1e12, 0],
   ]);
+  const SERVER_METRICS = Object.freeze([
+    ["serverVideoSpeed", "Server video pace", 0, 1000, 2, "×"],
+    ["sourceVideoMbps", "Source video read", 0, 10000, 2, "Mbps"],
+    ["sourceAudioMbps", "Source audio read", 0, 10000, 2, "Mbps"],
+  ]);
   const LABELS = Object.freeze({
     method: Object.freeze({ webcodecs: "WebCodecs", mjpeg: "MJPEG", jxl: "JXL", hls: "HLS", native: "Native", vlc: "VLC" }),
     state: Object.freeze({ playing: "Playing", buffering: "Buffering", reconnecting: "Reconnecting", paused: "Paused", idle: "Idle", error: "Error", stopped: "Stopped" }),
@@ -48,14 +53,24 @@
   function normalize(snapshot) {
     snapshot = snapshot && typeof snapshot === "object" ? snapshot : {};
     const metrics = {};
-    for (const [key, , min, max, decimals] of METRICS) metrics[key] = metricValue(snapshot, key, min, max, decimals);
+    for (const [key, , min, max, decimals] of [...METRICS, ...SERVER_METRICS]) {
+      metrics[key] = metricValue(snapshot, key, min, max, decimals);
+    }
+    const playbackRate = metricValue(snapshot, "playbackRate", 1, 4, 2);
+    const rate = snapshot.method === "webcodecs" && playbackRate !== "Unavailable" ? playbackRate : 1;
+    // Show buffer time and frame targets as the viewer experiences them.
+    if (metrics.queueSeconds !== "Unavailable") metrics.queueSeconds = Number((metrics.queueSeconds / rate).toFixed(1));
+    if (metrics.fps !== "Unavailable") metrics.fps = Number((metrics.fps * rate).toFixed(1));
+    const expectedFps = metrics.fps === "Unavailable" ? 0 : metrics.fps;
     let hint = "Not enough evidence";
     if (snapshot.state === "buffering") {
       if (snapshot.audioStatus === "silent" || snapshot.audioStatus === "retrying") hint = "Audio may need attention";
-      else if (metrics.queueSeconds !== "Unavailable" && metrics.receiveFps !== "Unavailable" && metrics.fps !== "Unavailable"
-          && metrics.fps > 0 && metrics.queueSeconds < 1 && metrics.receiveFps < metrics.fps * 0.8) hint = "Possible slow stream delivery";
-      else if (metrics.queueSeconds !== "Unavailable" && metrics.renderedFps !== "Unavailable" && metrics.fps !== "Unavailable"
-          && metrics.fps > 0 && metrics.queueSeconds >= 1 && metrics.renderedFps < metrics.fps * 0.8) hint = "Device rendering may be behind";
+      else if (metrics.serverVideoSpeed !== "Unavailable" && metrics.serverVideoSpeed < rate * 0.9
+          && metrics.queueSeconds !== "Unavailable" && metrics.queueSeconds < 1) hint = "Server video production is behind";
+      else if (metrics.queueSeconds !== "Unavailable" && metrics.receiveFps !== "Unavailable"
+          && expectedFps > 0 && metrics.queueSeconds < 1 && metrics.receiveFps < expectedFps * 0.8) hint = "Possible slow stream delivery";
+      else if (metrics.queueSeconds !== "Unavailable" && metrics.renderedFps !== "Unavailable"
+          && expectedFps > 0 && metrics.queueSeconds >= 1 && metrics.renderedFps < expectedFps * 0.8) hint = "Device rendering may be behind";
     } else if (snapshot.state === "playing") hint = "No current buffering";
     return Object.freeze({
       method: safeLabel("method", snapshot.method),
@@ -79,6 +94,8 @@
       ["Playback hint", data.hint], ["Quality reason", data.qualityReason], ["Error category", data.errorCategory],
       ...METRICS.map(([key, label]) => [label, data.metrics[key] === "Unavailable" || !units[key]
         ? data.metrics[key] : `${data.metrics[key]} ${units[key]}`]),
+      ...SERVER_METRICS.filter(([key]) => data.metrics[key] !== "Unavailable")
+        .map(([key, label, , , , unit]) => [label, `${data.metrics[key]} ${unit}`]),
     ];
   }
   function report(snapshot) {
