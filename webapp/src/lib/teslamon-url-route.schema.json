@@ -1,0 +1,1 @@
+{"type":"object","additionalProperties":false,"properties":{"route":{"type":"string","enum":["video","ha","mac","answer","unsupported"]},"text":{"type":"string","maxLength":220},"message":{"type":"string","maxLength":500}},"required":["route","text","message"]}

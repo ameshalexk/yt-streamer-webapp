@@ -1,4 +1,4 @@
-// Explicit URL navigation to an unknown path is a playback-only command.
+// Explicit URL navigation to an unknown path is a natural-language command.
 // Real application, API and static asset routes must never turn into commands.
 const RESERVED=new Set([
   'api','stream','vendor','apne','cast','internal','retro-pc','retrotv',
