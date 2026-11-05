@@ -82,12 +82,12 @@ const VIDEO_URL_PROMPT=[
   'You are TeslaMon processing a video-playback command from a URL path.',
   'The spoken command was converted into a URL and spaces may have been removed.',
   'Infer the intended word boundaries and obvious transcription mistakes from context.',
-  'Choose search_and_play for a clear request to play a video, otherwise unsupported.',
+  'For a clear play/search request choose search_and_play. For browser-tab video controls choose pause, resume, get_playback_state, request_fullscreen or exit_fullscreen.',
   'Preserve latest, newest and most recent in the video search query when requested.',
-  'For search_and_play provide a natural-language search query of 2 to 120 characters.',
+  'For search_and_play provide a natural-language search query of 2 to 120 characters. For every other tool set query to empty string.',
   'Use exactly the tool and query keys in the required JSON output schema.',
   'Never invoke tools, MCP servers, Home Assistant, devices, shell, files or browsing.',
-  'All other playback commands, light commands and non-video requests are unsupported.',
+  'Lighting, device controls, commands unrelated to this browser player and all non-video requests are unsupported.',
   'The authenticated browser will search and play one video in its own tab.',
 ].join(' ');
 
@@ -253,7 +253,7 @@ export function createTeslaMonCodex({
           return finish({status:'failed',code:'invalid_codex_reply'});
         }
         const result=validateCodexPlan(json);
-        if(videoOnly&&(result.status!=='ok'||result.tool!=='search_and_play'))
+        if(videoOnly&&(result.status!=='ok'||result.tool==='ha_done'))
           return finish({status:'unsupported',code:'video_only_command'});
         if(result.status==='ha_done'&&completedMcpCalls===0)
           return finish({status:'failed',code:'ha_mcp_not_called'});

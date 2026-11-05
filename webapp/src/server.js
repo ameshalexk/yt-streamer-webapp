@@ -9,6 +9,9 @@ import { config } from "./config.js";
 import {startProductionMediaRelay} from "./lib/ai-media-agent-production-relay.js";
 import {createTeslaMonTranscriber} from "./lib/teslamon-transcribe.js";
 import {createTeslaMonCodex,createTeslaMonCodexSelector} from "./lib/teslamon-codex-cli.js";
+import {createDevicePlanner} from "./lib/teslamon-device-plan.js";
+import {createHACommandService} from "./lib/teslamon-device-mcp.js";
+import {createMacCommandService} from "./lib/teslamon-mac-mcp.js";
 import * as store from "./lib/store.js";
 import * as storageManager from "./lib/storage-manager.js";
 import { findSavedPlayback } from "./lib/saved-playback.js";
@@ -129,11 +132,27 @@ function playbackStats(value) {
     "sourceDurationSec", "playbackRate",
     "audioStatus", "audioBufferedSeconds", "audioErrorCode", "audioLoadElapsedMs",
   ];
-  const stats = Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
-  for (const key of ["serverVideoSpeed", "sourceVideoMbps", "sourceAudioMbps"]) {
-    if (Number.isFinite(source[key]) && source[key] >= 0) stats[key] = source[key];
+  const sanitized = Object.fromEntries(keys.filter((key) => source[key] !== undefined)
+    .map((key) => [key, source[key]]));
+  const adaptiveNumbers = [
+    "deliveryBps", "capacityBps", "sustainableBps", "deliveryFloorBps", "mediaBps", "candidateBps",
+    "capacityFastBps", "capacitySlowBps", "deliveryFastBps", "deliverySlowBps", "latencyMs",
+    "queueTargetSeconds", "queueDepletion", "decodeLoad", "decodePressure", "decoderQueueSize", "effectiveWidth", "effectiveHeight", "effectiveFps",
+    "adaptiveUpgrades", "adaptiveDowngrades", "adaptiveLowMs", "adaptiveMediumMs", "adaptiveHighMs",
+    "adaptiveRebuffers", "adaptiveRebufferMs", "rebufferDurationMs", "switchInterruptionMs",
+  ];
+  for (const key of adaptiveNumbers) {
+    const value = source[key];
+    if (typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1e12) sanitized[key] = value;
   }
-  return stats;
+  for (const key of ["serverVideoSpeed", "sourceVideoMbps", "sourceAudioMbps"]) {
+    const value = source[key];
+    if (Number.isFinite(value) && value >= 0 && value <= 1e12) sanitized[key] = value;
+  }
+  if (["low", "medium", "high"].includes(source.adaptiveTier)) sanitized.adaptiveTier = source.adaptiveTier;
+  if (["network", "delivery", "device", "healthy"].includes(source.adaptiveSignal)) sanitized.adaptiveSignal = source.adaptiveSignal;
+  if (["mjpeg", "webcodecs"].includes(source.transport)) sanitized.transport = source.transport;
+  return sanitized;
 }
 
 function playbackTiming(value) {
@@ -2361,6 +2380,9 @@ const teslamonCodex=createTeslaMonCodex({
   onDiagnostic:event=>console.info('[teslamon-codex]',JSON.stringify(event))
 });
 const teslamonCodexSelector=createTeslaMonCodexSelector();
+const teslamonHACommands=createHACommandService({planner:createDevicePlanner()});
+const teslamonMacCommands=createMacCommandService({planner:createDevicePlanner({provider:'mac'})});
+const teslamonUrlRouter=createDevicePlanner({provider:'route'});
 // Stage durations only: never log speech, queries, identities, or credentials.
 function logTeslaMonLatency(stage,started,status){
   console.info('[teslamon-latency]',JSON.stringify({stage,ms:Date.now()-started,status}));
@@ -2424,6 +2446,107 @@ app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,
 // Separate signed, origin-bound planner: URL navigation cannot trigger HA MCPs.
 app.post('/api/teslamon/url-video-plan',verifyTeslaMonVoiceRequest,
   (req,res)=>handleTeslaMonPlan(req,res,{videoOnly:true}));
+// Unprefixed natural-language URLs are classified with a tool-free Codex
+// process. Classification does not execute actions; each routed provider uses
+// its own separate signed endpoint and explicit confirmation for mutations.
+app.post('/api/teslamon/url-route',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  const body=req.body;
+  if(!body||Object.getPrototypeOf(body)!==Object.prototype||
+     Object.keys(body).sort().join(',')!=='session,text'||
+     typeof body.session!=='string'||!/^[a-f0-9-]{36}$/i.test(body.session)||
+     typeof body.text!=='string'||body.text.length<2||body.text.length>220||
+     /[\x00-\x1f\x7f]/.test(body.text))
+    return res.status(400).json({status:'failed',code:'invalid_url_request'});
+  const principal=req.teslamonVoiceIdentity;
+  if(typeof principal?.subject!=='string'||!principal.subject||
+     typeof principal.issuer!=='string'||!principal.issuer)
+    return res.status(401).json({status:'failed',code:'signed_access_required'});
+  const controller=new AbortController();
+  const onClose=()=>{if(!res.writableEnded)controller.abort();};
+  res.once('close',onClose);
+  const started=Date.now();
+  try{
+    const outcome=await teslamonUrlRouter.plan(body.text,{signal:controller.signal});
+    console.info('[teslamon-url-route]',JSON.stringify({status:outcome.status,
+      route:outcome.route||null,ms:Date.now()-started}));
+    return res.status(outcome.status==='unavailable'?503:outcome.status==='failed'?422:200)
+      .json(outcome);
+  }catch{return res.status(503).json({status:'unavailable',code:'codex_unavailable'});}
+  finally{res.removeListener('close',onClose);}
+});
+// Device URLs use explicit /ha/ namespace and signed POSTs. A GET never
+// executes a mutation. Even an authenticated model-created plan only creates
+// a short-lived proposal; a human click is required to use the MCP write tool.
+function validatedDeviceRequest(req,keys){
+  const body=req.body;
+  return body&&Object.getPrototypeOf(body)===Object.prototype&&
+    Object.keys(body).sort().join(',')===keys.slice().sort().join(',')&&
+    typeof body.session==='string'&&/^[a-f0-9-]{36}$/i.test(body.session);
+}
+function deviceIdentity(req){
+  const principal=req.teslamonVoiceIdentity;
+  if(typeof principal?.subject!=='string'||!principal.subject||
+     typeof principal.issuer!=='string'||!principal.issuer)return null;
+  return crypto.createHash('sha256').update(principal.issuer+'\n'+principal.subject).digest('hex');
+}
+app.post('/api/teslamon/ha-plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  if(!validatedDeviceRequest(req,['session','text'])||
+    typeof req.body.text!=='string'||req.body.text.length<2||req.body.text.length>220||
+    /[\x00-\x1f\x7f]/.test(req.body.text))
+    return res.status(400).json({status:'failed',code:'invalid_device_request'});
+  const identity=deviceIdentity(req);
+  if(!identity)return res.status(401).json({status:'failed',code:'signed_access_required'});
+  const started=Date.now();
+  const controller=new AbortController();
+  const onClose=()=>{if(!res.writableEnded)controller.abort()};
+  res.once('close',onClose);
+  try{
+    const result=await teslamonHACommands.plan(req.body.text,req.body.session,identity,
+      {signal:controller.signal});
+    console.info('[teslamon-ha]',JSON.stringify({outcome:result.status,ms:Date.now()-started}));
+    return res.status(result.status==='unavailable'?503:200).json(result);
+  }catch{return res.status(503).json({status:'unavailable',code:'home_assistant_unavailable'});}
+  finally{res.removeListener('close',onClose);}
+});
+app.post('/api/teslamon/ha-confirm',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  if(!validatedDeviceRequest(req,['id','session'])||
+     typeof req.body.id!=='string'||! /^[a-f0-9]{48}$/.test(req.body.id))
+    return res.status(400).json({status:'failed',code:'invalid_confirmation'});
+  const identity=deviceIdentity(req);
+  if(!identity)return res.status(401).json({status:'failed',code:'signed_access_required'});
+  try{return res.json(await teslamonHACommands.confirm(req.body.id,req.body.session,identity));}
+  catch{return res.status(503).json({status:'unavailable',code:'home_assistant_unavailable'});}
+});
+
+// Separate signed Mac Control namespace and local MCP allowlist. No device
+// commands are accepted through the unprefixed, video-only Grok URL path.
+app.post('/api/teslamon/mac-plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  if(!validatedDeviceRequest(req,['session','text'])||
+     typeof req.body.text!=='string'||req.body.text.length<2||req.body.text.length>220||
+     /[\x00-\x1f\x7f]/.test(req.body.text))
+    return res.status(400).json({status:'failed',code:'invalid_device_request'});
+  const identity=deviceIdentity(req);
+  if(!identity)return res.status(401).json({status:'failed',code:'signed_access_required'});
+  const started=Date.now(),controller=new AbortController();
+  const onClose=()=>{if(!res.writableEnded)controller.abort()};
+  res.once('close',onClose);
+  try{
+    const result=await teslamonMacCommands.plan(req.body.text,req.body.session,identity,
+      {signal:controller.signal});
+    console.info('[teslamon-mac]',JSON.stringify({outcome:result.status,ms:Date.now()-started}));
+    return res.status(result.status==='unavailable'?503:200).json(result);
+  }catch{return res.status(503).json({status:'unavailable',code:'mac_control_unavailable'});}
+  finally{res.removeListener('close',onClose);}
+});
+app.post('/api/teslamon/mac-confirm',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  if(!validatedDeviceRequest(req,['id','session'])||
+    typeof req.body.id!=='string'||! /^[a-f0-9]{48}$/.test(req.body.id))
+    return res.status(400).json({status:'failed',code:'invalid_confirmation'});
+  const identity=deviceIdentity(req);
+  if(!identity)return res.status(401).json({status:'failed',code:'signed_access_required'});
+  try{return res.json(await teslamonMacCommands.confirm(req.body.id,req.body.session,identity));}
+  catch{return res.status(503).json({status:'unavailable',code:'mac_control_unavailable'});}
+});
 app.post('/api/teslamon/select-candidate',verifyTeslaMonVoiceRequest,async(req,res)=>{
   const body=req.body;
   if(!body||Object.getPrototypeOf(body)!==Object.prototype||

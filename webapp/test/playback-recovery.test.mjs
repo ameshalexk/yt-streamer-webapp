@@ -79,18 +79,24 @@ test('persistent drift needs five seconds and stable playback restores the budge
   for (let i = 1; i <= 7; i++) f.advance(1000, { audioEnabled: true, videoProgress: 16 + i, audioTime: 11 + i });
   assert.equal(f.monitor.attempts, 0);
 });
-test('reconnect uses the captured video clock and stops separate audio while preserving watch session', async () => {
+test('reconnect uses fresh progress, preserves watch state and does not wait for WebCodecs end', async () => {
   const app = await fs.readFile(new URL('../public/app.js', import.meta.url), 'utf8');
-  const calls = []; const replay = time => calls.push(['replay', time]);
+  const calls = []; const replay = time => { calls.push(['replay', time]); return new Promise(() => {}); };
   const context = vm.createContext({ replayFn: replay, playbackPaused: false, document: { hidden: false }, navigator: { onLine: true },
-    activeCompat: null, streamSeek: { seekable: true }, clampStreamSeekTime: n => n,
+    activeCompat: null, streamSeek: { seekable: true }, clampStreamSeekTime: n => n, streamAttempt: 10,
+    pendingQualityRestore: null, awaitingRecoveredFrame: null, recoveryReplay: null,
+    failedRecoveryPosition: null, playbackRecoverySample: () => ({ attempt: 10, position: 42, started: true, videoProgress: 40 }),
     watchProgress: { save: () => calls.push(['save']) }, stopDesktopAudioHlsSession: async () => calls.push(['audio-stop']),
-    clearBrowserAudioRetry: () => {}, cleanupMedia: keep => calls.push(['cleanup', keep]) });
+    clearBrowserAudioRetry: () => {} });
   const start = app.indexOf('async function recoverPlayback('); const end = app.indexOf('\nconst playbackRecovery', start);
   vm.runInContext(app.slice(start, end), context);
-  await context.recoverPlayback({ replay, position: 42, audioOnly: false });
-  assert.deepEqual(calls, [['save'], ['audio-stop'], ['cleanup', true], ['replay', 42]]);
-  context.playbackPaused = true; await context.recoverPlayback({ replay, position: 99 }); assert.equal(calls.length, 4);
+  const sample = { replay, attempt: 10, position: 39, reason: 'video', videoProgress: 40 };
+  assert.equal((await context.recoverPlayback(sample)).status, 'started');
+  assert.deepEqual(calls, [['save'], ['audio-stop'], ['replay', 42]]);
+  assert.equal((await context.recoverPlayback({ ...sample, videoProgress: 30 })).status, 'noop');
+  context.playbackPaused = true;
+  assert.equal((await context.recoverPlayback(sample)).status, 'canceled');
+  assert.equal(calls.length, 3);
 });
 
 test('pausing or hiding cancels a queued retry without consuming its budget', async () => {
@@ -168,6 +174,63 @@ test('network return resumes interrupted recovery without another user action', 
   assert.equal(f.recoveries.length, 1);
 });
 
+test('transitioning suppresses stalls and cancels stale retries without resetting backoff', async () => {
+  const f = fixture();
+  f.advance(0); f.advance(16000);
+  assert.equal(f.task.delay, 1000);
+  f.advance(1, { transitioning: true });
+  assert.equal(f.task, null);
+  assert.equal(f.monitor.pending, false);
+  assert.equal(f.monitor.attempts, 1);
+  f.advance(60000, { transitioning: true });
+  assert.equal(f.task, null);
+  assert.equal(f.monitor.attempts, 1);
+  // A real failure sample during an ended transition remains explicitly
+  // requestable because the caller reports transitioning=false.
+  assert.equal(f.monitor.request('failure', { ...f.sample, transitioning: false }), true);
+  assert.equal(f.task.delay, 3000);
+  await f.run();
+  assert.equal(f.recoveries.length, 1);
+});
+
+test('transition cancellation invalidates a callback already entering recovery', async () => {
+  let finish;
+  const gate = new Promise(resolve => { finish = resolve; });
+  const f = fixture({ recover: async () => { await gate; return { status: 'playing' }; } });
+  f.monitor.request('failure', f.sample);
+  const running = f.task.fn();
+  f.advance(1, { transitioning: true });
+  finish(); await running;
+  assert.equal(f.monitor.pending, false);
+  assert.equal(f.monitor.attempts, 1);
+  assert.equal(f.events.some(e => e.state === 'playing'), false);
+});
+
+test('video recovery arbitration excludes audio repairs', async () => {
+  const f = fixture();
+  f.monitor.request('audio', { ...f.sample, audioEnabled: true });
+  assert.equal(f.monitor.isVideoRecoveryPending(), false);
+  f.monitor.reset();
+  f.monitor.request('failure', f.sample);
+  assert.equal(f.monitor.isVideoRecoveryPending(), true);
+  f.monitor.reset();
+  assert.equal(f.monitor.isVideoRecoveryPending(), false);
+});
+
+test('recovery outcomes report actual playback separately from no-op and cancellation', async () => {
+  for (const [result, expected] of [
+    [{ status: 'playing' }, 'playing'],
+    [{ status: 'noop' }, 'noop'],
+    [{ status: 'canceled' }, 'canceled'],
+    [undefined, 'noop'],
+  ]) {
+    const f = fixture({ recover: async () => result });
+    f.monitor.request('failure', f.sample); await f.run();
+    assert.equal(f.events.at(-1).state, expected);
+    assert.equal(f.task, null, 'completed no-op/canceled work does not create a retry loop');
+  }
+});
+
 test('lowest quality hides the one-click quality action; higher setting lowers and disables Auto', async () => {
   const app = await fs.readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const html = await fs.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -211,4 +274,17 @@ test('healthy frames cancel a queued retry and do not reconnect after returning 
   assert.equal(f.task, null);
   f.monitor.hold();
   assert.equal(f.monitor.resume(f.sample), false);
+});
+
+test('a video failure preempts an audio retry queued before video teardown', async () => {
+  const f = fixture();
+  const sample = { ...f.sample, audioEnabled: true, canRepairAudio: true, audioError: true };
+  assert.equal(f.monitor.request('audio', sample), true);
+  assert.equal(f.monitor.isVideoRecoveryPending(), false);
+  assert.equal(f.monitor.request('failure', sample), true);
+  assert.equal(f.monitor.isVideoRecoveryPending(), true);
+  await f.run();
+  assert.equal(f.recoveries.length, 1);
+  assert.equal(f.recoveries[0].audioOnly, false);
+  assert.equal(f.recoveries[0].reason, 'failure');
 });

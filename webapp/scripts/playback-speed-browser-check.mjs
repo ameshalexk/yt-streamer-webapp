@@ -82,8 +82,8 @@ try {
  });
  // Drive the same transition that follows a confirmed Auto downgrade.
  await page.evaluate(() => {
-   autoQualityController.selectTier("low", { switched: true });
-   requestAutoQualityTier({ action: "switch", from: "medium", to: "low", reason: "rebuffer" });
+   const decision = autoQualityController.switchTo("low", "rebuffer", performance.now());
+   requestAutoQualityTier(decision, diagnosticsStats);
  });
  const lowSettings = (await lowRequest).postDataJSON();
  assert.equal(lowSettings.fps, 12, "Auto Low must reduce source FPS even at 2x");

@@ -17,6 +17,10 @@
     ["receiveBytesPerSecond", "Stream delivery", 0, 1e9, 0],
     ["decoderQueueSize", "Decoder queue", 0, 1e6, 0],
     ["fps", "Target FPS", 0, 1000, 1],
+    ["effectiveHeight", "Rendered height", 0, 16384, 0],
+    ["deliveryBps", "Measured video delivery", 0, 1e10, 0],
+    ["sustainableBps", "Estimated sustainable bandwidth", 0, 1e10, 0],
+    ["adaptiveRebufferMs", "Time rebuffering", 0, 1e12, 0],
   ]);
   const SERVER_METRICS = Object.freeze([
     ["serverVideoSpeed", "Server video pace", 0, 1000, 2, "×"],
@@ -27,7 +31,7 @@
     method: Object.freeze({ webcodecs: "WebCodecs", mjpeg: "MJPEG", jxl: "JXL", hls: "HLS", native: "Native", vlc: "VLC" }),
     state: Object.freeze({ playing: "Playing", buffering: "Buffering", reconnecting: "Reconnecting", paused: "Paused", idle: "Idle", error: "Error", stopped: "Stopped" }),
     quality: Object.freeze({ low: "Low", medium: "Medium", high: "High", auto: "Auto", source: "Source" }),
-    qualityReason: Object.freeze({ startup: "Startup", user: "User selected", manual: "User selected", automatic: "Automatic adjustment", auto: "Automatic adjustment", bandwidth: "Delivery conditions", delivery_pressure: "Delivery conditions", "delivery-slow": "Delivery conditions", delivery_slow: "Delivery conditions", render_pressure: "Rendering conditions", "device-overload": "Rendering conditions", device_overload: "Rendering conditions", recovery: "Recovery", rebuffer: "Rebuffer recovery", "stable-headroom": "Stable playback", stable_headroom: "Stable playback", stable: "Stable playback", unavailable: "Unavailable" }),
+    qualityReason: Object.freeze({ startup: "Startup", user: "User selected", manual: "User selected", automatic: "Automatic adjustment", auto: "Automatic adjustment", bandwidth: "Delivery conditions", delivery_pressure: "Delivery conditions", "delivery-slow": "Delivery conditions", "bandwidth-shortfall": "Delivery conditions", "paced-delivery-trial": "Trial after stable playback", delivery_slow: "Delivery conditions", render_pressure: "Rendering conditions", "device-overload": "Rendering conditions", device_overload: "Rendering conditions", recovery: "Recovery", rebuffer: "Rebuffer recovery", "stable-headroom": "Stable playback", stable_headroom: "Stable playback", stable: "Stable playback", unavailable: "Unavailable" }),
     errorCategory: Object.freeze({ network: "Network", decode: "Decoder", playback: "Playback", "playback-failed": "Playback", unsupported: "Unsupported", timeout: "Timeout", cancelled: "Cancelled", unavailable: "Unavailable" }),
     audioStatus: Object.freeze({ synced: "Synced", ready: "Ready", starting: "Starting", retrying: "Retrying", silent: "Silent", muted: "Muted", source: "Source", idle: "Idle" }),
   });
@@ -75,6 +79,7 @@
       qualityReason: safeLabel("qualityReason", snapshot.qualityReason),
       errorCategory: safeLabel("errorCategory", snapshot.errorCategory),
       audioStatus: safeLabel("audioStatus", snapshot.audioStatus),
+      adaptiveTier: snapshot.quality === "auto" ? safeLabel("quality", snapshot.stats?.adaptiveTier) : "Unavailable",
       hint,
       metrics: Object.freeze(metrics),
     });
@@ -83,9 +88,9 @@
     const data = normalize(snapshot);
     const units = { queueSeconds: "s", receiveFps: "fps", renderedFps: "fps",
       latestAvDriftMs: "ms", decodeMs: "ms/frame", receiveBytesPerSecond: "bytes/s",
-      decoderQueueSize: "frames", fps: "fps" };
+      decoderQueueSize: "frames", fps: "fps", effectiveHeight: "px", deliveryBps: "bits/s", sustainableBps: "bits/s", adaptiveRebufferMs: "ms" };
     return [
-      ["Method", data.method], ["Status", data.state], ["Audio", data.audioStatus], ["Quality", data.quality],
+      ["Method", data.method], ["Status", data.state], ["Audio", data.audioStatus], ["Quality", data.adaptiveTier === "Unavailable" ? data.quality : `${data.quality} · ${data.adaptiveTier}`],
       ["Playback hint", data.hint], ["Quality reason", data.qualityReason], ["Error category", data.errorCategory],
       ...METRICS.map(([key, label]) => [label, data.metrics[key] === "Unavailable" || !units[key]
         ? data.metrics[key] : `${data.metrics[key]} ${units[key]}`]),

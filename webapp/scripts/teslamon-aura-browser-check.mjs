@@ -5,11 +5,19 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
 import {chromium} from 'playwright-core';
+import {parseTeslaMonVideoUrl} from '../public/teslamon-video-url.js';
+import {parseTeslaMonDeviceUrl} from '../public/teslamon-device-url.js';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../public');
 let fixtureScenario='ha_done';
 let fixtureCapabilitiesGate=null,releaseFixtureCapabilities=null;
 const fixtureBootstrap=()=>{
   window.__fixturePlayback='idle';
+  window.__fixtureRenderedFrames=0;
+  window.__fixtureUrl=/^\/play/i.test(location.pathname);
+  window.__fixtureUrlPlanRequests=0;
+  window.__fixtureRouteRequests=0;
+  window.__fixtureDevicePlans=0;
+  window.__fixtureConfirmRequests=0;
   window.__fixtureSpeechText='turn on office lights';
   window.__fixtureCalls={search:0,play:0,pause:0,resume:0,commands:0};
   window.__fixtureMicRequests=0;
@@ -41,7 +49,8 @@ const fixtureBootstrap=()=>{
       return {status:'completed'};
     },
     get_player_state:()=>({playback_phase:window.__fixturePlayback,fullscreen_kind:'none',
-      media_id:'abcdefghijk',rendered_frames:0,mode:'native'}),
+      media_id:'abcdefghijk',rendered_frames:window.__fixtureRenderedFrames,
+      mode:window.__fixtureUrl?'buffered_mjpeg':'native'}),
   };
   navigator.mediaDevices.getUserMedia=async()=>{window.__fixtureMicRequests++;throw new Error('Fixture must not request microphone');};
   const nativeFetch=window.fetch.bind(window);
@@ -50,6 +59,10 @@ const fixtureBootstrap=()=>{
     const isPlan=new URL(url,location.href).pathname==='/api/teslamon/plan';
     const isCapabilities=new URL(url,location.href).pathname==='/api/teslamon/capabilities';
     if(isPlan)window.__fixturePlanRequests++;
+    if(new URL(url,location.href).pathname==='/api/teslamon/url-video-plan')window.__fixtureUrlPlanRequests++;
+    if(new URL(url,location.href).pathname==='/api/teslamon/url-route')window.__fixtureRouteRequests++;
+    if(['/api/teslamon/ha-plan','/api/teslamon/mac-plan'].includes(new URL(url,location.href).pathname))window.__fixtureDevicePlans++;
+    if(['/api/teslamon/ha-confirm','/api/teslamon/mac-confirm'].includes(new URL(url,location.href).pathname))window.__fixtureConfirmRequests++;
     if(isCapabilities)window.__fixtureCapabilitiesRequests++;
     const response=await nativeFetch(...args);
     if(isPlan)window.__fixturePlanResponses++;
@@ -189,6 +202,20 @@ const server=http.createServer(async(req,res)=>{
   if(pathname.startsWith('/api/')){
     res.writeHead(200,{'content-type':'application/json'});
     const payload=pathname==='/api/teslamon/capabilities'?{codexAvailable:true,localTranscription:true}:
+      pathname==='/api/teslamon/url-route'?
+        (fixtureScenario==='url_limit'?{status:'unavailable',code:'codex_usage_limit'}:
+        fixtureScenario==='url_light'?{status:'ok',route:'ha',text:'turn on game room lights'}:
+        fixtureScenario==='url_mac'?{status:'ok',route:'mac',text:'open Safari'}:
+        fixtureScenario==='url_answer'?{status:'ok',route:'answer',message:'Two plus two is four.'}:
+        fixtureScenario==='url_unsupported'?{status:'unsupported',route:'unsupported',message:'Tesla is not yet connected to this URL router.'}:
+        {status:'ok',route:'video',text:'play fixture video'}):
+      pathname==='/api/teslamon/url-video-plan'?
+        (fixtureScenario==='url_pause'?{status:'ok',tool:'pause',args:{}}:
+          {status:'ok',tool:'search_and_play',args:{query:'fixture video'}}):
+      pathname==='/api/teslamon/ha-plan'||pathname==='/api/teslamon/mac-plan'?
+        {status:'confirm_required',id:'a'.repeat(48),message:fixtureScenario==='url_mac'?'Open Safari?':'Turn on game room lights?'}:
+      pathname==='/api/teslamon/ha-confirm'||pathname==='/api/teslamon/mac-confirm'?
+        {status:'ok',message:'Confirmed action complete'}:
       pathname==='/api/teslamon/plan'?(['search_play','slow_play'].includes(fixtureScenario)?{status:'ok',tool:'search_and_play',args:{query:'fixture video'}}:
         ['error','slow_error'].includes(fixtureScenario)?{status:'failed',code:'codex_unavailable'}:
         fixtureScenario==='uncertain'?{status:'uncertain',code:'invalid_codex_reply'}:
@@ -204,11 +231,15 @@ const server=http.createServer(async(req,res)=>{
     else respond();
     return;
   }
-  const target=path.resolve(root,decodeURIComponent(pathname==='/'?'index.html':pathname.slice(1)));
+  // Mirror production SPA fallback for eligible video commands. Ordinary
+  // routes and assets are never interpreted as Codex requests.
+  const urlCommand=parseTeslaMonVideoUrl(pathname);
+  const deviceCommand=parseTeslaMonDeviceUrl(pathname);
+  const target=path.resolve(root,decodeURIComponent(pathname==='/'||urlCommand||deviceCommand?'index.html':pathname.slice(1)));
   if(!target.startsWith(root+path.sep)){res.writeHead(403);res.end();return;}
   try{
     let bytes=await fs.readFile(target);
-    if((pathname==='/'||pathname==='/index.html')&&requestUrl.searchParams.get('fixture')==='1')
+    if((pathname==='/'||pathname==='/index.html'||urlCommand||deviceCommand)&&requestUrl.searchParams.get('fixture')==='1')
       bytes=Buffer.from(bytes.toString('utf8').replace('</head>',fixtureBootstrapScript+'</head>'));
     if(pathname==='/teslamon-pet.js')bytes=Buffer.from(bytes.toString('utf8').replace(
       "['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'",
@@ -233,6 +264,128 @@ const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/A
 const viewports=process.env.TESLAMON_AURA_FAST==='1'?[[390,844]]:[[320,568],[375,667],[390,844],[430,932],[768,1024],[844,390],[1280,800],[1920,1080]];
 const results=[],errors=[];
 try{
+  // URL command must show the original request, survive Mic Off and buffering,
+  // and close only once the selected media has ADVANCING rendered frames.
+  for(const [urlPath,expected] of [
+    ['/play%20Kalyanraman%20Malayalam','play Kalyanraman Malayalam'],
+    ['/play%20%E0%B4%AE%E0%B4%B2%E0%B4%AF%E0%B4%BE%E0%B4%B3%E0%B4%82','play മലയാളം'],
+    ['/play%2520MKBHD%2520greatest%2520video','play MKBHD greatest video'],
+    ['/play+MKBHD+50%25+video','play MKBHD 50% video']
+  ]){
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario:'url_play'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    page.on('pageerror',error=>errors.push('url-preview '+urlPath+' '+error.message));
+    const urlPosts=[];
+    page.on('request',req=>{if(new URL(req.url()).pathname==='/api/teslamon/url-video-plan')urlPosts.push({method:req.method(),body:req.postData()});});
+    // Bootstrap is already injected by the fixture HTML; avoid double-wrapping fetch.
+    await page.goto(origin+urlPath+'?fixture=1',{waitUntil:'domcontentloaded'});
+    await page.locator('#tmAura').waitFor({state:'visible',timeout:5000});
+    await page.locator('#tmAuraTranscript').waitFor({state:'visible',timeout:5000});
+    assert.equal(await page.locator('#tmAuraTranscript').textContent(),expected);
+    assert.equal(await page.evaluate(()=>location.pathname),'/','command path cleared after capture');
+    await page.waitForFunction(()=>window.__fixtureCalls.play===1,null,{timeout:7000});
+    assert.equal(await page.locator('#tmAura').isVisible(),true,'overlay survives accepted stream buffering');
+    assert.match(await page.locator('#tmAuraDetail').textContent(),/waiting for video frames/i);
+    assert.equal(urlPosts.length,1,'exactly one video planner POST '+JSON.stringify(urlPosts));
+    assert.equal(await page.evaluate(()=>window.__fixtureRouteRequests),1,'exactly one general URL routing POST');
+    assert.equal(await page.evaluate(()=>window.__fixturePlanRequests),0,'normal planner not used');
+    assert.equal(await page.evaluate(()=>window.__fixtureMicRequests),0,'URL navigation does not request microphone');
+    // An optimistic playing flag alone does not establish video frames.
+    await page.evaluate(()=>{window.__fixturePlayback='playing';window.__fixtureRenderedFrames=0;});
+    await page.waitForTimeout(1150);
+    assert.equal(await page.locator('#tmAura').isVisible(),true,'playing without frames cannot dismiss Aura');
+    // Transition from 0 to a newly rendered frame confirms real playback.
+    await page.evaluate(()=>window.__fixtureRenderedFrames=1);
+    await page.locator('#tmAura').waitFor({state:'hidden',timeout:3000});
+    assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),1,'frame observation never replays media');
+    await context.close();
+  }
+  // General path is interpreted once and a lighting mutation is never
+  // executed by navigation or by the router's model output.
+  {
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario:'url_light'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    // Bootstrap is already injected by the fixture HTML; avoid double-wrapping fetch.
+    await page.goto(origin+'/turnonnthegameroomlights?fixture=1');
+    await page.locator('#tmDeviceApproval').waitFor({state:'visible',timeout:7000});
+    assert.equal(await page.evaluate(()=>window.__fixtureRouteRequests),1);
+    assert.equal(await page.evaluate(()=>window.__fixtureDevicePlans),1);
+    assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0,'GET or model routing cannot change lights');
+    assert.equal(await page.evaluate(()=>window.__fixtureUrlPlanRequests),0,'video model is not called for device commands');
+    assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),0);
+    assert.match(await page.locator('#tmDeviceApproval').textContent(),/Turn on game room lights/i);
+    await page.getByRole('button',{name:'Confirm',exact:true}).click();
+    await page.waitForFunction(()=>window.__fixtureConfirmRequests===1);
+    assert.equal(await page.evaluate(()=>location.pathname),'/', 'command pathname cleared');
+    await page.reload();
+    assert.equal(await page.evaluate(()=>window.__fixtureRouteRequests),0,
+      'reloading after a confirmed action never replays the URL command');
+    assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0,
+      'reload does not reconfirm a prior device change');
+    await context.close();
+  }
+  // Mac changes follow the same one-use human confirmation path.
+  {
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario:'url_mac'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();// Bootstrap is already injected by the fixture HTML; avoid double-wrapping fetch.
+    await page.goto(origin+'/openSafari?fixture=1');
+    await page.locator('#tmDeviceApproval').waitFor({state:'visible',timeout:7000});
+    assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0);
+    assert.match(await page.locator('#tmDeviceApproval').textContent(),/Open Safari/i);
+    await page.getByRole('button',{name:'Cancel'}).click();
+    assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0);
+    await context.close();
+  }
+  // Existing explicit device namespaces still bypass the general router.
+  {
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario:'url_light'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    await page.goto(origin+'/ha/turnonnthegameroomlights?fixture=1');
+    await page.locator('#tmDeviceApproval').waitFor({state:'visible',timeout:7000});
+    assert.equal(await page.evaluate(()=>window.__fixtureRouteRequests),0,'explicit HA path skips generic routing');
+    assert.equal(await page.evaluate(()=>window.__fixtureDevicePlans),1);
+    assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0);
+    await context.close();
+  }
+  // Answer and unsupported requests remain in Aura and never trigger tools.
+  for(const [scenario,command,detail] of [
+    ['url_answer','whatis2plus2','Two plus two is four'],
+    ['url_unsupported','whatsmyteslabattery','Tesla is not yet connected']
+  ]){
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();// Bootstrap is already injected by the fixture HTML; avoid double-wrapping fetch.
+    await page.goto(origin+'/'+command+'?fixture=1');
+    await page.waitForFunction(()=>['complete','error'].includes(document.querySelector('#tmAura')?.dataset.phase));
+    assert.match(await page.locator('#tmAuraDetail').textContent(),new RegExp(detail));
+    assert.equal(await page.evaluate(()=>window.__fixtureDevicePlans),0);
+    assert.equal(await page.evaluate(()=>window.__fixtureUrlPlanRequests),0);
+    await context.close();
+  }
+  // A Codex usage-limit reply stays visible instead of collapsing into Mic Off.
+  {
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario:'url_limit'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    // Bootstrap is already injected by the fixture HTML; avoid double-wrapping fetch.
+    await page.goto(origin+'/play%20Kalyanraman?fixture=1');
+    await page.locator('#tmAura').waitFor({state:'visible'});
+    await page.waitForFunction(()=>document.querySelector('#tmAura')?.dataset.phase==='error');
+    assert.equal(await page.locator('#tmAuraTranscript').textContent(),'play Kalyanraman');
+    assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),0);
+    assert.equal(await page.locator('#tmAura').isVisible(),true);
+    await context.close();
+  }
   // First-visible startup regression: browsers can load a tab in the
   // background. Startup Aura should appear on its first foreground transition.
   {

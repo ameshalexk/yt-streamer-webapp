@@ -1,6 +1,7 @@
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
-import {parseTeslaMonVideoUrl} from './teslamon-video-url.js';
-import {createTeslaMonAura} from './teslamon-aura.js?v=20261028-aura-reliable1';
+import {parseTeslaMonDeviceUrl} from './teslamon-device-url.js?v=20261105-mac-mcp1';
+import {parseTeslaMonVideoUrl} from './teslamon-video-url.js?v=20261105-universal1';
+import {createTeslaMonAura} from './teslamon-aura.js?v=20261105-url-preview1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261102-moonshine1';
@@ -12,8 +13,9 @@ import {shouldDismissTeslaMon} from './teslamon-presence.js';
 import {TESLAMON_WAKE_KEYWORDS, normalizeTeslaMonWakeKeywords, restoreTeslaMonWakeKeywords, stripTeslaMonWakePhrasePrefix, teslaMonWakePhraseLabel} from './teslamon-wake-phrases.js?v=20261025-mycroft-rhasspy1';
 
 if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
-  const urlVideoCommand=parseTeslaMonVideoUrl(location.pathname);
-  if(urlVideoCommand)try{history.replaceState(history.state,'','/'+location.search+location.hash);}catch{}
+  const urlDeviceCommand=parseTeslaMonDeviceUrl(location.pathname);
+  const urlVideoCommand=urlDeviceCommand?null:parseTeslaMonVideoUrl(location.pathname);
+  if(urlVideoCommand||urlDeviceCommand)try{history.replaceState(history.state,'','/'+location.search+location.hash);}catch{}
   const pet=document.createElement('aside');
   pet.id='teslamonPet';
   pet.setAttribute('aria-label','TeslaMon playback assistant');
@@ -154,15 +156,17 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const AURA_KEY='ytStreamerTeslaMonAuraEnabledV1';
   let auraEnabled=true,userDisabled=false,startupAuraPending=false;
   let startupAuraEntry=null;
-  let activeAuraEntry=null,voiceAuraEntry=null,playbackTimer=null,wakePauseGuard=false;
+  let activeAuraEntry=null,voiceAuraEntry=null,urlAuraEntry=null,urlAuraDismissed=false,
+    playbackTimer=null,wakePauseGuard=false;
   let voiceOwner=0,pendingVoice=null,modelGeneration=0;
   let activePlannerVoice=false,activeIssueVoice=false;
   try{auraEnabled=localStorage.getItem(AURA_KEY)!=='0';}catch{}
   try{userDisabled=localStorage.getItem(DISABLED_KEY)==='1';}catch{}
-  startupAuraPending=auraEnabled&&!userDisabled&&!urlVideoCommand;
+  startupAuraPending=auraEnabled&&!userDisabled&&!urlVideoCommand&&!urlDeviceCommand;
   const aura=createTeslaMonAura({onDismiss:(entry,reason)=>{
     // Tap/Escape only suppress this presentation; speech and dispatch continue.
     if(startupAuraEntry===entry)startupAuraEntry=null;
+    if(urlAuraEntry===entry){urlAuraEntry=null;urlAuraDismissed=true;}
     if(activeAuraEntry===entry){activeAuraEntry=null;voiceAuraEntry=null;}
     if(playbackTimer!==null){clearTimeout(playbackTimer);playbackTimer=null;}
     if(!userDisabled&&!fullscreenActive()){
@@ -174,7 +178,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     try{return globalThis.YTStreamerMediaAgent?.get_player_state?.()||null;}catch{return null;}
   };
   function closeAura(){
-    startupAuraEntry=null;
+    startupAuraEntry=null;urlAuraEntry=null;
     aura.close();activeAuraEntry=null;voiceAuraEntry=null;
     if(playbackTimer!==null){clearTimeout(playbackTimer);playbackTimer=null;}
     if(!userDisabled&&!fullscreenActive())pet.hidden=false;
@@ -198,19 +202,23 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
     playbackTimer=setTimeout(observeAuraPlayback,350);
   }
-  function openAura({phase='standby',message='',fromWake=false,preview=false,startup=false}={}){
+  function openAura({phase='standby',message='',fromWake=false,preview=false,startup=false,
+    holdForFrames=false}={}){
     if(!auraEnabled||userDisabled||document.hidden)return null;
-    if(!fromWake&&!preview&&playerState()?.playback_phase==='playing')return null;
+    if(!fromWake&&!preview&&!holdForFrames&&playerState()?.playback_phase==='playing')return null;
     startupAuraPending=false;
     if(!startup)startupAuraEntry=null;
     wakePauseGuard=fromWake;
     activeAuraEntry=aura.open({phase,status:message});
+    urlAuraEntry=holdForFrames?activeAuraEntry:null;
     startupAuraEntry=startup?activeAuraEntry:null;
     if(playbackTimer!==null)clearTimeout(playbackTimer);
     playbackTimer=null;
     // A manual visual preview stays available even over an already-playing
     // video. It never pauses playback or starts capture; tap/Escape closes it.
-    if(!preview)playbackTimer=setTimeout(observeAuraPlayback,350);
+    // A URL command must not close on stale/optimistic playing state.
+    // Its own media observation closes the overlay after rendered frames.
+    if(!preview&&!holdForFrames)playbackTimer=setTimeout(observeAuraPlayback,350);
     pet.hidden=true;
     return activeAuraEntry;
   }
@@ -276,7 +284,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     'Moonshine WASM is unsupported in this browser security context. Select Whisper Tiny to leave isolated mode.':'';
   let selected=null,enabled=false,busy=false,modelBusy=false,opened=false,
     captureBinding=null,speech=null,speechMode=null,generation=0,micEpoch=0,voiceAvailable=false,
-    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=!userDisabled&&!urlVideoCommand,autoWakeBlocked=false,
+    wakeInputChanged=false,wakeHandled=false,autoWakeWanted=!userDisabled&&!urlVideoCommand&&!urlDeviceCommand,autoWakeBlocked=false,
     panelRevision=0,fullscreenSeen=false,dismissedForSuccess=false,auraVoiceFlow=false;
   const WAKE_KEY='ytStreamerTeslaMonWakePhrasesV1';
   let selectedWakeKeywords=[...TESLAMON_WAKE_KEYWORDS];
@@ -521,7 +529,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }else if(phase==='starting'){
       updateStartupAuraStatus(message||'Requesting microphone permission…');
     }else if(phase==='off'||phase==='error'){
-      if(startupAuraEntry&&startupAuraEntry===activeAuraEntry&&aura.active){
+      if(urlAuraEntry&&urlAuraEntry===activeAuraEntry&&aura.active){
+        // URL playback is independent of mic status: an "Off" event must not
+        // hide its received request, planner progress or frame wait.
+      }else if(startupAuraEntry&&startupAuraEntry===activeAuraEntry&&aura.active){
         // Bootstrap updates describe startup Aura without dismissing the
         // presentation or revealing the paw over it.
         const startupMessage=phase==='off'?'Mic Off · wake listening is off':
@@ -627,7 +638,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   function report(response,action,{owner=null,entry=null}={}){
     // Dispatch acceptance is not evidence of playing frames.
     if(response?.status==='observed'&&response?.playbackPhase==='playing'){
-      if(entry!==null&&entry===activeAuraEntry)closeAura();
+      if(entry!==null&&entry===activeAuraEntry&&entry!==urlAuraEntry)closeAura();
     }else if(response?.status==='accepted')auraStage('acting','Waiting for playback…',{entry});
     else if(response?.status==='observed')auraStage('complete','Done · say a wake phrase',{entry});
     else if(response?.status==='needs_user_gesture')auraStage('error','Use the player control',{entry,kind:'warn'});
@@ -715,6 +726,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   }
   async function issue(intent,requestRevision=panelRevision,context={}){
     const owner=context.owner??null,entry=context.entry??null;
+    const urlPlayback=entry!==null&&entry===urlAuraEntry&&intent.tool==='search_and_play';
     if(busy){status('Wait for the current command.','warn',owner);finishVoiceAura(owner,entry);return false;}
     if(!enabled||!localPlayer.ready){status('This page player is still loading.','warn',owner);finishVoiceAura(owner,entry);return false;}
     busy=true;activeIssueVoice=Boolean(context.voice);syncPetMotion();renderSttModelState();
@@ -728,14 +740,18 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     try{
       const result=await localPlayer.run(intent,{...context,isCurrent:current});
       if(!current())return false;
-      report(result,intent.tool,{owner,entry});
+      // Player acceptance, including an optimistic "playing" snapshot, is
+      // not proof that new video frames have appeared for this URL request.
+      report(urlPlayback&&result.mediaId&&result.status==='observed'?
+        {...result,status:'accepted'}:result,intent.tool,{owner,entry});
       dismissAfterSuccess(result,intent.tool,requestRevision);
       // An accepted play handoff is the end of the voice task. Do not keep
       // the listening surface over a buffering or paused player.
       if(context.voice)finishVoiceAura(owner,entry);
-      if(intent.tool==='search_and_play'&&result.status==='accepted'&&result.mediaId){
+      if(intent.tool==='search_and_play'&&['accepted','observed'].includes(result.status)&&result.mediaId){
         status('Video selected. Waiting for video frames…','info',owner);
-        void localPlayer.observe(result.mediaId,{isCurrent:current})
+        auraStage('acting','Video selected · waiting for video frames…',{entry});
+        void localPlayer.observe(result.mediaId,{isCurrent:current,attempts:urlPlayback?90:12})
           .then(confirmed=>{
             if(!current())return;
             if(confirmed.status==='observed'){
@@ -788,10 +804,19 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     status('Codex is understanding your request…','info',owner);
     try{
       const endpoint=videoOnly?'/api/teslamon/url-video-plan':'/api/teslamon/plan';
-      const result=await post(endpoint,{text:request,session:tabSession},'application/json',signal);
-      if(!current())return false;
+      // Busy means the planner never started this command. Retry only that
+      // transient case; quota failures and device/video rejections are final.
+      let result;
+      for(let attempt=0;attempt<4;attempt++){
+        result=await post(endpoint,{text:request,session:tabSession},'application/json',signal);
+        if(!current())return false;
+        if(!videoOnly||result.code!=='codex_busy'||attempt===3)break;
+        auraStage('thinking','Codex is busy · retrying automatically…',{entry});
+        await new Promise(resolve=>setTimeout(resolve,(attempt+1)*1000));
+        if(!current())return false;
+      }
       if(result.status==='ok'&&typeof result.tool==='string'&&
-         (!videoOnly||result.tool==='search_and_play')){
+         (!videoOnly||['pause','resume','get_playback_state','search_and_play','request_fullscreen','exit_fullscreen'].includes(result.tool))){
         if(input.value.trim()===request)input.value='';
         return await issue({tool:result.tool,args:result.args||{}},requestRevision,{
           originalRequest:request,signal,owner,entry,voice,epoch,isCurrent:current,
@@ -808,6 +833,12 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       }
       if(voice&&input.value.trim()===request)input.value='';
       report(result,null,{owner,entry});
+      if(videoOnly&&result.code==='codex_usage_limit')
+        auraStage('error','Codex usage limit reached · retry after reset',{entry,kind:'warn'});
+      else if(videoOnly&&result.code==='codex_busy')
+        auraStage('error','Codex is still busy · retry later',{entry,kind:'warn'});
+      else if(videoOnly&&(result.status==='unsupported'||result.code==='video_only_command'))
+        auraStage('error','This URL only plays videos · use /ha/ for lights',{entry,kind:'warn'});
       if(voice)finishVoiceAura(owner,entry);
       return false;
     }catch{
@@ -1254,31 +1285,149 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   // Wake listening must initialize even when the puppy panel stays closed.
   // This triggers only the browser's normal permission flow, never a bypass.
   void refresh();
-  if(urlVideoCommand){
-    // A deliberate navigation works even when the puppy/microphone was disabled.
-    // The existing same-tab Codex -> search -> player path performs the action.
-    closeAura();
-    let commandDispatched=false,commandWaiting=false;
-    async function runUrlCommandOnceVisible(){
-      if(commandDispatched||commandWaiting||document.hidden)return;
-      commandWaiting=true;
+  // Both explicit /ha/ or /mac/ and a general Codex-routed device request
+  // use the same signed planner and ONE-TIME click-confirmation path.
+  async function runDeviceCommand(request,entry=null){
+    const providerName=request.provider==='mac'?'Mac Control':'Home Assistant';
+    auraStage('thinking','Checking '+providerName+'…',{entry});
+    try{
+      const result=await post('/api/teslamon/'+request.provider+'-plan',
+        {text:request.text,session:tabSession});
+      if(result.status==='confirm_required'&&typeof result.id==='string'){
+        // No mutation from navigation; the user must press Confirm.
+        if(entry!==null&&entry===activeAuraEntry)closeAura();
+        showDeviceConfirmation(request,result);
+      }else if(result.status==='ok'){
+        const message=String(result.message||'Request completed').slice(0,400);
+        status(message,'ok');auraStage('complete',message.slice(0,250),{entry});
+      }else{
+        const message=String(result.message||result.code||providerName+' unavailable').slice(0,250);
+        status(message,'warn');auraStage('error',message,{entry,kind:'warn'});
+      }
+    }catch{
+      status(providerName+' command could not be processed.','warn');
+      auraStage('error','Could not contact '+providerName,{entry,kind:'warn'});
+    }
+  }
+  function showDeviceConfirmation(request,result){
+    const providerName=request.provider==='mac'?'Mac Control':'Home Assistant';
+    const existing=document.querySelector('#tmDeviceApproval');
+    existing?.remove();
+    const prompt=document.createElement('section');
+    prompt.id='tmDeviceApproval';prompt.className='tm-device-approval';
+    prompt.setAttribute('role','dialog');prompt.setAttribute('aria-modal','true');
+    prompt.setAttribute('aria-label','Confirm '+providerName+' change');
+    const title=document.createElement('strong');title.textContent='Confirm '+providerName+' change';
+    const detail=document.createElement('p');detail.textContent=String(result.message||'Change a device?').slice(0,160);
+    const buttons=document.createElement('div');
+    const approve=document.createElement('button');approve.type='button';approve.textContent='Confirm';
+    const cancel=document.createElement('button');cancel.type='button';cancel.textContent='Cancel';
+    const dismiss=()=>prompt.remove();
+    cancel.addEventListener('click',()=>{dismiss();status('Device change canceled.','ok');});
+    approve.addEventListener('click',async()=>{
+      approve.disabled=true;cancel.disabled=true;
+      detail.textContent='Applying approved change…';
       try{
-        for(let attempt=0;attempt<48;attempt++){
+        const applied=await post('/api/teslamon/'+request.provider+'-confirm',
+          {id:result.id,session:tabSession});
+        const success=applied.status==='ok';
+        status(String(applied.message||applied.code||(success?'Completed':'Could not complete')),'ok');
+        detail.textContent=String(applied.message||applied.code||(success?'Completed':'Could not complete'));
+        if(!success)detail.dataset.error='true';
+      }catch{detail.textContent=providerName+' could not confirm the action.';}
+      finally{approve.remove();cancel.textContent='Close';cancel.disabled=false;}
+    });
+    buttons.append(approve,cancel);prompt.append(title,detail,buttons);
+    document.body.append(prompt);approve.focus({preventScroll:true});
+  }
+  if(urlDeviceCommand){
+    let started=false;
+    function runExplicitDeviceCommand(){
+      if(started||document.hidden)return;
+      started=true;
+      const entry=(!userDisabled&&!urlAuraDismissed&&auraEnabled)?
+        openAura({phase:'preparing',message:'Request received · '+urlDeviceCommand.provider,
+          holdForFrames:true}):null;
+      if(entry!==null)aura.setTranscript(urlDeviceCommand.text,{entry});
+      void runDeviceCommand(urlDeviceCommand,entry);
+    }
+    document.addEventListener('visibilitychange',()=>{
+      if(!document.hidden)runExplicitDeviceCommand();
+    });
+    runExplicitDeviceCommand();
+  }
+  if(urlVideoCommand){
+    // A URL GET shows the app; only a signed POST after readiness classifies
+    // the command. Repeated visibility, tab reload or delayed replies cannot
+    // cause a second dispatch within the same document.
+    let commandDispatched=false;
+    function showUrlAura(){
+      if(document.hidden||urlAuraDismissed||!auraEnabled||userDisabled)return null;
+      if(urlAuraEntry&&aura.active)return urlAuraEntry;
+      const entry=openAura({phase:'preparing',message:'Command received · checking intent…',
+        holdForFrames:true});
+      if(entry!==null)aura.setTranscript(urlVideoCommand,{entry});
+      return entry;
+    }
+    async function runUrlCommandOnceVisible(){
+      if(commandDispatched||document.hidden)return;
+      commandDispatched=true;
+      const entry=showUrlAura();
+      auraStage('thinking','Codex is routing your request…',{entry});
+      let route;
+      try{
+        for(let attempt=0;attempt<3;attempt++){
+          route=await post('/api/teslamon/url-route',
+            {text:urlVideoCommand,session:tabSession});
           if(document.hidden)return;
-          if(localPlayer.ready){
-            commandDispatched=true;
-            enabled=true;selected='this_tab';
-            await interpret(urlVideoCommand,{allowClosed:true,videoOnly:true});
-            return;
-          }
-          await new Promise(resolve=>setTimeout(resolve,250));
+          if(route?.code!=='codex_busy'||attempt===2)break;
+          auraStage('thinking','Codex is busy · retrying…',{entry});
+          await new Promise(resolve=>setTimeout(resolve,1000*(attempt+1)));
+          if(document.hidden)return;
         }
-        status('The player did not become ready for the URL command.','warn');
-      }finally{commandWaiting=false;}
+        if(route?.status==='ok'&&['ha','mac'].includes(route.route)){
+          // Device writes still become time-limited proposals, never actions
+          // until an actual browser click confirms the plan.
+          await runDeviceCommand({provider:route.route,text:route.text},entry);
+          return;
+        }
+        if(route?.status==='ok'&&route.route==='answer'){
+          status(route.message,'ok');
+          auraStage('complete',route.message,{entry});
+          return;
+        }
+        if(route?.status==='ok'&&route.route==='video'){
+          for(let attempt=0;attempt<48;attempt++){
+            if(document.hidden)return;
+            if(localPlayer.ready){
+              enabled=true;selected='this_tab';
+              auraStage('thinking','Sending video request to Codex…',{entry});
+              await interpret(route.text,{allowClosed:true,videoOnly:true,entry});
+              return;
+            }
+            await new Promise(resolve=>setTimeout(resolve,250));
+          }
+          auraStage('error','The player did not become ready',{entry,kind:'warn'});
+          return;
+        }
+        const message=route?.message||({
+          codex_busy:'Codex is busy · retry later',
+          codex_usage_limit:'Codex usage limit reached · retry after reset',
+          codex_unavailable:'Codex is unavailable right now',
+          codex_timeout_or_cancelled:'Codex could not finish routing this request'
+        }[route?.code])||'This command is not supported by the connected tools';
+        status(message,'warn');auraStage('error',message,{entry,kind:'warn'});
+      }catch{
+        if(!document.hidden){
+          status('Codex routing service could not be reached.','warn');
+          auraStage('error','Could not connect · try again',{entry,kind:'warn'});
+        }
+      }
     }
     document.addEventListener('visibilitychange',()=>{
       if(!document.hidden)void runUrlCommandOnceVisible();
     });
     void runUrlCommandOnceVisible();
   }
+
 }
