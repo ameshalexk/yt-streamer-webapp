@@ -810,6 +810,7 @@ body.fullscreen-controls-idle .screen .stream-badge {
 .notice-detail { font-size: 14px; line-height: 1.35; color: var(--muted); }
 .notice-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .notice-actions .btn { min-height: 42px; padding: 0 16px; font-size: 14px; }
+.notice-actions[hidden], .notice-actions .btn[hidden] { display: none !important; }
 .stream-seek {
   margin: 0 0 8px; padding: 0;
 }
