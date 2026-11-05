@@ -38,7 +38,7 @@ server = http.createServer(async (req, res) => {
     const rate=Number(body.playbackRate)===2?2:1;
     if (rate===2) await new Promise(resolve=>setTimeout(resolve,1200));
     sessionRates.set(id,rate);
-    starts.push({ id, at: Date.now(), playbackRate: body.playbackRate, startAt: body.startAt });
+    starts.push({ id, at: Date.now(), playbackRate: body.playbackRate, startAt: body.startAt, height: body.height, fps: body.fps });
     res.writeHead(200,{"content-type":"application/json"}); res.end(JSON.stringify({ id, resolveMs:0 })); return;
   }
   const sessionMatch=u.pathname.match(/^\/api\/experimental\/cyberdash\/([^/]+)\/status$/);
@@ -64,7 +64,7 @@ try {
  await page.goto(`http://127.0.0.1:${server.address().port}/`,{waitUntil:"domcontentloaded"});
  await page.waitForFunction(()=>typeof playCyberdashStream==="function" && document.querySelector("#playbackSpeedSelect"),{timeout:12000});
  // Enter through the same application playback function used by production UI.
- await page.evaluate(()=>{ youtubePlaybackMethod="webcodecs"; renderYoutubePlaybackMethod(); activeYoutubeSourceUrl="https://fixture.invalid/video"; replayFn=(startAt=0)=>playCyberdashStream("https://fixture.invalid/video","Local FFmpeg fixture",{startAt,seekable:true,duration:18}); void playCyberdashStream("https://fixture.invalid/video","Local FFmpeg fixture",{seekable:true,duration:18}); });
+ await page.evaluate(()=>{ youtubePlaybackMethod="webcodecs"; renderYoutubePlaybackMethod(); resetStreamSettings(); activeYoutubeSourceUrl="https://fixture.invalid/video"; replayFn=(startAt=0)=>playCyberdashStream("https://fixture.invalid/video","Local FFmpeg fixture",{startAt,seekable:true,duration:18}); void playCyberdashStream("https://fixture.invalid/video","Local FFmpeg fixture",{seekable:true,duration:18}); });
  await page.waitForFunction(()=>cyberdashPlayer?.currentTime?.()>0 && !document.querySelector("#screen")?.classList.contains("loading"),{timeout:15000});
  const before=await page.evaluate(()=>({time:cyberdashPlayer?.currentTime?.(),badge:document.querySelector("#statusBadge")?.textContent}));
  const t0=Date.now();
@@ -75,6 +75,19 @@ try {
  await page.waitForTimeout(2000);
  const later2=await page.evaluate(()=>cyberdashPlayer?.currentTime?.());
  const elapsed=(Date.now()-t0)/1000;
+ const lowRequest = page.waitForRequest(request => {
+   if (!request.url().endsWith("/api/experimental/cyberdash/start")) return false;
+   const body = request.postDataJSON();
+   return body.playbackRate === 2 && body.height === 360;
+ });
+ // Drive the same transition that follows a confirmed Auto downgrade.
+ await page.evaluate(() => {
+   autoQualityController.selectTier("low", { switched: true });
+   requestAutoQualityTier({ action: "switch", from: "medium", to: "low", reason: "rebuffer" });
+ });
+ const lowSettings = (await lowRequest).postDataJSON();
+ assert.equal(lowSettings.fps, 12, "Auto Low must reduce source FPS even at 2x");
+ assert.ok(lowSettings.startAt >= later2 - 0.5, "Auto must keep the movie position");
  const oneXAttempt=await page.evaluate(()=>streamAttempt);
  await page.locator("#playbackSpeedSelect").selectOption("1");
  await page.waitForFunction(attempt=>streamAttempt>attempt && !document.querySelector("#screen")?.classList.contains("loading") && cyberdashPlayer?.currentTime?.()>0.2,oneXAttempt,{timeout:15000});
@@ -91,7 +104,7 @@ try {
  await page.locator("#playbackSpeedSelect").selectOption("2"); await page.waitForTimeout(100); await page.locator("#playbackSpeedSelect").selectOption("1"); await page.waitForTimeout(2200);
  const evidence={ ffmpegFixture:"18s H.264/AAC source; DASH generated using production buildCyberdashDashArgs atempo=1x and 2x", mediaRequests, initialTime:before.time, initialBadge:before.badge, starts, stoppedIds, twoXSwitchWallSeconds:elapsed, timeAtTwoX:after2, laterAtTwoX:later2, twoXSourceAdvance:Number.isFinite(after2)&&Number.isFinite(later2)?later2-after2:null, pausedAt, remainedPausedAt, timeAfterReturnOneX:after1 };
  console.log(JSON.stringify(evidence,null,2));
- assert.ok(starts.some(x=>x.playbackRate===2),"2x selection must start replacement server session");
+ assert.ok(starts.some(x=>x.playbackRate===2 && x.height===480 && x.fps===15),"2x Auto Medium must request 480p at 15 source fps");
  assert.ok(starts.some(x=>x.playbackRate===1),"1x selection must restore normal session");
  assert.ok(Number.isFinite(later2),"Cyberdash must report progressing media time at 2x");
  assert.ok(later2-after2>2.5,"2x media clock should advance at approximately twice wall time after startup");

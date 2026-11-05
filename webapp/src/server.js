@@ -34,6 +34,7 @@ import { createApneThumbnailService } from "./lib/apne-thumbnails.js";
 import { createApneLiveThumbnailService } from "./lib/apne-hls-thumbnails.js";
 import { createApneOfficialArtwork } from "./lib/apne-official-artwork.js";
 import * as cyberdashDash from "./lib/cyberdash-dash.js";
+import { openBoundedMediaRange } from "./lib/bounded-media-range.js";
 import * as processedDashCache from "./lib/processed-dash-cache.js";
 import { readReleaseRevision } from "./lib/release-info.js";
 import { createCastService } from "./lib/vlc-cast.js";
@@ -128,7 +129,11 @@ function playbackStats(value) {
     "sourceDurationSec", "playbackRate",
     "audioStatus", "audioBufferedSeconds", "audioErrorCode", "audioLoadElapsedMs",
   ];
-  return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
+  const stats = Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
+  for (const key of ["serverVideoSpeed", "sourceVideoMbps", "sourceAudioMbps"]) {
+    if (Number.isFinite(source[key]) && source[key] >= 0) stats[key] = source[key];
+  }
+  return stats;
 }
 
 function playbackTiming(value) {
@@ -201,7 +206,10 @@ function pruneGoogleVideoProxySessions() {
   }
 }
 
-function localGoogleVideoProxyUrl(value, { headers = {}, sourceUrl = "", role = "video", maxHeight = config.download.maxHeight } = {}) {
+function localGoogleVideoProxyUrl(value, {
+  headers = {}, sourceUrl = "", role = "video", maxHeight = config.download.maxHeight,
+  inputBytes = null, boundedReads = false,
+} = {}) {
   if (!isGoogleVideoUrl(value)) return value;
   pruneGoogleVideoProxySessions();
   const id = crypto.randomBytes(18).toString("base64url");
@@ -213,16 +221,25 @@ function localGoogleVideoProxyUrl(value, { headers = {}, sourceUrl = "", role = 
     maxHeight,
     createdAt: Date.now(),
     refreshCount: 0,
+    inputBytes,
+    boundedReads,
   });
   return `http://127.0.0.1:${config.port}/internal/googlevideo/${id}`;
 }
 
-function proxyYouTubeStreams(resolved, { sourceUrl = "", maxHeight = config.download.maxHeight } = {}) {
+function proxyYouTubeStreams(resolved, options = {}) {
+  const { sourceUrl = "", maxHeight = config.download.maxHeight, measureInput = false, boundedReads = false } = options;
   const { videoUrl, audioUrl, videoHeaders, audioHeaders } = resolved;
   const durationValue = resolved.duration;
+  const inputBytes = measureInput ? {
+    video: isGoogleVideoUrl(videoUrl) ? 0 : null,
+    audio: isGoogleVideoUrl(audioUrl) ? 0 : null,
+  } : null;
+  const proxyOptions = { sourceUrl, maxHeight, inputBytes, boundedReads };
   return {
-    videoUrl: localGoogleVideoProxyUrl(videoUrl, { headers: videoHeaders, sourceUrl, role: "video", maxHeight }),
-    audioUrl: audioUrl ? localGoogleVideoProxyUrl(audioUrl, { headers: audioHeaders, sourceUrl, role: "audio", maxHeight }) : null,
+    videoUrl: localGoogleVideoProxyUrl(videoUrl, { ...proxyOptions, headers: videoHeaders, role: "video" }),
+    audioUrl: audioUrl ? localGoogleVideoProxyUrl(audioUrl, { ...proxyOptions, headers: audioHeaders, role: "audio" }) : null,
+    inputBytes,
     isLive: Boolean(resolved.isLive),
     duration: durationValue != null && durationValue !== "" && Number.isFinite(Number(durationValue))
       ? Number(durationValue)
@@ -276,10 +293,10 @@ async function resolveYouTubeStreamsCached(sourceUrl, maxHeight = config.downloa
   }
 }
 
-async function resolveProxiedYouTubeStreams(sourceUrl, maxHeight = config.download.maxHeight) {
+async function resolveProxiedYouTubeStreams(sourceUrl, maxHeight = config.download.maxHeight, options = {}) {
   const result = await resolveYouTubeStreamsCached(sourceUrl, maxHeight);
   return {
-    ...proxyYouTubeStreams(result.resolved, { sourceUrl, maxHeight }),
+    ...proxyYouTubeStreams(result.resolved, { ...options, sourceUrl, maxHeight }),
     resolveCache: result.resolveCache,
     resolveMs: result.resolveMs,
   };
@@ -1538,40 +1555,65 @@ app.get("/internal/googlevideo/:id", asyncH(async (req, res) => {
 
   const controller = new AbortController();
   res.on("close", () => controller.abort());
-  const fetchUpstream = () => {
-    const headers = { ...session.headers };
-    if (!headers["User-Agent"] && !headers["user-agent"]) headers["User-Agent"] = YOUTUBE_STREAM_HEADERS.userAgent;
-    if (!headers.Accept && !headers.accept) headers.Accept = "*/*";
-    if (req.headers.range) headers.Range = req.headers.range;
-    if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
-    return fetch(session.target, { method: "GET", headers, redirect: "follow", signal: controller.signal });
+  const fetchUpstream = async (range = req.headers.range, bounded = false, signal = controller.signal) => {
+    const headers = new Headers(session.headers);
+    if (!headers.has("User-Agent")) headers.set("User-Agent", YOUTUBE_STREAM_HEADERS.userAgent);
+    if (!headers.has("Accept")) headers.set("Accept", "*/*");
+    if (range) headers.set("Range", range);
+    if (req.headers["if-range"]) headers.set("If-Range", req.headers["if-range"]);
+    if (bounded) headers.set("Accept-Encoding", "identity");
+    const request = () => fetch(session.target, {
+      method: "GET", headers, redirect: "follow", signal,
+    });
+
+    let response = await request();
+    const firstStatus = response.status;
+    if ((firstStatus === 403 || firstStatus === 410) && !signal.aborted && await refreshGoogleVideoProxySession(session)) {
+      try { await response.body?.cancel(); } catch {}
+      console.warn(`[googlevideo-proxy] upstream ${firstStatus}; refreshed signed ${session.role} URL`);
+      await appendPlaybackEvent({
+        at: new Date().toISOString(),
+        event: "googlevideo_refresh",
+        youtubeId: youtubeIdFromPlaybackUrl(session.sourceUrl),
+        role: session.role,
+        upstreamStatus: firstStatus,
+        serverInstanceId: SERVER_INSTANCE_ID,
+      });
+      response = await request();
+    }
+    if (response.status >= 400) {
+      await appendPlaybackEvent({
+        at: new Date().toISOString(),
+        event: "googlevideo_proxy_error",
+        youtubeId: youtubeIdFromPlaybackUrl(session.sourceUrl),
+        role: session.role,
+        upstreamStatus: response.status,
+        refreshCount: session.refreshCount,
+        serverInstanceId: SERVER_INSTANCE_ID,
+      });
+    }
+    return response;
   };
 
-  let upstream = await fetchUpstream();
-  const firstStatus = upstream.status;
-  if ((upstream.status === 403 || upstream.status === 410) && await refreshGoogleVideoProxySession(session)) {
-    try { await upstream.body?.cancel(); } catch {}
-    console.warn(`[googlevideo-proxy] upstream ${firstStatus}; refreshed signed ${session.role} URL`);
-    await appendPlaybackEvent({
-      at: new Date().toISOString(),
-      event: "googlevideo_refresh",
-      youtubeId: youtubeIdFromPlaybackUrl(session.sourceUrl),
-      role: session.role,
-      upstreamStatus: firstStatus,
-      serverInstanceId: SERVER_INSTANCE_ID,
-    });
-    upstream = await fetchUpstream();
-  }
-  if (upstream.status >= 400) {
-    await appendPlaybackEvent({
-      at: new Date().toISOString(),
-      event: "googlevideo_proxy_error",
-      youtubeId: youtubeIdFromPlaybackUrl(session.sourceUrl),
-      role: session.role,
-      upstreamStatus: upstream.status,
-      refreshCount: session.refreshCount,
-      serverInstanceId: SERVER_INSTANCE_ID,
-    });
+  let bounded, upstream;
+  try {
+    // GoogleVideo may pace open-ended transfers at about 1×. Serve the same
+    // seekable response from finite upstream reads for accelerated WebCodecs.
+    if (session.boundedReads && !req.headers["if-range"]) {
+      bounded = await openBoundedMediaRange({
+        rangeHeader: req.headers.range,
+        fetchRange: ({ start, end, signal }) => fetchUpstream(`bytes=${start}-${end}`, true, signal),
+        signal: controller.signal,
+      });
+    }
+    if (controller.signal.aborted) {
+      bounded?.body.destroy();
+      return;
+    }
+    upstream = bounded || await fetchUpstream();
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    throw error;
   }
 
   res.status(upstream.status);
@@ -1589,11 +1631,14 @@ app.get("/internal/googlevideo/:id", asyncH(async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
   if (!upstream.body) return res.end();
-  Readable.fromWeb(upstream.body)
-    .on("error", (error) => {
-      if (!res.destroyed && error?.name !== "AbortError") res.destroy(error);
-    })
-    .pipe(res);
+  const media = bounded ? upstream.body : Readable.fromWeb(upstream.body);
+  if (upstream.status >= 200 && upstream.status < 300 && session.inputBytes) {
+    media.on("data", (chunk) => { session.inputBytes[session.role] += chunk.length; });
+  }
+  media.on("error", (error) => {
+    if (!res.destroyed && error?.name !== "AbortError") res.destroy(error);
+  }).pipe(res);
+  res.once("close", () => media.destroy());
 }));
 
 // The JPEG XL option is gated by an actual installed libjxl encoder.
@@ -1887,10 +1932,10 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
   // Only HTTPS archive.org/download URLs are accepted; arbitrary remote URLs
   // still follow the existing YouTube resolver and cannot become FFmpeg inputs.
   const retroArchive = retroEnabled ? archiveVideoUrl(url) : null;
-  const { videoUrl, audioUrl, resolveCache, resolveMs, isLive, duration, title } =
+  const { videoUrl, audioUrl, inputBytes, resolveCache, resolveMs, isLive, duration, title } =
     retroArchive ? { videoUrl: retroArchive, audioUrl: null, resolveCache: "archive", resolveMs: 0,
       isLive: false, duration: null, title: null }
-      : await resolveProxiedYouTubeStreams(url, maxHeight);
+      : await resolveProxiedYouTubeStreams(url, maxHeight, { measureInput: true, boundedReads: playbackRate > 1 });
   if (isLive) {
     return res.status(409).json({
       error: "Live YouTube streams use MJPEG playback.",
@@ -1909,6 +1954,7 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
     fps,
     startAt,
     playbackRate,
+    inputBytes,
   });
   res.json({
     ...session,

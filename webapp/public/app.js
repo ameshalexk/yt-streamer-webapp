@@ -836,7 +836,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261104-controls-speed-audio1")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261105-fast-quality")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -853,10 +853,14 @@ async function stopCyberdashPlayback(options = {}) {
   }
 }
 
-function adaptiveCyberdashFps(baseFps, playbackRate = youtubePlaybackRate) {
+function adaptiveCyberdashFps(baseFps, playbackRate = youtubePlaybackRate, automatic = false) {
   const base = Number.isFinite(Number(baseFps)) ? Math.max(5, Math.min(30, Number(baseFps))) : 24;
   const rate = Number.isFinite(Number(playbackRate)) ? Math.max(1, Number(playbackRate)) : 1;
   if (rate <= 1) return Math.round(base);
+
+  // The decoder consumes source frames at the playback rate. Preserve each
+  // tier's source cadence through 2×, then cap its wall-time frame load.
+  if (automatic) return Math.max(5, Math.floor(Math.min(base, base * 2 / rate)));
 
   // YouTube-style fast playback keeps the source's frame cadence instead of
   // throwing most frames away first. Our MJPEG-oriented low FPS setting can be
@@ -873,7 +877,7 @@ function currentCyberdashSettings() {
   return {
     height: Number.isFinite(selectedHeight) ? Math.max(0, selectedHeight) : 0,
     baseFps,
-    fps: adaptiveCyberdashFps(baseFps),
+    fps: adaptiveCyberdashFps(baseFps, youtubePlaybackRate, streamQualitySelection === AUTO_STREAM_QUALITY_ID),
   };
 }
 
@@ -4672,7 +4676,7 @@ function requestAutoQualityTier(decision, stats = null) {
   if (!applied) return false;
 
   reportPlaybackEvent("auto_quality_switch", {
-    streamUrl: activeCompat?.mjpegUrl || "",
+    streamUrl: activeCompat?.mjpegUrl || activeYoutubeSourceUrl || "",
     reason: decision.reason,
     message: `${decision.from}->${decision.to}; ${autoQualityReasonLabel(decision.reason)}`,
     stats: stats || decision.metrics,

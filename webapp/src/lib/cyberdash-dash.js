@@ -80,15 +80,18 @@ export function buildCyberdashDashArgs({
     ? Math.min(15, Math.max(6, speed * 5))
     : 4;
   const args = ["-hide_banner", "-loglevel", "warning", "-y"];
-  const addInput = (input) => {
+  const addInput = (input, readRate) => {
     if (seek) args.push("-ss", String(seek));
-    args.push("-readrate", String(inputReadRate));
+    args.push("-readrate", String(readRate));
     if (initialBurstSupported) args.push("-readrate_initial_burst", String(initialBurst));
     args.push("-i", String(input));
   };
 
-  addInput(videoInput);
-  if (audioInput) addInput(audioInput);
+  addInput(videoInput, inputReadRate);
+  // DASH interleaves the output timestamps. atempo shortens the audio
+  // timeline, so a separate audio input needs proportionally more input
+  // headroom to avoid holding back ready video packets.
+  if (audioInput) addInput(audioInput, inputReadRate * speed);
 
   args.push("-map", "0:v:0");
   args.push("-map", audioInput ? "1:a:0" : "0:a:0?");
@@ -163,6 +166,20 @@ export function parseDashManifest(text = "") {
       (attrs.match(/\bframeRate="([^"]+)"/) || [])[1] ||
       null;
     result[kind] = { id, codec, bandwidth, width, height, frameRate };
+    if (kind === "video") {
+      const template = body.match(/<SegmentTemplate\b([^>]*)>([\s\S]*?)<\/SegmentTemplate>/);
+      const timescale = Number(template?.[1].match(/\btimescale="(\d+)"/)?.[1] ?? 1);
+      const timeline = template?.[2].match(/<SegmentTimeline>([\s\S]*?)<\/SegmentTimeline>/)?.[1];
+      if (timeline && timescale > 0) {
+        let ticks = 0;
+        for (const [, entry] of timeline.matchAll(/<S\b([^>]*)\/>/g)) {
+          const duration = Number(entry.match(/\bd="(\d+)"/)?.[1]);
+          const repeat = Number(entry.match(/\br="(-?\d+)"/)?.[1] ?? 0);
+          if (duration > 0 && repeat >= 0) ticks += duration * (repeat + 1);
+        }
+        if (ticks > 0) result.videoTimelineSeconds = ticks / timescale;
+      }
+    }
   }
 
   return result;
@@ -231,6 +248,7 @@ export async function startYouTubeDashSession({
   fps = 30,
   startAt = 0,
   playbackRate = 1,
+  inputBytes = null,
 } = {}) {
   await pruneIdleSessions();
   await fs.mkdir(rootDir(), { recursive: true });
@@ -260,6 +278,8 @@ export async function startYouTubeDashSession({
     fps: clampInt(fps, 5, 60, 30),
     startAt: safeSeek(startAt),
     playbackRate: safePlaybackRate(playbackRate),
+    producerStartedAt: performance.now(),
+    inputBytes,
     createdAt: now,
     lastAccessAt: now,
     stderr: "",
@@ -319,6 +339,12 @@ export async function getSessionStatus(id) {
     startAt: session.startAt,
     playbackRate: session.playbackRate,
     createdAt: session.createdAt,
+    throughput: {
+      elapsedMs: Math.round(performance.now() - session.producerStartedAt),
+      outputVideoSeconds: files.manifest.videoTimelineSeconds ?? 0,
+      sourceVideoBytes: session.inputBytes?.video ?? null,
+      sourceAudioBytes: session.inputBytes?.audio ?? null,
+    },
     ...files,
   };
 }

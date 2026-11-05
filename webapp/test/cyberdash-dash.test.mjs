@@ -152,7 +152,8 @@ test("CyberDash DASH producer scales input readrate with playback speed", () => 
   const readrateIndexes = args.flatMap((value, index) => value === "-readrate" ? [index] : []);
   assert.equal(readrateIndexes.length, 2);
   const rates = readrateIndexes.map((index) => Number(args[index + 1]));
-  assert.ok(rates.every((rate) => rate > 3));
+  assert.ok(rates[0] > 3);
+  assert.equal(rates[1], rates[0] * 3);
   const burstIndexes = args.flatMap((value, index) => value === "-readrate_initial_burst" ? [index] : []);
   assert.equal(burstIndexes.length, 2);
   assert.ok(burstIndexes.every((index) => Number(args[index + 1]) >= 9));
@@ -187,9 +188,9 @@ test("FFmpeg without initial burst support retains readrate and separate input s
   assert.equal(args.includes("-readrate_initial_burst"), false);
   const inputs = args.flatMap((value, index) => value === "-i" ? [index] : []);
   assert.equal(inputs.length, 2);
-  for (const index of inputs) {
+  for (const [track, index] of inputs.entries()) {
     assert.deepEqual(args.slice(index - 4, index - 1), ["-ss", "12.5", "-readrate"]);
-    assert.ok(Math.abs(Number(args[index - 1]) - 2.4) < 0.0001);
+    assert.ok(Math.abs(Number(args[index - 1]) - [2.4, 3.6][track]) < 0.0001);
   }
   assert.equal(args[args.indexOf("-c:v") + 1], "libx264");
   assert.equal(args[args.indexOf("-af") + 1], "atempo=1.5");
@@ -265,6 +266,8 @@ test("real FFmpeg produces independently decodable half-second DASH video and au
   const manifest = parseDashManifest(fs.readFileSync(output, "utf8"));
   assert.ok(manifest.video?.id != null, "DASH video representation");
   assert.ok(manifest.audio?.id != null, "DASH audio representation");
+  assert.ok(manifest.videoTimelineSeconds > 1.6 && manifest.videoTimelineSeconds < 1.9,
+    "video timeline reports the seeked media produced, including the short final segment");
   const files = fs.readdirSync(directory);
   for (const id of [manifest.video.id, manifest.audio.id]) {
     assert.ok(files.includes(`init-${id}.m4s`), "codec init segment exists");

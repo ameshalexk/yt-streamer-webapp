@@ -85,6 +85,29 @@ test("Auto ignores a brief low-FPS sample and downgrades after sustained deliver
   assert.equal(decision?.reason, "delivery-slow");
 });
 
+test("Auto converts WebCodecs source queue depth to wall time at playback speed", () => {
+  let now = 1000;
+  const controller = new AutoQualityController({ now: () => now });
+  controller.enable({ tier: "medium" });
+  const fast = {
+    state: "playing", fps: 24, playbackRate: 2, receiveFps: 30,
+    renderedFps: 48, producerSpeed: 1.25, renderedFrames: 120,
+    receivedFrames: 120, droppedFrames: 0, averageDecodeMs: 5,
+    lastAvDriftMs: 30, queueSeconds: 2, queueTrend: "shrinking", rebufferCount: 0,
+  };
+  assert.equal(controller.observe(fast), null);
+  now = 8000;
+  assert.equal(controller.observe(fast), null);
+  now = 13100;
+  const decision = controller.observe(fast);
+  assert.equal(decision?.to, "low");
+  assert.equal(decision?.reason, "delivery-slow");
+  assert.equal(decision?.metrics.playbackRate, 2);
+  assert.equal(decision?.metrics.queueWallSeconds, 1);
+  assert.equal(decision?.metrics.frameBudgetMs, 1000 / 48);
+  assert.equal(decision?.metrics.producerSpeed, 0.625);
+});
+
 test("Auto clears delivery pressure after healthy sample instead of restarting later", () => {
   let now = 1000;
   const controller = new AutoQualityController({ now: () => now });
@@ -126,4 +149,8 @@ test("Auto quality changes stay silent and WebCodecs feeds Auto telemetry", () =
   assert.match(app, /silent: Boolean\(transition\.silentToast\)/);
   assert.match(app, /if \(!transition\.silentToast\) \{[\s\S]*Changing quality/);
   assert.match(app, /onStats\(stats\) \{[\s\S]*maybeAdaptAutoQuality\(stats\)/);
+});
+
+test("Auto WebCodecs switch event correlates to active source when MJPEG URL is absent", () => {
+  assert.match(app, /reportPlaybackEvent\("auto_quality_switch", \{\s*streamUrl: activeCompat\?\.mjpegUrl \|\| activeYoutubeSourceUrl \|\| ""/);
 });

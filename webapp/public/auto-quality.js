@@ -50,18 +50,21 @@
     const droppedFrames = Math.max(0, finite(stats.droppedFrames, 0));
     const totalRenderFrames = Math.max(1, renderedFrames + droppedFrames);
     const dropRatio = droppedFrames / totalRenderFrames;
-    const frameBudgetMs = 1000 / fps;
+    const playbackRate = Math.max(1, finite(stats.playbackRate, 1));
+    const expectedFps = fps * playbackRate;
+    const frameBudgetMs = 1000 / expectedFps;
     const averageDecodeMs = finite(stats.averageDecodeMs);
-    const driftMs = Math.abs(finite(stats.lastAvDriftMs, 0));
+    const driftMs = Math.abs(finite(stats.lastAvDriftMs, 0)) / playbackRate;
     const queueSeconds = Math.max(0, finite(stats.queueSeconds, 0));
     const producerSpeed = finite(stats.producerSpeed,
       receiveFps == null ? null : receiveFps / fps);
     return {
       fps,
+      expectedFps,
       receiveFps,
       renderedFps,
-      renderRatio: clampRatio(renderedFps == null ? null : renderedFps / fps),
-      producerSpeed: clampRatio(producerSpeed),
+      renderRatio: clampRatio(renderedFps == null ? null : renderedFps / expectedFps),
+      producerSpeed: clampRatio(producerSpeed == null ? null : producerSpeed / playbackRate),
       renderedFrames,
       receivedFrames,
       droppedFrames,
@@ -69,7 +72,11 @@
       frameBudgetMs,
       averageDecodeMs,
       driftMs,
+      playbackRate,
       queueSeconds,
+      // Decoder queue is measured in source-media seconds; convert to the
+      // wall-time reserve the viewer actually has at the current speed.
+      queueWallSeconds: queueSeconds / playbackRate,
       queueTrend: String(stats.queueTrend || "unknown"),
       rebufferCount: Math.max(0, finite(stats.rebufferCount, 0)),
       state: String(stats.state || ""),
@@ -179,10 +186,10 @@
       );
 
       const deliveryPressure = enoughReceiveHistory && (
-        (m.receiveFps != null && m.receiveFps < m.fps * 0.90
-          && m.queueSeconds < Math.max(1.25, m.rebufferSeconds))
+        (m.receiveFps != null && m.receiveFps < m.expectedFps * 0.90
+          && m.queueWallSeconds < Math.max(1.25, m.rebufferSeconds))
         || (m.queueTrend === "shrinking"
-          && m.queueSeconds < Math.max(1.25, m.rebufferSeconds * 1.15))
+          && m.queueWallSeconds < Math.max(1.25, m.rebufferSeconds * 1.15))
       );
 
       // Quality changes rebuild the stream and discard its buffer. Segment
@@ -212,7 +219,7 @@
         return null;
       }
 
-      const queueHealthy = m.queueSeconds >= Math.max(
+      const queueHealthy = m.queueWallSeconds >= Math.max(
         policy.startupSeconds,
         policy.maxQueueSeconds * 0.58
       );
