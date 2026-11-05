@@ -20,13 +20,16 @@ test("Actual codec is distinct from selected playback preference and visible at 
  assert.match(html,/aria-live="polite"/);
  assert.match(css,/@media \(max-width: 520px\)[\s\S]*?\.player-active-status \{/);
 });
-test("Buffered sound failure retries and exposes visible manual recovery rather than a silent false-success",()=>{
+test("Buffered sound failure uses coordinated automatic recovery and reserves the tap action for browser policy",()=>{
  assert.match(app,/const handleBufferedAudioFailure = \(reason\) =>/);
- assert.match(app,/audioRetryCount < 3/);
+ assert.doesNotMatch(app,/audioRetryCount < 3/);
+ assert.match(app,/playbackRecovery\?\.request\("audio"/);
+ assert.match(app,/Audio: reconnecting automatically/);
+ assert.match(app,/status === "gesture-required"/);
  assert.match(app,/player\.setAudioDisabled\(true, clockPosition\)/);
  assert.match(app,/url\.searchParams\.set\("_", String\(Date\.now\(\)\)\)/);
  assert.match(app,/url\.searchParams\.set\("timestamp", String\(absoluteTime\)\)/);
- assert.match(app,/Sound unavailable · video continues silently/);
+ assert.doesNotMatch(app,/Sound unavailable · video continues silently/);
  assert.match(app,/audio\.onplaying = \(\) =>/);
  assert.match(app,/\$\("#playerRetryAudioBtn"\)\.onclick =/);
  assert.match(app,/Audio: unavailable · video clock \(silent\)/);

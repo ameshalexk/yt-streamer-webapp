@@ -81,6 +81,17 @@ jobs:
       - name: iPhone player responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
         working-directory: webapp
+      - name: Buffered MJPEG audio coordination browser regression
+        run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mjpeg-audio-coordination-browser-check.mjs --automated
+        working-directory: webapp
+        timeout-minutes: 8
+      - name: Save MJPEG recovery fixture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mjpeg-audio-recovery-${{ matrix.os }}
+          path: docs/evidence/mjpeg-audio-coordination-20261104.json
+          if-no-files-found: warn
       - name: Playback speed menu responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/playback-speed-menu-browser-check.mjs
         working-directory: webapp

@@ -1,5 +1,20 @@
 (function (root) {
   'use strict';
+  function audioAlignmentPlan({ fullFile = false, streamStartAt = 0, requestedLocalTime = 0,
+    currentLocalTime = 0, toleranceSeconds = 0.1 } = {}) {
+    const current = Math.max(0, Number(currentLocalTime) || 0);
+    const requested = Math.max(0, Number(requestedLocalTime) || 0);
+    const start = Math.max(0, Number(streamStartAt) || 0);
+    const targetAudioTime = fullFile ? start + current : Math.max(0, current - requested);
+    const driftSeconds = fullFile ? 0 : Math.max(0, current - requested);
+    return {
+      targetAudioTime,
+      sourceTimestamp: start + current,
+      driftSeconds,
+      withinTolerance: driftSeconds <= Math.max(0, toleranceSeconds),
+      requestFreshSegment: !fullFile && driftSeconds > Math.max(0, toleranceSeconds),
+    };
+  }
   // Keep retrying the same media with capped backoff. A real, sustained
   // playback recovery resets the delay. Stop/Pause/source changes cancel
   // pending timers, and offline/hidden holds resume on return.
@@ -88,7 +103,8 @@
         const drifted = sample.audioEnabled && Math.abs(sample.driftMs || 0) > 1500;
         if (drifted) this.driftAt ??= now;
         else this.driftAt = null;
-        if (sample.audioEnabled && (sample.audioError
+        const audioRepairSuppressed = sample.audioStatus === 'retrying' || sample.audioStatus === 'gesture-required';
+        if (sample.audioEnabled && !audioRepairSuppressed && (sample.audioError
             || (sample.videoAvailable && now - this.audioAt >= this.audioStallMs)
             || (this.driftAt != null && now - this.driftAt >= 5000))) {
           this.request('audio', sample);
@@ -109,7 +125,10 @@
       }
       this.attempts++;
       this.recoveryActive = true;
-      const audioOnly = reason === 'audio' && sample.canRepairAudio && this.audioAttempts < 1;
+      // A buffered audio transport has its own current-position repair path.
+      // Keep every retry on that path; never turn repeated audio failures into
+      // whole-player replays that can interrupt the live video queue.
+      const audioOnly = reason === 'audio' && sample.canRepairAudio;
       if (audioOnly) this.audioAttempts++;
       this.pendingAudioOnly = audioOnly;
       const generation = this.generation;
@@ -135,12 +154,12 @@
             const queued = this.queued;
             this.queued = null;
             if (queued) this.request(queued.reason, queued.sample);
-            else if (failed) this.request('failure', sample);
+            else if (failed) this.request(audioOnly ? 'audio' : 'failure', sample);
           }
         }
       }, delay);
       return true;
     }
   }
-  root.PlaybackRecovery = { Monitor };
+  root.PlaybackRecovery = { Monitor, audioAlignmentPlan };
 })(typeof window !== 'undefined' ? window : globalThis);
