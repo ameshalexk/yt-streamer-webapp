@@ -9,7 +9,7 @@
 1. A browser navigation loads the streamer app; the eligible path is captured and removed from browser history. Opening a URL cannot directly mutate a device.
 2. An origin-bound, Cloudflare Access authenticated POST to `/api/teslamon/url-route` asks a **tool-free** Codex CLI process to classify the unspaced or encoded utterance using a strict JSON schema: `video`, `ha`, `mac`, `answer`, `unsupported`.
 3. For `video`, the existing restricted local-tab player planner runs. Video search and local player controls are allowed, but no MCP or other device tools.
-4. For `ha` or `mac`, the original signed provider planner interprets the normalized text. Read-only results may be shown; device/app changes return an expiring one-use confirmation token and **must be approved by a user click in the browser**. Route classification does not execute provider actions.
+4. For `ha` or `mac`, the original signed provider planner interprets the normalized text. Read-only results are shown; authenticated and allowlisted HA changes execute hands-free in the dedicated HA planner, while Mac Control changes still require an expiring one-use approval token and browser click. Routing/classification alone never calls a device tool.
 5. For `answer`, Codex may give a brief, static general-knowledge response. For other actions or missing integrations (such as Tesla), the router responds `unsupported` rather than fabricating a result. Arbitrary filesystem, shell, coding-agent execution, email, secrets and security changes are never available through this URL router.
 6. Aura shows the received text, classification progress, and result or reason for failure. Busy errors receive bounded retry only; quota errors are not masked or retried indefinitely.
 

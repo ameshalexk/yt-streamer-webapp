@@ -46,40 +46,30 @@ test('sensors and other HA entities can be queried but not controlled',async()=>
   assert.match((await api.plan('office temperature',session,identity)).message,/74 °F/);
   assert.deepEqual(calls.map(c=>c.name),['get_entity_state']);
 });
-test('device URL plans do not execute mutations; approve once with same principal and session',async()=>{
+test('signed, allowlisted HA write executes hands-free exactly once per request',async()=>{
   const {api,calls}=service({status:'ok',op:'light_on',target:'Kitchen main',value:null,write:true});
-  const p=await api.plan('turn on kitchen main',session,identity);
-  assert.equal(p.status,'confirm_required');
-  assert.deepEqual(calls.map(x=>x.name),['search_entities']);
-  assert.equal((await api.confirm(p.id,session,other)).status,'failed');
-  assert.deepEqual(calls.map(x=>x.name),['search_entities']);
-  // A mismatched identity also burns the one-time token.
-  assert.equal((await api.confirm(p.id,session,identity)).code,'confirmation_expired');
-  const again=await api.plan('turn on kitchen main',session,identity);
-  assert.equal((await api.confirm(again.id,session,identity)).status,'ok');
-  assert.equal(calls.at(-1).name,'control_light');
-  assert.equal(calls.at(-1).args.confirm,true);
-  assert.equal((await api.confirm(again.id,session,identity)).code,'confirmation_expired');
+  assert.equal((await api.plan('turn on kitchen main',session,other)).status,'ok');
+  assert.deepEqual(calls.map(x=>x.name),['search_entities','control_light']);
+  assert.deepEqual(calls.at(-1).args,{entity_id:'light.kitchen_main',action:'turn_on',confirm:true});
+  assert.equal(typeof api.confirm,'undefined','no separate HA approval endpoint');
+  assert.equal((await api.plan('turn on kitchen main','invalid-session',identity)).code,'invalid_device_request');
+  assert.equal(calls.filter(x=>x.name==='control_light').length,1,'bad session did not change devices');
 });
-test('expired approvals and ambiguous entities fail closed',async()=>{
-  let time=100;
-  const {api,calls}=service({status:'ok',op:'light_off',target:'Kitchen',value:null,write:true},
-    {time:()=>time});
-  const p=await api.plan('turn off Kitchen',session,identity);
-  time+=91000;
-  assert.equal((await api.confirm(p.id,session,identity)).status,'failed');
-  assert.equal(calls.some(x=>x.name==='control_light'),false);
+test('ambiguous targets and failed writes never report completion',async()=>{
   const multi=service({status:'ok',op:'light_off',target:'Kitchen',value:null,write:true},
     {fixturesByName:{...fixtures,search_entities:{items:[
       {entity_id:'light.one',state:'on'},{entity_id:'light.two',state:'off'}],has_more:false}}});
   assert.equal((await multi.api.plan('turn off kitchen',session,identity)).code,'ambiguous_entity');
   assert.equal(multi.calls.some(x=>x.name==='control_light'),false);
+  const failed=service({status:'ok',op:'light_on',target:'light.kitchen_main',value:null,write:true},
+    {fixturesByName:{...fixtures,control_light:{success:false}}});
+  assert.equal((await failed.api.plan('turn on kitchen',session,identity)).code,'device_change_not_confirmed');
+  assert.equal(failed.calls.filter(x=>x.name==='control_light').length,1);
 });
-test('room-wide light action still requires click and never uses generic service calls',async()=>{
+test('room-wide lights execute without a second click and never use generic service calls',async()=>{
   const {api,calls}=service({status:'ok',op:'area_light_off',target:'Kitchen',value:null,write:true});
-  const proposal=await api.plan('turn off kitchen lights',session,identity);
-  assert.equal(calls.length,0);
-  assert.match(proposal.message,/lights in Kitchen/);
-  assert.equal((await api.confirm(proposal.id,session,identity)).status,'ok');
-  assert.deepEqual(calls[0],{name:'control_light',args:{area:'Kitchen',action:'turn_off',confirm:true}});
+  const result=await api.plan('turn off kitchen lights',session,identity);
+  assert.equal(result.status,'ok');
+  assert.match(result.message,/lights in Kitchen/);
+  assert.deepEqual(calls,[{name:'control_light',args:{area:'Kitchen',action:'turn_off',confirm:true}}]);
 });
