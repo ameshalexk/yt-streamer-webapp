@@ -1,5 +1,5 @@
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
-import {parseTeslaMonVideoUrl} from './teslamon-video-url.js?v=20261105-unicode1';
+import {parseTeslaMonVideoUrl,isTeslaMonUnprefixedLightCommand} from './teslamon-video-url.js?v=20261105-url-light-hint1';
 import {createTeslaMonAura} from './teslamon-aura.js?v=20261105-url-preview1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
@@ -802,8 +802,17 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     status('Codex is understanding your request…','info',owner);
     try{
       const endpoint=videoOnly?'/api/teslamon/url-video-plan':'/api/teslamon/plan';
-      const result=await post(endpoint,{text:request,session:tabSession},'application/json',signal);
-      if(!current())return false;
+      // Busy means the planner never started this command. Retry only that
+      // transient case; quota failures and device/video rejections are final.
+      let result;
+      for(let attempt=0;attempt<4;attempt++){
+        result=await post(endpoint,{text:request,session:tabSession},'application/json',signal);
+        if(!current())return false;
+        if(!videoOnly||result.code!=='codex_busy'||attempt===3)break;
+        auraStage('thinking','Codex is busy · retrying automatically…',{entry});
+        await new Promise(resolve=>setTimeout(resolve,(attempt+1)*1000));
+        if(!current())return false;
+      }
       if(result.status==='ok'&&typeof result.tool==='string'&&
          (!videoOnly||result.tool==='search_and_play')){
         if(input.value.trim()===request)input.value='';
@@ -825,7 +834,9 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(videoOnly&&result.code==='codex_usage_limit')
         auraStage('error','Codex usage limit reached · retry after reset',{entry,kind:'warn'});
       else if(videoOnly&&result.code==='codex_busy')
-        auraStage('error','Codex is busy · try again shortly',{entry,kind:'warn'});
+        auraStage('error','Codex is still busy · retry later',{entry,kind:'warn'});
+      else if(videoOnly&&(result.status==='unsupported'||result.code==='video_only_command'))
+        auraStage('error','This URL only plays videos · use TeslaMon for lights',{entry,kind:'warn'});
       if(voice)finishVoiceAura(owner,entry);
       return false;
     }catch{
@@ -1291,6 +1302,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       commandWaiting=true;
       const entry=showUrlAura();
       try{
+        if(isTeslaMonUnprefixedLightCommand(urlVideoCommand)){
+          commandDispatched=true;
+          const message='This URL only plays videos. Enter light commands in TeslaMon instead.';
+          status(message,'warn');
+          auraStage('error',message,{entry,kind:'warn'});
+          return;
+        }
         for(let attempt=0;attempt<48;attempt++){
           if(document.hidden)return;
           if(localPlayer.ready){
