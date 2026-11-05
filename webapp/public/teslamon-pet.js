@@ -1,5 +1,5 @@
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
-import {parseTeslaMonDeviceUrl} from './teslamon-device-url.js?v=20261105-ha-mcp1';
+import {parseTeslaMonDeviceUrl} from './teslamon-device-url.js?v=20261105-mac-mcp1';
 import {parseTeslaMonVideoUrl} from './teslamon-video-url.js?v=20261105-unicode1';
 import {createTeslaMonAura} from './teslamon-aura.js?v=20261105-url-preview1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
@@ -1282,12 +1282,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(started||document.hidden)return;
       started=true;
       const request=urlDeviceCommand;
+      const providerName=request.provider==='mac'?'Mac Control':'Home Assistant';
       const entry=(!userDisabled&&!urlAuraDismissed&&auraEnabled)?
-        openAura({phase:'preparing',message:'Request received · Home Assistant',holdForFrames:true}):null;
+        openAura({phase:'preparing',message:'Request received · '+providerName,holdForFrames:true}):null;
       if(entry!==null)aura.setTranscript(request.text,{entry});
-      auraStage('thinking','Checking Home Assistant…',{entry});
+      auraStage('thinking','Checking '+providerName+'…',{entry});
       try{
-        const result=await post('/api/teslamon/ha-plan',
+        const result=await post('/api/teslamon/'+request.provider+'-plan',
           {text:request.text,session:tabSession});
         if(result.status==='confirm_required'&&typeof result.id==='string'){
           // Aura is visual-only and closes before the explicit approval UI.
@@ -1301,18 +1302,19 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           status(message,'warn');auraStage('error',message,{entry,kind:'warn'});
         }
       }catch{
-        status('Home Assistant command could not be processed.','warn');
+        status(providerName+' command could not be processed.','warn');
         auraStage('error','Could not contact the command service',{entry,kind:'warn'});
       }
     }
     function showDeviceConfirmation(request,result){
+      const providerName=request.provider==='mac'?'Mac Control':'Home Assistant';
       const existing=document.querySelector('#tmDeviceApproval');
       existing?.remove();
       const prompt=document.createElement('section');
       prompt.id='tmDeviceApproval';prompt.className='tm-device-approval';
       prompt.setAttribute('role','dialog');prompt.setAttribute('aria-modal','true');
-      prompt.setAttribute('aria-label','Confirm Home Assistant change');
-      const title=document.createElement('strong');title.textContent='Confirm Home Assistant change';
+      prompt.setAttribute('aria-label','Confirm '+providerName+' change');
+      const title=document.createElement('strong');title.textContent='Confirm '+providerName+' change';
       const detail=document.createElement('p');detail.textContent=String(result.message||'Change a device?').slice(0,160);
       const buttons=document.createElement('div');
       const approve=document.createElement('button');approve.type='button';approve.textContent='Confirm';
@@ -1323,13 +1325,13 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         approve.disabled=true;cancel.disabled=true;
         detail.textContent='Applying approved change…';
         try{
-          const applied=await post('/api/teslamon/ha-confirm',
+          const applied=await post('/api/teslamon/'+request.provider+'-confirm',
             {id:result.id,session:tabSession});
           const success=applied.status==='ok';
           status(String(applied.message||applied.code||(success?'Completed':'Could not complete')),'ok');
           detail.textContent=String(applied.message||applied.code||(success?'Completed':'Could not complete'));
           if(!success)detail.dataset.error='true';
-        }catch{detail.textContent='Home Assistant could not confirm the action.';}
+        }catch{detail.textContent=providerName+' could not confirm the action.';}
         finally{approve.remove();cancel.textContent='Close';cancel.disabled=false;}
       });
       buttons.append(approve,cancel);prompt.append(title,detail,buttons);
