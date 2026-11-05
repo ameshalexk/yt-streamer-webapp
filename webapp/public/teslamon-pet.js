@@ -1,6 +1,6 @@
 import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
 import {parseTeslaMonDeviceUrl} from './teslamon-device-url.js?v=20261105-mac-mcp1';
-import {parseTeslaMonVideoUrl,isTeslaMonUnprefixedLightCommand} from './teslamon-video-url.js?v=20261105-url-light-hint1';
+import {parseTeslaMonVideoUrl} from './teslamon-video-url.js?v=20261105-universal1';
 import {createTeslaMonAura} from './teslamon-aura.js?v=20261105-url-preview1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
@@ -816,7 +816,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         if(!current())return false;
       }
       if(result.status==='ok'&&typeof result.tool==='string'&&
-         (!videoOnly||result.tool==='search_and_play')){
+         (!videoOnly||['pause','resume','get_playback_state','search_and_play','request_fullscreen','exit_fullscreen'].includes(result.tool))){
         if(input.value.trim()===request)input.value='';
         return await issue({tool:result.tool,args:result.args||{}},requestRevision,{
           originalRequest:request,signal,owner,entry,voice,epoch,isCurrent:current,
@@ -1285,117 +1285,142 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   // Wake listening must initialize even when the puppy panel stays closed.
   // This triggers only the browser's normal permission flow, never a bypass.
   void refresh();
+  // Both explicit /ha/ or /mac/ and a general Codex-routed device request
+  // use the same signed planner and ONE-TIME click-confirmation path.
+  async function runDeviceCommand(request,entry=null){
+    const providerName=request.provider==='mac'?'Mac Control':'Home Assistant';
+    auraStage('thinking','Checking '+providerName+'…',{entry});
+    try{
+      const result=await post('/api/teslamon/'+request.provider+'-plan',
+        {text:request.text,session:tabSession});
+      if(result.status==='confirm_required'&&typeof result.id==='string'){
+        // No mutation from navigation; the user must press Confirm.
+        if(entry!==null&&entry===activeAuraEntry)closeAura();
+        showDeviceConfirmation(request,result);
+      }else if(result.status==='ok'){
+        const message=String(result.message||'Request completed').slice(0,400);
+        status(message,'ok');auraStage('complete',message.slice(0,250),{entry});
+      }else{
+        const message=String(result.message||result.code||providerName+' unavailable').slice(0,250);
+        status(message,'warn');auraStage('error',message,{entry,kind:'warn'});
+      }
+    }catch{
+      status(providerName+' command could not be processed.','warn');
+      auraStage('error','Could not contact '+providerName,{entry,kind:'warn'});
+    }
+  }
+  function showDeviceConfirmation(request,result){
+    const providerName=request.provider==='mac'?'Mac Control':'Home Assistant';
+    const existing=document.querySelector('#tmDeviceApproval');
+    existing?.remove();
+    const prompt=document.createElement('section');
+    prompt.id='tmDeviceApproval';prompt.className='tm-device-approval';
+    prompt.setAttribute('role','dialog');prompt.setAttribute('aria-modal','true');
+    prompt.setAttribute('aria-label','Confirm '+providerName+' change');
+    const title=document.createElement('strong');title.textContent='Confirm '+providerName+' change';
+    const detail=document.createElement('p');detail.textContent=String(result.message||'Change a device?').slice(0,160);
+    const buttons=document.createElement('div');
+    const approve=document.createElement('button');approve.type='button';approve.textContent='Confirm';
+    const cancel=document.createElement('button');cancel.type='button';cancel.textContent='Cancel';
+    const dismiss=()=>prompt.remove();
+    cancel.addEventListener('click',()=>{dismiss();status('Device change canceled.','ok');});
+    approve.addEventListener('click',async()=>{
+      approve.disabled=true;cancel.disabled=true;
+      detail.textContent='Applying approved change…';
+      try{
+        const applied=await post('/api/teslamon/'+request.provider+'-confirm',
+          {id:result.id,session:tabSession});
+        const success=applied.status==='ok';
+        status(String(applied.message||applied.code||(success?'Completed':'Could not complete')),'ok');
+        detail.textContent=String(applied.message||applied.code||(success?'Completed':'Could not complete'));
+        if(!success)detail.dataset.error='true';
+      }catch{detail.textContent=providerName+' could not confirm the action.';}
+      finally{approve.remove();cancel.textContent='Close';cancel.disabled=false;}
+    });
+    buttons.append(approve,cancel);prompt.append(title,detail,buttons);
+    document.body.append(prompt);approve.focus({preventScroll:true});
+  }
   if(urlDeviceCommand){
-    // A device URL may only submit a read-only query or CREATE a confirmation
-    // proposal. No URL GET, model response, or timer can execute a mutation.
     let started=false;
-    async function runDeviceCommand(){
+    function runExplicitDeviceCommand(){
       if(started||document.hidden)return;
       started=true;
-      const request=urlDeviceCommand;
-      const providerName=request.provider==='mac'?'Mac Control':'Home Assistant';
       const entry=(!userDisabled&&!urlAuraDismissed&&auraEnabled)?
-        openAura({phase:'preparing',message:'Request received · '+providerName,holdForFrames:true}):null;
-      if(entry!==null)aura.setTranscript(request.text,{entry});
-      auraStage('thinking','Checking '+providerName+'…',{entry});
-      try{
-        const result=await post('/api/teslamon/'+request.provider+'-plan',
-          {text:request.text,session:tabSession});
-        if(result.status==='confirm_required'&&typeof result.id==='string'){
-          // Aura is visual-only and closes before the explicit approval UI.
-          if(entry!==null&&entry===activeAuraEntry)closeAura();
-          showDeviceConfirmation(request,result);
-        }else if(result.status==='ok'){
-          const message=String(result.message||'Request completed').slice(0,400);
-          status(message,'ok');auraStage('complete',message.slice(0,140),{entry});
-        }else{
-          const message=String(result.message||result.code||'Home Assistant unavailable').slice(0,160);
-          status(message,'warn');auraStage('error',message,{entry,kind:'warn'});
-        }
-      }catch{
-        status(providerName+' command could not be processed.','warn');
-        auraStage('error','Could not contact the command service',{entry,kind:'warn'});
-      }
+        openAura({phase:'preparing',message:'Request received · '+urlDeviceCommand.provider,
+          holdForFrames:true}):null;
+      if(entry!==null)aura.setTranscript(urlDeviceCommand.text,{entry});
+      void runDeviceCommand(urlDeviceCommand,entry);
     }
-    function showDeviceConfirmation(request,result){
-      const providerName=request.provider==='mac'?'Mac Control':'Home Assistant';
-      const existing=document.querySelector('#tmDeviceApproval');
-      existing?.remove();
-      const prompt=document.createElement('section');
-      prompt.id='tmDeviceApproval';prompt.className='tm-device-approval';
-      prompt.setAttribute('role','dialog');prompt.setAttribute('aria-modal','true');
-      prompt.setAttribute('aria-label','Confirm '+providerName+' change');
-      const title=document.createElement('strong');title.textContent='Confirm '+providerName+' change';
-      const detail=document.createElement('p');detail.textContent=String(result.message||'Change a device?').slice(0,160);
-      const buttons=document.createElement('div');
-      const approve=document.createElement('button');approve.type='button';approve.textContent='Confirm';
-      const cancel=document.createElement('button');cancel.type='button';cancel.textContent='Cancel';
-      const dismiss=()=>prompt.remove();
-      cancel.addEventListener('click',()=>{dismiss();status('Device change canceled.','ok');});
-      approve.addEventListener('click',async()=>{
-        approve.disabled=true;cancel.disabled=true;
-        detail.textContent='Applying approved change…';
-        try{
-          const applied=await post('/api/teslamon/'+request.provider+'-confirm',
-            {id:result.id,session:tabSession});
-          const success=applied.status==='ok';
-          status(String(applied.message||applied.code||(success?'Completed':'Could not complete')),'ok');
-          detail.textContent=String(applied.message||applied.code||(success?'Completed':'Could not complete'));
-          if(!success)detail.dataset.error='true';
-        }catch{detail.textContent=providerName+' could not confirm the action.';}
-        finally{approve.remove();cancel.textContent='Close';cancel.disabled=false;}
-      });
-      buttons.append(approve,cancel);prompt.append(title,detail,buttons);
-      document.body.append(prompt);approve.focus({preventScroll:true});
-    }
-    document.addEventListener('visibilitychange',()=>{if(!document.hidden)void runDeviceCommand();});
-    void runDeviceCommand();
+    document.addEventListener('visibilitychange',()=>{
+      if(!document.hidden)runExplicitDeviceCommand();
+    });
+    runExplicitDeviceCommand();
   }
   if(urlVideoCommand){
-    // URL navigation is a visual command even with the microphone off.
-    // Do not accidentally request mic access or dismiss Aura on dispatch.
-    let commandDispatched=false,commandWaiting=false,commandTimedOut=false,retryOnVisible=false;
+    // A URL GET shows the app; only a signed POST after readiness classifies
+    // the command. Repeated visibility, tab reload or delayed replies cannot
+    // cause a second dispatch within the same document.
+    let commandDispatched=false;
     function showUrlAura(){
-      if(document.hidden||commandDispatched||urlAuraDismissed||!auraEnabled||userDisabled)return null;
+      if(document.hidden||urlAuraDismissed||!auraEnabled||userDisabled)return null;
       if(urlAuraEntry&&aura.active)return urlAuraEntry;
-      // User dismissal is presentation-only: it must not cancel Codex.
-      const entry=openAura({phase:'preparing',message:'Command received · preparing the player…',
+      const entry=openAura({phase:'preparing',message:'Command received · checking intent…',
         holdForFrames:true});
       if(entry!==null)aura.setTranscript(urlVideoCommand,{entry});
       return entry;
     }
     async function runUrlCommandOnceVisible(){
-      if(commandDispatched||commandTimedOut||document.hidden)return;
-      if(commandWaiting){retryOnVisible=true;return;}
-      commandWaiting=true;
+      if(commandDispatched||document.hidden)return;
+      commandDispatched=true;
       const entry=showUrlAura();
+      auraStage('thinking','Codex is routing your request…',{entry});
+      let route;
       try{
-        if(isTeslaMonUnprefixedLightCommand(urlVideoCommand)){
-          commandDispatched=true;
-          const message='This URL only plays videos. Use /ha/ for Home Assistant commands.';
-          status(message,'warn');
-          auraStage('error',message,{entry,kind:'warn'});
+        for(let attempt=0;attempt<3;attempt++){
+          route=await post('/api/teslamon/url-route',
+            {text:urlVideoCommand,session:tabSession});
+          if(document.hidden)return;
+          if(route?.code!=='codex_busy'||attempt===2)break;
+          auraStage('thinking','Codex is busy · retrying…',{entry});
+          await new Promise(resolve=>setTimeout(resolve,1000*(attempt+1)));
+          if(document.hidden)return;
+        }
+        if(route?.status==='ok'&&['ha','mac'].includes(route.route)){
+          // Device writes still become time-limited proposals, never actions
+          // until an actual browser click confirms the plan.
+          await runDeviceCommand({provider:route.route,text:route.text},entry);
           return;
         }
-        for(let attempt=0;attempt<48;attempt++){
-          if(document.hidden)return;
-          if(localPlayer.ready){
-            commandDispatched=true;
-            enabled=true;selected='this_tab';
-            auraStage('thinking','Sending your request to Codex…',{entry});
-            await interpret(urlVideoCommand,{allowClosed:true,videoOnly:true,entry});
-            return;
-          }
-          await new Promise(resolve=>setTimeout(resolve,250));
+        if(route?.status==='ok'&&route.route==='answer'){
+          status(route.message,'ok');
+          auraStage('complete',route.message,{entry});
+          return;
         }
-        commandTimedOut=true;
-        status('The player did not become ready for the URL command.','warn');
-        auraStage('error','The player did not become ready',{entry,kind:'warn'});
-      }finally{
-        commandWaiting=false;
-        if(retryOnVisible&&!document.hidden&&!commandDispatched&&!commandTimedOut){
-          retryOnVisible=false;
-          void runUrlCommandOnceVisible();
+        if(route?.status==='ok'&&route.route==='video'){
+          for(let attempt=0;attempt<48;attempt++){
+            if(document.hidden)return;
+            if(localPlayer.ready){
+              enabled=true;selected='this_tab';
+              auraStage('thinking','Sending video request to Codex…',{entry});
+              await interpret(route.text,{allowClosed:true,videoOnly:true,entry});
+              return;
+            }
+            await new Promise(resolve=>setTimeout(resolve,250));
+          }
+          auraStage('error','The player did not become ready',{entry,kind:'warn'});
+          return;
+        }
+        const message=route?.message||({
+          codex_busy:'Codex is busy · retry later',
+          codex_usage_limit:'Codex usage limit reached · retry after reset',
+          codex_unavailable:'Codex is unavailable right now',
+          codex_timeout_or_cancelled:'Codex could not finish routing this request'
+        }[route?.code])||'This command is not supported by the connected tools';
+        status(message,'warn');auraStage('error',message,{entry,kind:'warn'});
+      }catch{
+        if(!document.hidden){
+          status('Codex routing service could not be reached.','warn');
+          auraStage('error','Could not connect · try again',{entry,kind:'warn'});
         }
       }
     }
@@ -1404,4 +1429,5 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     });
     void runUrlCommandOnceVisible();
   }
+
 }

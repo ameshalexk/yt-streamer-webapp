@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseTeslaMonVideoUrl,isTeslaMonUnprefixedLightCommand} from '../public/teslamon-video-url.js';
+import {parseTeslaMonVideoUrl} from '../public/teslamon-video-url.js';
 
 test('every ordinary unknown path is passed through as an unspaced video command',()=>{
   assert.equal(parseTeslaMonVideoUrl('/playthelatestMKBSTvideo'),'playthelatestMKBSTvideo');
@@ -29,15 +29,4 @@ test('existing app, assets and unsafe paths never become automatic commands',()=
     assert.equal(parseTeslaMonVideoUrl(path),null,path);
   }
   assert.equal(parseTeslaMonVideoUrl('/'+ 'a'.repeat(221)),null);
-});
-
-test('unprefixed lighting controls are identified for a safe explanatory error',()=>{
-  for(const command of ['turnonnthegameroomlights','turn on the game room lights',
-    'turnoffbedroomlight','switch-on-kitchen-lamps','togglelivingroombulbs']){
-    assert.equal(isTeslaMonUnprefixedLightCommand(command),true,command);
-  }
-  for(const command of ['playturnonthelightsmusicvideo','play the lights movie',
-    'play latest light review','turn on the gaming video','']){
-    assert.equal(isTeslaMonUnprefixedLightCommand(command),false,command);
-  }
 });

@@ -2336,6 +2336,7 @@ const teslamonCodex=createTeslaMonCodex({
 const teslamonCodexSelector=createTeslaMonCodexSelector();
 const teslamonHACommands=createHACommandService({planner:createDevicePlanner()});
 const teslamonMacCommands=createMacCommandService({planner:createDevicePlanner({provider:'mac'})});
+const teslamonUrlRouter=createDevicePlanner({provider:'route'});
 // Stage durations only: never log speech, queries, identities, or credentials.
 function logTeslaMonLatency(stage,started,status){
   console.info('[teslamon-latency]',JSON.stringify({stage,ms:Date.now()-started,status}));
@@ -2399,6 +2400,34 @@ app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,
 // Separate signed, origin-bound planner: URL navigation cannot trigger HA MCPs.
 app.post('/api/teslamon/url-video-plan',verifyTeslaMonVoiceRequest,
   (req,res)=>handleTeslaMonPlan(req,res,{videoOnly:true}));
+// Unprefixed natural-language URLs are classified with a tool-free Codex
+// process. Classification does not execute actions; each routed provider uses
+// its own separate signed endpoint and explicit confirmation for mutations.
+app.post('/api/teslamon/url-route',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  const body=req.body;
+  if(!body||Object.getPrototypeOf(body)!==Object.prototype||
+     Object.keys(body).sort().join(',')!=='session,text'||
+     typeof body.session!=='string'||!/^[a-f0-9-]{36}$/i.test(body.session)||
+     typeof body.text!=='string'||body.text.length<2||body.text.length>220||
+     /[\x00-\x1f\x7f]/.test(body.text))
+    return res.status(400).json({status:'failed',code:'invalid_url_request'});
+  const principal=req.teslamonVoiceIdentity;
+  if(typeof principal?.subject!=='string'||!principal.subject||
+     typeof principal.issuer!=='string'||!principal.issuer)
+    return res.status(401).json({status:'failed',code:'signed_access_required'});
+  const controller=new AbortController();
+  const onClose=()=>{if(!res.writableEnded)controller.abort();};
+  res.once('close',onClose);
+  const started=Date.now();
+  try{
+    const outcome=await teslamonUrlRouter.plan(body.text,{signal:controller.signal});
+    console.info('[teslamon-url-route]',JSON.stringify({status:outcome.status,
+      route:outcome.route||null,ms:Date.now()-started}));
+    return res.status(outcome.status==='unavailable'?503:outcome.status==='failed'?422:200)
+      .json(outcome);
+  }catch{return res.status(503).json({status:'unavailable',code:'codex_unavailable'});}
+  finally{res.removeListener('close',onClose);}
+});
 // Device URLs use explicit /ha/ namespace and signed POSTs. A GET never
 // executes a mutation. Even an authenticated model-created plan only creates
 // a short-lived proposal; a human click is required to use the MCP write tool.

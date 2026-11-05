@@ -224,9 +224,9 @@ test('URL video mode allows only video search and never configures Home Assistan
   assert.doesNotMatch(args,/teslamon_lights|Mac_Control|Home_Assistant/);
   assert.match(args,/read-only/);
 });
-test('URL video mode rejects even valid non-video plans and all MCP use',async()=>{
+test('URL video mode permits bounded browser player controls but no device MCP use',async()=>{
   const pause=client([{tool:'pause',query:''}],[]);
-  assert.equal((await pause.plan('pause',SESSION,ID,{videoOnly:true})).code,'video_only_command');
+  assert.equal((await pause.plan('pause',SESSION,ID,{videoOnly:true})).tool,'pause');
   const lights=client([{tool:'ha_done',query:'',mcp:{tool:'set_light'}}],[]);
   assert.equal((await lights.plan('turnoffbedroomlights',SESSION,ID,{videoOnly:true})).code,'codex_disallowed_tool');
 });
