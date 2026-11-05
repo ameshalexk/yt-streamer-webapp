@@ -31,12 +31,18 @@ export async function callHA(name,args,{transportFactory}={}){
       const require=createRequire(SDK_PARENT);
       const {Client}=require('@modelcontextprotocol/sdk/client/index.js');
       const {StreamableHTTPClientTransport}=require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+      const {CallToolResultSchema}=require('@modelcontextprotocol/sdk/types.js');
       create=()=>({client:new Client({name:'teslamon-home-gateway',version:'1.0.0'}),
-        transport:new StreamableHTTPClientTransport(new URL('http://127.0.0.1:3848/mcp'))});
+        transport:new StreamableHTTPClientTransport(new URL('http://127.0.0.1:3848/mcp')),
+        schema:CallToolResultSchema});
     }
     const pair=create();c=pair.client;
     await c.connect(pair.transport);
-    const answer=await c.callTool({name,arguments:args},{timeout:12000});
+    // The installed provider advertises an optional output schema that this
+    // SDK's automatic validator cannot parse. Validate the normal MCP
+    // CallToolResult envelope and the narrow fields we actually consume.
+    const answer=await c.request({method:'tools/call',params:{name,arguments:args}},
+      pair.schema,{timeout:12000});
     const parsed=safeResult(answer);
     if(!parsed)throw Error('home_assistant_call_failed');
     return parsed;
