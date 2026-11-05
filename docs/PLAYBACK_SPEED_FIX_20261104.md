@@ -95,3 +95,15 @@ work, run the exact-head shared Mac/Linux and native HA architecture gates, and
 follow the normal backup/release procedure. Physical iPhone Safari/Tesla touch,
 audio and real-network playback acceptance remain separate from local Chrome
 emulation and generated-media checks.
+
+### CI runner exception (2026-11-04)
+
+Ubuntu GitHub-hosted headless Chrome completed the speed-menu responsive
+checks but failed the real-media browser fixture after an
+InvalidStateError (VideoDecoder.decode on a closed codec). The macOS
+GitHub runner passed that same real-media step. The cross-platform
+workflow now keeps menu/UI, Node/FFmpeg and package tests on both
+runners, but runs the real WebCodecs Chrome A/V fixture only on macOS.
+This is a documented CI-environment limitation, not proof that Linux
+browser playback is compatible or that the underlying decoder issue
+is fixed. No change was made to the deployed player for this exception.
