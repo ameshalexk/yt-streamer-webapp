@@ -228,12 +228,53 @@ function audioHealthSnapshot(state) {
     audioMaxScheduleSlipMs: round(state.maxAudioScheduleSlipMs),
     audioFeedDone: Boolean(state.audioFeedDone),
     videoFeedDone: Boolean(state.videoFeedDone),
+    audioEndPtsSec: round(state.audioEndPtsSec, 3),
+    audioEndSourceSec: round(state.audioEndSourceSec, 3),
+    videoEndPtsSec: round(state.videoEndPtsSec, 3),
+    knownVideoEndSourceSec: round(state.knownVideoEndSourceSec, 3),
+    sourceDurationSec: round(state.sourceDurationSec, 3),
+    playbackRate: normalizePlaybackRate(state.playbackRate),
     audioMuted: Boolean(state.requestedMuted),
     audioMediaReadyState: external?.readyState ?? null,
     audioMediaNetworkState: external?.networkState ?? null,
     audioMediaPaused: external?.paused ?? null,
     audioMediaTimeSec: external ? round(Number(external.currentTime), 2) : null,
     playbackPositionSec: round(state.startAt + playbackElapsed(state), 2),
+  };
+}
+
+// Fail only after internal audio has actually run out while reliable timeline
+// evidence says video should continue. The two-second margin absorbs AAC
+// priming/padding and ordinary end-of-stream timestamp rounding.
+export function detectPrematureAudioEnd({
+  playing = false, hasFirstPicture = false, paused = false, stopped = false,
+  muted = false, externalAudio = false, audioFeedDone = false,
+  audioEndPtsSec, videoEndPtsSec, knownVideoEndSec, currentSourceSec = 0,
+  audioAheadSec = 0, playbackRate = 1, startAt = 0, segmentOffsetSourceSec = 0,
+  toleranceSec = 2,
+} = {}) {
+  if (!playing || !hasFirstPicture || paused || stopped || muted || externalAudio || !audioFeedDone) return null;
+  const audioEnd = Number(audioEndPtsSec);
+  if (!Number.isFinite(audioEnd) || audioEnd <= 0 || Number(audioAheadSec) > 0.05) return null;
+  const rate = normalizePlaybackRate(playbackRate);
+  const origin = Math.max(0, Number(startAt) || 0) + Math.max(0, Number(segmentOffsetSourceSec) || 0);
+  const audioEndSource = origin + audioEnd * rate;
+  const current = Number(currentSourceSec);
+  if (!Number.isFinite(current) || current < audioEndSource + toleranceSec) return null;
+  const evidenceEnd = Math.max(
+    Number.isFinite(Number(knownVideoEndSec)) ? Number(knownVideoEndSec) : 0,
+    // Prepared video PTS remains relative to segmentStartAt; unlike audio it
+    // is not trimmed by segmentOffsetSourceSec.
+    Number.isFinite(Number(videoEndPtsSec)) ? (Math.max(0, Number(startAt) || 0) + Number(videoEndPtsSec)) : 0,
+  );
+  if (evidenceEnd <= audioEndSource + toleranceSec) return null;
+  // A sub-two-second tail can be ordinary encoder padding/timestamp slop at
+  // natural completion, especially when both feeds have already ended.
+  if (evidenceEnd - current <= toleranceSec) return null;
+  return {
+    audioEndSourceSec: audioEndSource,
+    evidenceEndSourceSec: evidenceEnd,
+    remainingSourceSec: evidenceEnd - current,
   };
 }
 
@@ -501,6 +542,20 @@ async function feedTrack(state, MP4Box, kind, initName) {
     appendBuffer(ab);
   };
 
+  const finishTrack = async () => {
+    const decoder = kind === "video" ? state.videoDecoder : state.audioDecoder;
+    if (decoder?.state === "configured") await decoder.flush();
+    if (kind === "audio") {
+      state.audioEndPtsSec = lastPtsSec;
+      state.audioEndSourceSec = Math.max(0, Number(state.startAt) || 0)
+        + Math.max(0, Number(state.segmentOffsetSourceSec) || 0)
+        + lastPtsSec * normalizePlaybackRate(state.playbackRate);
+    } else {
+      state.videoEndPtsSec = lastPtsSec;
+    }
+    return { lastPtsSec, segments: fed.size };
+  };
+
   await appendFile(initName);
   await withTimeout(ready, 4000, `${kind} fMP4 init parse`);
 
@@ -562,7 +617,7 @@ async function feedTrack(state, MP4Box, kind, initName) {
     if (state.stopRequested) throw new Error("Stopped");
     file.flush();
     await processPending();
-    return { lastPtsSec, segments: fed.size };
+    return finishTrack();
   }
 
   while (!state.stopRequested) {
@@ -583,7 +638,7 @@ async function feedTrack(state, MP4Box, kind, initName) {
     if (status.done && available.every((name) => fed.has(name))) {
       file.flush();
       await processPending();
-      return { lastPtsSec, segments: fed.size };
+      return finishTrack();
     }
     if (!progressed) await sleep(120);
   }
@@ -764,6 +819,35 @@ function startRenderLoop(state) {
             );
           }
         }
+        const exhaustion = detectPrematureAudioEnd({
+          playing: true,
+          hasFirstPicture: state.firstPictureMs != null,
+          paused: state.paused,
+          stopped: state.stopRequested,
+          muted: state.requestedMuted,
+          externalAudio: Boolean(state.externalAudioElement),
+          audioFeedDone: state.audioFeedDone,
+          audioEndPtsSec: state.audioEndPtsSec,
+          videoEndPtsSec: Math.max(
+            Number(state.videoEndPtsSec) || 0,
+            Number(state.lastVideoPtsSec) || 0,
+          ),
+          knownVideoEndSec: state.knownVideoEndSourceSec,
+          currentSourceSec: state.startAt + elapsed,
+          audioAheadSec: scheduledAudioAheadSec(state),
+          playbackRate: state.playbackRate,
+          startAt: state.startAt,
+          segmentOffsetSourceSec: state.segmentOffsetSourceSec,
+        });
+        if (exhaustion) {
+          throw new Error(
+            "Audio ended before video continued" +
+            ` audioEnd=${round(exhaustion.audioEndSourceSec, 2)}s` +
+            ` videoEnd=${round(exhaustion.evidenceEndSourceSec, 2)}s` +
+            ` position=${round(state.startAt + elapsed, 2)}s` +
+            ` rate=${normalizePlaybackRate(state.playbackRate)}`
+          );
+        }
         if (state.decodedVideo.length > 1) {
           state.decodedVideo.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
         }
@@ -828,10 +912,19 @@ async function runSession(state) {
   const initial = await waitForInitialStatus(state);
   state.manifest = initial.manifest;
   state.height = initial.height;
+  const sourceDuration = Number(state.sourceDurationSec ?? initial.duration);
+  const manifestDuration = Number(initial.manifest?.durationSec);
+  state.sourceDurationSec = Number.isFinite(sourceDuration) && sourceDuration > 0
+    ? sourceDuration
+    : (Number.isFinite(manifestDuration) && manifestDuration > 0
+      ? Math.max(0, Number(state.startAt) || 0) + manifestDuration
+      : null);
+  state.knownVideoEndSourceSec = state.sourceDurationSec;
 
   state.videoDecoder = new VideoDecoder({
     output(frame) {
       state.decodedVideo.push(frame);
+      state.lastVideoPtsSec = Math.max(Number(state.lastVideoPtsSec) || 0, Number(frame.timestamp || 0) / 1e6);
       state.maxVideoQueue = Math.max(state.maxVideoQueue, state.videoDecoder.decodeQueueSize || 0);
     },
     error(error) {
@@ -953,9 +1046,10 @@ async function runSession(state) {
   }
 
   const renderPromise = startRenderLoop(state);
-  const [videoResult, audioResult] = await Promise.all([videoFeed, audioFeed]);
+  // Observe render failures immediately. A broken audio schedule must release
+  // feedTrack's lead limiter instead of waiting for both media feeds to finish.
+  const [videoResult, audioResult] = await Promise.all([videoFeed, audioFeed, renderPromise]);
   state.mediaEndSec = Math.max(videoResult.lastPtsSec, audioResult.lastPtsSec || 0);
-  await renderPromise;
 
   if (state.decoderError) throw new Error(state.decoderError);
   state.onEnded?.();
@@ -1132,6 +1226,12 @@ export function createCyberdashPlayer({
       audioDecoder: null,
       videoFeedDone: false,
       audioFeedDone: false,
+      audioEndPtsSec: null,
+      audioEndSourceSec: null,
+      videoEndPtsSec: null,
+      lastVideoPtsSec: 0,
+      knownVideoEndSourceSec: null,
+      sourceDurationSec: null,
       mediaEndSec: 0,
       renderedFrames: 0,
       droppedFrames: 0,
@@ -1193,6 +1293,11 @@ export function createCyberdashPlayer({
       if (state !== next) return;
       next.sessionId = response.id;
       next.resolveMs = response.resolveMs;
+      const responseDuration = Number(response.duration);
+      if (Number.isFinite(responseDuration) && responseDuration > 0) {
+        next.sourceDurationSec = responseDuration;
+        next.knownVideoEndSourceSec = responseDuration;
+      }
       next.preparedStatic = Boolean(response.preparedStatic);
       next.initialStatus = next.preparedStatic ? response : null;
       next.staticTracks = response.staticTracks || null;
