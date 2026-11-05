@@ -59,6 +59,12 @@ jobs:
         working-directory: webapp
       - run: npm test
         working-directory: webapp
+      - name: Smart Adaptive quality switch fixture (baseline and candidate)
+        run: |
+          git fetch --depth=1 origin dfc719cf50d22c794e700d9e514d2fba546520ca
+          MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/smart-adaptive-browser-check.mjs
+        working-directory: webapp
+        timeout-minutes: 3
       - name: TeslaMon same-tab responsive browser smoke
         run: npm run test:teslamon-live-browser
         working-directory: webapp
@@ -81,12 +87,6 @@ jobs:
       - name: iPhone player responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
         working-directory: webapp
-      - name: Smart Adaptive quality switch fixture (baseline and candidate)
-        run: |
-          git fetch --depth=1 origin dfc719cf50d22c794e700d9e514d2fba546520ca
-          MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/smart-adaptive-browser-check.mjs
-        working-directory: webapp
-        timeout-minutes: 3
       # Hosted headless Chrome on either OS may load MP3 successfully but
       # have no output audio clock (readyState=4, currentTime remains zero).
       # CI gates real HTTP MJPEG frames + audio HTTP failure retries, video

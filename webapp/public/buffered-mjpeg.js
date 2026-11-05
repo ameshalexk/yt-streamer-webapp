@@ -558,7 +558,7 @@
       this.stats = {
         state: "idle",
         transport: "mjpeg",
-        adaptiveEligible: true,
+        adaptiveEligible: this.frameMimeType === "image/jpeg",
         fps: this.fps,
         effectiveFps: null,
         effectiveWidth: null,

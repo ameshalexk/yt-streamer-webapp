@@ -61,6 +61,16 @@ test("WebCodecs can upgrade with a healthy short decoded queue and paced product
   assert.ok(decision.metrics.sustainableBps > decision.metrics.candidateBps);
 });
 
+test("normal frame quantization and small buffer dips do not reset a healthy WebCodecs dwell", () => {
+  const h = harness();
+  const decisions = run(h, 31, (n) => ({
+    frames: n % 6 === 1 ? 14 : n % 6 === 2 ? 16 : 15,
+    queueSeconds: n % 6 === 1 ? 0.20 : 0.34,
+    queueTargetSeconds: 0.45,
+  }));
+  assert.equal(decisions[0]?.to, "high");
+});
+
 test("capacity disappearance and long callback gaps cannot finish an upgrade dwell", () => {
   const h = harness();
   assert.equal(run(h, 18).length, 0);
@@ -77,7 +87,7 @@ test("sustained collapse downshifts and later headroom restores quality after re
   const down = run(h, 10, (i) => ({ ...collapse, state: "buffering", rebufferCount: i > 1 ? 2 : 1,
     rebufferDurationMs: i * 1000 }));
   assert.ok(down.length >= 1);
-  assert.equal(down[0].to, "medium");
+  assert.equal(down[0].to, "low", "severe collapse skips an intermediate restart");
   const up = run(h, 125, { capacityBps: 8e6, rebufferCount: 2, rebufferDurationMs: 2000 });
   assert.equal(up.at(-1)?.to, "high");
   assert.ok(h.controller.getTelemetry().adaptiveRebuffers >= 2);
@@ -91,6 +101,14 @@ test("a video stall needs delivery evidence and a fresh burst does not oscillate
   assert.deepEqual(run(h, 72, (n) => n % 6 === 1 ? weak : good), []);
   assert.deepEqual(run(h, 12, { state: "buffering", frames: 0, rebufferCount: 4, capacityBps: null,
     queueSeconds: 0.3, producerSpeed: 1 }), []);
+});
+
+test("moderate delivery pressure still downshifts one tier", () => {
+  const h = harness({ tier: "high" });
+  run(h, 12, { capacityBps: 2e6 });
+  const [down] = run(h, 14, { frames: 15, producerSpeed: 0.68, queueSeconds: 0.12,
+    mediaBps: 1.4e6, capacityBps: 1e6 });
+  assert.equal(down?.to, "medium");
 });
 
 test("available input plus decoder pressure downshifts independently of network", () => {

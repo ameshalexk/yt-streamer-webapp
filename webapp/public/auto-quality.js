@@ -75,6 +75,9 @@
       this.lastSwitchAt = -Infinity;
       this.retryAfter = -Infinity;
       this.failedUpgrades = 0;
+      this.failedTrials = 0;
+      this.trialRetryAfter = -Infinity;
+      this.lastTrialAt = -Infinity;
       this.lastUpgradeAt = -Infinity;
       this.lastRebufferAt = -Infinity;
       this.time = { low: 0, medium: 0, high: 0 };
@@ -106,6 +109,9 @@
       this.latency = new Ewma(5);
       this.depletion = new Ewma(2);
       this.decode = new Ewma(4);
+      this.render = new Ewma(3);
+      this.drops = new Ewma(3);
+      this.bufferHealth = new Ewma(3);
       this.recentCapacityAt = -Infinity;
       this.recentDeliveryAt = -Infinity;
       this.decodeQueueSince = null;
@@ -200,6 +206,9 @@
       const drops = Math.max(0, m.droppedFrames - prior.droppedFrames);
       const dropRatio = drops / Math.max(1, drops + m.renderedFrames - prior.renderedFrames);
       const decodeLoad = m.averageDecodeMs == null ? null : this.decode.sample(m.averageDecodeMs * m.fps / 1000, dt);
+      const renderHealth = this.render.sample(Math.min(1.2, renderRatio), dt);
+      const dropLoad = this.drops.sample(dropRatio, dt);
+      const bufferHealth = this.bufferHealth.sample(m.queueSeconds, dt);
       const demand = this.demand.estimate;
       const measuredCapacity = wc && now - this.recentCapacityAt <= 3500 ? this.capacity.estimate : null;
       const delivered = now - this.recentDeliveryAt <= 3500 ? this.delivery.estimate : null;
@@ -263,8 +272,13 @@
           // Failed upgrades impose progressively longer quiet periods on
           // later trials (bounded at ten minutes for a long session).
           if (now - this.lastUpgradeAt < 45000) this.failedUpgrades++;
+          if (now - this.lastTrialAt < 45000) this.deferPacedTrial(now);
           this.retryAfter = now + Math.min(600000, 24000 * 2 ** Math.min(this.failedUpgrades, 5));
-          return this.switchTo(lower, reason, now);
+          // If sustained delivery is far below even the intermediate profile,
+          // skip its encoder rebuild. Keep ordinary and device downshifts one tier.
+          const severeDelivery = reason !== "device-overload" && critical && (m.producerSpeed ?? 1) < 0.55
+            && (capacityShort || underfed) && this.tier === "high" && profiles.low;
+          return this.switchTo(severeDelivery ? "low" : lower, reason, now);
         }
       }
 
@@ -273,14 +287,16 @@
         ? !decoderBacklog && (m.decoderQueueSize ?? 0) <= 2
         : decodeLoad != null && loadScale != null && decodeLoad * loadScale <= 0.55;
       const healthy = candidate && loadScale > 1 && projectedDeviceOK && stats.state === "playing"
-        && this.samples >= 6 && m.queueSeconds >= m.target * (wc ? 0.65 : 0.90) && slope < 0.12
-        && renderRatio >= 0.94 && dropRatio <= 0.025 && m.driftMs <= 150 && !decodePressure
+        && this.samples >= 6 && m.queueSeconds >= m.target * (wc ? 0.35 : 0.65)
+        && bufferHealth >= m.target * (wc ? 0.65 : 0.90) && slope < 0.12
+        && renderHealth >= 0.94 && renderRatio >= 0.80 && dropLoad <= 0.025
+        && m.driftMs <= 150 && !decodePressure
         && now - this.lastSwitchAt >= 18000 && now - this.lastRebufferAt >= 20000
         && now >= this.retryAfter && !fluctuating;
       // MJPEG cannot expose unused link capacity when FFmpeg or the browser
       // paces reads. A healthy, paced stream can try one tier after a longer
       // dwell; this is labeled a trial, never claimed as measured capacity.
-      const trial = !wc && nextDemand != null && m.producerSpeed >= 0.97
+      const trial = !wc && now >= this.trialRetryAfter && nextDemand != null && m.producerSpeed >= 0.97
         && delivered != null && demand != null && delivered >= demand * 0.90;
       if (!healthy || (!headroom && !trial)) {
         this.stableSince = null;
@@ -289,6 +305,7 @@
       this.stableSince ??= now;
       if (now - this.stableSince < (headroom ? 18000 : 60000)) return null;
       this.lastUpgradeAt = now;
+      if (!headroom) this.lastTrialAt = now;
       return this.switchTo(upper, headroom ? "stable-headroom" : "paced-delivery-trial", now);
     }
 
@@ -302,11 +319,17 @@
       return { action: "switch", from, to, reason, metrics: this.getTelemetry() };
     }
 
+    deferPacedTrial(now) {
+      this.failedTrials++;
+      this.trialRetryAfter = now + Math.min(600000, 300000 * this.failedTrials);
+    }
+
     rejectSwitch(decision) {
       if (this.tier !== decision?.to) return;
       this.selectTier(decision.from);
       this.failedUpgrades++;
       this.lastSwitchAt = this.now();
+      if (decision.reason === "paced-delivery-trial") this.deferPacedTrial(this.lastSwitchAt);
       this.retryAfter = this.lastSwitchAt + Math.min(600000, 24000 * 2 ** Math.min(this.failedUpgrades, 5));
     }
 
