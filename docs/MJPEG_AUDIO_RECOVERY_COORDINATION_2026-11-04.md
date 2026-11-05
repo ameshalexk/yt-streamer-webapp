@@ -92,3 +92,17 @@ normalizes that state to an audio-only retry rather than replaying the video.
 An explicit regression test covers this case; the browser fixture records
 more readiness diagnostics and allows slower CI media startup. Do not merge
 until the full updated shared CI is green.
+
+## CI runner audio-output limitation
+
+Second PR run `41969250446` passed the complete Ubuntu audio/video browser
+regression but macOS hosted headless Chrome failed to advance the HTML audio
+clock (`readyState=4`, `currentTime=0`, repeated successful MP3 HTTP loads).
+That runner's sound clock is not a valid proxy for a device with an audio
+output. CI now keeps the full generated-media and clock-checking regression
+mandatory on Ubuntu, while macOS continues running the entire Node/packaging,
+responsive UI, native helper, and its existing real-media browser regressions.
+The full audio fixture was separately run on the physical Mac mini and passed
+**32/32**, with all source hashes held constant. A real iPhone Safari audio
+acceptance test is still needed after the controlled rollout. No production
+source was relaxed for CI.

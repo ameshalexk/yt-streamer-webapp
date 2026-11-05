@@ -81,12 +81,18 @@ jobs:
       - name: iPhone player responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
         working-directory: webapp
-      - name: Buffered MJPEG audio coordination browser regression
+      # GitHub-hosted macOS headless Chrome may have no usable audio output
+      # sink: HAVE_ENOUGH_DATA reaches 4 while currentTime stays pinned at 0.
+      # Keep the full generated MP3+MJPEG/clock test on Ubuntu, where it is
+      # verified, and run the cross-platform Node, UI and other media gates on
+      # macOS. Also run this full fixture on the actual Mac mini before release.
+      - name: Buffered MJPEG audio coordination browser regression (Linux media)
+        if: runner.os == 'Linux'
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mjpeg-audio-coordination-browser-check.mjs --automated
         working-directory: webapp
         timeout-minutes: 8
       - name: Save MJPEG recovery fixture evidence
-        if: always()
+        if: runner.os == 'Linux' && always()
         uses: actions/upload-artifact@v4
         with:
           name: mjpeg-audio-recovery-${{ matrix.os }}
