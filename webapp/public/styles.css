@@ -166,7 +166,7 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 38px;
+  min-height: 48px;
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -176,13 +176,18 @@ textarea {
   font-weight: 700;
 }
 .playback-speed-control select {
-  min-height: 32px;
+  min-height: 48px;
   border: 0;
   background: transparent;
   color: var(--text);
+  color-scheme: light;
   font: inherit;
   font-size: 14px;
   font-weight: 800;
+}
+.playback-speed-control select option {
+  background-color: #fff;
+  color: #111;
 }
 .playback-speed-control.disabled {
   opacity: .5;
@@ -196,6 +201,9 @@ textarea {
 .video-controls-row .playback-speed-control select {
   color: #fff;
 }
+/* Keep the speed picker large enough even when mobile-player-fixes.css loads after this file. */
+.screen .video-controls-row .playback-speed-control { min-height: 48px; }
+.screen .video-controls-row .playback-speed-control select { min-height: 48px; }
 .player-toolbar {
   display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 8px;
   padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel);

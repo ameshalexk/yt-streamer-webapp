@@ -141,9 +141,10 @@ export function fastPlaybackBufferTargets({ playbackRate = 1, fps = 30 } = {}) {
       rebufferHighVideoSourceSec: 0.45,
     };
   }
-  // Trade a little startup latency for enough reserve to survive normal Wi-Fi/cellular
-  // jitter. The target grows with speed because 1.5x/2x burns source time faster.
-  const startupWallSec = Math.min(4, 1.5 + ((rate - 1) * 2.5));
+  // Rate changes restart the pitch-preserving server audio pipeline. Start with
+  // a modest wall-time reserve instead of making 2x wait for four seconds of
+  // audio before showing a frame. Keep the larger recovery targets below.
+  const startupWallSec = 1.5;
   const startupVideoSourceSec = Math.min(6.5, startupWallSec * rate);
   const rebufferHighWallSec = Math.min(3, 1.5 + (rate - 1));
   return {
@@ -155,6 +156,23 @@ export function fastPlaybackBufferTargets({ playbackRate = 1, fps = 30 } = {}) {
     rebufferHighWallSec,
     rebufferHighVideoSourceSec: Math.min(6.5, rebufferHighWallSec * rate),
   };
+}
+
+export function playbackStartupReady({
+  playbackRate = 1, videoFrames = 0, audioBlocks = 0,
+  videoSourceSec = 0, audioWallSec = 0,
+  videoFeedDone = false, audioFeedDone = false, externalAudio = false,
+  targets = fastPlaybackBufferTargets({ playbackRate }),
+} = {}) {
+  const minimumReady = videoFrames >= (videoFeedDone ? 1 : 3)
+    && (externalAudio || audioBlocks >= 1);
+  if (!minimumReady) return false;
+  if (normalizePlaybackRate(playbackRate) <= 1) return true;
+  // Time coverage is the reserve that matters. A fixed requested-FPS frame
+  // count can be unreachable for a lower-cadence source. At EOF no more data
+  // can arrive, so play the available tail instead of waiting 15 seconds.
+  return (videoFeedDone || videoSourceSec >= targets.startupVideoSourceSec)
+    && (externalAudio || audioFeedDone || audioWallSec >= targets.startupAudioWallSec);
 }
 
 // Normal-speed playback usually has only a few decoded frames in flight.
@@ -899,13 +917,18 @@ async function runSession(state) {
     if (state.decoderError) throw new Error(state.decoderError);
     const videoSourceSec = decodedVideoAheadSec(state, state.segmentOffsetSourceSec || 0);
     const audioWallSec = state.externalAudioElement ? targets.startupAudioWallSec : pendingAudioBufferedSec(state);
-    const minimumReady = state.decodedVideo.length >= 3 && (state.externalAudioElement || state.pendingAudio.length >= 1);
-    const targetReady = !fastPlayback || (
-      state.decodedVideo.length >= targets.startupVideoFrames &&
-      videoSourceSec >= targets.startupVideoSourceSec &&
-      audioWallSec >= targets.startupAudioWallSec
-    );
-    if (minimumReady && targetReady) break;
+    const minimumReady = state.decodedVideo.length >= (state.videoFeedDone ? 1 : 3)
+      && (state.externalAudioElement || state.pendingAudio.length >= 1);
+    if (playbackStartupReady({
+      playbackRate: state.playbackRate,
+      videoFrames: state.decodedVideo.length,
+      audioBlocks: state.pendingAudio.length,
+      videoSourceSec, audioWallSec,
+      videoFeedDone: state.videoFeedDone,
+      audioFeedDone: state.audioFeedDone,
+      externalAudio: Boolean(state.externalAudioElement),
+      targets,
+    })) break;
 
     if (performance.now() > prebufferDeadline) {
       if (minimumReady) {
@@ -1190,10 +1213,15 @@ export function createCyberdashPlayer({
           playbackRate: next.playbackRate,
         }),
       }, preparedId ? 12000 : 45000);
-      if (state !== next) return;
       next.sessionId = response.id;
-      next.resolveMs = response.resolveMs;
       next.preparedStatic = Boolean(response.preparedStatic);
+      // A rapid rate change/Stop can finish while the start request is still
+      // resolving. Release that late-created encoder instead of orphaning it.
+      if (state !== next || next.stopRequested) {
+        await stopServerSession(next);
+        return;
+      }
+      next.resolveMs = response.resolveMs;
       next.initialStatus = next.preparedStatic ? response : null;
       next.staticTracks = response.staticTracks || null;
       next.segmentOffsetSourceSec = Math.max(0, Number(response.segmentOffsetSourceSec) || 0);

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { advanceAudioHealthIncident, classifyAudioSchedule, fastPlaybackBufferTargets, normalSpeedNeedsRebuffer, normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
+import { advanceAudioHealthIncident, classifyAudioSchedule, fastPlaybackBufferTargets, normalSpeedNeedsRebuffer, normalizePlaybackRate, planAudioSchedule, playbackStartupReady } from "../public/cyberdash-embedded.mjs";
 
 const FRAME = 1024 / 48000;
 
@@ -90,20 +90,44 @@ test("fast playback prebuffer scales source video with playback rate", () => {
   assert.equal(one.startupAudioWallSec, 0);
 
   const oneFive = fastPlaybackBufferTargets({ playbackRate: 1.5, fps: 30 });
-  assert.equal(oneFive.startupWallSec, 2.75);
-  assert.equal(oneFive.startupVideoSourceSec, 4.125);
-  assert.equal(oneFive.startupVideoFrames, 124);
-  assert.equal(oneFive.startupAudioWallSec, 2.75);
+  assert.equal(oneFive.startupWallSec, 1.5);
+  assert.equal(oneFive.startupVideoSourceSec, 2.25);
+  assert.equal(oneFive.startupVideoFrames, 68);
+  assert.equal(oneFive.startupAudioWallSec, 1.5);
   assert.equal(oneFive.rebufferLowWallSec, 0.65);
   assert.equal(oneFive.rebufferHighWallSec, 2);
   assert.equal(oneFive.rebufferHighVideoSourceSec, 3);
 
   const two = fastPlaybackBufferTargets({ playbackRate: 2, fps: 30 });
-  assert.equal(two.startupWallSec, 4);
-  assert.equal(two.startupVideoSourceSec, 6.5);
-  assert.equal(two.startupVideoFrames, 195);
+  assert.equal(two.startupWallSec, 1.5);
+  assert.equal(two.startupVideoSourceSec, 3);
+  assert.equal(two.startupVideoFrames, 90);
   assert.equal(two.rebufferHighWallSec, 2.5);
   assert.equal(two.rebufferHighVideoSourceSec, 5);
+});
+
+test("fast startup uses playable time rather than an assumed source frame cadence", () => {
+  const ready = { playbackRate: 2, videoFrames: 37, audioBlocks: 5, videoSourceSec: 3, audioWallSec: 1.5 };
+  assert.equal(playbackStartupReady(ready), true);
+  assert.equal(playbackStartupReady({ ...ready, videoSourceSec: 2.9 }), false);
+  assert.equal(playbackStartupReady({ ...ready, audioWallSec: 1.4 }), false);
+  assert.equal(playbackStartupReady({ ...ready, videoFrames: 0 }), false);
+  assert.equal(playbackStartupReady({ ...ready, audioBlocks: 0 }), false);
+  for (const rate of [1.25, 1.5, 2, 3, 4]) {
+    const targets = fastPlaybackBufferTargets({ playbackRate: rate });
+    assert.ok(targets.startupAudioWallSec > targets.rebufferLowWallSec);
+    assert.ok(targets.startupVideoSourceSec > targets.rebufferLowWallSec * rate);
+  }
+});
+
+test("startup plays a short completed tail without waiting for impossible reserves", () => {
+  const tail = { playbackRate: 2, videoFrames: 12, audioBlocks: 3, videoSourceSec: 0.8, audioWallSec: 0.4 };
+  assert.equal(playbackStartupReady(tail), false);
+  assert.equal(playbackStartupReady({ ...tail, videoFeedDone: true }), false);
+  assert.equal(playbackStartupReady({ ...tail, audioFeedDone: true }), false);
+  assert.equal(playbackStartupReady({ ...tail, videoFeedDone: true, audioFeedDone: true }), true);
+  assert.equal(playbackStartupReady({ ...tail, videoFeedDone: true, audioFeedDone: true, videoFrames: 0 }), false);
+  assert.equal(playbackStartupReady({ ...tail, videoFeedDone: true, audioFeedDone: true, audioBlocks: 0 }), false);
 });
 
 
