@@ -20,9 +20,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-26 was being canceled without assignment on 2026-11-04.
-        # Use the generally available stable macOS runner until it recovers.
-        os: [ubuntu-24.04, macos-15]
+        # Native Audio Tap uses processRestoreEnabled from the macOS 26 SDK;
+        # macos-15 cannot compile it. macos-26 previously passed the shared checks.
+        os: [ubuntu-24.04, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
