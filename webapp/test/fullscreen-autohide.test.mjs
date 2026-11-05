@@ -75,7 +75,7 @@ test("idle player overlay becomes invisible and non-interactive", () => {
   assert.match(css, /\.video-control-btn \{[^}]*min-height:\s*52px;/s);
   const mobileCss = fs.readFileSync(new URL("../public/mobile-player-fixes.css", import.meta.url), "utf8");
   assert.match(mobileCss, /\.screen > \.player-quality-trigger/);
-  assert.match(mobileCss, /body\.screen-fullscreen\.fullscreen-controls-idle \.screen > \.player-quality-trigger \{[^}]*visibility:\s*hidden;[^}]*pointer-events:\s*none;/s);
+  assert.match(mobileCss, /body\.fullscreen-controls-idle \.screen > \.player-quality-trigger \{[^}]*visibility:\s*hidden;[^}]*pointer-events:\s*none;/s);
   assert.match(mobileCss, /\.screen > \.player-quality-trigger \{[^}]*min-height:\s*44px;/s);
   assert.match(mobileCss, /\.screen:not\(\.playing\) > \.player-quality-trigger/);
   assert.match(mobileCss, /\.player-quality-panel \.player-quality-btn \{[^}]*min-height:\s*46px;/s);
@@ -83,14 +83,42 @@ test("idle player overlay becomes invisible and non-interactive", () => {
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.stream-badge \{[^}]*top:\s*8px;[^}]*bottom:\s*auto;/s);
 });
 
-test("auto-hide is limited to uninterrupted playback", () => {
+test("five seconds of user inactivity hides app controls even while paused", () => {
+  const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  let timer;
+  const classes = new Set(["playing"]);
+  const bodyClasses = new Set();
+  const overlay = { inert: false, setAttribute() {}, removeAttribute() {} };
+  const quality = { inert: false, setAttribute() {}, removeAttribute() {} };
+  const panel = { hidden: false };
+  const context = vm.createContext({
+    FULLSCREEN_OVERLAY_HIDE_MS: 5000,
+    fullscreenOverlayHideTimer: null,
+    playbackPaused: true,
+    document: { body: { classList: { toggle: (x, enabled) => enabled ? bodyClasses.add(x) : bodyClasses.delete(x), add: (x) => bodyClasses.add(x), remove: (x) => bodyClasses.delete(x) } } },
+    $(selector) { return selector === "#screen" ? { classList: { contains: (x) => classes.has(x) } } : selector === "#videoControlsOverlay" ? overlay : selector === "#playerQualityBtn" ? quality : selector === "#playerQualityPanel" ? panel : null; },
+    setTimeout(fn, ms) { assert.equal(ms, 5000); timer = fn; return 7; },
+    clearTimeout() {},
+    setPlayerQualityPanelOpen(open) { panel.hidden = !open; },
+    updateStreamSeekUi() {},
+  });
+  for (const name of ["canAutoHideScreenOverlays", "setScreenOverlaysIdle", "scheduleFullscreenOverlayHide"]) vm.runInContext(extractFunction(app, name), context);
+  vm.runInContext("scheduleFullscreenOverlayHide()", context);
+  assert.equal(typeof timer, "function");
+  timer();
+  assert.equal(bodyClasses.has("fullscreen-controls-idle"), true);
+  assert.equal(overlay.inert, true);
+  assert.equal(quality.inert, true);
+  assert.equal(panel.hidden, true);
+});
+
+test("idle timer is independent of pause, loading notices, and focused controls", () => {
   const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
   assert.match(app, /FULLSCREEN_OVERLAY_HIDE_MS = 5000/);
-  assert.match(app, /!screen\.classList\.contains\("loading"\)/);
-  assert.match(app, /!screen\.classList\.contains\("controls-interacting"\)/);
-  assert.match(app, /!playbackPaused/);
-  assert.match(app, /!noticeVisible/);
-  assert.match(app, /active\.matches\(\":focus-visible\"\)[\s\S]*catch \{ return fullscreenKeyboardModality; \}/);
+  assert.match(app, /screen\.classList\.contains\("playing"\) \|\| screen\.classList\.contains\("loading"\)/);
+  assert.doesNotMatch(app.slice(app.indexOf("function canAutoHideScreenOverlays"), app.indexOf("function clearFullscreenOverlayHide")), /playbackPaused|streamNotice|controls-interacting/);
+  assert.match(app, /control\.inert = idle/);
+  assert.match(app, /setPlayerQualityPanelOpen\(false\)/);
   assert.match(app, /screen\.addEventListener\("focusin", \(\) => showFullscreenOverlays\(\)\)/);
 });
 

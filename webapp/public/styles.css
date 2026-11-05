@@ -610,6 +610,7 @@ body.screen-fullscreen.browser-streaming .screen .browser-keyboard-input:not([hi
 .video-controls-overlay .fullscreen-icon { transform: scale(1.08); }
 body.fullscreen-controls-idle .video-controls-overlay {
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
 }
 .browser-close-popup {
