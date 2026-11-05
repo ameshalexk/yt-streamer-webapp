@@ -12,7 +12,7 @@ import {getTeslaMonPetMotion} from './teslamon-pet-motion.js?v=20261024-poses1';
 import {shouldDismissTeslaMon} from './teslamon-presence.js';
 import {TESLAMON_WAKE_KEYWORDS, normalizeTeslaMonWakeKeywords, restoreTeslaMonWakeKeywords, stripTeslaMonWakePhrasePrefix, teslaMonWakePhraseLabel} from './teslamon-wake-phrases.js?v=20261025-mycroft-rhasspy1';
 
-if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
+if(['stream.ameshalex.com','streamha.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'){
   const urlDeviceCommand=parseTeslaMonDeviceUrl(location.pathname);
   const urlVideoCommand=urlDeviceCommand?null:parseTeslaMonVideoUrl(location.pathname);
   if(urlVideoCommand||urlDeviceCommand)try{history.replaceState(history.state,'','/'+location.search+location.hash);}catch{}

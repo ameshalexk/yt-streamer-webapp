@@ -21,3 +21,28 @@
 - A Codex usage limit prevents classification; the UI must report the limitation. This is not a bypass of Codex quota.
 - The Tesla connector is not yet present in the streamer server; Tesla actions are not claimed supported.
 - Do not deploy this branch automatically. Run local Node/browser tests and shared Mac/HA CI, then require an approved release plan with backups and verification.
+
+## StreamHA site parity — Linux add-on
+
+The StreamHA UI uses the same source code, but the Linux add-on intentionally
+ships **without** a Codex login, Mac Control runtime or access to Home Assistant
+Core internals. On `https://streamha.ameshalex.com`, the UI enables TeslaMon
+Aura and sends the ten specifically allowlisted `/api/teslamon/*` POST requests
+to its local add-on endpoint. The add-on verifies the Cloudflare Access JWT with
+the exact issuer and the configured app audience, then forwards the request to
+the pinned Mac URL `https://stream.ameshalex.com` over HTTPS.
+
+The Mac's original independent Cloudflare Access verification, planner
+allowlists, one-time signed confirmation tokens and same-principal session
+binding **still apply**. No HTTP redirect, unverified browser metadata,
+generic proxy endpoint, arbitrary shell command or direct Mac LAN listener is
+introduced. Audio transcription, voice capabilities and candidate selection
+use the same restricted relay. The user's Access audience must remain the
+same on both hostnames; otherwise the bridge rejects the request.
+
+This arrangement is a **dependency**, not a fully independent Pi assistant:
+if Mac, its Access edge, or Codex is offline/over quota, StreamHA will display
+the bounded unavailable result instead of silently switching credentials.
+The server/video paths and reserved navigation remain local to StreamHA.
+Test with signed real browser sessions after deployment; no end-to-end
+Cloudflare session can be simulated by the unit/Chrome fixture.

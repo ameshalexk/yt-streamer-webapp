@@ -12,6 +12,9 @@ import {createTeslaMonCodex,createTeslaMonCodexSelector} from "./lib/teslamon-co
 import {createDevicePlanner} from "./lib/teslamon-device-plan.js";
 import {createHACommandService} from "./lib/teslamon-device-mcp.js";
 import {createMacCommandService} from "./lib/teslamon-mac-mcp.js";
+import {createStreamhaCodexProxy} from "./lib/teslamon-streamha-proxy.js";
+import {TrustedBrowserRegistrationFlow} from "./lib/ai-media-agent-trusted-browser-flow.js";
+import {createPinnedCloudflareJwksProvider} from "../scripts/ai-agent-remote-mcp.mjs";
 import * as store from "./lib/store.js";
 import * as storageManager from "./lib/storage-manager.js";
 import { findSavedPlayback } from "./lib/saved-playback.js";
@@ -68,6 +71,27 @@ app.get("/robots.txt", (_req, res) => {
   res.type("text/plain").send("User-agent: *\nDisallow: /\n");
 });
 app.use(express.json({ limit: "256kb" }));
+// StreamHA shares the Access app audience with the Mac streamer, but the
+// Linux add-on intentionally has no Codex credentials or Mac MCP binary.
+// Verify a signed StreamHA principal locally, then relay only the strictly
+// enumerated TeslaMon POST operations through the pinned HTTPS Mac frontend.
+// Mac's existing signed-origin verifier independently authenticates the same
+// signed JWT before any scoped planning or user-approved device mutation.
+if(process.platform==='linux' &&
+   process.env.CAST_CONTROL_ORIGIN==='https://streamha.ameshalex.com' &&
+   /^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(process.env.CAST_ACCESS_ISSUER||'') &&
+   /^[A-Za-z0-9_-]{20,}$/.test(process.env.CAST_ACCESS_AUDIENCE||'')){
+  const issuer=process.env.CAST_ACCESS_ISSUER;
+  const flow=new TrustedBrowserRegistrationFlow({
+    jwksProvider:createPinnedCloudflareJwksProvider({teamDomain:new URL(issuer).hostname}),
+    audience:process.env.CAST_ACCESS_AUDIENCE,
+    allowedSubjects:[],accessPolicyOnly:true,
+    allowedOrigins:['https://streamha.ameshalex.com']
+  });
+  app.use('/api/teslamon',express.raw({type:['audio/webm','audio/ogg','audio/mp4','audio/wav'],
+    limit:'5mb'}),createStreamhaCodexProxy({authenticate:req=>flow.authenticateHttp(req)}));
+}
+
 // The retired Money hostname may never access other application routes.
 app.use((req, res, next) => req.hostname === "money.ameshalex.com" ? res.status(404).end() : next());
 // Receiver hostname is deliberately media-only: never expose the authenticated

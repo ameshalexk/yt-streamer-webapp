@@ -242,8 +242,8 @@ const server=http.createServer(async(req,res)=>{
     if((pathname==='/'||pathname==='/index.html'||urlCommand||deviceCommand)&&requestUrl.searchParams.get('fixture')==='1')
       bytes=Buffer.from(bytes.toString('utf8').replace('</head>',fixtureBootstrapScript+'</head>'));
     if(pathname==='/teslamon-pet.js')bytes=Buffer.from(bytes.toString('utf8').replace(
-      "['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'",
-      "['stream.ameshalex.com','teslamon-stage.ameshalex.com','127.0.0.1'].includes(location.hostname)&&['https:','http:'].includes(location.protocol)"
+      "['stream.ameshalex.com','streamha.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'",
+      "['stream.ameshalex.com','streamha.ameshalex.com','teslamon-stage.ameshalex.com','127.0.0.1'].includes(location.hostname)&&['https:','http:'].includes(location.protocol)"
     ));
     res.writeHead(200,{'content-type':mime[path.extname(target)]||'application/octet-stream'});
     res.end(bytes);
@@ -384,6 +384,33 @@ try{
     assert.equal(await page.locator('#tmAuraTranscript').textContent(),'play Kalyanraman');
     assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),0);
     assert.equal(await page.locator('#tmAura').isVisible(),true);
+    await context.close();
+  }
+  // StreamHA is a separate public hostname. Exercise the real hostname in a
+  // fully isolated fixture; no real Access, Codex, Home Assistant or Mac call.
+  {
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario:'url_light'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    await context.route('https://streamha.ameshalex.com/**',async route=>{
+      const u=new URL(route.request().url());
+      const response=await fetch(origin+u.pathname+u.search,{
+        method:route.request().method(),
+        headers:route.request().method()==='POST'?{'content-type':'application/json'}:{},
+        body:route.request().method()==='POST'?route.request().postData():undefined
+      });
+      await route.fulfill({status:response.status,
+        contentType:response.headers.get('content-type')||'application/octet-stream',
+        body:Buffer.from(await response.arrayBuffer())});
+    });
+    const page=await context.newPage();
+    await page.goto('https://streamha.ameshalex.com/turnonnthegameroomlights?fixture=1');
+    await page.locator('#tmDeviceApproval').waitFor({state:'visible',timeout:7000});
+    assert.equal(await page.evaluate(()=>location.hostname),'streamha.ameshalex.com');
+    assert.equal(await page.evaluate(()=>window.__fixtureRouteRequests),1);
+    assert.equal(await page.evaluate(()=>window.__fixtureDevicePlans),1);
+    assert.equal(await page.evaluate(()=>window.__fixtureConfirmRequests),0);
+    assert.match(await page.locator('#tmDeviceApproval').textContent(),/Confirm Home Assistant change/i);
     await context.close();
   }
   // First-visible startup regression: browsers can load a tab in the
