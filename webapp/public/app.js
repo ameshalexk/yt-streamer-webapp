@@ -813,7 +813,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261104-speed-startup-v12")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261104-controls-speed-audio1")
       .then((module) => {
         cyberdashModule = module;
         return module;
