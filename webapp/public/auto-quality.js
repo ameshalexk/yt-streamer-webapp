@@ -78,6 +78,7 @@
       this.failedTrials = 0;
       this.trialRetryAfter = -Infinity;
       this.lastTrialAt = -Infinity;
+      this.recoveryCeiling = 0;
       this.lastUpgradeAt = -Infinity;
       this.lastRebufferAt = -Infinity;
       this.time = { low: 0, medium: 0, high: 0 };
@@ -276,6 +277,7 @@
           this.retryAfter = now + Math.min(600000, 24000 * 2 ** Math.min(this.failedUpgrades, 5));
           // If sustained delivery is far below even the intermediate profile,
           // skip its encoder rebuild. Keep ordinary and device downshifts one tier.
+          this.recoveryCeiling = Math.max(this.recoveryCeiling, TIER_ORDER.indexOf(this.tier));
           const severeDelivery = reason !== "device-overload" && critical && (m.producerSpeed ?? 1) < 0.55
             && (capacityShort || underfed) && this.tier === "high" && profiles.low;
           return this.switchTo(severeDelivery ? "low" : lower, reason, now);
@@ -294,9 +296,10 @@
         && now - this.lastSwitchAt >= 18000 && now - this.lastRebufferAt >= 20000
         && now >= this.retryAfter && !fluctuating;
       // MJPEG cannot expose unused link capacity when FFmpeg or the browser
-      // paces reads. A healthy, paced stream can try one tier after a longer
-      // dwell; this is labeled a trial, never claimed as measured capacity.
-      const trial = !wc && now >= this.trialRetryAfter && nextDemand != null && m.producerSpeed >= 0.97
+      // paces reads. A trial can restore an earlier tier after a downgrade,
+      // never raise initial quality purely on the absence of a stall.
+      const trial = !wc && upper && TIER_ORDER.indexOf(upper) <= this.recoveryCeiling
+        && now >= this.trialRetryAfter && nextDemand != null && m.producerSpeed >= 0.97
         && delivered != null && demand != null && delivered >= demand * 0.90;
       if (!healthy || (!headroom && !trial)) {
         this.stableSince = null;

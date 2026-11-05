@@ -126,7 +126,20 @@ try {
       await context.route("**/*", route => route.request().url().startsWith(origin + "/") ? route.continue() : route.abort());
       const page = await context.newPage();
       const errors = [];
+      const fixtureEvents = [];
+      const fixtureRequests = [];
+      const mode = engine + " / " + (baseline ? "baseline" : "v3");
+      console.log("Testing " + mode);
       page.on("pageerror", err => errors.push(err.message));
+      page.on("request", request => {
+        const url = new URL(request.url());
+        if (fixtureRequests.length >= 32) return;
+        if (url.pathname.includes("cyberdash") || url.pathname.includes("fixture-mjpeg")) fixtureRequests.push(url.pathname);
+        if (url.pathname === "/api/playback-event") {
+          const event = request.postDataJSON();
+          if (fixtureEvents.length < 32) fixtureEvents.push([event.event, event.reason, event.message, event.errorName]);
+        }
+      });
       await page.goto(origin + "/?ui=" + (baseline ? "classic" : "new"), { waitUntil: "domcontentloaded" });
       await page.waitForFunction(() => typeof stopPlayback === "function" && window.YtAutoQuality);
       await page.evaluate((engine) => {
@@ -139,7 +152,12 @@ try {
           : playCyberdashStream("https://fixture.invalid/video", "Fixture", { ...meta, startAt });
         replayFn(15);
       }, engine);
-      await page.waitForFunction(() => diagnosticsStats?.renderedFrames > 5, null, { timeout: 18000 });
+      await page.waitForFunction(() => diagnosticsStats?.renderedFrames > 5, null, { timeout: 18000 }).catch(async (error) => {
+        const state = await page.evaluate(() => ({ badge: document.querySelector("#streamBadge")?.textContent,
+          now: getStreamCurrentTime(), stats: diagnosticsStats, videoDecoder: typeof VideoDecoder,
+          audioDecoder: typeof AudioDecoder, screen: document.querySelector("#screen")?.className }));
+        throw new Error(mode + " did not start: " + JSON.stringify({ state, errors, fixtureEvents, fixtureRequests }), { cause: error });
+      });
       const attemptBefore = await page.evaluate(() => streamAttempt);
       const requestIndex = starts.length;
       const measurement = await page.evaluate(({ engine, baseline }) => {
@@ -184,7 +202,9 @@ try {
       }
       await page.evaluate(() => stopPlayback());
       assert.deepEqual(errors, []);
-      results.push({ engine, controller: baseline ? "baseline" : "v3", ...measurement });
+      const result = { engine, controller: baseline ? "baseline" : "v3", ...measurement };
+      results.push(result);
+      console.log(JSON.stringify(result));
       await context.close();
     }
   }

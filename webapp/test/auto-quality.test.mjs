@@ -131,7 +131,10 @@ test("upstream and audio failures, startup, pause, offline and background do not
 });
 
 test("MJPEG only tries a paced upgrade after prolonged health and projected decode headroom", () => {
-  const h = harness({ transport: "mjpeg", tier: "low" });
+  const h = harness({ transport: "mjpeg" });
+  assert.deepEqual(run(h, 100), [], "paced delivery cannot justify an initial blind upgrade");
+  const down = run(h, 12, { producerSpeed: 0.4, queueSeconds: 0.2, frames: 8 });
+  assert.equal(down[0]?.to, "low");
   assert.deepEqual(run(h, 90, { averageDecodeMs: 28 }), []);
   assert.deepEqual(run(h, 55), []);
   const upgrade = run(h, 20).at(-1);
