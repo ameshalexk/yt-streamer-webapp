@@ -76,6 +76,21 @@ const BASE_PROMPT=[
   'For a play request choose search_and_play. The page will play the first valid ranked search result automatically.',
 ].join(' ');
 
+// URL navigation is a deliberately separate, playback-only Codex context.
+// Grok may collapse spaces in URL paths; let the model infer word boundaries.
+const VIDEO_URL_PROMPT=[
+  'You are TeslaMon processing a video-playback command from a URL path.',
+  'The spoken command was converted into a URL and spaces may have been removed.',
+  'Infer the intended word boundaries and obvious transcription mistakes from context.',
+  'Choose search_and_play for a clear request to play a video, otherwise unsupported.',
+  'Preserve latest, newest and most recent in the video search query when requested.',
+  'For search_and_play provide a natural-language search query of 2 to 120 characters.',
+  'Use exactly the tool and query keys in the required JSON output schema.',
+  'Never invoke tools, MCP servers, Home Assistant, devices, shell, files or browsing.',
+  'All other playback commands, light commands and non-video requests are unsupported.',
+  'The authenticated browser will search and play one video in its own tab.',
+].join(' ');
+
 export function createTeslaMonCodex({
   binary=TESLAMON_CODEX_BINARY,
   workspace=path.join(os.homedir(),'Library/Application Support/YTStreamerWebapp/private/teslamon-codex/workspace'),
@@ -87,14 +102,14 @@ export function createTeslaMonCodex({
   let busy=false;
   const available=isSupportedPlatform && path.isAbsolute(binary) &&
     path.isAbsolute(workspace) && binaryExists(binary) && binaryExists(workspace);
-  function plan(text,session,identity,{signal}={}){
+  function plan(text,session,identity,{signal,videoOnly=false}={}){
     if(!available)return Promise.resolve({status:'unavailable',code:EXIT_ERROR});
     if(typeof text!=='string'||!VALID_LINE.test(text)||!SESSION.test(session)||
        typeof identity!=='string'||!/^[a-f0-9]{64}$/.test(identity))
       return Promise.resolve({status:'failed',code:'invalid_codex_request'});
     if(busy)return Promise.resolve({status:'failed',code:'codex_busy'});
     busy=true;
-    const key=createHash('sha256').update(identity+':'+session).digest('hex');
+    const key=createHash('sha256').update(identity+':'+session+(videoOnly?':url-video':'')).digest('hex');
     const existing=sessions.get(key);
     // No data from model output can become subprocess arguments: thread ids are
     // taken solely from Codex events and constrained to UUID-shaped strings.
@@ -103,9 +118,11 @@ export function createTeslaMonCodex({
     const args=['exec',...(canResume?['resume',oldThread]:[]),
       '--ignore-user-config','--ignore-rules','--skip-git-repo-check',
       '-c','sandbox_mode="read-only"','-c','approval_policy="never"',
-      '-c','mcp_servers.teslamon_lights.command="/opt/homebrew/bin/node"',
-      '-c','mcp_servers.teslamon_lights.args=['+JSON.stringify(HA_PROXY)+']',
-      '-c','mcp_servers.teslamon_lights.default_tools_approval_mode="approve"',
+      ...(!videoOnly?[
+        '-c','mcp_servers.teslamon_lights.command="/opt/homebrew/bin/node"',
+        '-c','mcp_servers.teslamon_lights.args=['+JSON.stringify(HA_PROXY)+']',
+        '-c','mcp_servers.teslamon_lights.default_tools_approval_mode="approve"'
+      ]:[]),
       '-C',workspace,'--output-schema',SCHEMA,'--json','-'];
     // exec resume does not support -C, -s or --skip-git-repo-check.
     if(canResume){
@@ -114,7 +131,7 @@ export function createTeslaMonCodex({
     }else{
       const at=args.indexOf('-c');args.splice(at,0,'--sandbox','read-only');
     }
-    const prompt=BASE_PROMPT+'\n\nUser request: '+JSON.stringify(text);
+    const prompt=(videoOnly?VIDEO_URL_PROMPT:BASE_PROMPT)+'\n\nUser request: '+JSON.stringify(text);
     const started=now(),traceId=randomUUID();
     // Only fixed phase labels, elapsed times, counts and outcome codes are logged.
     // Never include transcripts, prompts, thread IDs, identities or CLI stderr.
@@ -178,7 +195,7 @@ export function createTeslaMonCodex({
         // tools. No unrestricted HA or device-control tool catalog.
         if(evt.item?.type==='mcp_tool_call'){
           const item=evt.item;
-          if(item.server!=='teslamon_lights'||!APPROVED_LIGHT_TOOLS.has(item.tool)){
+          if(videoOnly||item.server!=='teslamon_lights'||!APPROVED_LIGHT_TOOLS.has(item.tool)){
             suspicious=true;
           }else if(evt.type==='item.started'){
             allowedMcpCalls++;
@@ -236,6 +253,8 @@ export function createTeslaMonCodex({
           return finish({status:'failed',code:'invalid_codex_reply'});
         }
         const result=validateCodexPlan(json);
+        if(videoOnly&&(result.status!=='ok'||result.tool!=='search_and_play'))
+          return finish({status:'unsupported',code:'video_only_command'});
         if(result.status==='ha_done'&&completedMcpCalls===0)
           return finish({status:'failed',code:'ha_mcp_not_called'});
         if(['ok','ha_done'].includes(result.status)&&thread){

@@ -965,7 +965,6 @@ function setBrowserStreamActive(active) {
 }
 
 let syntheticFullscreen = false;
-let fullscreenKeyboardModality = false;
 let fullscreenRequestSerial = 0;
 let fullscreenExitRequested = false;
 let activeEmbedCode = "";
@@ -1375,6 +1374,7 @@ function setPlayerQualityPanelOpen(open) {
   panel.hidden = !expanded;
   button.setAttribute("aria-expanded", String(expanded));
   if (expanded) {
+    showFullscreenOverlays({ withProgress: false });
     renderQuickQuality();
   }
 }
@@ -1442,7 +1442,7 @@ function renderFpsPresets() {
   `).join("");
 }
 
-function setBadge(mode, text, { revealControls = true } = {}) {
+function setBadge(mode, text, { revealControls = false } = {}) {
   const b = $("#streamBadge");
   if (mode === "hidden") { b.hidden = true; updateActivePlaybackStatus(); return; }
   b.hidden = false;
@@ -1761,54 +1761,64 @@ function updateStreamSeekUi(current = getStreamCurrentTime()) {
 
 function canAutoHideScreenOverlays() {
   const screen = $("#screen");
-  const noticeVisible = !$("#streamNotice")?.hidden;
-  return Boolean(screen
-    && screen.classList.contains("playing")
-    && !screen.classList.contains("loading")
-    && !screen.classList.contains("controls-interacting")
-    && !playbackPaused
-    && !noticeVisible);
+  return Boolean(screen && (screen.classList.contains("playing") || screen.classList.contains("loading")));
+}
+
+function setScreenOverlaysIdle(idle) {
+  document.body.classList.toggle("fullscreen-controls-idle", idle);
+  for (const selector of ["#videoControlsOverlay", "#playerQualityBtn"]) {
+    const control = $(selector);
+    if (!control) continue;
+    control.inert = idle;
+    if (idle) control.setAttribute("aria-hidden", "true");
+    else control.removeAttribute("aria-hidden");
+  }
+  if (idle) setPlayerQualityPanelOpen(false);
 }
 
 function clearFullscreenOverlayHide() {
   clearTimeout(fullscreenOverlayHideTimer);
   fullscreenOverlayHideTimer = null;
-  document.body.classList.remove("fullscreen-controls-idle");
-}
-
-function fullscreenKeyboardFocusIsVisible(screen) {
-  const active = document.activeElement;
-  if (!screen?.contains(active)) return false;
-  try { return active.matches(":focus-visible"); }
-  catch { return fullscreenKeyboardModality; }
+  setScreenOverlaysIdle(false);
 }
 
 function scheduleFullscreenOverlayHide() {
   clearTimeout(fullscreenOverlayHideTimer);
+  fullscreenOverlayHideTimer = null;
   if (!canAutoHideScreenOverlays()) {
-    document.body.classList.remove("fullscreen-controls-idle");
+    clearFullscreenOverlayHide();
     return;
   }
+  // Only an actual held pointer can defer hiding; retained focus cannot.
+  if ($("#screen").classList.contains("controls-interacting")) return;
   fullscreenOverlayHideTimer = setTimeout(() => {
     fullscreenOverlayHideTimer = null;
-    const screen = $("#screen");
-    const keyboardFocused = fullscreenKeyboardFocusIsVisible(screen);
-    if (canAutoHideScreenOverlays() && !keyboardFocused) {
-      document.body.classList.add("fullscreen-controls-idle");
-    }
+    if (canAutoHideScreenOverlays()) setScreenOverlaysIdle(true);
   }, FULLSCREEN_OVERLAY_HIDE_MS);
 }
 
+function syncScreenOverlayLifecycle() {
+  if (!canAutoHideScreenOverlays()) {
+    clearFullscreenOverlayHide();
+    return;
+  }
+  // Arm newly loaded players, including iframe/remote sources. Repeated class
+  // or statistics updates must not reset an existing timer or reveal idle UI.
+  if (fullscreenOverlayHideTimer === null
+      && !document.body.classList.contains("fullscreen-controls-idle")) {
+    scheduleFullscreenOverlayHide();
+  }
+}
+
 function showFullscreenOverlays({ withProgress = true } = {}) {
-  document.body.classList.remove("fullscreen-controls-idle");
+  clearFullscreenOverlayHide();
   if (withProgress) updateStreamSeekUi();
   if (canAutoHideScreenOverlays()) scheduleFullscreenOverlayHide();
-  else clearFullscreenOverlayHide();
 }
 
 function beginScreenControlInteraction() {
   $("#screen")?.classList.add("controls-interacting");
-  clearFullscreenOverlayHide();
+  showFullscreenOverlays();
 }
 
 function endScreenControlInteraction() {
@@ -2279,6 +2289,7 @@ function cleanupMedia(keepWatchProgress = false) {
   if (!keepWatchProgress) void watchProgress.stop();
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
   void stopCyberdashPlayback({ report: true });
+  screen.classList.remove("controls-interacting");
   clearFullscreenOverlayHide();
   setDesktopStreamActive(false);
   setBrowserStreamActive(false);
@@ -4132,10 +4143,15 @@ function isScreenFullscreen() {
 function updateFullscreenButton() {
   const btn = $("#fullscreenBtn");
   const active = isScreenFullscreen();
+  const exitedFullscreen = !active && document.body.classList.contains("screen-fullscreen");
   document.body.classList.toggle("screen-fullscreen", active);
   if (active) showFullscreenOverlays();
   else {
-    clearFullscreenOverlayHide();
+    // Reveal only on actual fullscreen exit; ordinary render updates should
+    // not keep resetting the five-second inactivity timer.
+    if (exitedFullscreen) showFullscreenOverlays({ withProgress: false });
+    else if (canAutoHideScreenOverlays()) scheduleFullscreenOverlayHide();
+    else clearFullscreenOverlayHide();
     updateStreamSeekUi();
   }
   if (!btn) return;
@@ -9206,6 +9222,7 @@ seekTrack.addEventListener("pointerdown", (e) => {
     document.removeEventListener("pointermove", move);
     document.removeEventListener("pointerup", up);
     document.removeEventListener("pointercancel", cancel);
+    window.removeEventListener("blur", blur);
     seekPreview.dragging = false;
     hideStreamSeekPreview();
     if (commit) seekStreamTo(target);
@@ -9215,6 +9232,8 @@ seekTrack.addEventListener("pointerdown", (e) => {
   };
   const up = (ev) => { if (ev.pointerId === pointerId) finish(true); };
   const cancel = (ev) => { if (ev.pointerId === pointerId) finish(false); };
+  const blur = () => finish(false);
+  window.addEventListener("blur", blur);
   document.addEventListener("pointermove", move);
   document.addEventListener("pointerup", up);
   document.addEventListener("pointercancel", cancel);
@@ -9232,11 +9251,26 @@ videoControlsOverlay.addEventListener("pointerup", (e) => {
   if (!e.target.closest(".stream-seek-track")) endScreenControlInteraction();
 });
 videoControlsOverlay.addEventListener("pointercancel", endScreenControlInteraction);
-videoControlsOverlay.addEventListener("focusin", beginScreenControlInteraction);
-videoControlsOverlay.addEventListener("focusout", () => {
-  requestAnimationFrame(() => {
-    if (!videoControlsOverlay.contains(document.activeElement)) endScreenControlInteraction();
-  });
+document.addEventListener("pointerup", () => {
+  if ($("#screen").classList.contains("controls-interacting")) endScreenControlInteraction();
+});
+document.addEventListener("pointercancel", () => {
+  if ($("#screen").classList.contains("controls-interacting")) endScreenControlInteraction();
+});
+videoControlsOverlay.addEventListener("focusin", () => showFullscreenOverlays());
+// Inert controls may lose focus when hidden. Focus loss is not user activity.
+window.addEventListener("blur", () => {
+  if ($("#screen").classList.contains("controls-interacting")) endScreenControlInteraction();
+});
+videoControlsOverlay.addEventListener("lostpointercapture", () => {
+  if (!seekPreview.dragging && $("#screen").classList.contains("controls-interacting")) endScreenControlInteraction();
+});
+const playerQualityPanel = $("#playerQualityPanel");
+for (const event of ["pointerdown", "focusin", "keydown", "click"]) {
+  playerQualityPanel.addEventListener(event, () => showFullscreenOverlays({ withProgress: false }));
+}
+playerQualityPanel.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "mouse") showFullscreenOverlays({ withProgress: false });
 });
 $("#muteBtn").onclick = () => {
   const a = $("#audio");
@@ -9997,9 +10031,11 @@ function handleDesktopPanPointerUp(e) {
   let fullscreenTapRevealOnly = false;
   let controlsRevealOnlyUntil = 0;
 
-  document.addEventListener("keydown", () => { fullscreenKeyboardModality = true; }, true);
-  screen.addEventListener("pointerdown", () => { fullscreenKeyboardModality = false; }, true);
-  screen.addEventListener("touchstart", () => { fullscreenKeyboardModality = false; }, { capture: true, passive: true });
+  document.addEventListener("keydown", (e) => {
+    const target = e.target;
+    const editable = target?.closest?.("input, textarea, select, [contenteditable='true']");
+    if (screen.contains(target) || playerQualityPanel.contains(target) || e.key === "Tab" && !editable) showFullscreenOverlays();
+  }, true);
 
   function canTogglePlaybackFromTap(target) {
     if (!screen.classList.contains("playing") || screen.classList.contains("embed-mode")) return false;
@@ -10032,9 +10068,6 @@ function handleDesktopPanPointerUp(e) {
   }
 
   screen.addEventListener("focusin", () => showFullscreenOverlays());
-  screen.addEventListener("focusout", () => setTimeout(() => {
-    if (canAutoHideScreenOverlays()) scheduleFullscreenOverlayHide();
-  }, 0));
   if (window.PointerEvent) {
     screen.addEventListener("pointerdown", (e) => {
       retryBufferedAudioFromGesture();
@@ -10044,13 +10077,13 @@ function handleDesktopPanPointerUp(e) {
         && !browserInputActiveForScreen()
         && !e.target?.closest("button, input, select, textarea, a, .video-controls-overlay");
       if (fullscreenTapRevealOnly) controlsRevealOnlyUntil = 0;
-      if (screen.classList.contains("playing") || isScreenFullscreen()) showFullscreenOverlays();
+      if (canAutoHideScreenOverlays() || isScreenFullscreen()) showFullscreenOverlays();
     });
     screen.addEventListener("pointerdown", handleDesktopInputPointerDown);
     screen.addEventListener("pointerdown", handleBrowserInputPointerDown);
     screen.addEventListener("pointerdown", handleDesktopPanPointerDown);
     screen.addEventListener("pointermove", (e) => {
-      if (screen.classList.contains("playing") && e.pointerType === "mouse") {
+      if (canAutoHideScreenOverlays() && e.pointerType === "mouse") {
         const controlsWereIdle = document.body.classList.contains("fullscreen-controls-idle");
         showFullscreenOverlays({ withProgress: false });
         if (controlsWereIdle) controlsRevealOnlyUntil = Date.now() + 500;
@@ -10087,7 +10120,7 @@ function handleDesktopPanPointerUp(e) {
         && !desktopInputActiveForScreen()
         && !browserInputActiveForScreen()
         && !e.target?.closest("button, input, select, textarea, a, .video-controls-overlay");
-      if (screen.classList.contains("playing") || isScreenFullscreen()) showFullscreenOverlays();
+      if (canAutoHideScreenOverlays() || isScreenFullscreen()) showFullscreenOverlays();
     }, { passive: true });
     screen.addEventListener("touchend", (e) => {
       if (desktopInputActiveForScreen() || browserInputActiveForScreen()) return;
@@ -10400,7 +10433,10 @@ function initEverydayControls() {
   const savedApneReturn = returnToApne ? restoreApneReturnState() : null;
   setMode(returnToApne ? "apne" : "watch");
   installMobilePlayerReveal();
-  new MutationObserver(updatePlayerQualityAccess).observe($("#screen"), {
+  new MutationObserver(() => {
+    updatePlayerQualityAccess();
+    syncScreenOverlayLifecycle();
+  }).observe($("#screen"), {
     attributes: true, attributeFilter: ["class"],
   });
   resetStreamSettings();

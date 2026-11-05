@@ -20,6 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Native Audio Tap uses processRestoreEnabled from the macOS 26 SDK;
+        # macos-15 cannot compile it. macos-26 previously passed the shared checks.
         os: [ubuntu-24.04, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
