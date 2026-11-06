@@ -104,7 +104,7 @@ try {
  await page.locator("#playbackSpeedSelect").selectOption("2"); await page.waitForTimeout(100); await page.locator("#playbackSpeedSelect").selectOption("1"); await page.waitForTimeout(2200);
  const evidence={ ffmpegFixture:"18s H.264/AAC source; DASH generated using production buildCyberdashDashArgs atempo=1x and 2x", mediaRequests, initialTime:before.time, initialBadge:before.badge, starts, stoppedIds, twoXSwitchWallSeconds:elapsed, timeAtTwoX:after2, laterAtTwoX:later2, twoXSourceAdvance:Number.isFinite(after2)&&Number.isFinite(later2)?later2-after2:null, pausedAt, remainedPausedAt, timeAfterReturnOneX:after1 };
  console.log(JSON.stringify(evidence,null,2));
- assert.ok(starts.some(x=>x.playbackRate===2 && x.height===480 && x.fps===15),"2x Auto Medium must request 480p at 15 source fps");
+ assert.ok(starts.some(x=>x.playbackRate===2 && x.height===480 && x.fps===24),"2x Auto High must request 480p at 24 source fps");
  assert.ok(starts.some(x=>x.playbackRate===1),"1x selection must restore normal session");
  assert.ok(Number.isFinite(later2),"Cyberdash must report progressing media time at 2x");
  assert.ok(later2-after2>2.5,"2x media clock should advance at approximately twice wall time after startup");
