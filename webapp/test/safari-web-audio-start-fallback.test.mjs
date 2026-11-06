@@ -38,7 +38,7 @@ test("buffered MJPEG runs video without an interrupting autoplay audio dialog", 
   assert.match(app, /if \(!meta.silentAudioAutoplayFallback\) \{\s*showStreamNotice\("warning", "Tap to start audio"/);
   assert.match(app, /player\.setAudioDisabled\(true, player\.currentTime\(\)\);\s*player\.setAudioReady\(true, \{ playable: false \}\)/);
   assert.match(app, /looseAudioSync: Boolean\(meta.silentAudioAutoplayFallback \|\| meta.looseAudioSync\)/);
-  assert.match(html, /app\.js\?v=20261105-safari-audio-fallback1/);
+  assert.match(html, /app\.js\?v=20261106-auto-start-high1/);
 });
 
 test("WebCodecs autoplay fallback invokes exactly one video-first replay", () => {

@@ -141,7 +141,7 @@ const STREAM_QUALITY_PROFILES = Object.freeze({
 });
 
 const AUTO_STREAM_QUALITY_ID = "auto";
-const AUTO_STREAM_INITIAL_TIER = "medium";
+const AUTO_STREAM_INITIAL_TIER = "high";
 const autoQualityController = window.YtAutoQuality?.AutoQualityController
   ? new window.YtAutoQuality.AutoQualityController()
   : null;
@@ -4772,7 +4772,7 @@ function requestAutoQualityMode() {
 
   reportPlaybackEvent("auto_quality_enabled", {
     streamUrl: activeCompat?.mjpegUrl || "",
-    reason: "start-medium",
+    reason: "start-high",
     message: `tier=${AUTO_STREAM_INITIAL_TIER}`,
     stats: activeCompat?.bufferedPlayer?.getStats?.(),
   });

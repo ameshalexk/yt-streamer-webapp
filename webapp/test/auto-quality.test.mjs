@@ -44,7 +44,7 @@ function run(h, seconds, sample) {
   return decisions;
 }
 
-test("Auto keeps the existing transport buffer policies and starts at Medium", () => {
+test("Controller defaults remain medium and transport buffer policies remain unchanged", () => {
   assert.equal(harness().controller.tier, "medium");
   assert.deepEqual(BUFFER_POLICIES.low, {
     id: "auto-low", startupSeconds: 3.5, rebufferSeconds: 2.25, maxQueueSeconds: 7,
@@ -193,6 +193,17 @@ test("manual Low Medium High profiles remain unchanged", () => {
   assert.match(app, /low:\s*Object\.freeze\(\{ id: "low", label: "Low", height: "360", fps: "12", quality: "12" \}\)/);
   assert.match(app, /medium:\s*Object\.freeze\(\{ id: "medium", label: "Medium", height: "480", fps: "15", quality: "7" \}\)/);
   assert.match(app, /high:\s*Object\.freeze\(\{ id: "high", label: "High", height: "480", fps: "24", quality: "4" \}\)/);
+});
+
+test("Auto starts each video at High 480p/24 FPS but retains downshift capability", () => {
+  assert.match(app, /AUTO_STREAM_INITIAL_TIER = "high"/);
+  assert.match(app, /high:\s*Object\.freeze\(\{ id: "high", label: "High", height: "480", fps: "24", quality: "4" \}\)/);
+  assert.match(app, /autoQualityController\?\.selectTier\(AUTO_STREAM_INITIAL_TIER\)/);
+  assert.match(app, /applyStreamSettings\(STREAM_QUALITY_PROFILES\[AUTO_STREAM_INITIAL_TIER\]\)/);
+  assert.match(app, /autoQualityController\.enable\(\{ tier: AUTO_STREAM_INITIAL_TIER \}\)/);
+  const h = harness({ tier: "high" });
+  const downshifts = run(h, 25, { producerSpeed: 0.2, capacityBps: 40000, deliveryBps: 20000, frames: 2, queueSeconds: 0.01 });
+  assert.ok(downshifts.some(decision => decision.to === "medium" || decision.to === "low"), "Auto High must still downgrade during sustained network slowdown");
 });
 
 test("each new video resets to Auto while manual tiers stay current-video only", () => {
