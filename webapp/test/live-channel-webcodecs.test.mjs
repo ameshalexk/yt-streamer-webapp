@@ -65,3 +65,19 @@ test("live WebCodecs startup computes its clock before rendering the first statu
   const firstBadgeAt = block.indexOf("setBadge(\"reconnecting\", `↻ WebCodecs · ${effectiveRate}×…`)");
   assert.ok(rateDeclaredAt >= 0 && firstBadgeAt > rateDeclaredAt, "clock must be defined before first badge");
 });
+
+test("live IPTV avoids VideoToolbox SEI failures without changing on-demand encoder choice", () => {
+  const live = buildCyberdashDashArgs({
+    videoInput: "https://public.example/abc.m3u8", manifestPath: "/tmp/live.mpd",
+    live: true, encoder: "h264_videotoolbox",
+  });
+  assert.equal(live[live.indexOf("-c:v") + 1], "libx264");
+  assert.deepEqual(live.slice(live.indexOf("-preset"), live.indexOf("-pix_fmt")),
+    ["-preset", "veryfast", "-tune", "zerolatency"]);
+  const vod = buildCyberdashDashArgs({
+    videoInput: "/tmp/vod.mp4", manifestPath: "/tmp/vod.mpd",
+    live: false, encoder: "h264_videotoolbox",
+  });
+  assert.equal(vod[vod.indexOf("-c:v") + 1], "h264_videotoolbox");
+  assert.equal(vod.includes("-preset"), false);
+});

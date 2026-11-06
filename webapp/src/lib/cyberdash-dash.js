@@ -109,9 +109,14 @@ export function buildCyberdashDashArgs({
   args.push("-map", "0:v:0");
   args.push("-map", audioInput ? "1:a:0" : "0:a:0?");
 
+  // VideoToolbox can reject live HLS frames with irregular SEI metadata
+  // even when the same source decodes with libx264. Keep VOD's configured
+  // hardware encoder; use the portable low-latency encoder for live IPTV.
+  const outputEncoder = live ? "libx264" : encoder;
   args.push(
     "-vf", `scale=-2:${outHeight},fps=${outFps}`,
-    "-c:v", encoder,
+    "-c:v", outputEncoder,
+    ...(live ? ["-preset", "veryfast", "-tune", "zerolatency"] : []),
     "-pix_fmt", "yuv420p",
     "-b:v", `${rate.target}k`,
     "-maxrate", `${rate.max}k`,
