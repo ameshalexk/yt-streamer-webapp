@@ -1973,6 +1973,7 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
     fps,
     startAt,
     playbackRate,
+    bufferLab: body.bufferLab === true,
     inputBytes,
   });
   res.json({
