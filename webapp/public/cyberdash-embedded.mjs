@@ -1418,6 +1418,9 @@ export function createCyberdashPlayer({
     muted = false,
     playbackRate = 1,
     bufferLab = false,
+    live = false,
+    userAgent = "",
+    referer = "",
     audioElement = null,
     audioPlayPromise = null,
   } = {}) {
@@ -1444,6 +1447,7 @@ export function createCyberdashPlayer({
 
     const next = {
       sourceUrl: url || `processed://${preparedId}`,
+      live: Boolean(live),
       preparedId: preparedId || null,
       preparedStatic: false,
       initialStatus: null,
@@ -1477,8 +1481,8 @@ export function createCyberdashPlayer({
       decodedVideo: [],
       lastVideoFrameAt: null,
       lastAudioAheadAt: null,
-      bufferLab: Boolean(bufferLab && !preparedId),
-      bufferTargets: fastPlaybackBufferTargets({ playbackRate, fps, bufferLab: Boolean(bufferLab && !preparedId) }),
+      bufferLab: Boolean(bufferLab && !preparedId && !live),
+      bufferTargets: fastPlaybackBufferTargets({ playbackRate, fps, bufferLab: Boolean(bufferLab && !preparedId && !live) }),
       startupVideoBufferSec: 0,
       startupAudioBufferSec: 0,
       startupBufferShortfall: false,
@@ -1550,7 +1554,7 @@ export function createCyberdashPlayer({
       onStatus?.("resolving");
       const endpoint = preparedId
         ? "/api/experimental/cyberdash/prepared/start"
-        : "/api/experimental/cyberdash/start";
+        : live ? "/api/experimental/cyberdash/live/start" : "/api/experimental/cyberdash/start";
       const response = await fetchJson(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1561,6 +1565,9 @@ export function createCyberdashPlayer({
           playbackRate: next.playbackRate,
         } : {
           url,
+          live: Boolean(live),
+          userAgent: live ? String(userAgent || "") : undefined,
+          referer: live ? String(referer || "") : undefined,
           height: Number.isFinite(Number(height)) ? Number(height) : 0,
           fps: Number(fps) || 30,
           startAt: next.startAt,

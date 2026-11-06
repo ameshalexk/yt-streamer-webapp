@@ -58,6 +58,9 @@ export function buildCyberdashDashArgs({
   encoder = config.video.dashEncoder,
   initialBurstSupported = true,
   bufferLab = false,
+  live = false,
+  userAgent = "",
+  referer = "",
   manifestPath,
 }) {
   if (!videoInput) throw new Error("video input required");
@@ -82,9 +85,18 @@ export function buildCyberdashDashArgs({
     : (bufferLab ? 8 : 4);
   const args = ["-hide_banner", "-loglevel", "warning", "-y"];
   const addInput = (input, readRate) => {
-    if (seek) args.push("-ss", String(seek));
-    args.push("-readrate", String(readRate));
-    if (initialBurstSupported) args.push("-readrate_initial_burst", String(initialBurst));
+    if (!live && seek) args.push("-ss", String(seek));
+    // Live HLS already arrives in real time. Readrate can throttle live
+    // playlists and prevent the DASH muxer from reaching its first segment.
+    if (!live) {
+      args.push("-readrate", String(readRate));
+      if (initialBurstSupported) args.push("-readrate_initial_burst", String(initialBurst));
+    }
+    if (live && /^https?:\/\//i.test(String(input))) {
+      if (userAgent) args.push("-user_agent", userAgent);
+      if (referer) args.push("-headers", `Referer: ${referer}\r\n`);
+      args.push("-rw_timeout", "15000000");
+    }
     args.push("-i", String(input));
   };
 
@@ -117,8 +129,9 @@ export function buildCyberdashDashArgs({
     "-frag_duration", String(segmentSeconds),
     "-use_template", "1",
     "-use_timeline", "1",
-    "-window_size", "0",
-    "-extra_window_size", "0",
+    // Limit live segment retention. VOD still keeps its complete timeline.
+    "-window_size", live ? "60" : "0",
+    "-extra_window_size", live ? "60" : "0",
     "-remove_at_exit", "0",
     "-init_seg_name", "init-$RepresentationID$.m4s",
     "-media_seg_name", "chunk-$RepresentationID$-$Number%05d$.m4s",
@@ -251,6 +264,9 @@ export async function startYouTubeDashSession({
   playbackRate = 1,
   bufferLab = false,
   inputBytes = null,
+  live = false,
+  userAgent = "",
+  referer = "",
 } = {}) {
   await pruneIdleSessions();
   await fs.mkdir(rootDir(), { recursive: true });
@@ -268,6 +284,9 @@ export async function startYouTubeDashSession({
     startAt,
     playbackRate,
     bufferLab,
+    live,
+    userAgent,
+    referer,
     manifestPath,
     initialBurstSupported: await supportsInitialBurst(),
   });
@@ -277,6 +296,7 @@ export async function startYouTubeDashSession({
     id,
     dir,
     sourceUrl: String(sourceUrl || ""),
+    live: Boolean(live),
     height: clampInt(height, 240, 1080, 720),
     fps: clampInt(fps, 5, 60, 30),
     startAt: safeSeek(startAt),
@@ -319,6 +339,7 @@ export async function startYouTubeDashSession({
     fps: session.fps,
     startAt: session.startAt,
     playbackRate: session.playbackRate,
+    isLive: session.live,
     statusUrl: `/api/experimental/cyberdash/${id}/status`,
     manifestUrl: `/stream/experimental/cyberdash/${id}/manifest.mpd`,
   };
@@ -333,6 +354,7 @@ export async function getSessionStatus(id) {
   return {
     id: session.id,
     state: session.error ? "error" : session.closed ? "done" : "running",
+    isLive: session.live,
     done: session.closed,
     stopped: session.stopped,
     exitCode: session.exitCode,

@@ -1939,6 +1939,34 @@ app.get("/stream/processed-dash/:id/*", asyncH(async (req, res) => {
   res.sendFile(filePath);
 }));
 
+// Live IPTV channels use a single A/V FFmpeg session, avoiding the two
+// independent upstream connections required by the legacy MJPEG+MP3 path.
+// Only remote HTTP(S) sources are eligible; local addresses and credentials
+// must not be accepted as video sources from browser-supplied JSON.
+app.post("/api/experimental/cyberdash/live/start", asyncH(async (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const raw = String(body.url || "").trim();
+  let source;
+  try { source = new URL(raw); } catch { return res.status(400).json({ error: "Invalid live channel URL" }); }
+  if (!/^https?:$/.test(source.protocol) || source.username || source.password
+      || /^(?:localhost|.*\.localhost|.*\.local|.*\.internal)$/i.test(source.hostname)
+      || /^(?:\d+\.){3}\d+$/.test(source.hostname)
+      || source.hostname.includes(":")) {
+    return res.status(400).json({ error: "A remote HTTP(S) channel URL is required" });
+  }
+  const height = requestedYouTubeMaxHeight(body.height);
+  const fps = Math.max(5, Math.min(30, Number.parseInt(String(body.fps ?? 24), 10) || 24));
+  const userAgent = String(body.userAgent || "").replace(/[\r\n]/g, "").slice(0, 300);
+  const referer = String(body.referer || "").replace(/[\r\n]/g, "").slice(0, 1200);
+  const session = await cyberdashDash.startYouTubeDashSession({
+    videoInput: source.href,
+    sourceUrl: source.href,
+    height, fps, live: true, playbackRate: 1,
+    userAgent, referer,
+  });
+  res.json({ ...session, duration: null, player: "experimental-live-cyberdash-v1" });
+}));
+
 app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const url = String(body.url || "").trim();

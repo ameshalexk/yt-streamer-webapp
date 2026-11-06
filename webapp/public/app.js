@@ -3768,8 +3768,43 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     playbackStarted: false,
     browserAudio: Boolean(meta.browserAudio),
     browserPcm: Boolean(meta.browserPcm),
+    audioStatus: audioUrl && soundOn ? "starting" : "muted",
   };
-  audio.onended = () => { void handleAutoplayEnd({ naturalEnd: true }); };
+  let liveAudioRetryTimer = null;
+  let liveAudioRetryCount = 0;
+  let cancelLiveAudioRecovery = false;
+  const scheduleLiveAudioRetry = () => {
+    if (!meta.isLive || !audioUrl || cancelLiveAudioRecovery || liveAudioRetryTimer
+        || !currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl) return;
+    if (liveAudioRetryCount >= 3) {
+      activeCompat.audioStatus = "silent";
+      updateActivePlaybackStatus();
+      return;
+    }
+    const delay = 2500 * (2 ** liveAudioRetryCount++);
+    activeCompat.audioStatus = "retrying";
+    updateActivePlaybackStatus();
+    liveAudioRetryTimer = setTimeout(() => {
+      liveAudioRetryTimer = null;
+      if (cancelLiveAudioRecovery || !currentAttempt(attempt)
+          || activeCompat?.mjpegUrl !== mjpegUrl || !soundOn) return;
+      // Reattach audio without restarting live video or the playback clock.
+      void setCompatAudioSource(audio, audioUrl).catch(() => scheduleLiveAudioRetry());
+    }, delay);
+  };
+  activeCompat.cancelAudioRecovery = () => {
+    cancelLiveAudioRecovery = true;
+    clearTimeout(liveAudioRetryTimer);
+    liveAudioRetryTimer = null;
+  };
+  if (meta.isLive) activeCompat.repairAudio = () => {
+    liveAudioRetryCount = 0;
+    clearTimeout(liveAudioRetryTimer);
+    liveAudioRetryTimer = null;
+    scheduleLiveAudioRetry();
+    return Promise.resolve(true);
+  };
+  audio.onended = () => { if (!meta.isLive) void handleAutoplayEnd({ naturalEnd: true }); };
 
   const releaseCompatPlayback = () => {
     if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl || activeCompat.playbackStarted) return;
@@ -3843,6 +3878,20 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl) return;
       if (!audioReadyForSync(audio)) return;
       activeCompat.audioReady = true;
+      if (meta.isLive) {
+        liveAudioRetryCount = 0;
+        clearTimeout(liveAudioRetryTimer);
+        liveAudioRetryTimer = null;
+        activeCompat.audioStatus = "synced";
+        updateActivePlaybackStatus();
+      }
+      // Live video may already be running after a temporary audio failure.
+      // Restore sound in place instead of making the image wait or restart.
+      if (meta.isLive && activeCompat.playbackStarted) {
+        const resumedAudio = startCompatAudio(false);
+        if (resumedAudio?.catch) resumedAudio.catch(() => {});
+        return;
+      }
       if (meta.syncVideoToAudio && !activeCompat.videoStarted) {
         const videoDelayMs = measuredAudioStartupDelayMs(activeCompat.audioLoadStartedAt);
         if (videoDelayMs > 0) {
@@ -3863,10 +3912,14 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     audio.oncanplaythrough = loadVideoIfAudioReady;
     audio.onerror = () => {
       if (!currentAttempt(attempt)) return;
-      toast("Audio failed, starting video");
       activeCompat.audioReady = true;
       loadCompatVideo(attempt, mjpegUrl);
       releaseCompatPlayback();
+      if (meta.isLive) {
+        scheduleLiveAudioRetry();
+      } else {
+        toast("Audio unavailable · continuing video");
+      }
     };
     activeCompat.audioLoadStartedAt = performance.now();
     setCompatAudioSource(audio, audioUrl, {
@@ -3877,6 +3930,7 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       activeCompat.audioReady = true;
       loadCompatVideo(attempt, mjpegUrl);
       releaseCompatPlayback();
+      if (meta.isLive) scheduleLiveAudioRetry();
       return false;
     }).then((attached) => {
       if (attached === false || !currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl || !meta.browserAudio) return;
@@ -3905,6 +3959,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   const screen = $("#screen");
   const canvas = $("#cyberdashCanvas");
   const preparedId = String(meta.preparedId || "").trim();
+  const effectiveRate = meta.liveUrl ? 1 : youtubePlaybackRate;
   activeYoutubeSourceUrl = youtubeUrl || (preparedId ? `processed://${preparedId}` : "");
   $("#nowPlaying").textContent = label || "YouTube";
   $("#stopBtn").disabled = false;
@@ -3926,7 +3981,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) autoQualityController?.beginAttempt();
   screen.classList.remove("video-mode", "mjpeg-mode", "mjpeg-buffered-mode");
   screen.classList.add("playing", "loading", "cyberdash-mode");
-  if (!quietTransition) setBadge("reconnecting", `↻ WebCodecs · ${youtubePlaybackRate}×…`);
+  if (!quietTransition) setBadge("reconnecting", `↻ WebCodecs · ${effectiveRate}×…`);
   startStreamWatchdog(attempt, "WebCodecs playback", { warnMs: 18000, failMs: 40000, silent: quietTransition });
 
   // WebCodecs audio stays inside the DASH session. FFmpeg applies pitch-preserving
@@ -3951,7 +4006,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
         if (!currentAttempt(attempt)) return;
         finishAutoQualityTransition("playing", attempt);
         markStreamLive(attempt);
-        setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×", { revealControls: !quietTransition });
+        setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + effectiveRate + "×", { revealControls: !quietTransition });
       },
       onEnded() {
         if (currentAttempt(attempt)) void handleAutoplayEnd({ naturalEnd: true });
@@ -3970,10 +4025,10 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
           // rebuffering stays behind the current frame instead of waking the UI.
           if (screen.classList.contains("loading") && !quietTransition) {
             const phase = detail.phase === "startup" ? "Buffering" : "Rebuffering";
-            setBadge("reconnecting", `↻ ${phase} · ${youtubePlaybackRate}×`);
+            setBadge("reconnecting", `↻ ${phase} · ${effectiveRate}×`);
           }
         } else if (status === "playing") {
-          setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×", { revealControls: false });
+          setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + effectiveRate + "×", { revealControls: false });
         }
       },
       onStats(stats) {
@@ -3989,6 +4044,13 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       onError(error) {
         if (!currentAttempt(attempt)) return;
         fatalHandled = true;
+        if (meta.liveUrl && typeof meta.fallbackLive === "function") {
+          // An unsupported or silent live source must return to the existing
+          // MPEG-TS/MJPEG path without changing the saved playback preference.
+          toast("Live WebCodecs unavailable · using channel fallback");
+          void Promise.resolve(meta.fallbackLive()).catch((fallbackError) => toast(fallbackError.message, true));
+          return;
+        }
         if (isBlockedWebAudioStartup(error) && replayFn && youtubePlaybackMethod === "webcodecs") {
           // Safari can refuse to start Web Audio without a user gesture. More
           // WebCodecs retries cannot grant permission; hand off to buffered
@@ -4029,18 +4091,24 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
     await player.play({
       url: preparedId ? null : youtubeUrl,
       preparedId: preparedId || null,
+      live: Boolean(meta.liveUrl),
+      userAgent: meta.liveUserAgent || "",
+      referer: meta.liveReferer || "",
       height: requestedHeight,
       fps: settings.fps,
       startAt: meta.startAt || 0,
       muted: !soundOn,
-      playbackRate: youtubePlaybackRate,
-      bufferLab: bufferLabEnabled && !preparedId,
+      playbackRate: effectiveRate,
+      bufferLab: bufferLabEnabled && !preparedId && !meta.liveUrl,
     });
   } catch (error) {
     // Ignore a rejected promise from a player that was intentionally replaced
     // by Stop, seek, method switch, or playback-rate change.
     if (!currentAttempt(attempt) || (cyberdashPlayer && cyberdashPlayer !== player)) return;
-    if (!fatalHandled) {
+    if (!fatalHandled && meta.liveUrl && typeof meta.fallbackLive === "function") {
+      toast("Live WebCodecs unavailable · using channel fallback");
+      void Promise.resolve(meta.fallbackLive()).catch((fallbackError) => toast(fallbackError.message, true));
+    } else if (!fatalHandled) {
       failStreamAttempt(attempt, "WebCodecs playback failed", streamErrorDetail(error?.message || error));
     }
   }
@@ -4052,6 +4120,12 @@ async function playStream(sources, label, meta = {}) {
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
   const youtubeUrl = String(meta.youtubeUrl || "").trim();
   activeYoutubeSourceUrl = youtubeUrl;
+  if (meta.isLive && meta.liveUrl && youtubePlaybackMethod === "webcodecs" && !meta.skipWebcodecs) {
+    return playCyberdashStream(meta.liveUrl, label, {
+      ...meta, audioUrl,
+      fallbackLive: () => playStream(sources, label, { ...meta, skipWebcodecs: true }),
+    });
+  }
   if (youtubeUrl && youtubePlaybackMethod === "webcodecs" && !meta.isLive) {
     return playCyberdashStream(youtubeUrl, label, { ...meta, audioUrl });
   }
@@ -4227,6 +4301,9 @@ async function playItem(item) {
     }, item.title, {
       seekable: item.type === "youtube" || item.type === "file",
       isLive: item.type !== "youtube" && item.type !== "file",
+      liveUrl: item.type !== "youtube" && item.type !== "file" ? item.url : "",
+      liveUserAgent: item.meta?.userAgent || "",
+      liveReferer: item.meta?.referer || "",
       bufferedMjpeg: item.type === "youtube" || item.type === "file",
       duration: item.meta?.duration,
       youtubeUrl: item.type === "youtube" ? item.url : "",
@@ -9164,7 +9241,10 @@ $("#chList").addEventListener("click", async (e) => {
   renderItems();
   renderYoutubeSearch();
   showAttemptedUrl(c.url);
-  replayFn = () => playStream(channelStreamSrc(c), c.name);
+  replayFn = () => playStream(channelStreamSrc(c), c.name, {
+    isLive: true, seekable: false, liveUrl: c.url,
+    liveUserAgent: c.userAgent || "", liveReferer: c.referer || "",
+  });
   replayFn();
 });
 
