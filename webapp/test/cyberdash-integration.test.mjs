@@ -52,7 +52,7 @@ test("existing seek path reaches WebCodecs startAt and ffmpeg input seek", () =>
   assert.match(server, /const requestedStartAt = Math\.max\(0,[\s\S]*body\.startAt/);
   assert.match(server, /const startAt = Number\.isFinite\(duration\)[\s\S]*requestedStartAt/);
   assert.match(server, /startYouTubeDashSession\(\{[\s\S]*startAt,/);
-  assert.match(dash, /if \(seek\) args\.push\("-ss", String\(seek\)\)/);
+  assert.match(dash, /if \(!live && seek\) args\.push\("-ss", String\(seek\)\)/);
 });
 
 test("WebCodecs starts internal AudioContext playback from the user gesture path", () => {
@@ -163,7 +163,8 @@ test("WebCodecs speed control offers 1x through 4x and persists the selection", 
   assert.match(app, /const YOUTUBE_PLAYBACK_RATE_KEY = "ytStreamerYoutubePlaybackRate"/);
   assert.match(app, /const YOUTUBE_PLAYBACK_RATES = \[1, 1\.25, 1\.5, 2, 3, 4\]/);
   assert.match(app, /localStorage\.setItem\(YOUTUBE_PLAYBACK_RATE_KEY, String\(youtubePlaybackRate\)\)/);
-  assert.match(app, /playbackRate: youtubePlaybackRate/);
+  assert.match(app, /const effectiveRate = meta\.liveUrl \? 1 : youtubePlaybackRate/);
+  assert.match(app, /playbackRate: effectiveRate/);
 });
 
 test("WebCodecs speed uses server tempo audio and a faster video clock", () => {
