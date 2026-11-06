@@ -192,6 +192,8 @@
       this.samples++;
       if (stats.state !== "buffering") this.time[this.tier] += dt;
       const wc = stats.transport === "webcodecs";
+      const lab = wc && stats.bufferLab === true;
+      const compressedAhead = lab ? Math.max(0, number(stats.compressedAheadSec) ?? 0) : 0;
       const profiles = stats.profiles || DEFAULT_PROFILES;
       const from = profiles[this.tier];
       if (!from) return null;
@@ -272,11 +274,12 @@
       const lowerProfile = profiles[lower];
       const distinctLower = lowerProfile && (!wc || Number(lowerProfile.fps) < Number(from.fps)
         || Number(lowerProfile.height) < Number(from.height));
-      if (distinctLower && now - this.attemptStartedAt >= 8000 && now - this.lastSwitchAt >= 8000) {
+      if (distinctLower && now - this.attemptStartedAt >= (lab ? 5000 : 8000)
+          && now - this.lastSwitchAt >= 8000) {
         const repeated = this.rebufferTimes.length >= 2 && deliveryPressure;
         const reason = this.decodeSince != null && now - this.decodeSince >= 4000 ? "device-overload"
           : repeated ? "rebuffer"
-          : this.deliverySince != null && now - this.deliverySince >= 3000 ? (capacityShort ? "bandwidth-shortfall" : "delivery-slow")
+          : this.deliverySince != null && now - this.deliverySince >= (lab ? 1800 : 3000) ? (capacityShort ? "bandwidth-shortfall" : "delivery-slow")
           : null;
         if (reason) {
           // Failed upgrades impose progressively longer quiet periods on
@@ -297,9 +300,15 @@
       const projectedDeviceOK = wc
         ? !decoderBacklog && (m.decoderQueueSize ?? 0) <= 2
         : decodeLoad != null && loadScale != null && decodeLoad * loadScale <= 0.55;
+      // With the opt-in compressed reserve, a healthy decoder does not need
+      // multiple seconds of *decoded* VideoFrames to prove safe headroom.
+      const compressedHealthy = lab && compressedAhead >= 6
+        && m.queueSeconds >= 0.15 && bufferHealth >= 0.15;
       const healthy = candidate && loadScale > 1 && projectedDeviceOK && stats.state === "playing"
-        && this.samples >= 6 && m.queueSeconds >= m.target * (wc ? 0.35 : 0.65)
-        && bufferHealth >= m.target * (wc ? 0.65 : 0.90) && slope < 0.12
+        && this.samples >= 6 && (compressedHealthy || (
+          m.queueSeconds >= m.target * (wc ? 0.35 : 0.65)
+          && bufferHealth >= m.target * (wc ? 0.65 : 0.90)))
+        && slope < 0.12
         && renderHealth >= 0.94 && renderRatio >= 0.80 && dropLoad <= 0.025
         && m.driftMs <= 150 && !decodePressure
         && now - this.lastSwitchAt >= 18000 && now - this.lastRebufferAt >= 20000
@@ -315,7 +324,7 @@
         return null;
       }
       this.stableSince ??= now;
-      if (now - this.stableSince < (headroom ? 18000 : 60000)) return null;
+      if (now - this.stableSince < (headroom ? (lab && compressedHealthy ? 12000 : 18000) : 60000)) return null;
       this.lastUpgradeAt = now;
       if (!headroom) this.lastTrialAt = now;
       return this.switchTo(upper, headroom ? "stable-headroom" : "paced-delivery-trial", now);

@@ -673,6 +673,8 @@ const YOUTUBE_PLAYBACK_METHOD_KEY = "ytStreamerYoutubePlaybackMethod";
 const YOUTUBE_PLAYBACK_RATE_KEY = "ytStreamerYoutubePlaybackRate";
 const YOUTUBE_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 3, 4];
 // JXL must be explicitly opted into on each page visit, never restored from storage.
+const BUFFER_LAB_FLAG_KEY = "ytStreamerBufferLabV1";
+let bufferLabEnabled = localStorage.getItem(BUFFER_LAB_FLAG_KEY) === "1";
 let youtubePlaybackMethod = ["mjpeg", "webcodecs"].includes(localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY))
   ? localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY) : "mjpeg";
 // One-shot transfer to video-first MJPEG when browser policy blocks Web Audio
@@ -824,7 +826,18 @@ function updateActivePlaybackStatus() {
   }
 }
 
+function renderBufferLabToggle() {
+  const toggle = document.querySelector("#bufferLabToggle");
+  if (!toggle) return;
+  toggle.checked = bufferLabEnabled;
+  toggle.disabled = youtubePlaybackMethod !== "webcodecs";
+  toggle.title = toggle.disabled
+    ? "Select WebCodecs to enable experimental buffering"
+    : "Experimental: bounded compressed look-ahead and conservative decoder backpressure";
+}
+
 function renderYoutubePlaybackMethod() {
+  renderBufferLabToggle();
   document.querySelectorAll("[data-playback-method]").forEach((button) => {
     const active = button.dataset.playbackMethod === youtubePlaybackMethod;
     button.classList.toggle("active", active);
@@ -848,7 +861,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261105-fast-quality-v3")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261105-fast-quality-v3-bufferlab1")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -4021,6 +4034,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       startAt: meta.startAt || 0,
       muted: !soundOn,
       playbackRate: youtubePlaybackRate,
+      bufferLab: bufferLabEnabled && !preparedId,
     });
   } catch (error) {
     // Ignore a rejected promise from a player that was intentionally replaced
@@ -9811,6 +9825,27 @@ $("#playbackMethodToggle")?.addEventListener("click", async (event) => {
   } else {
     toast(next === "jxl" ? (candidate ? `JXL WebAssembly experiment · 480p / ${candidate.profile?.fps || 12} FPS cap` : "JPEG XL experiment · capped at 12 FPS")
       : (next === "webcodecs" ? "WebCodecs selected for YouTube" : "MJPEG selected for YouTube"));
+  }
+});
+$("#bufferLabToggle")?.addEventListener("change", (event) => {
+  bufferLabEnabled = Boolean(event.target.checked);
+  try {
+    if (bufferLabEnabled) localStorage.setItem(BUFFER_LAB_FLAG_KEY, "1");
+    else localStorage.removeItem(BUFFER_LAB_FLAG_KEY);
+  } catch {}
+  renderBufferLabToggle();
+  // Switching a transport's buffer policy requires a new encoder session. Do
+  // not touch any live session until this explicit user toggle is changed.
+  if (youtubePlaybackMethod === "webcodecs" && activeYoutubeSourceUrl && replayFn) {
+    const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
+    const wasPaused = playbackPaused;
+    const beforeAttempt = streamAttempt;
+    cancelAutoQualityTransition();
+    if (wasPaused) pendingPlaybackMethodRestore = { minAttempt: beforeAttempt + 1, replay: replayFn };
+    const result = replayFn(resumeAt);
+    if (result?.catch) result.catch((error) => toast(error.message, true));
+  } else {
+    toast(bufferLabEnabled ? "Buffer Lab enabled for next WebCodecs video" : "Standard buffering selected");
   }
 });
 $("#playbackSpeedSelect")?.addEventListener("change", (event) => {

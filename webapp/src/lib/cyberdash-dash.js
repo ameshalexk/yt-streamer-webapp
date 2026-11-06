@@ -57,6 +57,7 @@ export function buildCyberdashDashArgs({
   playbackRate = 1,
   encoder = config.video.dashEncoder,
   initialBurstSupported = true,
+  bufferLab = false,
   manifestPath,
 }) {
   if (!videoInput) throw new Error("video input required");
@@ -75,10 +76,10 @@ export function buildCyberdashDashArgs({
   // network/decoder hiccup does not immediately drain the client buffer.
   const inputReadRate = speed > 1
     ? Math.min(5, Math.max(1.6, speed * 1.6))
-    : 1.15;
+    : (bufferLab ? 2 : 1.15);
   const initialBurst = speed > 1
     ? Math.min(15, Math.max(6, speed * 5))
-    : 4;
+    : (bufferLab ? 8 : 4);
   const args = ["-hide_banner", "-loglevel", "warning", "-y"];
   const addInput = (input, readRate) => {
     if (seek) args.push("-ss", String(seek));
@@ -248,6 +249,7 @@ export async function startYouTubeDashSession({
   fps = 30,
   startAt = 0,
   playbackRate = 1,
+  bufferLab = false,
   inputBytes = null,
 } = {}) {
   await pruneIdleSessions();
@@ -265,6 +267,7 @@ export async function startYouTubeDashSession({
     fps,
     startAt,
     playbackRate,
+    bufferLab,
     manifestPath,
     initialBurstSupported: await supportsInitialBurst(),
   });

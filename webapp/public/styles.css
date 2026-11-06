@@ -2515,3 +2515,9 @@ html[data-ui='new'] #castVlcPanel:not([hidden]) {
   .playback-diagnostics-actions { align-items: stretch; flex-direction: column; }
   .playback-diagnostics-actions .btn { width: 100%; min-height: 48px; }
 }
+
+
+/* Buffer Lab: explicit WebCodecs-only opt-in, deliberately off by default. */
+.player-buffer-lab-toggle { display: inline-flex; align-items: center; gap: .45rem; font-size: .85rem; cursor: pointer; padding: .2rem .3rem; }
+.player-buffer-lab-toggle input { width: 1rem; height: 1rem; accent-color: var(--accent, #377db0); }
+.player-buffer-lab-toggle:has(input:disabled) { opacity: .55; cursor: not-allowed; }
