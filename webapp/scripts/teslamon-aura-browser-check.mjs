@@ -139,7 +139,6 @@ export function createTeslaMonHandsFree({onState,onAudio}={}){
     startCommand(){
       if(!enabled||state!=='listening')return false;
       globalThis.__fixtureStartupCaptures=(globalThis.__fixtureStartupCaptures||0)+1;
-      globalThis.__fixturePlayback='paused';
       const invocationId=++invocation;
       emit({state:'preparing',invocationId,message:'Startup voice command ready'});
       emit({state:'recording',invocationId,message:'Recording the first command without wake'});
@@ -492,6 +491,29 @@ try{
     assert.equal(await page.locator('#tmAura').isHidden(),true,'dismissal survives repeated visibility and late capabilities');
     await context.close();
   }
+  // First-page speech can reach the signed planner without any synthetic wake.
+  {
+    await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({scenario:'ha_done'})});
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();
+    page.on('pageerror',error=>errors.push('startup transcript '+error.message));
+    await page.addInitScript(fixtureBootstrap);
+    await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded'});
+    await page.waitForFunction(()=>window.__fixtureWakeState==='recording');
+    assert.equal(await page.evaluate(()=>window.__fixtureStartupCaptures),1);
+    assert.equal(await page.evaluate(()=>window.__fixturePlanRequests),0,
+      'opening Aura or microphone never submits a speculative Codex request');
+    await page.evaluate(()=>{window.__fixtureSpeechText='turn on office lights';
+      window.__fixturePendingVoice=window.__auraVoiceSubmit();});
+    await page.waitForFunction(()=>window.__fixturePlanRequests===1,null,{timeout:8000});
+    await page.waitForFunction(()=>window.__fixtureWakeState==='listening',null,{timeout:8000});
+    assert.equal(await page.evaluate(()=>window.__fixtureStartupCaptures),1,
+      'startup invocation is not repeated on rearming');
+    assert.equal(await page.evaluate(()=>window.__fixturePlanRequests),1,
+      'one spoken command reaches the planner once without saying a wake phrase');
+    await context.close();
+  }
   for(const [width,height] of viewports){
     for(const ui of (process.env.TESLAMON_AURA_FAST==='1'?['classic']:['classic','new'])){
       console.log('checking',ui,width,height);
@@ -514,7 +536,7 @@ try{
         focused:document.activeElement?.id||'',focusIsEditable:!!document.activeElement?.matches('input,textarea,[contenteditable=true]'),
         keyboard:window.__fixtureKeyboardRequests||0}));
       assert.deepEqual({...startupState,focused:'',focusIsEditable:false},
-        {startupCaptures:1,mic:0,plans:0,calls:{search:0,play:0,pause:0,resume:0,commands:0},playback:'paused',focused:'',focusIsEditable:false,keyboard:0},
+        {startupCaptures:1,mic:0,plans:0,calls:{search:0,play:0,pause:0,resume:0,commands:0},playback:'idle',focused:'',focusIsEditable:false,keyboard:0},
         ui+' '+width+' startup begins one fake voice capture without sending a command or opening the keyboard');
       assert.equal(startupState.focusIsEditable,false,ui+' '+width+' startup must not focus an editable command control');
       assert.notEqual(startupState.focused,'tmText',ui+' '+width+' startup must not focus the command editor');
