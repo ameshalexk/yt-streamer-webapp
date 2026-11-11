@@ -193,6 +193,14 @@ try{
  // The production detector/model is untouched; real recognition is a device check.
  const wake=await setup({width:390,height:844},'classic',false,true);
  try{
+  // First-page Aura now owns one immediate voice capture. End that initial
+  // session explicitly before checking the next genuine wake invocation.
+  await wake.page.waitForFunction(()=>['recording','listening'].includes(
+    document.querySelector('#teslamonPet')?.dataset.wake),null,{timeout:8000});
+  if(await wake.page.locator('#teslamonPet').getAttribute('data-wake')==='recording'){
+   await wake.page.evaluate(()=>document.querySelector('#tmWakeToggle').click()); // Mic Off
+   await wake.page.evaluate(()=>document.querySelector('#tmWakeToggle').click()); // Mic On
+  }
   await wake.page.waitForFunction(()=>document.querySelector('#teslamonPet')?.dataset.wake==='listening',null,{timeout:8000});
   await wake.page.locator('#tmFace').click();
   await wake.page.locator('button[data-tm="get_playback_state"]').click();
