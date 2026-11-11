@@ -61,6 +61,19 @@ const dismissStartupAura=async page=>{
   await aura.waitFor({state:'hidden',timeout:3000});
  }
 };
+// Once the one-shot initial command is armed, subsequent checks need passive
+// wake standby. Explicitly cancel that synthetic startup capture instead of
+// waiting for the 12-second no-speech timeout (which varies on CI hosts).
+const preparePassiveWake=async page=>{
+ await page.waitForFunction(()=>['listening','recording','processing'].includes(
+   document.querySelector('#teslamonPet')?.dataset.wake),null,{timeout:20000});
+ if(await page.locator('#teslamonPet').getAttribute('data-wake')!=='listening'){
+  await page.evaluate(()=>document.querySelector('#tmWakeToggle').click()); // Mic Off
+  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Off',null,{timeout:5000});
+  await page.evaluate(()=>document.querySelector('#tmWakeToggle').click()); // Mic On
+ }
+ await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
+};
 try{
  const context=await browser.newContext({viewport:{width:390,height:844},permissions:['microphone'],serviceWorkers:'block'});
  const page=await context.newPage();
@@ -146,6 +159,7 @@ try{
  // Reload restores only Mycroft and automatic listening uses the persisted choice.
  await page.reload({waitUntil:'domcontentloaded'});
  await dismissStartupAura(page);
+ await preparePassiveWake(page);
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Listening for Hey Mycroft',null,{timeout:15000});
  await page.locator('#tmFace').click();
  assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true);
@@ -159,6 +173,7 @@ try{
  await page.evaluate(()=>localStorage.setItem('ytStreamerTeslaMonWakePhrasesV1',JSON.stringify(['hey_luna'])));
  await page.reload({waitUntil:'domcontentloaded'});
  await dismissStartupAura(page);
+ await preparePassiveWake(page);
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Listening for Hey Mycroft, Hey Rhasspy',null,{timeout:15000});
  await page.locator('#tmFace').click();
  assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true);
@@ -170,7 +185,7 @@ try{
  await page.evaluate(()=>localStorage.setItem('ytStreamerTeslaMonSttModelV1','__proto__'));
  await page.reload({waitUntil:'domcontentloaded'});
  await dismissStartupAura(page);
- await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
+ await preparePassiveWake(page);
  await page.locator('#tmFace').click();
  assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-tiny.en','invalid saved model falls back to Tiny');
  await page.locator('#tmWakeToggle').click();
@@ -279,7 +294,7 @@ try{
      playbackBefore:{paused:before.paused,time:before.time},playbackAfter:{paused:proof.videoPaused,time:proof.time},
      timeAfter250ms:stoppedTime,playbackPhase:proof.state.playback_phase,mode:proof.state.mode});
  }
- await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
+ await preparePassiveWake(page);
  await page.waitForFunction(()=>{const video=document.querySelector('#video');return video&&!video.paused&&video.readyState>=2&&video.currentTime>0.2;},null,{timeout:10000});
  await acceptedWakeMustPausePlayback();
  assert.equal(await page.locator('#tmAura').isVisible(),true,'wake presents Aura by default');
@@ -328,12 +343,13 @@ try{
  await page.evaluate(()=>localStorage.clear());
  await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded'});
  await dismissStartupAura(page);
- await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:15000});
+ await preparePassiveWake(page);
  await page.locator('#tmFace').click();
  assert.equal(await page.locator('#tmSttModel').isDisabled(),false,'Moonshine entry clickable during wake standby');
  await page.locator('#tmSttModel').selectOption('moonshine-tiny-streaming');
  await page.waitForURL(url=>url.pathname==='/'&&url.searchParams.get('tm_stt_mode')==='moonshine',{timeout:12000});
  await dismissStartupAura(page);
+ await preparePassiveWake(page);
  await page.locator('#tmFace').click();
  assert.equal(await page.locator('#tmSttModel').inputValue(),'moonshine-tiny-streaming');
  assert.equal(await page.evaluate(()=>crossOriginIsolated),true,'WASM mode isolates the normal player document');
@@ -343,6 +359,7 @@ try{
  await page.locator('#tmSttModel').selectOption('whisper-tiny.en');
  await page.waitForURL(url=>url.pathname==='/'&&!url.searchParams.has('tm_stt_mode'),{timeout:12000});
  await dismissStartupAura(page);
+ await preparePassiveWake(page);
  await page.locator('#tmFace').click();
  assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-tiny.en');
  assert.equal(await page.evaluate(()=>crossOriginIsolated),false,'Whisper mode restores ordinary media headers');
