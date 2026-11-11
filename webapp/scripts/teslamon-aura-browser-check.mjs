@@ -136,6 +136,15 @@ export function createTeslaMonHandsFree({onState,onAudio}={}){
     emit({state:'listening',invocationId:invocation,message:'Listening for a wake phrase'});
   };
   return {enable(){enabled=true;emit({state:'listening',message:'Waiting for wake phrase'});return Promise.resolve(true);},
+    startCommand(){
+      if(!enabled||state!=='listening')return false;
+      globalThis.__fixtureStartupCaptures=(globalThis.__fixtureStartupCaptures||0)+1;
+      globalThis.__fixturePlayback='paused';
+      const invocationId=++invocation;
+      emit({state:'preparing',invocationId,message:'Startup voice command ready'});
+      emit({state:'recording',invocationId,message:'Recording the first command without wake'});
+      return true;
+    },
     disable(){enabled=false;activeController?.abort();activeController=null;emit({state:'off',message:'Off'});},
     suspend(){return false;},resume(){return true;},
     get enabled(){return enabled;},get state(){return state;}};
@@ -400,7 +409,9 @@ try{
     assert.equal(await page.locator('#tmAura').isHidden(),true,'hidden initial document defers startup Aura');
     await page.evaluate(()=>window.__fixtureSetHidden(false));
     await page.locator('#tmAura').waitFor({state:'visible',timeout:1500});
-    assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'standby');
+    await page.waitForFunction(()=>window.__fixtureWakeState==='recording');
+    assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'listening',
+      'first foreground appearance automatically begins the command');
     await context.close();
   }
   // A playing player wins at the first foreground transition. Startup Aura
@@ -497,13 +508,14 @@ try{
       await page.waitForFunction(()=>typeof window.__auraWake==='function');
       assert.equal(await page.locator('#tmAuraToggle').isChecked(),true);
       await page.locator('#tmAura').waitFor({state:'visible'});
-      const startupState=await page.evaluate(()=>({mic:window.__fixtureMicRequests,
+      await page.waitForFunction(()=>window.__fixtureWakeState==='recording');
+      const startupState=await page.evaluate(()=>({startupCaptures:window.__fixtureStartupCaptures||0,mic:window.__fixtureMicRequests,
         plans:window.__fixturePlanRequests,calls:{...window.__fixtureCalls},playback:window.__fixturePlayback,
         focused:document.activeElement?.id||'',focusIsEditable:!!document.activeElement?.matches('input,textarea,[contenteditable=true]'),
         keyboard:window.__fixtureKeyboardRequests||0}));
       assert.deepEqual({...startupState,focused:'',focusIsEditable:false},
-        {mic:0,plans:0,calls:{search:0,play:0,pause:0,resume:0,commands:0},playback:'idle',focused:'',focusIsEditable:false,keyboard:0},
-        ui+' '+width+' default Aura startup is visual only and does not focus the command editor');
+        {startupCaptures:1,mic:0,plans:0,calls:{search:0,play:0,pause:0,resume:0,commands:0},playback:'paused',focused:'',focusIsEditable:false,keyboard:0},
+        ui+' '+width+' startup begins one fake voice capture without sending a command or opening the keyboard');
       assert.equal(startupState.focusIsEditable,false,ui+' '+width+' startup must not focus an editable command control');
       assert.notEqual(startupState.focused,'tmText',ui+' '+width+' startup must not focus the command editor');
       const startupMeasure=await page.evaluate(()=>{
@@ -524,7 +536,7 @@ try{
         await page.screenshot({path:destination});
       }
       // Explicitly exit startup presentation before editing controls. Escape
-      // must not turn the preference off or invoke voice/media capabilities.
+      // must not turn the preference off or dispatch a planner command.
       await page.locator('#tmAura').press('Escape');
       await page.locator('#tmAura').waitFor({state:'hidden'});
       // Saved Off survives a fresh page load and stays closed.
