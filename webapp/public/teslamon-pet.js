@@ -6,7 +6,7 @@ import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261102-moonshine1';
 import {bindTeslaMonCaptureButton} from './teslamon-capture-binding.js';
-import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261028-aura-reliable1';
+import {createTeslaMonHandsFree} from './teslamon-handsfree.js?v=20261111-startup-voice1';
 import {createTeslaMonSilenceMonitor} from './teslamon-silence-monitor.js';
 import {getTeslaMonPetMotion} from './teslamon-pet-motion.js?v=20261024-poses1';
 import {shouldDismissTeslaMon} from './teslamon-presence.js';
@@ -155,7 +155,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const DISABLED_KEY='ytStreamerTeslaMonDisabledV1';
   const AURA_KEY='ytStreamerTeslaMonAuraEnabledV1';
   let auraEnabled=true,userDisabled=false,startupAuraPending=false;
-  let startupAuraEntry=null;
+  let startupAuraEntry=null,startupCommandAttempted=false;
   let activeAuraEntry=null,voiceAuraEntry=null,urlAuraEntry=null,urlAuraDismissed=false,
     playbackTimer=null,wakePauseGuard=false;
   let voiceOwner=0,pendingVoice=null,modelGeneration=0;
@@ -228,6 +228,16 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(!startupAuraPending||document.hidden)return;
     startupAuraPending=false;
     openAura({phase:'standby',message:'Preparing TeslaMon…',startup:true});
+  }
+  function startStartupCommandIfReady(){
+    // Only the fresh, still-visible startup Aura may skip a wake phrase.
+    // Capability/microphone permission must be granted first. One attempt per page.
+    if(startupCommandAttempted||!startupAuraEntry||startupAuraEntry!==activeAuraEntry||
+      !aura.active||document.hidden||!auraEnabled||userDisabled||
+      !autoWakeWanted||autoWakeBlocked||!voiceAvailable||
+      !handsFree?.enabled||handsFree.state!=='listening')return false;
+    startupCommandAttempted=true;
+    return handsFree.startCommand();
   }
   function auraStage(phase,message,{entry=activeAuraEntry,kind='info'}={}){
     if(entry===null||entry!==activeAuraEntry||!aura.active)return false;
@@ -941,10 +951,14 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           updateStartupAuraStatus(wakeState==='starting'?'Requesting microphone permission…':
             wakeState==='listening'?'Wake listening is on · say a wake phrase':
             `Microphone active · ${wakeState||'wake listener active'}`);
+          startStartupCommandIfReady();
         }else updateStartupAuraStatus('Mic Off · wake listening is off');
         if(wakeSupported&&voiceAvailable&&autoWakeWanted&&!autoWakeBlocked&&
            !handsFree.enabled&&!document.hidden)
-          void handsFree.enable().then(started=>{if(!started)autoWakeBlocked=true;});
+          void handsFree.enable().then(started=>{
+            if(!started)autoWakeBlocked=true;
+            else startStartupCommandIfReady();
+          });
       }else{
         mic.disabled=true;mic.textContent='Local voice unavailable';
         voiceAvailable=false;wakeToggle.disabled=true;handsFree.disable();
@@ -1277,8 +1291,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   if(screen)fullscreenObserver.observe(screen,{attributes:true,attributeFilter:['class']});
   window.addEventListener('pagehide',()=>fullscreenObserver.disconnect(),{once:true});
   monitorFullscreen();
-  // Aura preference is a presentation preference: enter once on a fresh
-  // document without requesting microphone access or starting media work.
+  // Aura enters once on a fresh document. After player/capability/microphone
+  // readiness, this first entry also starts one wake-equivalent voice command.
   // A hidden initial load gets its one entry when first shown. Dismissal or
   // an already-playing player consumes it; later visibility cannot reopen it.
   enterStartupAura();

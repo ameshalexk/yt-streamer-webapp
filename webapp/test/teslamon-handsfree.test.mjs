@@ -87,6 +87,27 @@ test('default Off never requests mic; user enable reaches local listening and Of
   assert.equal(h.detectorStops,1);
 });
 
+test('a first-page command can record without a wake phrase and cannot duplicate an invocation',async()=>{
+  const h=rig();
+  assert.equal(h.handsfree.startCommand(),false,'no recording before mic permission');
+  await h.handsfree.enable();
+  assert.equal(h.handsfree.startCommand(),true);
+  assert.equal(h.handsfree.startCommand(),false,'second startup attempt is ignored');
+  h.wake({keyword:'hey_jarvis'});
+  await settle();
+  assert.equal(h.asked,1,'reuses the existing microphone stream');
+  assert.equal(h.captures.length,1,'startup and wake detector share one recorder');
+  assert.equal(h.handsfree.state,'recording');
+  assert.equal(h.events.find(event=>event.state==='preparing').keyword,null);
+  h.monitors[0].opts.onSpeechEnd();
+  await settle();
+  assert.equal(h.uploads.length,1,'one transcript submitted');
+  h.timers.run(1500);
+  assert.equal(h.handsfree.state,'listening','normal wake detection resumes');
+  h.handsfree.disable();
+  assert.equal(h.handsfree.startCommand(),false,'Mic Off stays Off');
+});
+
 test('one wake creates one bounded command; speech end submits once then resumes wake detection',async()=>{
   const h=rig();
   await h.handsfree.enable();
