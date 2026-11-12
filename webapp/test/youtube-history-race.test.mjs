@@ -86,3 +86,41 @@ test('latest history failure wins even when older refresh succeeds first', async
   assert.equal(state.youtubeHistoryError, 'latest failure');
   assert.deepEqual(toasts, ['latest failure']);
 });
+
+test('three overlapping refreshes ignore both stale completions', async () => {
+  const { state, pending, context, toasts, getRenders } = setup();
+  const first = context.loadYoutubeHistory();
+  const second = context.loadYoutubeHistory();
+  const third = context.loadYoutubeHistory();
+  pending[1].reject(new Error('stale middle error'));
+  await second;
+  assert.equal(state.youtubeHistoryLoading, true);
+  assert.equal(state.youtubeHistoryError, '');
+  pending[2].resolve([{ id: 'latest' }]);
+  await third;
+  const renders = getRenders();
+  pending[0].resolve([{ id: 'first' }]);
+  await first;
+  assert.equal(state.youtubeHistory[0].id, 'latest');
+  assert.equal(state.youtubeHistoryLoaded, true);
+  assert.equal(state.youtubeHistoryLoading, false);
+  assert.equal(toasts.length, 0);
+  assert.equal(getRenders(), renders);
+});
+
+test('latest refresh failure remains authoritative after two older successes', async () => {
+  const { state, pending, context, toasts } = setup();
+  const first = context.loadYoutubeHistory();
+  const second = context.loadYoutubeHistory();
+  const third = context.loadYoutubeHistory();
+  pending[2].reject(new Error('current failure'));
+  await third;
+  pending[0].resolve([{ id: 'first' }]);
+  pending[1].resolve([{ id: 'second' }]);
+  await Promise.all([first, second]);
+  assert.equal(state.youtubeHistory.length, 0);
+  assert.equal(state.youtubeHistoryLoaded, false);
+  assert.equal(state.youtubeHistoryLoading, false);
+  assert.equal(state.youtubeHistoryError, 'current failure');
+  assert.deepEqual(toasts, ['current failure']);
+});
