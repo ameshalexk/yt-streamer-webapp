@@ -53,3 +53,36 @@ test('older history failure cannot clear newer results or show a stale error', a
   assert.equal(toasts.length, 0);
   assert.equal(getRenders(), renders);
 });
+
+
+test('older history success settling first leaves latest refresh pending', async () => {
+  const { state, pending, context, getRenders } = setup();
+  const old = context.loadYoutubeHistory();
+  const recent = context.loadYoutubeHistory();
+  pending[0].resolve([{ id: 'old' }]);
+  await old;
+  assert.equal(state.youtubeHistory.length, 0);
+  assert.equal(state.youtubeHistoryLoaded, false);
+  assert.equal(state.youtubeHistoryLoading, true);
+  const renders = getRenders();
+  pending[1].resolve([{ id: 'recent' }]);
+  await recent;
+  assert.equal(state.youtubeHistory[0].id, 'recent');
+  assert.equal(state.youtubeHistoryLoading, false);
+  assert.equal(getRenders(), renders + 1);
+});
+
+test('latest history failure wins even when older refresh succeeds first', async () => {
+  const { state, pending, context, toasts } = setup();
+  const old = context.loadYoutubeHistory();
+  const recent = context.loadYoutubeHistory();
+  pending[0].resolve([{ id: 'old' }]);
+  await old;
+  pending[1].reject(new Error('latest failure'));
+  await recent;
+  assert.equal(state.youtubeHistory.length, 0);
+  assert.equal(state.youtubeHistoryLoaded, false);
+  assert.equal(state.youtubeHistoryLoading, false);
+  assert.equal(state.youtubeHistoryError, 'latest failure');
+  assert.deepEqual(toasts, ['latest failure']);
+});
