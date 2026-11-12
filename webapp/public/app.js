@@ -6504,13 +6504,19 @@ function renderYoutubeHistory() {
 }
 
 async function loadYoutubeHistory() {
+  // Only the most recently requested refresh may update history state.
+  const requestId = (state.youtubeHistoryRequestId || 0) + 1;
+  state.youtubeHistoryRequestId = requestId;
   state.youtubeHistoryLoading = true;
   state.youtubeHistoryError = "";
   renderYoutubeHistory();
   try {
-    state.youtubeHistory = await api.get(`/api/watch-history?_=${Date.now()}`);
+    const history = await api.get(`/api/watch-history?_=${Date.now()}`);
+    if (requestId !== state.youtubeHistoryRequestId) return;
+    state.youtubeHistory = history;
     state.youtubeHistoryLoaded = true;
   } catch (e) {
+    if (requestId !== state.youtubeHistoryRequestId) return;
     state.youtubeHistory = [];
     // A failed refresh must not keep the old loaded flag: reopening History
     // should retry the request instead of being stuck on an empty list.
@@ -6518,8 +6524,10 @@ async function loadYoutubeHistory() {
     state.youtubeHistoryError = e.message;
     toast(e.message, true);
   } finally {
-    state.youtubeHistoryLoading = false;
-    renderYoutubeHistory();
+    if (requestId === state.youtubeHistoryRequestId) {
+      state.youtubeHistoryLoading = false;
+      renderYoutubeHistory();
+    }
   }
 }
 
