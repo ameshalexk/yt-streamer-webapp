@@ -6512,6 +6512,9 @@ async function loadYoutubeHistory() {
     state.youtubeHistoryLoaded = true;
   } catch (e) {
     state.youtubeHistory = [];
+    // A failed refresh must not keep the old loaded flag: reopening History
+    // should retry the request instead of being stuck on an empty list.
+    state.youtubeHistoryLoaded = false;
     state.youtubeHistoryError = e.message;
     toast(e.message, true);
   } finally {
