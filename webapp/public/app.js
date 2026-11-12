@@ -6528,6 +6528,8 @@ async function performYoutubeSearch() {
     return toast("Enter a YouTube search", true);
   }
   const btn = $("#ytSearchBtn");
+  const requestId = (state.youtubeSearchRequestId || 0) + 1;
+  state.youtubeSearchRequestId = requestId;
   state.youtubeSearchQuery = query;
   state.youtubeSearchLoading = true;
   state.youtubeSearchPlayingId = null;
@@ -6537,18 +6539,21 @@ async function performYoutubeSearch() {
   btn.textContent = "...";
   try {
     const data = await api.get(`/api/youtube/search?q=${encodeURIComponent(query)}&limit=20`);
-    if (state.youtubeSearchQuery !== query) return;
+    if (state.youtubeSearchRequestId !== requestId) return;
     state.youtubeSearchResults = data.items || [];
     renderYoutubeSearch();
   } catch (e) {
+    if (state.youtubeSearchRequestId !== requestId) return;
     state.youtubeSearchResults = [];
     state.youtubeSearchError = e.message;
     toast(e.message, true);
   } finally {
-    if (state.youtubeSearchQuery === query) state.youtubeSearchLoading = false;
-    btn.disabled = false;
-    btn.textContent = "Search";
-    renderYoutubeSearch();
+    if (state.youtubeSearchRequestId === requestId) {
+      state.youtubeSearchLoading = false;
+      btn.disabled = false;
+      btn.textContent = "Search";
+      renderYoutubeSearch();
+    }
   }
 }
 
