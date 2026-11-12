@@ -124,3 +124,40 @@ test('latest refresh failure remains authoritative after two older successes', a
   assert.equal(state.youtubeHistoryError, 'current failure');
   assert.deepEqual(toasts, ['current failure']);
 });
+
+test('stale failure settling first leaves latest refresh loading without a toast', async () => {
+  const { state, pending, context, toasts, getRenders } = setup();
+  const old = context.loadYoutubeHistory();
+  const recent = context.loadYoutubeHistory();
+  const renders = getRenders();
+  pending[0].reject(new Error('outdated network error'));
+  await old;
+  assert.equal(state.youtubeHistoryLoading, true);
+  assert.equal(state.youtubeHistoryError, '');
+  assert.equal(state.youtubeHistoryLoaded, false);
+  assert.equal(toasts.length, 0);
+  assert.equal(getRenders(), renders);
+  pending[1].resolve([{ id: 'newest' }]);
+  await recent;
+  assert.equal(state.youtubeHistory[0].id, 'newest');
+  assert.equal(state.youtubeHistoryLoading, false);
+});
+
+test('failed latest refresh can be retried and replaces its error with fresh history', async () => {
+  const { state, pending, context, toasts } = setup();
+  const failed = context.loadYoutubeHistory();
+  pending[0].reject(new Error('temporary outage'));
+  await failed;
+  assert.equal(state.youtubeHistoryLoaded, false);
+  assert.equal(state.youtubeHistoryError, 'temporary outage');
+  const retried = context.loadYoutubeHistory();
+  assert.equal(state.youtubeHistoryLoading, true);
+  assert.equal(state.youtubeHistoryError, '');
+  pending[1].resolve([{ id: 'recovered' }]);
+  await retried;
+  assert.equal(state.youtubeHistory[0].id, 'recovered');
+  assert.equal(state.youtubeHistoryLoaded, true);
+  assert.equal(state.youtubeHistoryLoading, false);
+  assert.equal(state.youtubeHistoryError, '');
+  assert.deepEqual(toasts, ['temporary outage']);
+});
