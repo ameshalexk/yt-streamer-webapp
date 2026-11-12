@@ -221,3 +221,17 @@ test('post-selection observation reports failed streams instead of success',asyn
     status:'failed',code:'playback_stream_failed'
   });
 });
+
+
+test('temporary player facade lookup failure reports offline instead of rejecting commands',async()=>{
+  let available=false;
+  const facade={execute:async()=>({status:'completed',state:{playback_phase:'idle',fullscreen_kind:'none'}}),
+    get_player_state:()=>({media_id:A,playback_phase:'playing',mode:'native'})};
+  const player=createTeslaMonLocalPlayer({getPlayer:()=>{if(!available)throw new Error('player initializing');return facade;},sleep:async()=>{}});
+  assert.equal(player.ready,false,'startup readiness checks never throw');
+  assert.deepEqual(await player.run({tool:'pause',args:{}}),{status:'offline',code:'local_player_not_ready'});
+  assert.deepEqual(await player.observe(A),{status:'offline',code:'local_player_not_ready'});
+  available=true;
+  assert.equal(player.ready,true,'later player availability is observable');
+  assert.equal((await player.run({tool:'get_playback_state',args:{}})).status,'observed');
+});
