@@ -409,3 +409,45 @@ test("failed history deletion keeps active session and queued progress writes", 
   assert.equal(updates[0].positionSeconds, 23);
   assert.deepEqual(errors, ["delete unavailable"]);
 });
+
+test("overlapping Remove and Clear serialize around replay without losing the final session", async () => {
+  const { Tracker } = loadModule();
+  const rows = new Set();
+  const events = [];
+  let releaseRemove;
+  let removeStarted;
+  const started = new Promise(resolve => { removeStarted = resolve; });
+  const removeGate = new Promise(resolve => { releaseRemove = resolve; });
+  const tracker = new Tracker({
+    record: async payload => {
+      rows.add(payload.youtubeId);
+      events.push(`record:${payload.youtubeId}`);
+      return { id: payload.youtubeId, ...payload };
+    },
+    update: async (id, payload) => ({ id, ...payload }),
+    capture: () => ({ positionSeconds: 7, duration: 100 }),
+  });
+  await tracker.begin({ youtubeId: "first" });
+  const remove = tracker.runHistoryMutation(async () => {
+    removeStarted();
+    await removeGate;
+    rows.delete("first");
+    events.push("remove:first");
+  }, { deletedEntry: { id: "first" } });
+  await started;
+  const replay = tracker.begin({ youtubeId: "second" });
+  const clear = tracker.runHistoryMutation(async () => {
+    rows.clear();
+    events.push("clear");
+  }, { clearAll: true });
+  const finalReplay = tracker.begin({ youtubeId: "third" });
+  releaseRemove();
+  await Promise.all([remove, replay, clear, finalReplay]);
+  assert.deepEqual(events, [
+    "record:first", "remove:first", "record:second", "clear", "record:third",
+  ]);
+  assert.deepEqual([...rows], ["third"]);
+  assert.equal(tracker.session?.entry?.id, "third");
+  await tracker.save();
+  assert.deepEqual([...rows], ["third"], "later progress cannot recreate cleared entries");
+});
