@@ -18,6 +18,11 @@
       Object.assign(this, { record, update, capture, onSaved, onError });
       this.session = null;
       this.chain = Promise.resolve();
+      this.historyCallbackEpoch = 0;
+    }
+
+    invalidateHistoryCallbacks() {
+      this.historyCallbackEpoch++;
     }
 
     enqueue(task) {
@@ -35,9 +40,10 @@
         entry: null,
       };
       this.session = session;
+      const callbackEpoch = this.historyCallbackEpoch;
       return this.enqueue(async () => {
         session.entry = await this.record({ ...payload, playbackSessionId: session.token });
-        if (!this.session || this.session === session || this.session.key !== session.key) this.onSaved(session.entry);
+        if (callbackEpoch === this.historyCallbackEpoch && (!this.session || this.session === session || this.session.key !== session.key)) this.onSaved(session.entry);
         return session.entry;
       });
     }
@@ -50,6 +56,7 @@
       if (positionSeconds !== undefined) snapshot.positionSeconds = positionSeconds;
       if (!Number.isFinite(snapshot.positionSeconds) || snapshot.positionSeconds < 0) return this.chain;
       const payload = { ...snapshot, playbackSessionId: session.token, sequence: session.sequence++ };
+      const callbackEpoch = this.historyCallbackEpoch;
       return this.enqueue(async () => {
         if (!session.entry || session.entry.isLive) return null;
         const entry = await this.update(session.entry.id, payload, keepalive);
@@ -58,7 +65,7 @@
         }
         // Update the old video's History row after Stop/switch, never a newer
         // viewing session for the same video.
-        if (!this.session || this.session === session || this.session.key !== session.key) this.onSaved(entry);
+        if (callbackEpoch === this.historyCallbackEpoch && (!this.session || this.session === session || this.session.key !== session.key)) this.onSaved(entry);
         return entry;
       });
     }

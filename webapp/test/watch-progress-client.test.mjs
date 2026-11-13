@@ -266,3 +266,24 @@ test("History refresh failure clears the loaded flag so navigation can retry", a
   assert.equal(state.youtubeHistory[0].id, "recovered");
   assert.equal(renders.at(-1), true);
 });
+
+test('history deletion ignores earlier progress callbacks but permits new replay', async () => {
+  const { Tracker } = loadModule();
+  const saved = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const tracker = new Tracker({
+    record: async payload => ({ id: payload.youtubeId, ...payload }),
+    update: async (id, payload) => { await gate; return { id, ...payload }; },
+    capture: () => ({ positionSeconds: 10, duration: 100 }),
+    onSaved: entry => saved.push(entry),
+  });
+  await tracker.begin({ youtubeId: 'deleted' });
+  const pending = tracker.save();
+  tracker.invalidateHistoryCallbacks();
+  release();
+  await pending;
+  assert.equal(saved.length, 1, 'old progress must not reinsert deleted entry');
+  await tracker.begin({ youtubeId: 'deleted' });
+  assert.equal(saved.length, 2, 'replaying after deletion must be visible');
+});
