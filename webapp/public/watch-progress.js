@@ -18,11 +18,23 @@
       Object.assign(this, { record, update, capture, onSaved, onError });
       this.session = null;
       this.chain = Promise.resolve();
-      this.historyCallbackEpoch = 0;
     }
 
-    invalidateHistoryCallbacks() {
-      this.historyCallbackEpoch++;
+    runHistoryMutation(mutation, { deletedEntry = null, clearAll = false } = {}) {
+      const session = this.session;
+      return this.enqueue(async () => {
+        const result = await mutation();
+        const deletedKeys = [deletedEntry?.id, deletedEntry?.youtubeId, deletedEntry?.url].filter(Boolean);
+        const sessionKeys = [session?.key, session?.entry?.id, session?.entry?.youtubeId, session?.entry?.url].filter(Boolean);
+        const deletesSession = clearAll || deletedKeys.some((key) => sessionKeys.includes(key));
+        if (session && deletesSession) {
+          // Stop queued old-session progress after a successful delete. A new
+          // playback is queued after this mutation and remains independent.
+          session.historyInvalidated = true;
+          if (this.session === session) this.session = null;
+        }
+        return result;
+      });
     }
 
     enqueue(task) {
@@ -38,15 +50,12 @@
         token: root.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         sequence: 0,
         entry: null,
+        historyInvalidated: false,
       };
       this.session = session;
-      const callbackEpoch = this.historyCallbackEpoch;
       return this.enqueue(async () => {
-        // A queued begin from before History removal must not issue a new POST
-        // after deletion. A subsequent explicit begin captures the new epoch.
-        if (callbackEpoch !== this.historyCallbackEpoch) return null;
         session.entry = await this.record({ ...payload, playbackSessionId: session.token });
-        if (callbackEpoch === this.historyCallbackEpoch && (!this.session || this.session === session || this.session.key !== session.key)) this.onSaved(session.entry);
+        if (!this.session || this.session === session || this.session.key !== session.key) this.onSaved(session.entry);
         return session.entry;
       });
     }
@@ -59,16 +68,15 @@
       if (positionSeconds !== undefined) snapshot.positionSeconds = positionSeconds;
       if (!Number.isFinite(snapshot.positionSeconds) || snapshot.positionSeconds < 0) return this.chain;
       const payload = { ...snapshot, playbackSessionId: session.token, sequence: session.sequence++ };
-      const callbackEpoch = this.historyCallbackEpoch;
       return this.enqueue(async () => {
-        if (!session.entry || session.entry.isLive) return null;
+        if (session.historyInvalidated || !session.entry || session.entry.isLive) return null;
         const entry = await this.update(session.entry.id, payload, keepalive);
         if (this.session === session) {
           session.entry = entry;
         }
         // Update the old video's History row after Stop/switch, never a newer
         // viewing session for the same video.
-        if (callbackEpoch === this.historyCallbackEpoch && (!this.session || this.session === session || this.session.key !== session.key)) this.onSaved(entry);
+        if (!this.session || this.session === session || this.session.key !== session.key) this.onSaved(entry);
         return entry;
       });
     }
