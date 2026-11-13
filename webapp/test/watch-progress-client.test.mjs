@@ -385,3 +385,27 @@ test("clear invalidates the active session and a failed mutation preserves queue
   assert.deepEqual(records, ["clear-me", "still-active", "new-replay"]);
   assert.equal(saved.at(-1).id, "new-replay", "a replay queued during a failed mutation remains visible");
 });
+
+test("failed history deletion keeps active session and queued progress writes", async () => {
+  const { Tracker } = loadModule();
+  const updates = [];
+  const errors = [];
+  const tracker = new Tracker({
+    record: async payload => ({ id: payload.youtubeId, ...payload }),
+    update: async (id, payload) => { updates.push({ id, ...payload }); return { id, ...payload }; },
+    capture: () => ({ positionSeconds: 23, duration: 100 }),
+    onError: error => errors.push(error.message),
+  });
+  await tracker.begin({ youtubeId: "keep-on-failure" });
+  const session = tracker.session;
+  const deletion = tracker.runHistoryMutation(async () => { throw new Error("delete unavailable"); },
+    { deletedEntry: { id: "keep-on-failure" } });
+  const save = tracker.save();
+  await assert.rejects(deletion, /delete unavailable/);
+  await save;
+  assert.equal(tracker.session, session);
+  assert.equal(session.historyInvalidated, false);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].positionSeconds, 23);
+  assert.deepEqual(errors, ["delete unavailable"]);
+});
