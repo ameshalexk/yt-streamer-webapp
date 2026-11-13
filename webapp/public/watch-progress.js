@@ -42,6 +42,9 @@
       this.session = session;
       const callbackEpoch = this.historyCallbackEpoch;
       return this.enqueue(async () => {
+        // A queued begin from before History removal must not issue a new POST
+        // after deletion. A subsequent explicit begin captures the new epoch.
+        if (callbackEpoch !== this.historyCallbackEpoch) return null;
         session.entry = await this.record({ ...payload, playbackSessionId: session.token });
         if (callbackEpoch === this.historyCallbackEpoch && (!this.session || this.session === session || this.session.key !== session.key)) this.onSaved(session.entry);
         return session.entry;

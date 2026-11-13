@@ -287,3 +287,23 @@ test('history deletion ignores earlier progress callbacks but permits new replay
   await tracker.begin({ youtubeId: 'deleted' });
   assert.equal(saved.length, 2, 'replaying after deletion must be visible');
 });
+
+
+test("history deletion invalidation cancels queued old-session record but allows new playback", async () => {
+  const { Tracker } = loadModule();
+  const records = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const tracker = new Tracker({
+    record: async payload => { records.push(payload.youtubeId); return { id: payload.youtubeId }; },
+    update: async () => null, capture: () => null,
+  });
+  tracker.enqueue(() => gate);
+  const stale = tracker.begin({ youtubeId: "deleted" });
+  tracker.invalidateHistoryCallbacks();
+  release();
+  await stale;
+  assert.deepEqual(records, [], "queued pre-deletion POST must not recreate history");
+  await tracker.begin({ youtubeId: "replayed" });
+  assert.deepEqual(records, ["replayed"], "new explicit playback remains allowed");
+});
