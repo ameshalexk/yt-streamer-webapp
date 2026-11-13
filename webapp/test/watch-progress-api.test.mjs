@@ -174,4 +174,15 @@ test("watch progress HTTP API validates sessions and persists across server rest
     method: "PATCH", body: { playbackSessionId: "session-http-2", sequence: 0, positionSeconds: 10 },
   })).status, 404);
   assert.deepEqual((await request(baseUrl, "/api/watch-history")).body, []);
+
+  // Older clients without playbackSessionId must still replay after Clear.
+  const legacyReplay = await request(baseUrl, "/api/watch-history", {
+    method: "POST", body: { youtubeId: "http-progress-video", title: "Legacy replay", duration: 240 },
+  });
+  assert.equal(legacyReplay.status, 201);
+  assert.equal(legacyReplay.body.playbackSessionId, null);
+  assert.equal(legacyReplay.body.playCount, 1);
+  assert.equal((await request(baseUrl, `/api/watch-history/${id}/progress`, {
+    method: "PATCH", body: { playbackSessionId: "session-http-2", sequence: 0, positionSeconds: 20 },
+  })).status, 409);
 });
