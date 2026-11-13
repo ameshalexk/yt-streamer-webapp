@@ -451,3 +451,44 @@ test("overlapping Remove and Clear serialize around replay without losing the fi
   await tracker.save();
   assert.deepEqual([...rows], ["third"], "later progress cannot recreate cleared entries");
 });
+
+test("rejected Remove followed by same-video replay preserves the new session and queue", async () => {
+  const { Tracker } = loadModule();
+  const events = [];
+  const errors = [];
+  let rejectRemove;
+  let removeStarted;
+  const started = new Promise(resolve => { removeStarted = resolve; });
+  const pendingRemove = new Promise((_resolve, reject) => { rejectRemove = reject; });
+  const tracker = new Tracker({
+    record: async payload => {
+      events.push(`record:${payload.youtubeId}`);
+      return { id: payload.youtubeId, ...payload };
+    },
+    update: async (id, payload) => {
+      events.push(`update:${id}`);
+      return { id, ...payload };
+    },
+    capture: () => ({ positionSeconds: 12, duration: 100 }),
+    onError: error => errors.push(error.message),
+  });
+  await tracker.begin({ youtubeId: "same-video" });
+  const original = tracker.session;
+  const remove = tracker.runHistoryMutation(async () => {
+    removeStarted();
+    return pendingRemove;
+  }, { deletedEntry: { id: "same-video" } });
+  await started;
+  const replay = tracker.begin({ youtubeId: "same-video" });
+  rejectRemove(new Error("remove rejected"));
+  await assert.rejects(remove, /remove rejected/);
+  await replay;
+  await tracker.save();
+  assert.notEqual(tracker.session, original);
+  assert.equal(tracker.session?.historyInvalidated, false);
+  assert.equal(tracker.session?.entry?.id, "same-video");
+  assert.deepEqual(events, [
+    "record:same-video", "update:same-video", "record:same-video", "update:same-video",
+  ]);
+  assert.deepEqual(errors, ["remove rejected"]);
+});
