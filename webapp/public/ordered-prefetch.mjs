@@ -9,22 +9,25 @@ export async function* orderedPrefetch(indexes, fetchIndex, {
   let nextToSchedule = 0;
   const fill = () => {
     while (!shouldStop() && nextToSchedule < indexes.length && pending.size < maximum) {
-      const index = indexes[nextToSchedule++];
+      // Use the presentation slot as the key: repeated segment indexes must
+      // not overwrite each other's inflight requests.
+      const slot = nextToSchedule++;
+      const index = indexes[slot];
       const result = Promise.resolve().then(() => fetchIndex(index)).then(
-        (value) => ({ value }),
-        (error) => ({ error }),
+        (value) => ({ ok: true, value }),
+        (error) => ({ ok: false, error }),
       );
-      pending.set(index, result);
+      pending.set(slot, result);
     }
   };
   fill();
-  for (const index of indexes) {
+  for (let slot = 0; slot < indexes.length; slot++) {
     if (shouldStop()) return;
-    const result = await pending.get(index);
-    pending.delete(index);
+    const result = await pending.get(slot);
+    pending.delete(slot);
     fill();
     if (shouldStop()) return;
-    if (result.error) throw result.error;
-    yield { index, value: result.value };
+    if (!result.ok) throw result.error;
+    yield { index: indexes[slot], value: result.value };
   }
 }
