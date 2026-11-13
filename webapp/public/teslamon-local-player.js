@@ -56,7 +56,8 @@ export function createTeslaMonLocalPlayer({
   async function run(intent,{originalRequest='',signal,isCurrent=()=>true}={}){
     if(!supported(intent))return fail('invalid_local_playback_intent');
     if(busy)return fail('target_busy');
-    const player=getPlayer();
+    let player;
+    try{player=getPlayer();}catch{return fail('local_player_not_ready','offline');}
     if(!player||typeof player.execute!=='function')
       return fail('local_player_not_ready','offline');
     busy=true;
@@ -106,7 +107,9 @@ export function createTeslaMonLocalPlayer({
         const read=await snapshot(player);
         if(read.status!=='observed')return {...read,fullscreenAttempt};
         if(['native','in_page'].includes(read.fullscreenMode))fullscreenAttempt='observed';
-        const direct=player.get_player_state?.();
+        let direct;
+        try{direct=player.get_player_state?.();}
+        catch{/* Snapshot already confirmed playback state; direct frames are optional. */}
         if(direct?.media_id===mediaId&&direct.playback_phase==='playing'&&
            (direct.mode!=='buffered_mjpeg'||Number(direct.rendered_frames)>0))
           return {...read,mediaId,fullscreenAttempt};
@@ -134,7 +137,8 @@ export function createTeslaMonLocalPlayer({
   async function observe(mediaId,{attempts=12,intervalMs=1000,isCurrent=()=>true}={}){
     if(!VIDEO.test(mediaId)||typeof isCurrent!=='function')
       return fail('invalid_playback_observation');
-    const player=getPlayer();
+    let player;
+    try{player=getPlayer();}catch{return fail('local_player_not_ready','offline');}
     if(!player||typeof player.get_player_state!=='function')
       return fail('local_player_not_ready','offline');
     let priorFrames=null;
@@ -160,6 +164,7 @@ export function createTeslaMonLocalPlayer({
     return fail('playback_not_confirmed','uncertain');
   }
   return Object.freeze({run,observe,get ready(){
-    return typeof getPlayer()?.execute==='function';
+    try{return typeof getPlayer()?.execute==='function';}
+    catch{return false;}
   }});
 }
