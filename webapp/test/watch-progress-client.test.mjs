@@ -231,3 +231,38 @@ test("reopening a YouTube search result starts at its saved timestamp", async ()
   assert.equal(calls[0].startAt, 42);
   assert.equal(records[0][2].restartProgress, false);
 });
+
+test("History refresh failure clears the loaded flag so navigation can retry", async () => {
+  const state = {
+    youtubeHistory: [{ id: "old" }], youtubeHistoryLoaded: true,
+    youtubeHistoryLoading: false, youtubeHistoryError: "",
+  };
+  let requests = 0;
+  const renders = [];
+  const context = vm.createContext({
+    state,
+    Date,
+    api: { get: async () => {
+      requests += 1;
+      if (requests === 1) throw new Error("temporary offline");
+      return [{ id: "recovered" }];
+    } },
+    renderYoutubeHistory: () => renders.push(state.youtubeHistoryLoaded),
+    toast: () => {},
+  });
+  const start = app.indexOf("async function loadYoutubeHistory()");
+  const end = app.indexOf("\nasync function performYoutubeSearch", start);
+  assert.ok(start > -1 && end > start);
+  vm.runInContext(app.slice(start, end), context);
+
+  await context.loadYoutubeHistory();
+  assert.equal(state.youtubeHistoryLoaded, false, "failed refresh must become eligible for retry");
+  assert.equal(state.youtubeHistoryLoading, false);
+  assert.equal(state.youtubeHistoryError, "temporary offline");
+  await context.loadYoutubeHistory();
+  assert.equal(requests, 2);
+  assert.equal(state.youtubeHistoryLoaded, true);
+  assert.equal(state.youtubeHistoryError, "");
+  assert.equal(state.youtubeHistory[0].id, "recovered");
+  assert.equal(renders.at(-1), true);
+});
