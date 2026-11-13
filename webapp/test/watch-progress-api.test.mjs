@@ -154,4 +154,24 @@ test("watch progress HTTP API validates sessions and persists across server rest
   assert.equal(persisted.progressSequence, 0);
   assert.equal(persisted.playbackSessionId, "session-http-1");
   assert.equal(persisted.playCount, 1);
+
+  // A delayed progress PATCH from the deleted session must not resurrect history.
+  assert.equal((await request(baseUrl, `/api/watch-history/${id}`, { method: "DELETE" })).status, 200);
+  assert.equal((await request(baseUrl, `/api/watch-history/${id}/progress`, {
+    method: "PATCH", body: { playbackSessionId: "session-http-1", sequence: 1, positionSeconds: 99 },
+  })).status, 404);
+  assert.deepEqual((await request(baseUrl, "/api/watch-history")).body, []);
+
+  // Explicit replay is a new POST and must remain allowed after deletion.
+  const replay = await request(baseUrl, "/api/watch-history", {
+    method: "POST", body: { youtubeId: "http-progress-video", title: "Replay", duration: 240, playbackSessionId: "session-http-2" },
+  });
+  assert.equal(replay.status, 201);
+  assert.equal(replay.body.playbackSessionId, "session-http-2");
+  assert.equal(replay.body.playCount, 1);
+  assert.equal((await request(baseUrl, "/api/watch-history", { method: "DELETE" })).status, 200);
+  assert.equal((await request(baseUrl, `/api/watch-history/${id}/progress`, {
+    method: "PATCH", body: { playbackSessionId: "session-http-2", sequence: 0, positionSeconds: 10 },
+  })).status, 404);
+  assert.deepEqual((await request(baseUrl, "/api/watch-history")).body, []);
 });
