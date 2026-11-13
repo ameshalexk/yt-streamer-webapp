@@ -107,7 +107,9 @@ export function createTeslaMonLocalPlayer({
         const read=await snapshot(player);
         if(read.status!=='observed')return {...read,fullscreenAttempt};
         if(['native','in_page'].includes(read.fullscreenMode))fullscreenAttempt='observed';
-        const direct=player.get_player_state?.();
+        let direct;
+        try{direct=player.get_player_state?.();}
+        catch{/* Snapshot already confirmed playback state; direct frames are optional. */}
         if(direct?.media_id===mediaId&&direct.playback_phase==='playing'&&
            (direct.mode!=='buffered_mjpeg'||Number(direct.rendered_frames)>0))
           return {...read,mediaId,fullscreenAttempt};

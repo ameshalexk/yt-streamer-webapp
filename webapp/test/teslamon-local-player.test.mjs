@@ -235,3 +235,25 @@ test('temporary player facade lookup failure reports offline instead of rejectin
   assert.equal(player.ready,true,'later player availability is observable');
   assert.equal((await player.run({tool:'get_playback_state',args:{}})).status,'observed');
 });
+
+
+test('optional direct frame getter failure preserves confirmed accepted playback',async()=>{
+  const actions=[];
+  const player=createTeslaMonLocalPlayer({
+    getPlayer:()=>({
+      get_player_state:()=>{throw new Error('direct frame read unavailable');},
+      execute:async(action,args)=>{
+        actions.push(action);
+        if(action==='search_media')return {status:'completed',result:{results:[{media_id:A,title:'One'}]}};
+        if(action==='play_media')return {status:'accepted'};
+        if(action==='request_fullscreen')return {status:'needs_user_gesture'};
+        if(action==='get_player_state')return {status:'completed',state:{media_id:A,playback_phase:'playing',fullscreen_kind:'none'}};
+      }
+    }),selectCandidate:async()=>({status:'selected',index:0})
+  });
+  const result=await player.run({tool:'search_and_play',args:{query:'test video'}});
+  assert.equal(result.status,'accepted');
+  assert.equal(result.code,'state_not_yet_confirmed');
+  assert.equal(result.fullscreenAttempt,'needs_user_gesture');
+  assert.deepEqual(actions,['search_media','play_media','request_fullscreen','get_player_state']);
+});
