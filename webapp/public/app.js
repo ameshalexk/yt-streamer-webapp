@@ -7188,6 +7188,9 @@ async function removeYoutubeHistoryItem(item) {
   if (!item) return;
   try {
     await api.del(`/api/watch-history/${encodeURIComponent(item.id)}`);
+    // A refresh started before deletion may contain the removed item.
+    state.youtubeHistoryRequestId = (state.youtubeHistoryRequestId || 0) + 1;
+    state.youtubeHistoryLoading = false;
     state.youtubeHistory = state.youtubeHistory.filter((entry) => entry.id !== item.id);
     if (state.youtubeHistoryPlayingId === item.id) state.youtubeHistoryPlayingId = null;
     renderYoutubeHistory();
@@ -7202,6 +7205,9 @@ async function clearYoutubeHistory() {
   if (!confirm("Clear app playback history?")) return;
   try {
     await api.del("/api/watch-history");
+    // Ignore responses from refreshes started before clearing history.
+    state.youtubeHistoryRequestId = (state.youtubeHistoryRequestId || 0) + 1;
+    state.youtubeHistoryLoading = false;
     state.youtubeHistory = [];
     state.youtubeHistoryPlayingId = null;
     renderYoutubeHistory();
