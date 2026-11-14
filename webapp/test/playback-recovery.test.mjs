@@ -288,3 +288,14 @@ test('a video failure preempts an audio retry queued before video teardown', asy
   assert.equal(f.recoveries[0].audioOnly, false);
   assert.equal(f.recoveries[0].reason, 'failure');
 });
+
+test('simultaneous video stall and audio error prioritize full video recovery', async () => {
+  const f = fixture();
+  f.advance(0, { audioEnabled: true, audioError: false });
+  f.advance(16000, { audioEnabled: true, audioError: true, videoProgress: 10, audioTime: 5 });
+  assert.equal(f.task?.delay, 1000);
+  await f.run();
+  assert.equal(f.recoveries.length, 1);
+  assert.equal(f.recoveries[0].audioOnly, false);
+  assert.equal(f.recoveries[0].reason, 'video');
+});
