@@ -149,7 +149,8 @@
       }
       if (this.pending) {
         // A video failure cannot be replaced by an audio-only follow-up.
-        if (this.inFlight && (!audioOnly || !this.queued || this.queued.reason === 'audio')) {
+        if (this.inFlight && !(audioOnly && !this.pendingAudioOnly)
+            && (!audioOnly || !this.queued || this.queued.reason === 'audio')) {
           this.queued = { reason, sample };
         }
         return true;
