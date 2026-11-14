@@ -20,6 +20,23 @@
       this.chain = Promise.resolve();
     }
 
+    runHistoryMutation(mutation, { deletedEntry = null, clearAll = false } = {}) {
+      const session = this.session;
+      return this.enqueue(async () => {
+        const result = await mutation();
+        const deletedKeys = [deletedEntry?.id, deletedEntry?.youtubeId, deletedEntry?.url].filter(Boolean);
+        const sessionKeys = [session?.key, session?.entry?.id, session?.entry?.youtubeId, session?.entry?.url].filter(Boolean);
+        const deletesSession = clearAll || deletedKeys.some((key) => sessionKeys.includes(key));
+        if (session && deletesSession) {
+          // Stop queued old-session progress after a successful delete. A new
+          // playback is queued after this mutation and remains independent.
+          session.historyInvalidated = true;
+          if (this.session === session) this.session = null;
+        }
+        return result;
+      });
+    }
+
     enqueue(task) {
       const request = this.chain.then(task);
       this.chain = request.catch(this.onError);
@@ -33,6 +50,7 @@
         token: root.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         sequence: 0,
         entry: null,
+        historyInvalidated: false,
       };
       this.session = session;
       return this.enqueue(async () => {
@@ -51,7 +69,7 @@
       if (!Number.isFinite(snapshot.positionSeconds) || snapshot.positionSeconds < 0) return this.chain;
       const payload = { ...snapshot, playbackSessionId: session.token, sequence: session.sequence++ };
       return this.enqueue(async () => {
-        if (!session.entry || session.entry.isLive) return null;
+        if (session.historyInvalidated || !session.entry || session.entry.isLive) return null;
         const entry = await this.update(session.entry.id, payload, keepalive);
         if (this.session === session) {
           session.entry = entry;

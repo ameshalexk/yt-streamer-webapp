@@ -266,3 +266,229 @@ test("History refresh failure clears the loaded flag so navigation can retry", a
   assert.equal(state.youtubeHistory[0].id, "recovered");
   assert.equal(renders.at(-1), true);
 });
+
+test("history mutation waits for an in-flight record, removes its row, and permits replay", async () => {
+  const { Tracker } = loadModule();
+  const rows = new Set();
+  const events = [];
+  const saved = [];
+  let release;
+  let started;
+  const startedPromise = new Promise(resolve => { started = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const tracker = new Tracker({
+    record: async payload => {
+      events.push("record-start");
+      started();
+      await gate;
+      rows.add(payload.youtubeId);
+      events.push("record-finish");
+      return { id: payload.youtubeId, ...payload };
+    },
+    update: async (id, payload) => ({ id, ...payload }),
+    capture: () => ({ positionSeconds: 10, duration: 100 }),
+    onSaved: entry => saved.push(entry),
+  });
+  const begin = tracker.begin({ youtubeId: "deleted" });
+  await startedPromise;
+  const mutation = tracker.runHistoryMutation(async () => {
+    events.push("delete");
+    rows.delete("deleted");
+    return "deleted";
+  }, { deletedEntry: { id: "deleted", youtubeId: "deleted" } });
+  release();
+  await Promise.all([begin, mutation]);
+  assert.deepEqual(events, ["record-start", "record-finish", "delete"]);
+  assert.deepEqual(Array.from(rows), [], "the in-flight POST is removed after it settles");
+  assert.equal(saved.length, 1, "the pre-delete callback runs before deletion");
+  assert.equal(tracker.session, null, "deleting the active entry stops its stale tracker session");
+
+  await tracker.begin({ youtubeId: "deleted" });
+  assert.deepEqual(Array.from(rows), ["deleted"], "explicit replay after deletion remains allowed");
+  assert.equal(saved.length, 2);
+});
+
+
+test("history mutation orders a queued begin before delete and then allows replay", async () => {
+  const { Tracker } = loadModule();
+  const records = [];
+  const rows = new Set();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const tracker = new Tracker({
+    record: async payload => {
+      records.push(payload.youtubeId);
+      rows.add(payload.youtubeId);
+      return { id: payload.youtubeId, ...payload };
+    },
+    update: async () => null, capture: () => null,
+  });
+  tracker.enqueue(() => gate);
+  const pendingBegin = tracker.begin({ youtubeId: "deleted" });
+  const mutation = tracker.runHistoryMutation(async () => {
+    rows.delete("deleted");
+    return "deleted";
+  }, { deletedEntry: { id: "deleted", youtubeId: "deleted" } });
+  release();
+  await Promise.all([pendingBegin, mutation]);
+  assert.deepEqual(records, ["deleted"]);
+  assert.deepEqual(Array.from(rows), [], "the queued POST settles before deletion");
+  await tracker.begin({ youtubeId: "deleted" });
+  assert.deepEqual(records, ["deleted", "deleted"], "a later explicit replay is recorded");
+  assert.deepEqual(Array.from(rows), ["deleted"]);
+});
+
+test("deleting a different history item keeps the active playback session", async () => {
+  const { Tracker } = loadModule();
+  const saved = [];
+  let updates = 0;
+  const tracker = new Tracker({
+    record: async payload => ({ id: payload.youtubeId, ...payload }),
+    update: async (id, payload) => { updates++; return { id, ...payload }; },
+    capture: () => ({ positionSeconds: 10, duration: 100 }),
+    onSaved: entry => saved.push(entry),
+  });
+  await tracker.begin({ youtubeId: "keep-playing" });
+  const currentSession = tracker.session;
+  await tracker.runHistoryMutation(async () => "deleted", { deletedEntry: { id: "other-video" } });
+  assert.equal(tracker.session, currentSession);
+  await tracker.save();
+  assert.equal(updates, 1);
+  assert.equal(saved.at(-1).id, "keep-playing");
+});
+
+test("clear invalidates the active session and a failed mutation preserves queued replay", async () => {
+  const { Tracker } = loadModule();
+  const saved = [];
+  const records = [];
+  let rejectMutation;
+  const gate = new Promise((resolve, reject) => { rejectMutation = reject; });
+  const tracker = new Tracker({
+    record: async payload => { records.push(payload.youtubeId); return { id: payload.youtubeId, ...payload }; },
+    update: async (id, payload) => ({ id, ...payload }),
+    capture: () => ({ positionSeconds: 10, duration: 100 }),
+    onSaved: entry => saved.push(entry),
+  });
+  await tracker.begin({ youtubeId: "clear-me" });
+  await tracker.runHistoryMutation(async () => "cleared", { clearAll: true });
+  assert.equal(tracker.session, null, "successful Clear stops the deleted active session");
+
+  await tracker.begin({ youtubeId: "still-active" });
+  const mutation = tracker.runHistoryMutation(() => gate, { deletedEntry: { id: "still-active" } });
+  const replay = tracker.begin({ youtubeId: "new-replay" });
+  rejectMutation(new Error("delete failed"));
+  await assert.rejects(
+    mutation,
+    /delete failed/,
+  );
+  await replay;
+  assert.deepEqual(records, ["clear-me", "still-active", "new-replay"]);
+  assert.equal(saved.at(-1).id, "new-replay", "a replay queued during a failed mutation remains visible");
+});
+
+test("failed history deletion keeps active session and queued progress writes", async () => {
+  const { Tracker } = loadModule();
+  const updates = [];
+  const errors = [];
+  const tracker = new Tracker({
+    record: async payload => ({ id: payload.youtubeId, ...payload }),
+    update: async (id, payload) => { updates.push({ id, ...payload }); return { id, ...payload }; },
+    capture: () => ({ positionSeconds: 23, duration: 100 }),
+    onError: error => errors.push(error.message),
+  });
+  await tracker.begin({ youtubeId: "keep-on-failure" });
+  const session = tracker.session;
+  const deletion = tracker.runHistoryMutation(async () => { throw new Error("delete unavailable"); },
+    { deletedEntry: { id: "keep-on-failure" } });
+  const save = tracker.save();
+  await assert.rejects(deletion, /delete unavailable/);
+  await save;
+  assert.equal(tracker.session, session);
+  assert.equal(session.historyInvalidated, false);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].positionSeconds, 23);
+  assert.deepEqual(errors, ["delete unavailable"]);
+});
+
+test("overlapping Remove and Clear serialize around replay without losing the final session", async () => {
+  const { Tracker } = loadModule();
+  const rows = new Set();
+  const events = [];
+  let releaseRemove;
+  let removeStarted;
+  const started = new Promise(resolve => { removeStarted = resolve; });
+  const removeGate = new Promise(resolve => { releaseRemove = resolve; });
+  const tracker = new Tracker({
+    record: async payload => {
+      rows.add(payload.youtubeId);
+      events.push(`record:${payload.youtubeId}`);
+      return { id: payload.youtubeId, ...payload };
+    },
+    update: async (id, payload) => ({ id, ...payload }),
+    capture: () => ({ positionSeconds: 7, duration: 100 }),
+  });
+  await tracker.begin({ youtubeId: "first" });
+  const remove = tracker.runHistoryMutation(async () => {
+    removeStarted();
+    await removeGate;
+    rows.delete("first");
+    events.push("remove:first");
+  }, { deletedEntry: { id: "first" } });
+  await started;
+  const replay = tracker.begin({ youtubeId: "second" });
+  const clear = tracker.runHistoryMutation(async () => {
+    rows.clear();
+    events.push("clear");
+  }, { clearAll: true });
+  const finalReplay = tracker.begin({ youtubeId: "third" });
+  releaseRemove();
+  await Promise.all([remove, replay, clear, finalReplay]);
+  assert.deepEqual(events, [
+    "record:first", "remove:first", "record:second", "clear", "record:third",
+  ]);
+  assert.deepEqual([...rows], ["third"]);
+  assert.equal(tracker.session?.entry?.id, "third");
+  await tracker.save();
+  assert.deepEqual([...rows], ["third"], "later progress cannot recreate cleared entries");
+});
+
+test("rejected Remove followed by same-video replay preserves the new session and queue", async () => {
+  const { Tracker } = loadModule();
+  const events = [];
+  const errors = [];
+  let rejectRemove;
+  let removeStarted;
+  const started = new Promise(resolve => { removeStarted = resolve; });
+  const pendingRemove = new Promise((_resolve, reject) => { rejectRemove = reject; });
+  const tracker = new Tracker({
+    record: async payload => {
+      events.push(`record:${payload.youtubeId}`);
+      return { id: payload.youtubeId, ...payload };
+    },
+    update: async (id, payload) => {
+      events.push(`update:${id}`);
+      return { id, ...payload };
+    },
+    capture: () => ({ positionSeconds: 12, duration: 100 }),
+    onError: error => errors.push(error.message),
+  });
+  await tracker.begin({ youtubeId: "same-video" });
+  const original = tracker.session;
+  const remove = tracker.runHistoryMutation(async () => {
+    removeStarted();
+    return pendingRemove;
+  }, { deletedEntry: { id: "same-video" } });
+  await started;
+  const replay = tracker.begin({ youtubeId: "same-video" });
+  rejectRemove(new Error("remove rejected"));
+  await assert.rejects(remove, /remove rejected/);
+  await replay;
+  await tracker.save();
+  assert.notEqual(tracker.session, original);
+  assert.equal(tracker.session?.historyInvalidated, false);
+  assert.equal(tracker.session?.entry?.id, "same-video");
+  assert.deepEqual(events, [
+    "record:same-video", "update:same-video", "record:same-video", "update:same-video",
+  ]);
+  assert.deepEqual(errors, ["remove rejected"]);
+});
