@@ -288,3 +288,26 @@ test('a video failure preempts an audio retry queued before video teardown', asy
   assert.equal(f.recoveries[0].audioOnly, false);
   assert.equal(f.recoveries[0].reason, 'failure');
 });
+
+test('video failure during an in-flight audio repair runs a full recovery next', async () => {
+  let finishAudio;
+  const gate = new Promise(resolve => { finishAudio = resolve; });
+  const calls = [];
+  const f = fixture({ recover: async sample => {
+    calls.push(sample);
+    if (sample.audioOnly) await gate;
+    return { status: 'started' };
+  } });
+  const sample = { ...f.sample, audioEnabled: true, canRepairAudio: true };
+  assert.equal(f.monitor.request('audio', sample), true);
+  const audioTask = f.task.fn();
+  assert.equal(f.monitor.inFlight, true);
+  assert.equal(f.monitor.request('failure', sample), true);
+  finishAudio();
+  await audioTask;
+  assert.equal(f.task?.delay, 3000);
+  await f.run();
+  assert.deepEqual(calls.map(call => [call.reason, call.audioOnly]), [
+    ['audio', true], ['failure', false],
+  ]);
+});
