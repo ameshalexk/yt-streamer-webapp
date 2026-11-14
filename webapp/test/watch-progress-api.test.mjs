@@ -155,6 +155,27 @@ test("watch progress HTTP API validates sessions and persists across server rest
   assert.equal(persisted.playbackSessionId, "session-http-1");
   assert.equal(persisted.playCount, 1);
 
+  // A same-video replay before deletion must supersede the old session without
+  // accepting delayed progress from the prior playback.
+  const preDeleteReplay = await request(baseUrl, "/api/watch-history", {
+    method: "POST", body: { youtubeId: "http-progress-video", title: "New session",
+      duration: 240, playbackSessionId: "session-http-replay", restartProgress: true },
+  });
+  assert.equal(preDeleteReplay.status, 201);
+  assert.equal(preDeleteReplay.body.id, id);
+  assert.equal(preDeleteReplay.body.playCount, 2);
+  assert.equal(preDeleteReplay.body.positionSeconds, 0);
+  assert.equal(preDeleteReplay.body.progressSequence, -1);
+  assert.equal((await request(baseUrl, `/api/watch-history/${id}/progress`, {
+    method: "PATCH", body: { playbackSessionId: "session-http-1", sequence: 1, positionSeconds: 90 },
+  })).status, 409);
+  const replayProgress = await request(baseUrl, `/api/watch-history/${id}/progress`, {
+    method: "PATCH", body: { playbackSessionId: "session-http-replay", sequence: 0, positionSeconds: 12 },
+  });
+  assert.equal(replayProgress.status, 200);
+  assert.equal(replayProgress.body.positionSeconds, 12);
+  assert.equal(replayProgress.body.playCount, 2);
+
   // A delayed progress PATCH from the deleted session must not resurrect history.
   assert.equal((await request(baseUrl, `/api/watch-history/${id}`, { method: "DELETE" })).status, 200);
   assert.equal((await request(baseUrl, `/api/watch-history/${id}/progress`, {
