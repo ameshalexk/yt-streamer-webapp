@@ -123,12 +123,14 @@
         if (drifted) this.driftAt ??= now;
         else this.driftAt = null;
         const audioRepairSuppressed = sample.audioStatus === 'retrying' || sample.audioStatus === 'gesture-required';
-        if (sample.audioEnabled && !audioRepairSuppressed && (sample.audioError
+        // When both streams have stalled, repairing audio alone cannot
+        // restore the video reader. Give the full recovery priority.
+        if (sample.canMeasureVideo && now - this.videoAt >= this.stallMs) {
+          this.request('video', sample);
+        } else if (sample.audioEnabled && !audioRepairSuppressed && (sample.audioError
             || (sample.videoAvailable && now - this.audioAt >= this.audioStallMs)
             || (this.driftAt != null && now - this.driftAt >= 5000))) {
           this.request('audio', sample);
-        } else if (sample.canMeasureVideo && now - this.videoAt >= this.stallMs) {
-          this.request('video', sample);
         }
       }
       this.last = { ...sample };
