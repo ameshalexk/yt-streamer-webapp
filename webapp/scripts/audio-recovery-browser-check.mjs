@@ -36,7 +36,7 @@ const server=http.createServer(async(req,res)=>{
   const part=Buffer.concat([Buffer.from("--videotest\r\nContent-Type: image/jpeg\r\nContent-Length: "+image.stdout.length+"\r\n\r\n"),image.stdout,Buffer.from("\r\n")]);
   let frames=0;
   const timer=setInterval(()=>{
-    if(res.destroyed || frames++ > 150){clearInterval(timer);if(!res.destroyed)res.end();return;}
+    if(res.destroyed || frames++ > 1000){clearInterval(timer);if(!res.destroyed)res.end();return;}
     res.write(part);
   },70);
   res.on("close",()=>clearInterval(timer));
@@ -67,7 +67,8 @@ try{
  await page.goto("http://127.0.0.1:"+server.address().port+"/",{waitUntil:"domcontentloaded"});
  await page.waitForFunction(()=>typeof window.playBufferedMjpegStream==="function",{timeout:14000});
  await page.evaluate(()=>{
-   window.playBufferedMjpegStream({mjpegUrl:"/video-test?fps=12",audioUrl:"/audio-test"}, "Audio recovery test", {seekable:false,bufferedMjpeg:true});
+   replayFn = () => window.playBufferedMjpegStream({mjpegUrl:"/video-test?fps=12",audioUrl:"/audio-test"}, "Audio recovery test", {seekable:false,bufferedMjpeg:true});
+   replayFn();
  });
  await page.waitForFunction(()=>document.querySelector("#activePlaybackAudio")?.textContent.includes("reconnecting"),{timeout:9000});
  console.log("First audio failure correctly visible:",await page.locator("#activePlaybackAudio").textContent(),"requests",audioRequests);
@@ -94,22 +95,20 @@ try{
  });
  assert.match(await page.locator("#activePlaybackCodec").textContent(),/JPEG XL · (?:native )?JXL/);
 
- // Exhaust all bounded automatic retries, verify the UI does not claim sound,
- // then allow recovery by tapping the visible manual control.
+ // Continuous capped-backoff retry must persist beyond the old three-retry cap.
  forceFailures=true;
  const failuresStart=audioRequests;
  await page.evaluate(()=>{
-   window.playBufferedMjpegStream({mjpegUrl:"/video-test?fps=12",audioUrl:"/audio-test?phase=fail"}, "Permanent audio failure test", {seekable:false,bufferedMjpeg:true});
+   replayFn = () => window.playBufferedMjpegStream({mjpegUrl:"/video-test?fps=12",audioUrl:"/audio-test?phase=fail"}, "Continuous audio recovery test", {seekable:false,bufferedMjpeg:true});
+   replayFn();
  });
- await page.waitForFunction(()=>document.querySelector("#activePlaybackAudio")?.textContent.includes("video clock (silent)"),{timeout:22000});
- assert.equal(audioRequests-failuresStart,4,"Expected one initial audio request + three retries");
- assert.equal(await page.locator("#playerRetryAudioBtn").isVisible(),true,"Manual recovery must be visible");
- console.log("Silent fallback correctly displayed after three retries; requests:",audioRequests-failuresStart);
+ await page.waitForFunction(()=>document.querySelector("#activePlaybackAudio")?.textContent.includes("reconnecting"),{timeout:12000});
+ await page.waitForTimeout(16000);
+ assert.ok(audioRequests-failuresStart>=4,"Automatic retries must continue past the old three-retry limit");
+ assert.equal(await page.locator("#playerRetryAudioBtn").isVisible(),false,"Continuous automatic recovery should not demand manual retry");
  forceFailures=false;
- await page.locator("#playerRetryAudioBtn").click();
- await page.waitForFunction(()=>document.querySelector("#activePlaybackAudio")?.textContent.includes("synchronized") && document.querySelector("#audio")?.currentTime>0.2,{timeout:13000});
- assert.equal(await page.locator("#playerRetryAudioBtn").isVisible(),false);
- console.log("Manual Retry audio restored synchronized playback");
+ await page.waitForFunction(()=>document.querySelector("#activePlaybackAudio")?.textContent.includes("synchronized") && document.querySelector("#audio")?.currentTime>0.2,{timeout:35000});
+ console.log("Continuous automatic retry restored synchronized playback after",audioRequests-failuresStart,"audio requests");
 
 }finally{
  await browser.close();
