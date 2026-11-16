@@ -492,3 +492,32 @@ test("rejected Remove followed by same-video replay preserves the new session an
   ]);
   assert.deepEqual(errors, ["remove rejected"]);
 });
+
+test("failed Clear retains the current playback session and permits later progress", async () => {
+  const { Tracker } = loadModule();
+  const updates = [];
+  const errors = [];
+  const tracker = new Tracker({
+    record: async payload => ({ id: payload.youtubeId, ...payload }),
+    update: async (id, payload) => {
+      updates.push({ id, ...payload });
+      return { id, ...payload };
+    },
+    capture: () => ({ positionSeconds: 31, duration: 120 }),
+    onError: error => errors.push(error.message),
+  });
+  await tracker.begin({ youtubeId: "retain-after-clear-failure" });
+  const session = tracker.session;
+  const clear = tracker.runHistoryMutation(async () => {
+    throw new Error("clear unavailable");
+  }, { clearAll: true });
+  const progress = tracker.save();
+  await assert.rejects(clear, /clear unavailable/);
+  await progress;
+  assert.equal(tracker.session, session);
+  assert.equal(session.historyInvalidated, false);
+  assert.deepEqual(updates.map(({ id, positionSeconds }) => ({ id, positionSeconds })), [
+    { id: "retain-after-clear-failure", positionSeconds: 31 },
+  ]);
+  assert.deepEqual(errors, ["clear unavailable"]);
+});
