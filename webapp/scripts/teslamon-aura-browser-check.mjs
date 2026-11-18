@@ -686,10 +686,22 @@ try{
       assert.equal(await page.evaluate(()=>window.__fixturePlayback),'playing','Preview preserves existing playback');
       assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false','Preview works with mic Off');
       assert.notEqual(await page.evaluate(()=>document.activeElement?.id),'tmText','Preview never focuses command text');
-      await page.locator('#tmAura').tap({position:{x:Math.min(30,width/4),y:Math.min(30,height/4)}});
-      assert.equal(await page.locator('#tmAura').isVisible(),true,'one short tap leaves Preview open');
-      await page.locator('#tmAura').tap({position:{x:Math.min(30,width/4),y:Math.min(30,height/4)}});
-      assert.equal(await page.locator('#tmAura').isHidden(),true,'double tap closes Preview');
+      // The focused touch fixture exercises real taps. In the viewport matrix,
+      // send both pointer pairs in the same browser turn and omit the synthetic
+      // click so we also verify the delayed dismissal fallback.
+      const previewStayedOpen=await page.locator('#tmAura').evaluate(root=>{
+        const tap=pointerId=>{
+          for(const type of ['pointerdown','pointerup'])
+            root.dispatchEvent(new PointerEvent(type,{pointerId,isPrimary:true,pointerType:'touch',
+              button:0,clientX:24,clientY:24,bubbles:true,cancelable:true}));
+        };
+        tap(121);
+        const stayedOpen=!root.hidden;
+        tap(122);
+        return stayedOpen;
+      });
+      assert.equal(previewStayedOpen,true,'one short tap leaves Preview open');
+      await page.locator('#tmAura').waitFor({state:'hidden',timeout:2000});
       if(await page.locator('#tmPanel').isHidden())await page.locator('#tmFace').click();
       await preview.click();
       await page.locator('#tmAura').waitFor({state:'visible'});
