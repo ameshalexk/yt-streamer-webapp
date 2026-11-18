@@ -613,6 +613,24 @@ try{
       await page.locator('#tmAura').waitFor({state:'visible'});
       await page.locator('#tmAura').press('Escape');
       assert.equal(await page.locator('#tmAura').isHidden(),true,'Escape closes Preview');
+      // Aura is announced as a modal visual. Keyboard traversal must stay in
+      // that surface so the next Escape still dismisses it and restores focus.
+      await page.locator('#tmFace').click();
+      await preview.click();
+      await page.locator('#tmAura').waitFor({state:'visible'});
+      await page.keyboard.press('Tab');
+      assert.equal(await page.locator('#tmAura').evaluate(root=>root.contains(document.activeElement)),true,
+        'Tab must keep keyboard focus inside Aura');
+      await page.keyboard.press('Shift+Tab');
+      assert.equal(await page.locator('#tmAura').evaluate(root=>root.contains(document.activeElement)),true,
+        'Shift+Tab must keep keyboard focus inside Aura');
+      await page.locator('#themeToggleBtn').evaluate(button=>button.focus());
+      assert.equal(await page.locator('#tmAura').evaluate(root=>root.contains(document.activeElement)),true,
+        'focus moved to the background returns to Aura');
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#tmAura').isHidden(),true,'Escape dismisses Aura after keyboard navigation');
+      assert.equal(await page.evaluate(()=>document.activeElement?.id),'tmFace',
+        'Escape returns focus to TeslaMon controls');
       const previewAfter=await page.evaluate(()=>({mic:window.__fixtureMicRequests,
         plans:window.__fixturePlanRequests,calls:{...window.__fixtureCalls},playback:window.__fixturePlayback}));
       assert.deepEqual(previewAfter,{...previewBefore},'Preview does not request mic, plan commands, or control media');

@@ -46,6 +46,27 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
   };
   let mode='standby',entry=0,pointer=null,ignoreMouseClick=false,touchDismissTimer=null;
   function owned(token){return token===undefined||token===entry;}
+  function focusDialog(){
+    try{root.focus({preventScroll:true});}catch{root.focus();}
+  }
+  function containFocus(event){
+    if(!root.hidden&&!root.contains(event.target))focusDialog();
+  }
+  function handleDocumentKeydown(event){
+    if(root.hidden)return;
+    if(event.key==='Escape'){
+      dismiss(event);
+      return;
+    }
+    if(event.key==='Tab'){
+      // Aura has no controls. Keep its visual dialog as the only tab stop.
+      event.preventDefault();
+      event.stopPropagation();
+      focusDialog();
+    }
+  }
+  doc.addEventListener('focusin',containFocus,true);
+  doc.addEventListener('keydown',handleDocumentKeydown,true);
   function setPhase(next,{entry:token}={}){
     if(!owned(token))return false;
     mode=PHASES.has(next)?next:'standby';
@@ -79,7 +100,10 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
   }
   function attachToFullscreen(){
     const host=doc.fullscreenElement||doc.webkitFullscreenElement||doc.body;
-    if(root.parentElement!==host)host.append(root);
+    if(root.parentElement!==host){
+      host.append(root);
+      if(!root.hidden)focusDialog();
+    }
   }
   function open({phase='standby',status=''}={}){
     attachToFullscreen();
@@ -89,7 +113,7 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
     root.hidden=false;
     setPhase(phase);
     setStatus(status);
-    try{root.focus({preventScroll:true});}catch{root.focus();}
+    focusDialog();
     return entry;
   }
   function close(){
@@ -132,9 +156,6 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
     if(ignoreMouseClick){ignoreMouseClick=false;event.preventDefault();event.stopPropagation();return;}
     dismiss(event);
   });
-  root.addEventListener('keydown',event=>{
-    if(event.key==='Escape'){dismiss(event);}
-  });
   setPhase('standby');
   return Object.freeze({
     open,close,setPhase,setStatus,setTranscript,attachToFullscreen,
@@ -142,6 +163,11 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
     get phase(){return mode;},
     get entry(){return entry;},
     get element(){return root;},
-    destroy(){close();root.remove();},
+    destroy(){
+      close();
+      doc.removeEventListener('focusin',containFocus,true);
+      doc.removeEventListener('keydown',handleDocumentKeydown,true);
+      root.remove();
+    },
   });
 }

@@ -2,7 +2,7 @@ import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261118-v
 import {interpretTeslaMon} from './teslamon-intent.js';
 import {parseTeslaMonDeviceUrl} from './teslamon-device-url.js?v=20261105-mac-mcp1';
 import {parseTeslaMonVideoUrl} from './teslamon-video-url.js?v=20261105-universal1';
-import {createTeslaMonAura} from './teslamon-aura.js?v=20261105-url-preview1';
+import {createTeslaMonAura} from './teslamon-aura.js?v=20261118-controls1';
 import {createTeslaMonAutoSend} from './teslamon-auto-send.js';
 import {createTeslaMonCapture} from './teslamon-capture.js';
 import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261102-moonshine1';
@@ -86,6 +86,12 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     '<section class="tm-panel" id="tmPanel" hidden aria-label="TeslaMon controls">',
       '<div class="tm-head"><strong>TeslaMon</strong>',
         '<button id="tmClose" type="button" aria-label="Close">×</button></div>',
+      '<form id="tmForm"><label class="tm-visually-hidden" for="tmText">Command</label>',
+        '<input id="tmText" type="text" autocomplete="off" maxlength="220"',
+        ' aria-describedby="tmAutoSendHelp" placeholder="Play video or control lights…" />',
+        '<button id="tmSend" type="submit">Send</button></form>',
+      '<p id="tmAutoSendHelp">Automatically sends after 2 seconds of no changes.</p>',
+      '<button id="tmMic" type="button">Hold to talk</button>',
       '<p id="tmState" role="status" aria-live="polite">Connecting to this tab…</p>',
       '<div class="tm-wake-control" id="tmWakeControl" role="group" aria-label="Hands-free microphone">',
         '<div class="tm-wake-copy"><strong>Hands-free microphone</strong>',
@@ -100,6 +106,16 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
           '<span id="tmAuraToggleState">On</span></label>',
         '<button id="tmAuraPreview" type="button">Preview Aura</button>',
       '</div>',
+      '<div class="tm-target tm-self-target" aria-label="Playback target">',
+        '<span>Controls this browser tab only</span></div>',
+      '<div class="tm-actions">',
+        '<button type="button" data-tm="pause">Pause</button>',
+        '<button type="button" data-tm="resume">Resume</button>',
+        '<button type="button" data-tm="get_playback_state">Status</button>',
+        '<button type="button" data-tm="request_fullscreen">Fullscreen</button>',
+        '<button type="button" data-tm="exit_fullscreen">Exit fullscreen</button>',
+      '</div>',
+      '<details id="tmSettings" class="tm-settings"><summary>Settings</summary>',
       '<fieldset class="tm-wake-phrases" id="tmWakePhraseSet">',
         '<legend>Wake phrases</legend>',
         '<div class="tm-wake-options">',
@@ -120,24 +136,11 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         '<span id="tmSttModelHelp">Audio stays in this browser. Switching Moonshine reloads this page. Embedded website players need Whisper Tiny or Base; reopen the player after switching. Base uses more memory.</span>',
         '<span id="tmSttModelState" role="status" aria-live="polite"></span>',
       '</div>',
-      '<div class="tm-target tm-self-target" aria-label="Playback target">',
-        '<span>Controls this browser tab only</span></div>',
-      '<form id="tmForm"><label class="tm-visually-hidden" for="tmText">Command</label>',
-        '<input id="tmText" type="text" autocomplete="off" maxlength="220"',
-        ' placeholder="Play video or control lights…" />',
-        '<button id="tmSend" type="submit">Send</button></form>',
       '<label id="tmModelLabel" hidden><input id="tmModelOptIn" type="checkbox" />',
         'Use optional AI for unmatched phrases (separate API charges may apply)</label>',
-      '<div class="tm-actions">',
-        '<button id="tmMic" type="button">Hold to talk</button>',
-        '<button type="button" data-tm="pause">Pause</button>',
-        '<button type="button" data-tm="resume">Resume</button>',
-        '<button type="button" data-tm="get_playback_state">Status</button>',
-        '<button type="button" data-tm="request_fullscreen">Fullscreen</button>',
-        '<button type="button" data-tm="exit_fullscreen">Exit fullscreen</button>',
-      '</div>',
+      '</details>',
       '<p id="tmHelp">Codex handles video requests in this tab and Home Assistant lights. No remote tab selection,',
-        ' device pairing, or separate Cloudflare login is required. Text sends automatically after 2 seconds of no changes.</p>',
+      ' device pairing, or separate Cloudflare login is required.</p>',
     '</section>'
   ].join('');
   document.body.append(pet);
@@ -406,7 +409,12 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     hidePet();
   }
   function focusCommand({requestKeyboard=false}={}){
-    if(!opened){opened=true;panel.hidden=false;face.setAttribute('aria-expanded','true');}
+    if(!opened){
+      opened=true;
+      panel.hidden=false;
+      panel.scrollTop=0;
+      face.setAttribute('aria-expanded','true');
+    }
     alignPanel();
     try{input.focus({preventScroll:true});}catch{input.focus();}
     // Only a real user tap may allow opening the virtual keyboard. A wake-word
@@ -1129,23 +1137,37 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       [side,parseFloat(css.getPropertyValue('--tm-safe-'+side))||0]));
   }
   function alignPanel(){
+    if(panel.hidden||pet.hidden)return;
     const safe=safeInsets();
     const bounds=pet.getBoundingClientRect();
-    // Mobile CSS uses a wider panel than desktop. Measure the actual box to
-    // keep it within viewport safe edges after opening, dragging or rotation.
-    const width=panel.getBoundingClientRect().width||Math.min(336,Math.max(200,innerWidth-16));
-    const desired=bounds.right-width;
-    const left=Math.max(safe.left+8,Math.min(innerWidth-safe.right-width-8,desired));
-    panel.style.left=(left-bounds.left)+'px';
+    const viewport=window.visualViewport;
+    const left=(viewport?.offsetLeft??0)+safe.left+8;
+    const top=(viewport?.offsetTop??0)+safe.top+8;
+    const right=(viewport?.offsetLeft??0)+(viewport?.width??innerWidth)-safe.right-8;
+    const bottom=(viewport?.offsetTop??0)+(viewport?.height??innerHeight)-safe.bottom-8;
+    panel.style.maxWidth=Math.max(0,right-left)+'px';
+    const width=panel.getBoundingClientRect().width;
+    const panelLeft=Math.max(left,Math.min(right,bounds.right)-width);
+    panel.style.left=(panelLeft-bounds.left)+'px';
     panel.style.right='auto';
-    const above=Math.max(0,bounds.top-safe.top-16);
-    const below=Math.max(0,innerHeight-safe.bottom-bounds.bottom-16);
+    const aboveBottom=Math.min(bottom,bounds.top-8);
+    const belowTop=Math.max(top,bounds.bottom+8);
+    const above=Math.max(0,aboveBottom-top);
+    const below=Math.max(0,bottom-belowTop);
     if(below>above){
-      panel.style.top=(bounds.height+8)+'px';panel.style.bottom='auto';
+      panel.style.top=(belowTop-bounds.top)+'px';panel.style.bottom='auto';
     }else{
-      panel.style.top='auto';panel.style.bottom=(bounds.height+8)+'px';
+      panel.style.top='auto';panel.style.bottom=(bounds.bottom-aboveBottom)+'px';
     }
-    panel.style.maxHeight=Math.max(110,Math.min(650,Math.max(above,below)))+'px';
+    panel.style.maxHeight=Math.min(650,Math.max(above,below))+'px';
+  }
+  let panelFrame=null;
+  function schedulePanelAlignment(){
+    if(panelFrame!==null||panel.hidden)return;
+    panelFrame=requestAnimationFrame(()=>{
+      panelFrame=null;
+      alignPanel();
+    });
   }
   function setPosition(x,y){
     const safe=safeInsets();
@@ -1230,8 +1252,17 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   restorePositionForMode();
   window.addEventListener('resize',()=>{
     if(pet.style.left)setPosition(pet.offsetLeft,pet.offsetTop);
-    else alignPanel();
+    schedulePanelAlignment();
   });
+  // Browser chrome, the keyboard and rotation can update the visible viewport
+  // separately from the layout viewport. Re-measure after those changes.
+  window.visualViewport?.addEventListener('resize',schedulePanelAlignment);
+  window.visualViewport?.addEventListener('scroll',schedulePanelAlignment);
+  if(typeof ResizeObserver==='function'){
+    const panelResize=new ResizeObserver(schedulePanelAlignment);
+    panelResize.observe(pet);
+    panelResize.observe(panel);
+  }
   auraToggle.addEventListener('change',()=>setAuraEnabled(auraToggle.checked));
   auraPreview.addEventListener('click',()=>{
     if(!auraEnabled||userDisabled)return;
