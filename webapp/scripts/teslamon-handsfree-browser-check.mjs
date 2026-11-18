@@ -61,6 +61,10 @@ const dismissStartupAura=async page=>{
   await aura.waitFor({state:'hidden',timeout:3000});
  }
 };
+const openSettings=async page=>{
+ const settings=page.locator('#tmSettings');
+ if(await settings.getAttribute('open')===null)await page.locator('#tmSettings summary').click();
+};
 // Once the one-shot initial command is armed, subsequent checks need passive
 // wake standby. Explicitly cancel that synthetic startup capture instead of
 // waiting for the 12-second no-speech timeout (which varies on CI hosts).
@@ -115,6 +119,7 @@ try{
  await page.locator('#tmAura').waitFor({state:'visible',timeout:7000});
  await dismissStartupAura(page);
  await page.locator('#tmFace').click();
+ await openSettings(page);
  try{await page.waitForFunction(()=>!document.querySelector('#tmWakeToggle').disabled,null,{timeout:5000});}catch(error){console.error('INIT DEBUG',JSON.stringify(await page.evaluate(()=>({wake:document.querySelector('#tmWakeState')?.textContent,mic:document.querySelector('#tmMic')?.textContent,main:document.querySelector('#tmState')?.textContent,pet:!!document.querySelector('#teslamonPet'),toggleDisabled:document.querySelector('#tmWakeToggle')?.disabled})),null,2),'pageErrors',errors,'api',apiUploads,'unexpected',unexpected);throw error;}
  // Auto-wake is already ON after page load, subject to browser permissions.
  try { await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent?.includes('Listening for'),null,{timeout:12000}); }
@@ -163,6 +168,7 @@ try{
  await preparePassiveWake(page);
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Listening for Hey Mycroft',null,{timeout:15000});
  await page.locator('#tmFace').click();
+ await openSettings(page);
  assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true);
  assert.equal(await page.locator('input[value=alexa]').isChecked(),false);
  assert.equal(await page.locator('input[value=hey_jarvis]').isChecked(),false);
@@ -177,6 +183,7 @@ try{
  await preparePassiveWake(page);
  await page.waitForFunction(()=>document.querySelector('#tmWakeState')?.textContent==='Listening for Hey Mycroft, Hey Rhasspy',null,{timeout:15000});
  await page.locator('#tmFace').click();
+ await openSettings(page);
  assert.equal(await page.locator('input[value=hey_mycroft]').isChecked(),true);
  assert.equal(await page.locator('input[value=hey_rhasspy]').isChecked(),true);
  assert.equal(await page.locator('input[value=hey_jarvis]').isChecked(),false);
@@ -188,6 +195,7 @@ try{
  await dismissStartupAura(page);
  await preparePassiveWake(page);
  await page.locator('#tmFace').click();
+ await openSettings(page);
  assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-tiny.en','invalid saved model falls back to Tiny');
  await page.locator('#tmWakeToggle').click();
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true);
@@ -349,12 +357,14 @@ try{
  await dismissStartupAura(page);
  await preparePassiveWake(page);
  await page.locator('#tmFace').click();
+ await openSettings(page);
  assert.equal(await page.locator('#tmSttModel').isDisabled(),false,'Moonshine entry clickable during wake standby');
  await page.locator('#tmSttModel').selectOption('moonshine-tiny-streaming');
  await page.waitForURL(url=>url.pathname==='/'&&url.searchParams.get('tm_stt_mode')==='moonshine',{timeout:12000});
  await dismissStartupAura(page);
  await preparePassiveWake(page);
  await page.locator('#tmFace').click();
+ await openSettings(page);
  assert.equal(await page.locator('#tmSttModel').inputValue(),'moonshine-tiny-streaming');
  assert.equal(await page.evaluate(()=>crossOriginIsolated),true,'WASM mode isolates the normal player document');
  assert.equal(await page.evaluate(()=>typeof SharedArrayBuffer==='function'),true,'Moonshine WASM has shared memory');
@@ -365,6 +375,7 @@ try{
  await dismissStartupAura(page);
  await preparePassiveWake(page);
  await page.locator('#tmFace').click();
+ await openSettings(page);
  assert.equal(await page.locator('#tmSttModel').inputValue(),'whisper-tiny.en');
  assert.equal(await page.evaluate(()=>crossOriginIsolated),false,'Whisper mode restores ordinary media headers');
  console.log('PASS Moonshine works as an in-page STT option with isolated load and Whisper restoration');

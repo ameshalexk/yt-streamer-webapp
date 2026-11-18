@@ -74,6 +74,7 @@ const setup=async(viewport,ui,reducedMotion=false,simulateWake=false,hasTouch=fa
    catch{try{await route.abort();}catch{/* navigation settled */}}
  });
  await page.goto(origin+'/?ui='+ui,{waitUntil:'domcontentloaded',timeout:16000});
+ if(ui==='new')await page.locator('html[data-ui="new"]').waitFor({state:'attached'});
  await page.locator('#teslamonPet').waitFor({state:'attached',timeout:13000});
  await page.locator('#tmAura').waitFor({state:'visible',timeout:7000});
  await page.locator('#tmAura').press('Escape');
@@ -85,12 +86,39 @@ const setup=async(viewport,ui,reducedMotion=false,simulateWake=false,hasTouch=fa
  assert.equal(sizes.svg,1,ui+': vector puppy SVG missing');
  return {ctx,page,unexpected};
 };
+const assertPrimaryControls=async(page,label)=>{
+ const measurements=await page.locator('#tmPanel').evaluate(panel=>{
+  const bounds=panel.getBoundingClientRect();
+  return ['#tmText','#tmSend','#tmAutoSendHelp','#tmMic'].map(selector=>{
+   const control=panel.querySelector(selector);
+   const rect=control.getBoundingClientRect();
+   const inside=rect.left>=bounds.left&&rect.top>=bounds.top&&
+    rect.right<=bounds.right&&rect.bottom<=bounds.bottom&&
+    rect.left>=0&&rect.top>=0&&rect.right<=innerWidth&&rect.bottom<=innerHeight;
+   const hit=control.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2));
+   return {selector,inside,hit,width:rect.width,height:rect.height};
+  });
+ });
+ for(const control of measurements){
+  assert.ok(control.inside&&control.hit,label+' primary control is clipped '+JSON.stringify(control));
+  if(control.selector!=='#tmAutoSendHelp')
+   assert.ok(control.width>=44&&control.height>=44,label+' primary touch target below 44px '+JSON.stringify(control));
+ }
+};
 const clickOpen=async page=>{
  await page.locator('#tmFace').click();
  await page.locator('#tmPanel').waitFor({state:'visible'});
  assert.equal(await page.locator('#tmFace').getAttribute('aria-expanded'),'true');
- const mic=await page.locator('#tmMic').boundingBox();
- assert.ok(mic&&mic.width>=44&&mic.height>=44,'mic touch target under 44px '+JSON.stringify(mic));
+ // The primary task must be available as soon as the panel opens. Advanced
+ // microphone/model settings stay grouped behind a native disclosure.
+ await page.locator('#tmSettings').waitFor({state:'attached'});
+ assert.equal(await page.locator('#tmSettings').getAttribute('open'),null,'advanced settings start collapsed');
+ await assertPrimaryControls(page,'on opening');
+ assert.match(await page.locator('#tmAutoSendHelp').innerText(),/Automatically sends after 2 seconds of no changes\./i);
+ const describedBy=(await page.locator('#tmText').getAttribute('aria-describedby')||'').split(/\s+/);
+ assert.ok(describedBy.includes('tmAutoSendHelp'),'auto-send behavior is described by the command field');
+ const phraseAndModel=page.locator('#tmSettings #tmWakePhraseSet, #tmSettings #tmSttModel');
+ assert.equal(await phraseAndModel.count(),2,'wake phrases and transcription model are grouped under Settings');
  const wake=await page.locator('#tmWakeToggle').boundingBox();
  assert.ok(wake&&wake.width>=44&&wake.height>=44,'hands-free toggle touch target under 44px '+JSON.stringify(wake));
  assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false','wake mic must default off');
@@ -128,6 +156,22 @@ try{
    if(width===390&&ui==='classic')await page.screenshot({path:path.join(evidenceDir,'390-closed-puppy.png')});
    await clickOpen(page);
    let initial=await measure(page);assertContained(initial,width+'x'+height+' initial');
+   if(width===844&&height===390){
+    for(const viewport of [{width:375,height:667},{width:844,height:390}]){
+     await page.setViewportSize(viewport);
+     await page.waitForFunction(({width,height})=>{
+      const rect=document.querySelector('#tmPanel').getBoundingClientRect();
+      return innerWidth===width&&innerHeight===height&&rect.left>=7&&rect.top>=7&&
+       rect.right<=width-7&&rect.bottom<=height-7;
+     },viewport);
+     const rotated=await measure(page);
+     const label=ui+' after rotation to '+viewport.width+'x'+viewport.height;
+     assertContained(rotated,label);
+     await assertPrimaryControls(page,label);
+     if(ui==='new'&&viewport.width===375)
+      await page.screenshot({path:path.join(evidenceDir,'375-new-after-rotation.png')});
+    }
+   }
    if(width===320&&ui==='classic')await page.screenshot({path:path.join(evidenceDir,'320-panel-open.png')});
    if(width===1440)await page.screenshot({path:path.join(evidenceDir,'desktop-puppy-panel.png')});
    const moved=[];

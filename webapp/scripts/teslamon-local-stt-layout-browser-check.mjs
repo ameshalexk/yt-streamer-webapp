@@ -56,6 +56,7 @@ try{
       await page.locator('#tmAura').waitFor({state:'hidden',timeout:3000});
       await page.locator('#tmFace').waitFor({timeout:12000});
       await page.locator('#tmFace').click();
+      await page.locator('#tmSettings summary').click();
       await page.locator('#tmSttModel').selectOption('whisper-base.en');
       await page.locator('#tmSttModel').scrollIntoViewIfNeeded();
       const result=await page.evaluate(()=>{

@@ -23,7 +23,7 @@
 #teslamonPet #tmFace[data-state="warn"] .tm-tag{fill:#ffbb84}
 #teslamonPet .tm-tail{transform-origin:75px 78px;animation:tm-tail-wag 1.8s ease-in-out infinite}
 @keyframes tm-tail-wag{0%,60%,100%{transform:rotate(0deg)}70%,90%{transform:rotate(-12deg)}80%{transform:rotate(9deg)}}
-#teslamonPet .tm-panel{position:absolute;right:0;bottom:80px;width:min(336px,calc(100vw - 16px - var(--tm-safe-left) - var(--tm-safe-right)));max-height:min(650px,calc(100dvh - 100px));overflow-y:auto;padding:14px;background:#15232f;border:1px solid #647d92;border-radius:15px;box-shadow:0 16px 40px #000a;color:#f3f7ff;user-select:text;-webkit-user-select:text}
+#teslamonPet .tm-panel{position:absolute;right:0;bottom:80px;width:min(336px,calc(100vw - 16px - var(--tm-safe-left) - var(--tm-safe-right)));max-height:min(650px,calc(100dvh - 100px));overflow-y:auto;overscroll-behavior:contain;padding:14px;background:#15232f;border:1px solid #647d92;border-radius:15px;box-shadow:0 16px 40px #000a;color:#f3f7ff;user-select:text;-webkit-user-select:text}
 #teslamonPet .tm-panel[hidden]{display:none}
 #teslamonPet .tm-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:17px}
 #teslamonPet .tm-head button{border:0;color:#fff;background:#30485d;border-radius:8px;width:44px;height:44px;font-size:25px}
@@ -36,13 +36,18 @@
 #teslamonPet select option{background:#162b3c}
 #teslamonPet button:not(#tmFace):not(#tmHandle){min-height:44px}
 #teslamonPet #tmRefresh,#teslamonPet #tmSend,#teslamonPet .tm-actions button,#teslamonPet .tm-choice{border:1px solid #7891a3;border-radius:8px;background:#294961;color:#f5faff;padding:8px}
-#teslamonPet #tmForm{display:flex;gap:6px;margin-bottom:12px}
+#teslamonPet #tmForm{display:flex;gap:6px}
+#teslamonPet #tmText{font-size:16px}
+#teslamonPet #tmAutoSendHelp{margin:4px 0 8px;color:#c7d8e8;font-size:12px;line-height:1.35}
 #teslamonPet #tmModelLabel{display:flex;gap:7px;align-items:start;margin:0 0 12px;color:#c7d8e8;font-size:12px;line-height:1.4;user-select:text}
 #teslamonPet #tmModelLabel[hidden]{display:none}
 #teslamonPet #tmModelOptIn{width:18px;height:18px;flex:none;margin:0;accent-color:#6bd3a6}
 #teslamonPet #tmSend{min-width:57px}
 #teslamonPet .tm-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:10px}
-#teslamonPet #tmMic{background:#275e77;border-color:#74bedf;touch-action:none}
+#teslamonPet #tmMic{width:100%;border:1px solid #74bedf;border-radius:8px;background:#275e77;color:#f5faff;padding:8px;touch-action:none}
+#teslamonPet .tm-settings summary{min-height:44px;padding:8px 10px;border:1px solid #71889a;border-radius:8px;cursor:pointer;color:#d9eaf5;font-weight:600;line-height:26px}
+#teslamonPet .tm-settings[open] summary{margin-bottom:10px}
+#teslamonPet .tm-settings summary:focus-visible{outline:3px solid #a4d5ff;outline-offset:2px}
 #teslamonPet button:disabled{opacity:.5;cursor:not-allowed}
 #teslamonPet .tm-choice{text-align:left;overflow-wrap:anywhere}
 #teslamonPet #tmHelp{font-size:12px;line-height:1.45;color:#a9c0d0;margin:9px 0 0}
