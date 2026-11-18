@@ -99,7 +99,7 @@ const mime={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript'
   '.css':'text/css','.svg':'image/svg+xml','.json':'application/json','.wasm':'application/wasm'};
 const fakeHandsFree=String.raw`
 export function createTeslaMonHandsFree({onState,onAudio}={}){
-  let enabled=false,state='off',invocation=0,activeController=null;
+  let enabled=false,state='off',invocation=0,activeController=null,suspended=false;
   const emit=update=>{state=update.state;globalThis.__fixtureWakeState=state;onState?.(update);};
   globalThis.__auraWake=keyword=>{
     if(!enabled||state!=='listening')return;
@@ -162,9 +162,10 @@ export function createTeslaMonHandsFree({onState,onAudio}={}){
       emit({state:'recording',invocationId,message:'Recording the first command without wake'});
       return true;
     },
-    disable(){enabled=false;activeController?.abort();activeController=null;emit({state:'off',message:'Off'});},
-    suspend(){return false;},resume(){return true;},
-    get enabled(){return enabled;},get state(){return state;}};
+    disable(){enabled=false;suspended=false;activeController?.abort();activeController=null;emit({state:'off',message:'Off'});},
+    suspend(){if(!enabled||state!=='listening')return false;suspended=true;return true;},
+    resume(){if(suspended){suspended=false;return true;}return false;},
+    get enabled(){return enabled;},get suspended(){return suspended;},get state(){return state;}};
 }
 `;
 const fakeLocalStt=String.raw`
