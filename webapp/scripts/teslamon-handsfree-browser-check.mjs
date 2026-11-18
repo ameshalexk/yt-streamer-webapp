@@ -123,6 +123,7 @@ try{
  assert.match(await page.locator('#tmWakeState').innerText(),/Hey Jarvis, Alexa, Hey Mycroft, Hey Rhasspy/);
  assert.equal(await page.locator('#tmWakePhraseSet').evaluate(fieldset=>fieldset.disabled),true,'phrase changes locked while listening');
  assert.equal(await page.locator('#tmSttModel').isDisabled(),false,'model choice works during passive Mic On');
+ assert.deepEqual(modelRequests,[],'default passive wake must not eagerly fetch Whisper model weights');
  assert.match(await page.locator('#tmSttModelState').innerText(),/Changing the model turns Mic Off/);
  assert.equal(await page.evaluate(()=>window.__teslamonMicStreams.length),1,'page load obtains one mic stream');
  assert.equal(await page.locator('#teslamonPet').getAttribute('data-mic'),'on');
@@ -253,6 +254,9 @@ try{
    'restoring dog uses its own saved position rather than the paw position');
  assert.equal(await page.evaluate(()=>localStorage.getItem('ytStreamerTeslaMonDisabledV1')),null,'restore clears persistent opt-out');
  console.log('PASS puppy X stops mic; paw defaults bottom-right, drags/keyboard-moves independently, persists and restores');
+ // Earlier steps explicitly selected Whisper. Only requests made during the
+ // subsequent Base-mode pause fixture belong to this no-eager-download gate.
+ const modelRequestsBeforeBase=modelRequests.length;
  await page.evaluate(()=>localStorage.clear());
  await page.goto(origin+'/__teslamon_pause_fixture__?ui=classic&ai_agent_dev=1&teslamon_pause_fixture=1',{waitUntil:'domcontentloaded',timeout:20000});
  await page.waitForFunction(()=>typeof window.YTStreamerMediaAgent?.execute==='function'&&typeof window.__teslamonPauseFixture?.start==='function'&&typeof window.__teslamonTriggerWake==='function');
@@ -332,7 +336,7 @@ try{
    explicitResume:{status:explicitResume.status,phase:'playing'},playbackAfterSecondWake:'paused',automaticResumes:0,
    fixture:'local Chrome native video via canvas captureStream; deterministic accepted-wake trigger; real app adapter'}));
  console.log('PASS accepted wake pauses through the actual same-tab adapter before capture; explicit resume and repeated wake work; cleanup does not resume');
- assert.deepEqual(modelRequests,[],'choosing Base never eagerly downloads transcription weights');
+ assert.deepEqual(modelRequests.slice(modelRequestsBeforeBase),[],'choosing Base never eagerly downloads transcription weights');
  assert.deepEqual(apiUploads,[],'no ambient audio uploaded to PowerALX or Codex');
  assert.deepEqual(unexpected,[],'no third-party network calls');
  assert.deepEqual(errors,[],'no page JS errors');
