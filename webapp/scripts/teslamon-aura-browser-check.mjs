@@ -720,13 +720,13 @@ try{
         if(process.env.TESLAMON_AURA_SCREENSHOTS==='1')
           await page.screenshot({path:'/tmp/teslamon-aura-handoff-buffering.jpg',type:'jpeg',quality:70});
         await page.waitForTimeout(2200);
-        assert.equal(plans.length,2,'accepted handoff does not duplicate planner request');
+        assert.equal(plans.length,1,'bounded direct video request does not invoke the Codex planner');
         assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),1,'buffering observation does not replay media');
         await waitForVoiceReady();
 
         // Terminal non-player outcomes, no speech, and cooldown all release
         // takeover. They leave Aura armed so a later accepted wake can return.
-        for(const [mode,text] of [['ha_done','turn on office lights'],['error','turn on office lights'],
+        for(const [mode,text] of [['ha_done','show me the office lights'],['error','turn on office lights'],
           ['uncertain','turn on office lights'],['no_speech','']]){
           await scenario(mode);
           await submitVoice(text);

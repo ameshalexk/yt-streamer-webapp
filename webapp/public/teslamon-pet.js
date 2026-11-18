@@ -1,4 +1,5 @@
-import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261027-context1';
+import {createTeslaMonLocalPlayer} from './teslamon-local-player.js?v=20261118-voice-playback1';
+import {interpretTeslaMon} from './teslamon-intent.js';
 import {parseTeslaMonDeviceUrl} from './teslamon-device-url.js?v=20261105-mac-mcp1';
 import {parseTeslaMonVideoUrl} from './teslamon-video-url.js?v=20261105-universal1';
 import {createTeslaMonAura} from './teslamon-aura.js?v=20261105-url-preview1';
@@ -796,7 +797,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       }
     }
   }
-  // Both typed and voice commands use the existing authenticated planner.
+  // Explicit voice playback can use the same-tab player during a Codex outage.
   // Voice cancellation checks apply before any new player/HA dispatch.
   async function interpret(text,{allowClosed=false,signal,owner=null,entry=null,voice=false,videoOnly=false}={}){
     if(signal?.aborted){finishVoiceAura(owner,entry);return false;}
@@ -810,9 +811,21 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     const current=()=>token===modelGeneration&&!signal?.aborted&&
       target===selected&&(!voice||epoch===micEpoch)&&
       (!voice||owner===null||owner===voiceOwner)&&(!document.hidden)&&(opened||allowClosed);
-    auraStage('thinking','Understanding your request…',{entry});
-    status('Codex is understanding your request…','info',owner);
     try{
+      if(voice&&!videoOnly){
+        const direct=interpretTeslaMon(request);
+        const explicitPlay=/^(?:please\s+)?play\s+/iu.test(request.normalize('NFKC'));
+        if(!direct.error&&(direct.tool!=='search_and_play'||explicitPlay)){
+          if(!current())return false;
+          if(input.value.trim()===request)input.value='';
+          return await issue(direct,requestRevision,{
+            originalRequest:request,signal,owner,entry,voice,epoch,isCurrent:current,
+            explicitLocalPlay:direct.tool==='search_and_play'
+          });
+        }
+      }
+      auraStage('thinking','Understanding your request…',{entry});
+      status('Codex is understanding your request…','info',owner);
       const endpoint=videoOnly?'/api/teslamon/url-video-plan':'/api/teslamon/plan';
       // Busy means the planner never started this command. Retry only that
       // transient case; quota failures and device/video rejections are final.

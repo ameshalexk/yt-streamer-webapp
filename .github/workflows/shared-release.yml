@@ -48,7 +48,8 @@ jobs:
             echo "Using runner's existing FFmpeg installation"
           elif [ "$RUNNER_OS" = Linux ]; then
             sudo apt-get update
-            sudo apt-get install -y ffmpeg
+            # These fixtures do not use FFmpeg's optional speech-model or driver packages.
+            sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 ffmpeg
           else
             brew install ffmpeg
           fi
@@ -76,6 +77,9 @@ jobs:
         working-directory: webapp
       - name: TeslaMon wake and pause browser regression
         run: node scripts/teslamon-handsfree-browser-check.mjs
+        working-directory: webapp
+      - name: TeslaMon wake to voice playback without Codex (Whisper and Moonshine)
+        run: node scripts/teslamon-voice-playback-browser-check.mjs
         working-directory: webapp
       - name: TeslaMon Aura fullscreen and feature flag browser regression
         run: npm run test:teslamon-aura-browser
