@@ -114,7 +114,7 @@ export function createTeslaMonCapture({
     catch { /* The original error is the useful one. */ }
   }
 
-  async function start() {
+  async function start({submitAtDurationLimit=true}={}) {
     if (disposed || active) return false;
     if (!Number.isFinite(maxDurationMs) || maxDurationMs <= 0 || maxDurationMs > MAX_DURATION_MS ||
         !Number.isFinite(maxBytes) || maxBytes <= 0 || maxBytes > MAX_BYTES ||
@@ -200,7 +200,10 @@ export function createTeslaMonCapture({
       recorder.start();
       state(session, 'recording');
       if (active !== session) return false;
-      session.durationTimer = timers.setTimeout(() => requestStop(session, 'complete'), maxDurationMs);
+      session.durationTimer = timers.setTimeout(() => {
+        if (submitAtDurationLimit) requestStop(session, 'complete');
+        else terminate(session, new Error('Recording timed out before release. Hold to talk again.'));
+      }, maxDurationMs);
       return true;
     } catch (error) {
       terminate(session, error);
