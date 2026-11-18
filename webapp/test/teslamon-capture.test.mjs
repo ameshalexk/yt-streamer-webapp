@@ -109,6 +109,26 @@ test('release while permission is pending discards a late grant and permits a ne
   assert.equal(liveTrack.stopped, 1);
 });
 
+test('release-only recording discards buffered audio if the user never releases', async () => {
+  const timers = new FakeTimers();
+  const { Recorder, instances } = recorderHarness({ syncStop: true });
+  const { stream, track } = trackStream();
+  const audio = [];
+  const errors = [];
+  const controller = createTeslaMonCapture({
+    getUserMedia: async () => stream, MediaRecorder: Recorder, timers,
+    onAudio: blob => audio.push(blob), onError: error => errors.push(error),
+  });
+  assert.equal(await controller.start({ submitAtDurationLimit: false }), true);
+  instances[0].chunk(2048);
+  timers.run(TESLAMON_CAPTURE_LIMITS.maxDurationMs);
+  controller.release();
+  assert.deepEqual(audio, []);
+  assert.equal(track.stopped, 1);
+  assert.match(errors[0].message, /before release/);
+  assert.equal(controller.state, 'idle');
+});
+
 test('cancel lifecycle methods stop tracks without submitting audio', async t => {
   for (const method of ['cancel', 'pointerCancel', 'lostPointerCapture', 'pageHide', 'targetChanged', 'dispose']) {
     await t.test(method, async () => {

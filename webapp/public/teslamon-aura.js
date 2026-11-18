@@ -1,6 +1,6 @@
 // TeslaMon Aura is presentation only; it never owns a microphone or command.
 const PHASES=new Set(['standby','preparing','listening','transcribing','thinking','acting','complete','error']);
-export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=()=>{}}={}){
+export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=()=>{},onHoldStart=()=>{},onHoldEnd=()=>{},onHoldCancel=()=>{}}={}){
   if(!doc?.body)throw new TypeError('Aura needs a document with a body');
   const root=doc.createElement('section');
   root.id='tmAura';
@@ -9,7 +9,7 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
   root.tabIndex=0;
   root.setAttribute('role','dialog');
   root.setAttribute('aria-modal','true');
-  root.setAttribute('aria-label','TeslaMon Aura. Tap anywhere or press Escape to exit the visual.');
+  root.setAttribute('aria-label','TeslaMon Aura. Double tap to dismiss. Press Escape to close.');
   root.setAttribute('aria-keyshortcuts','Escape');
   root.innerHTML=`
     <div class="ta-ambient ta-ambient-left" aria-hidden="true"></div>
@@ -44,7 +44,9 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
     complete:['Request complete',''],
     error:['Request could not finish','You can retry your request'],
   };
-  let mode='standby',entry=0,pointer=null,ignoreMouseClick=false,touchDismissTimer=null;
+  const HOLD_MS=250,DOUBLE_TAP_MS=350,MOVE_LIMIT=12,TOUCH_CLICK_WAIT_MS=180;
+  let mode='standby',entry=0,pointer=null,lastTapAt=0,captureOnHold=false,keyboardHold=null;
+  let touchDismissTimer=null;
   function owned(token){return token===undefined||token===entry;}
   function focusDialog(){
     try{root.focus({preventScroll:true});}catch{root.focus();}
@@ -63,10 +65,32 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
       event.preventDefault();
       event.stopPropagation();
       focusDialog();
+      return;
     }
+    if(event.code==='Space'&&captureOnHold){
+      event.preventDefault();
+      event.stopPropagation();
+      if(!event.repeat&&!keyboardHold&&!pointer&&touchDismissTimer===null){
+        lastTapAt=0;
+        const state=keyboardHold={entry,holding:false,timer:null};
+        state.timer=setTimeout(()=>{
+          if(keyboardHold!==state)return;
+          state.holding=true;
+          onHoldStart({entry:state.entry,event});
+        },HOLD_MS);
+      }
+    }
+  }
+  function handleDocumentKeyup(event){
+    if(event.code!=='Space'||!keyboardHold)return;
+    event.preventDefault();event.stopPropagation();
+    const state=keyboardHold;keyboardHold=null;clearTimeout(state.timer);
+    if(state.holding)onHoldEnd({entry:state.entry,event});
   }
   doc.addEventListener('focusin',containFocus,true);
   doc.addEventListener('keydown',handleDocumentKeydown,true);
+  doc.addEventListener('keyup',handleDocumentKeyup,true);
+  doc.defaultView?.addEventListener('blur',onWindowBlur);
   function setPhase(next,{entry:token}={}){
     if(!owned(token))return false;
     mode=PHASES.has(next)?next:'standby';
@@ -105,11 +129,18 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
       if(!root.hidden)focusDialog();
     }
   }
-  function open({phase='standby',status=''}={}){
+  function open({phase='standby',status='',captureOnHold:canCapture=false}={}){
+    cancelPointer('reopen');
+    cancelKeyboard('reopen');
+    clearTouchDismiss();
     attachToFullscreen();
     entry++;
     setTranscript('',{entry});
-    ignoreMouseClick=false;
+    lastTapAt=0;
+    captureOnHold=Boolean(canCapture);
+    root.setAttribute('aria-label',captureOnHold
+      ?'TeslaMon Aura. Press and hold, or hold Space, to record. Release to send. Double tap or press Escape to dismiss.'
+      :'TeslaMon Aura. Double tap to dismiss. Press Escape to close.');
     root.hidden=false;
     setPhase(phase);
     setStatus(status);
@@ -118,11 +149,12 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
   }
   function close(){
     if(root.hidden)return;
+    cancelPointer('hidden');
+    cancelKeyboard('hidden');
+    clearTouchDismiss();
     root.hidden=true;
     setTranscript('');
     if(doc.activeElement===root)try{root.blur();}catch{}
-    pointer=null;
-    if(touchDismissTimer!==null){clearTimeout(touchDismissTimer);touchDismissTimer=null;}
   }
   function dismiss(event){
     if(root.hidden)return;
@@ -131,31 +163,92 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
     close();
     onDismiss(entry,event?.type==='keydown'?'keyboard':'pointer');
   }
+  function cancelPointer(reason){
+    if(!pointer)return;
+    const active=pointer;
+    pointer=null;
+    lastTapAt=0;
+    clearTimeout(active.timer);
+    if(active.holding)onHoldCancel({entry:active.entry,reason});
+    try{root.releasePointerCapture(active.id);}catch{}
+  }
+  function cancelKeyboard(reason){
+    if(!keyboardHold)return;
+    const active=keyboardHold;
+    keyboardHold=null;
+    clearTimeout(active.timer);
+    if(active.holding)onHoldCancel({entry:active.entry,reason});
+  }
+  function clearTouchDismiss(){
+    clearTimeout(touchDismissTimer);
+    touchDismissTimer=null;
+  }
+  function onWindowBlur(){
+    cancelPointer('blur');
+    cancelKeyboard('blur');
+    clearTouchDismiss();
+    lastTapAt=0;
+  }
+  function isolate(event){event.preventDefault();event.stopPropagation();}
   root.addEventListener('pointerdown',event=>{
-    pointer=event.isPrimary&&event.button===0?
-      {id:event.pointerId,x:event.clientX,y:event.clientY,moved:false}:null;
-  });
+    isolate(event);
+    if(!event.isPrimary||event.button!==0||root.hidden||keyboardHold||touchDismissTimer!==null)return;
+    cancelPointer('replaced');
+    const startedAt=Date.now();
+    const secondTap=lastTapAt>0&&startedAt-lastTapAt<=DOUBLE_TAP_MS;
+    const state=pointer={id:event.pointerId,x:event.clientX,y:event.clientY,holding:false,entry,startedAt,secondTap};
+    try{root.setPointerCapture(event.pointerId);}catch{}
+    // Reserve a press that starts inside the double-tap window for dismissal.
+    // A slow second touch must not accidentally turn into a mic command.
+    if(captureOnHold&&!secondTap){
+      state.timer=setTimeout(()=>{
+        if(pointer!==state||state.moved)return;
+        state.holding=true;
+        lastTapAt=0;
+        onHoldStart({entry:state.entry,event});
+      },HOLD_MS);
+    }
+  },{capture:true});
   root.addEventListener('pointermove',event=>{
-    if(pointer?.id===event.pointerId&&Math.hypot(event.clientX-pointer.x,event.clientY-pointer.y)>12)
+    if(pointer?.id!==event.pointerId)return;
+    isolate(event);
+    if(Math.hypot(event.clientX-pointer.x,event.clientY-pointer.y)>MOVE_LIMIT){
       pointer.moved=true;
-  });
-  root.addEventListener('pointercancel',()=>{pointer=null;});
+      cancelPointer('drag');
+    }
+  },{capture:true});
+  root.addEventListener('pointercancel',event=>{
+    if(pointer?.id===event.pointerId){isolate(event);cancelPointer('pointercancel');}
+  },{capture:true});
+  root.addEventListener('lostpointercapture',event=>{
+    if(pointer?.id===event.pointerId)cancelPointer('lostpointercapture');
+  },{capture:true});
   root.addEventListener('pointerup',event=>{
     if(!pointer||pointer.id!==event.pointerId)return;
-    const valid=!pointer.moved&&Math.hypot(event.clientX-pointer.x,event.clientY-pointer.y)<=12;
+    isolate(event);
+    const state=pointer;
+    const valid=!state.moved&&Math.hypot(event.clientX-state.x,event.clientY-state.y)<=MOVE_LIMIT;
     pointer=null;
-    if(event.pointerType==='touch'&&valid){
-      // Keep the overlay hit target through the browser's synthesized click.
-      // Some Tesla browsers omit that click, so a short fallback closes it.
-      event.preventDefault();event.stopPropagation();
-      touchDismissTimer=setTimeout(()=>{touchDismissTimer=null;dismiss();},180);
-    }else if(event.pointerType!=='touch')ignoreMouseClick=!valid;
-  });
+    clearTimeout(state.timer);
+    try{root.releasePointerCapture(state.id);}catch{}
+    if(!valid){lastTapAt=0;if(state.holding)onHoldCancel({entry:state.entry,reason:'drag'});return;}
+    if(state.holding){onHoldEnd({entry:state.entry,event});return;}
+    const now=Date.now();
+    if(now-state.startedAt>=HOLD_MS){lastTapAt=0;return;}
+    if(state.secondTap){
+      lastTapAt=0;
+      // Keep the hit target visible until the synthesized click is consumed.
+      // Some Tesla browsers omit that click, so also provide a short fallback.
+      if(event.pointerType==='touch')touchDismissTimer=setTimeout(()=>dismiss(),TOUCH_CLICK_WAIT_MS);
+      else dismiss(event);
+    }else lastTapAt=now;
+  },{capture:true});
+  // Native and synthesized clicks must never pass through the visual to the player.
   root.addEventListener('click',event=>{
-    if(event.button!==0)return;
-    if(ignoreMouseClick){ignoreMouseClick=false;event.preventDefault();event.stopPropagation();return;}
-    dismiss(event);
-  });
+    isolate(event);
+    if(touchDismissTimer!==null&&event.button===0)dismiss(event);
+  },{capture:true});
+  root.addEventListener('contextmenu',isolate,{capture:true});
   setPhase('standby');
   return Object.freeze({
     open,close,setPhase,setStatus,setTranscript,attachToFullscreen,
@@ -167,6 +260,8 @@ export function createTeslaMonAura({document:doc=globalThis.document,onDismiss=(
       close();
       doc.removeEventListener('focusin',containFocus,true);
       doc.removeEventListener('keydown',handleDocumentKeydown,true);
+      doc.removeEventListener('keyup',handleDocumentKeyup,true);
+      doc.defaultView?.removeEventListener('blur',onWindowBlur);
       root.remove();
     },
   });

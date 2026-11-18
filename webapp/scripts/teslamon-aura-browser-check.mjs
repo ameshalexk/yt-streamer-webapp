@@ -21,6 +21,9 @@ const fixtureBootstrap=()=>{
   window.__fixtureSpeechText='turn on office lights';
   window.__fixtureCalls={search:0,play:0,pause:0,resume:0,commands:0};
   window.__fixtureMicRequests=0;
+  window.__fixtureAllowMic=false;
+  window.__fixtureRecorderStarts=0;
+  window.__fixtureRecorderStops=0;
   window.__fixturePlanResponses=0;
   window.__fixturePlanRequests=0;
   window.__fixtureCapabilitiesRequests=0;
@@ -35,7 +38,17 @@ const fixtureBootstrap=()=>{
   }catch{}
   if(!window.AudioContext&&!window.webkitAudioContext)window.AudioContext=function(){};
   if(!window.AudioWorkletNode)window.AudioWorkletNode=function(){};
-  if(!window.MediaRecorder)window.MediaRecorder=function(){};
+  class FixtureMediaRecorder extends EventTarget{
+    constructor(_stream,options={}){super();this.mimeType=options.mimeType||'audio/webm;codecs=opus';this.state='inactive';}
+    static isTypeSupported(type){return type.startsWith('audio/webm');}
+    start(){this.state='recording';window.__fixtureRecorderStarts++;}
+    stop(){if(this.state==='inactive')return;
+      const data=new Event('dataavailable');Object.defineProperty(data,'data',{value:new Blob(['fixture-command'],{type:this.mimeType})});
+      this.dispatchEvent(data);this.state='inactive';window.__fixtureRecorderStops++;this.dispatchEvent(new Event('stop'));}
+  }
+  // A non-empty, supported chunk lets the normal bounded capture controller
+  // and STT/planner path run without opening a real device.
+  window.MediaRecorder=FixtureMediaRecorder;
   if(!window.Worker)window.Worker=function(){};
   window.YTStreamerMediaAgent={
     execute:async(action)=>{
@@ -52,7 +65,12 @@ const fixtureBootstrap=()=>{
       media_id:'abcdefghijk',rendered_frames:window.__fixtureRenderedFrames,
       mode:window.__fixtureUrl?'buffered_mjpeg':'native'}),
   };
-  navigator.mediaDevices.getUserMedia=async()=>{window.__fixtureMicRequests++;throw new Error('Fixture must not request microphone');};
+  navigator.mediaDevices.getUserMedia=async()=>{
+    window.__fixtureMicRequests++;
+    if(!window.__fixtureAllowMic)throw new Error('Fixture must not request microphone');
+    const track={stop(){},getSettings(){return {deviceId:'fixture'};}};
+    return {getTracks:()=>[track],getAudioTracks:()=>[track]};
+  };
   const nativeFetch=window.fetch.bind(window);
   window.fetch=async(...args)=>{
     const url=typeof args[0]==='string'?args[0]:args[0]?.url||'';
@@ -408,9 +426,12 @@ try{
     assert.equal(await page.locator('#tmAura').isHidden(),true,'hidden initial document defers startup Aura');
     await page.evaluate(()=>window.__fixtureSetHidden(false));
     await page.locator('#tmAura').waitFor({state:'visible',timeout:1500});
-    await page.waitForFunction(()=>window.__fixtureWakeState==='recording');
-    assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'listening',
-      'first foreground appearance automatically begins the command');
+    await page.waitForFunction(()=>window.__fixtureWakeState==='listening');
+    await page.waitForFunction(()=>window.__fixtureCapabilitiesResponses>0);
+    assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'standby',
+      'first foreground appearance opens Aura ready for a deliberate hold');
+    assert.equal(await page.evaluate(()=>window.__fixtureStartupCaptures||0),0,
+      'foreground startup does not capture audio automatically');
     await context.close();
   }
   // A playing player wins at the first foreground transition. Startup Aura
@@ -491,27 +512,85 @@ try{
     assert.equal(await page.locator('#tmAura').isHidden(),true,'dismissal survives repeated visibility and late capabilities');
     await context.close();
   }
-  // First-page speech can reach the signed planner without any synthetic wake.
+  // Startup Aura waits for a deliberate press-and-hold; release submits once.
   {
     await fetch(origin+'/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({scenario:'ha_done'})});
+      body:JSON.stringify({scenario:'search_play'})});
     const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
     const page=await context.newPage();
     page.on('pageerror',error=>errors.push('startup transcript '+error.message));
     await page.addInitScript(fixtureBootstrap);
     await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded'});
-    await page.waitForFunction(()=>window.__fixtureWakeState==='recording');
-    assert.equal(await page.evaluate(()=>window.__fixtureStartupCaptures),1);
+    await page.locator('#tmAura').waitFor({state:'visible'});
+    await page.waitForFunction(()=>window.__fixtureCapabilitiesResponses>0);
+    await page.waitForFunction(()=>window.__fixtureWakeState==='listening');
+    assert.equal(await page.evaluate(()=>window.__fixtureStartupCaptures||0),0,
+      'opening Aura does not start command capture');
     assert.equal(await page.evaluate(()=>window.__fixturePlanRequests),0,
-      'opening Aura or microphone never submits a speculative Codex request');
-    await page.evaluate(()=>{window.__fixtureSpeechText='turn on office lights';
-      window.__fixturePendingVoice=window.__auraVoiceSubmit();});
+      'opening Aura never submits a speculative Codex request');
+    await page.evaluate(()=>{
+      window.__fixtureAllowMic=true;window.__fixtureSpeechText='play fixture video';
+      const root=document.querySelector('#tmAura');
+      root.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:71,isPrimary:true,
+        pointerType:'touch',button:0,clientX:80,clientY:80}));
+    });
+    await page.waitForFunction(()=>window.__fixtureRecorderStarts===1,null,{timeout:4000});
+    await page.waitForTimeout(550);
+    await page.evaluate(()=>document.querySelector('#tmAura').dispatchEvent(new PointerEvent('pointerup',{
+      bubbles:true,pointerId:71,isPrimary:true,pointerType:'touch',button:0,clientX:80,clientY:80})));
     await page.waitForFunction(()=>window.__fixturePlanRequests===1,null,{timeout:8000});
     await page.waitForFunction(()=>window.__fixtureWakeState==='listening',null,{timeout:8000});
-    assert.equal(await page.evaluate(()=>window.__fixtureStartupCaptures),1,
-      'startup invocation is not repeated on rearming');
+    assert.equal(await page.evaluate(()=>window.__fixtureRecorderStarts),1,'one hold starts one recorder');
+    assert.equal(await page.evaluate(()=>window.__fixtureRecorderStops),1,'release stops the recorder once');
+    assert.equal(await page.evaluate(()=>window.__fixtureMicRequests),1,'hold requests microphone once');
     assert.equal(await page.evaluate(()=>window.__fixturePlanRequests),1,
-      'one spoken command reaches the planner once without saying a wake phrase');
+      'release sends exactly one spoken command to Codex');
+    assert.deepEqual(await page.evaluate(()=>({search:window.__fixtureCalls.search,play:window.__fixtureCalls.play})),
+      {search:1,play:1},'Codex-planned video command is executed once');
+    await context.close();
+  }
+  // Short single taps stay in the command-ready Aura; only the second quick
+  // tap dismisses. Neither short tap opens the microphone.
+  {
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();await page.addInitScript(fixtureBootstrap);
+    await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded'});
+    await page.locator('#tmAura').waitFor({state:'visible'});
+    await page.locator('#tmAura').tap({position:{x:90,y:90}});
+    await page.waitForTimeout(50);
+    assert.equal(await page.locator('#tmAura').isVisible(),true,'one short tap leaves Aura open');
+    assert.equal(await page.evaluate(()=>window.__fixtureMicRequests),0,'short tap does not request microphone');
+    await page.evaluate(()=>document.querySelector('#tmAura').dispatchEvent(new PointerEvent('pointerdown',{
+      bubbles:true,pointerId:99,isPrimary:true,pointerType:'touch',button:0,clientX:90,clientY:90})));
+    await page.waitForTimeout(300);
+    await page.evaluate(()=>document.querySelector('#tmAura').dispatchEvent(new PointerEvent('pointerup',{
+      bubbles:true,pointerId:99,isPrimary:true,pointerType:'touch',button:0,clientX:90,clientY:90})));
+    assert.equal(await page.locator('#tmAura').isVisible(),true,'a second press held past threshold does not dismiss');
+    assert.equal(await page.evaluate(()=>window.__fixtureRecorderStarts),0,'second press begun inside double-tap window does not capture');
+    await page.waitForTimeout(400);
+    await page.locator('#tmAura').tap({position:{x:90,y:90}});
+    await page.locator('#tmAura').tap({position:{x:90,y:90}});
+    await page.locator('#tmAura').waitFor({state:'hidden',timeout:1500});
+    assert.equal(await page.evaluate(()=>window.__fixtureMicRequests),0,'double-tap dismissal remains microphone-free');
+    await context.close();
+  }
+  // Cancelling an active hold tears down the capture without sending audio.
+  {
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const page=await context.newPage();await page.addInitScript(fixtureBootstrap);
+    await page.goto(origin+'/?ui=classic',{waitUntil:'domcontentloaded'});
+    await page.locator('#tmAura').waitFor({state:'visible'});
+    await page.waitForFunction(()=>window.__fixtureCapabilitiesResponses>0);
+    await page.evaluate(()=>{window.__fixtureAllowMic=true;document.querySelector('#tmAura').dispatchEvent(new PointerEvent('pointerdown',{
+      bubbles:true,pointerId:101,isPrimary:true,pointerType:'touch',button:0,clientX:90,clientY:90}));});
+    await page.waitForFunction(()=>window.__fixtureRecorderStarts===1,null,{timeout:4000});
+    await page.waitForTimeout(300);
+    await page.evaluate(()=>document.querySelector('#tmAura').dispatchEvent(new PointerEvent('pointercancel',{
+      bubbles:true,pointerId:101,isPrimary:true,pointerType:'touch',button:0,clientX:90,clientY:90})));
+    await page.waitForTimeout(100);
+    assert.equal(await page.evaluate(()=>window.__fixturePlanRequests),0,'pointer cancellation never submits a command');
+    assert.equal(await page.evaluate(()=>window.__fixtureRecorderStops),0,'cancel aborts capture instead of finalizing a command');
+    assert.equal(await page.locator('#tmAura').isVisible(),true,'cancelled hold leaves Aura available');
     await context.close();
   }
   for(const [width,height] of viewports){
@@ -530,14 +609,14 @@ try{
       await page.waitForFunction(()=>typeof window.__auraWake==='function');
       assert.equal(await page.locator('#tmAuraToggle').isChecked(),true);
       await page.locator('#tmAura').waitFor({state:'visible'});
-      await page.waitForFunction(()=>window.__fixtureWakeState==='recording');
+      await page.waitForFunction(()=>window.__fixtureWakeState==='listening');
       const startupState=await page.evaluate(()=>({startupCaptures:window.__fixtureStartupCaptures||0,mic:window.__fixtureMicRequests,
         plans:window.__fixturePlanRequests,calls:{...window.__fixtureCalls},playback:window.__fixturePlayback,
         focused:document.activeElement?.id||'',focusIsEditable:!!document.activeElement?.matches('input,textarea,[contenteditable=true]'),
         keyboard:window.__fixtureKeyboardRequests||0}));
       assert.deepEqual({...startupState,focused:'',focusIsEditable:false},
-        {startupCaptures:1,mic:0,plans:0,calls:{search:0,play:0,pause:0,resume:0,commands:0},playback:'idle',focused:'',focusIsEditable:false,keyboard:0},
-        ui+' '+width+' startup begins one fake voice capture without sending a command or opening the keyboard');
+        {startupCaptures:0,mic:0,plans:0,calls:{search:0,play:0,pause:0,resume:0,commands:0},playback:'idle',focused:'',focusIsEditable:false,keyboard:0},
+        ui+' '+width+' startup waits for a deliberate hold without capturing or opening the keyboard');
       assert.equal(startupState.focusIsEditable,false,ui+' '+width+' startup must not focus an editable command control');
       assert.notEqual(startupState.focused,'tmText',ui+' '+width+' startup must not focus the command editor');
       const startupMeasure=await page.evaluate(()=>{
@@ -599,7 +678,7 @@ try{
       await preview.click();
       await page.locator('#tmAura').waitFor({state:'visible'});
       assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'standby','Preview uses standby phase');
-      assert.match(await page.locator('#tmAura').innerText(),/Preview · tap anywhere to close/,
+      assert.match(await page.locator('#tmAura').innerText(),/Preview · double tap to close/,
         'Preview announces how to dismiss');
       await page.waitForTimeout(450);
       assert.equal(await page.locator('#tmAura').isVisible(),true,'playing media does not auto-dismiss Preview');
@@ -607,7 +686,9 @@ try{
       assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'false','Preview works with mic Off');
       assert.notEqual(await page.evaluate(()=>document.activeElement?.id),'tmText','Preview never focuses command text');
       await page.locator('#tmAura').tap({position:{x:Math.min(30,width/4),y:Math.min(30,height/4)}});
-      assert.equal(await page.locator('#tmAura').isHidden(),true,'tap closes Preview');
+      assert.equal(await page.locator('#tmAura').isVisible(),true,'one short tap leaves Preview open');
+      await page.locator('#tmAura').tap({position:{x:Math.min(30,width/4),y:Math.min(30,height/4)}});
+      assert.equal(await page.locator('#tmAura').isHidden(),true,'double tap closes Preview');
       if(await page.locator('#tmPanel').isHidden())await page.locator('#tmFace').click();
       await preview.click();
       await page.locator('#tmAura').waitFor({state:'visible'});
@@ -669,7 +750,7 @@ try{
       if(process.env.TESLAMON_AURA_SCREENSHOTS==='1'){
         await page.screenshot({path:'/tmp/teslamon-aura-'+ui+'-'+width+'x'+height+'.jpg',type:'jpeg',quality:60});
       }
-      await page.locator('#tmAura').tap({position:{x:Math.min(30,width/4),y:Math.min(30,height/4)}});
+      await page.locator('#tmAura').press('Escape');
       assert.equal(await page.locator('#tmAura').isHidden(),true);
       await page.evaluate(()=>window.__auraStandby());
       assert.equal(await page.locator('#tmAura').isHidden(),true,'standby cannot reopen a dismissed takeover');
@@ -759,7 +840,7 @@ try{
         await page.locator('#tmAura').waitFor({state:'hidden',timeout:4000});
         await page.evaluate(()=>window.__auraWake('alexa'));
         await page.locator('#tmAura').waitFor({state:'visible'});
-        await page.locator('#tmAura').tap();
+        await page.locator('#tmAura').press('Escape');
         await page.evaluate(()=>window.__auraStandby());
         assert.equal(await page.locator('#tmAura').isHidden(),true,'dismissal leaves wake armed for the next wake');
 
