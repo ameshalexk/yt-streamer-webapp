@@ -590,7 +590,7 @@ try{
       bubbles:true,pointerId:101,isPrimary:true,pointerType:'touch',button:0,clientX:90,clientY:90})));
     await page.waitForTimeout(100);
     assert.equal(await page.evaluate(()=>window.__fixturePlanRequests),0,'pointer cancellation never submits a command');
-    assert.equal(await page.evaluate(()=>window.__fixtureRecorderStops),0,'cancel aborts capture instead of finalizing a command');
+    assert.equal(await page.evaluate(()=>window.__fixtureRecorderStops),1,'cancel stops and tears down the active recorder');
     assert.equal(await page.locator('#tmAura').isVisible(),true,'cancelled hold leaves Aura available');
     await context.close();
   }
@@ -679,7 +679,7 @@ try{
       await preview.click();
       await page.locator('#tmAura').waitFor({state:'visible'});
       assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'standby','Preview uses standby phase');
-      assert.match(await page.locator('#tmAura').innerText(),/Preview · double tap to close/,
+      assert.match(await page.locator('#tmAura').innerText(),/Preview · double-tap to dismiss/,
         'Preview announces how to dismiss');
       await page.waitForTimeout(450);
       assert.equal(await page.locator('#tmAura').isVisible(),true,'playing media does not auto-dismiss Preview');
