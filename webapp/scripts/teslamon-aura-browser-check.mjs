@@ -904,7 +904,7 @@ try{
   await latePage.evaluate(()=>window.__auraStartupState({state:'starting',message:'Requesting microphone permission…'}));
   await latePage.waitForFunction(()=>document.querySelector('#tmAuraDetail')?.textContent.includes('Requesting microphone permission'));
   await latePage.evaluate(()=>window.__auraStartupState({state:'listening',message:'Listening for the selected wake phrase'}));
-  await latePage.waitForFunction(()=>document.querySelector('#tmAuraDetail')?.textContent.includes('Say a wake phrase'));
+  await latePage.waitForFunction(()=>document.querySelector('#tmAuraDetail')?.textContent.includes('Hold to talk'));
   await latePage.evaluate(()=>window.__auraStartupState({state:'error',message:'Fixture startup error'}));
   await latePage.waitForFunction(()=>document.querySelector('#tmAuraDetail')?.textContent.includes('Fixture startup error'));
   assert.equal(await latePage.locator('#tmAura').isVisible(),true,'starting/listening/error bootstrap statuses retain startup Aura');
