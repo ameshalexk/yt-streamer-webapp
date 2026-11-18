@@ -151,3 +151,7 @@
 #tmAura[data-phase="preparing"] .ta-orb{filter:saturate(.72)}
 #tmAura[data-phase="listening"] .ta-wave i{animation-duration:.8s}
 #tmAura .ta-title,#tmAura .ta-hint{overflow-wrap:anywhere}
+
+/* URL-command text is shown only during that command, never on idle/wake screens. */
+#tmAura .ta-transcript{max-height:min(23dvh,170px);overflow:auto;overscroll-behavior:contain}
+#tmAura .ta-transcript p{max-height:130px;white-space:normal;overflow-wrap:anywhere;word-break:break-word}

@@ -64,6 +64,25 @@ test("reports failed required segments", async () => {
   await assert.rejects(generator.next(), /HTTP 403/);
 });
 
+test("duplicate segment numbers keep independent results and presentation order", async () => {
+  let call = 0;
+  const received = [];
+  for await (const entry of orderedPrefetch([4, 4, 5], async (index) => {
+    call += 1;
+    return `${index}:request-${call}`;
+  }, { concurrency: 2 })) received.push(entry);
+  assert.deepEqual(received, [
+    { index: 4, value: "4:request-1" },
+    { index: 4, value: "4:request-2" },
+    { index: 5, value: "5:request-3" },
+  ]);
+});
+
+test("a falsy fetch rejection still stops playback instead of returning empty data", async () => {
+  const generator = orderedPrefetch([1], async () => { throw 0; });
+  await assert.rejects(generator.next(), (error) => error === 0);
+});
+
 test("prepared WebCodecs path uses progressive ordered prefetch", () => {
   const src = fs.readFileSync(new URL("../public/cyberdash-embedded.mjs", import.meta.url), "utf8");
   assert.match(src, /for await \(const \{ index, value: ab \} of orderedPrefetch/);

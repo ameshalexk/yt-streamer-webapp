@@ -28,7 +28,9 @@ const server=http.createServer(async(req,res)=>{
       const check="['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hostname)&&location.protocol==='https:'";
       assert.ok(source.includes(check));
       source=source.replace(check,"['127.0.0.1'].includes(location.hostname)");
-      source=source.replace("import {createTeslaMonLocalStt} from './teslamon-local-stt.js?v=20261102-moonshine1';","import {createTeslaMonLocalStt} from './__fixture-stt.js';");
+      const transcriptionImport=/import \{createTeslaMonLocalStt\} from '\.\/teslamon-local-stt\.js[^']*';/;
+      assert.match(source,transcriptionImport);
+      source=source.replace(transcriptionImport,"import {createTeslaMonLocalStt} from './__fixture-stt.js';");
       const detector="const module=await import('./teslamon-wake-engine.js?v=20261025-mycroft-rhasspy1');\n      return module.createTeslaMonWakeDetector(options);";
       assert.ok(source.includes(detector));
       source=source.replace(detector,"window.__triggerWake=()=>options.onWake({keyword:'hey_jarvis',score:0.99});return {start:async()=>true,pause(){},resume(){},stop:async()=>{}};");

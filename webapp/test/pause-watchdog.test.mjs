@@ -26,6 +26,7 @@ function fixture() {
     currentAttempt: (attempt) => attempt === context.streamAttempt,
     setBadge() {},
     showStreamNotice(...args) { notices.push(args); },
+    clearStreamNotice() {},
     failStreamAttempt(...args) { errors.push(args); },
   });
   vm.runInContext(clearTimers + "\n" + watchdog, context);
@@ -60,7 +61,7 @@ test("paused playback does not spend first-frame watchdog time or show a false e
   f.advance(6999);
   assert.equal(f.notices.length, 0);
   f.advance(1);
-  assert.equal(f.notices.length, 1);
+  assert.equal(f.notices.length, 0);
   f.advance(29999);
   assert.equal(f.errors.length, 0);
   f.advance(1);

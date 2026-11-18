@@ -17,12 +17,21 @@
     ["receiveBytesPerSecond", "Stream delivery", 0, 1e9, 0],
     ["decoderQueueSize", "Decoder queue", 0, 1e6, 0],
     ["fps", "Target FPS", 0, 1000, 1],
+    ["effectiveHeight", "Rendered height", 0, 16384, 0],
+    ["deliveryBps", "Measured video delivery", 0, 1e10, 0],
+    ["sustainableBps", "Estimated sustainable bandwidth", 0, 1e10, 0],
+    ["adaptiveRebufferMs", "Time rebuffering", 0, 1e12, 0],
+  ]);
+  const SERVER_METRICS = Object.freeze([
+    ["serverVideoSpeed", "Server video pace", 0, 1000, 2, "×"],
+    ["sourceVideoMbps", "Source video read", 0, 10000, 2, "Mbps"],
+    ["sourceAudioMbps", "Source audio read", 0, 10000, 2, "Mbps"],
   ]);
   const LABELS = Object.freeze({
     method: Object.freeze({ webcodecs: "WebCodecs", mjpeg: "MJPEG", jxl: "JXL", hls: "HLS", native: "Native", vlc: "VLC" }),
     state: Object.freeze({ playing: "Playing", buffering: "Buffering", reconnecting: "Reconnecting", paused: "Paused", idle: "Idle", error: "Error", stopped: "Stopped" }),
     quality: Object.freeze({ low: "Low", medium: "Medium", high: "High", auto: "Auto", source: "Source" }),
-    qualityReason: Object.freeze({ startup: "Startup", user: "User selected", manual: "User selected", automatic: "Automatic adjustment", auto: "Automatic adjustment", bandwidth: "Delivery conditions", delivery_pressure: "Delivery conditions", "delivery-slow": "Delivery conditions", delivery_slow: "Delivery conditions", render_pressure: "Rendering conditions", "device-overload": "Rendering conditions", device_overload: "Rendering conditions", recovery: "Recovery", rebuffer: "Rebuffer recovery", "stable-headroom": "Stable playback", stable_headroom: "Stable playback", stable: "Stable playback", unavailable: "Unavailable" }),
+    qualityReason: Object.freeze({ startup: "Startup", user: "User selected", manual: "User selected", automatic: "Automatic adjustment", auto: "Automatic adjustment", bandwidth: "Delivery conditions", delivery_pressure: "Delivery conditions", "delivery-slow": "Delivery conditions", "bandwidth-shortfall": "Delivery conditions", "paced-delivery-trial": "Trial after stable playback", delivery_slow: "Delivery conditions", render_pressure: "Rendering conditions", "device-overload": "Rendering conditions", device_overload: "Rendering conditions", recovery: "Recovery", rebuffer: "Rebuffer recovery", "stable-headroom": "Stable playback", stable_headroom: "Stable playback", stable: "Stable playback", unavailable: "Unavailable" }),
     errorCategory: Object.freeze({ network: "Network", decode: "Decoder", playback: "Playback", "playback-failed": "Playback", unsupported: "Unsupported", timeout: "Timeout", cancelled: "Cancelled", unavailable: "Unavailable" }),
     audioStatus: Object.freeze({ synced: "Synced", ready: "Ready", starting: "Starting", retrying: "Retrying", silent: "Silent", muted: "Muted", source: "Source", idle: "Idle" }),
   });
@@ -44,14 +53,24 @@
   function normalize(snapshot) {
     snapshot = snapshot && typeof snapshot === "object" ? snapshot : {};
     const metrics = {};
-    for (const [key, , min, max, decimals] of METRICS) metrics[key] = metricValue(snapshot, key, min, max, decimals);
+    for (const [key, , min, max, decimals] of [...METRICS, ...SERVER_METRICS]) {
+      metrics[key] = metricValue(snapshot, key, min, max, decimals);
+    }
+    const playbackRate = metricValue(snapshot, "playbackRate", 1, 4, 2);
+    const rate = snapshot.method === "webcodecs" && playbackRate !== "Unavailable" ? playbackRate : 1;
+    // Show buffer time and frame targets as the viewer experiences them.
+    if (metrics.queueSeconds !== "Unavailable") metrics.queueSeconds = Number((metrics.queueSeconds / rate).toFixed(1));
+    if (metrics.fps !== "Unavailable") metrics.fps = Number((metrics.fps * rate).toFixed(1));
+    const expectedFps = metrics.fps === "Unavailable" ? 0 : metrics.fps;
     let hint = "Not enough evidence";
     if (snapshot.state === "buffering") {
       if (snapshot.audioStatus === "silent" || snapshot.audioStatus === "retrying") hint = "Audio may need attention";
-      else if (metrics.queueSeconds !== "Unavailable" && metrics.receiveFps !== "Unavailable" && metrics.fps !== "Unavailable"
-          && metrics.fps > 0 && metrics.queueSeconds < 1 && metrics.receiveFps < metrics.fps * 0.8) hint = "Possible slow stream delivery";
-      else if (metrics.queueSeconds !== "Unavailable" && metrics.renderedFps !== "Unavailable" && metrics.fps !== "Unavailable"
-          && metrics.fps > 0 && metrics.queueSeconds >= 1 && metrics.renderedFps < metrics.fps * 0.8) hint = "Device rendering may be behind";
+      else if (metrics.serverVideoSpeed !== "Unavailable" && metrics.serverVideoSpeed < rate * 0.9
+          && metrics.queueSeconds !== "Unavailable" && metrics.queueSeconds < 1) hint = "Server video production is behind";
+      else if (metrics.queueSeconds !== "Unavailable" && metrics.receiveFps !== "Unavailable"
+          && expectedFps > 0 && metrics.queueSeconds < 1 && metrics.receiveFps < expectedFps * 0.8) hint = "Possible slow stream delivery";
+      else if (metrics.queueSeconds !== "Unavailable" && metrics.renderedFps !== "Unavailable"
+          && expectedFps > 0 && metrics.queueSeconds >= 1 && metrics.renderedFps < expectedFps * 0.8) hint = "Device rendering may be behind";
     } else if (snapshot.state === "playing") hint = "No current buffering";
     return Object.freeze({
       method: safeLabel("method", snapshot.method),
@@ -60,6 +79,7 @@
       qualityReason: safeLabel("qualityReason", snapshot.qualityReason),
       errorCategory: safeLabel("errorCategory", snapshot.errorCategory),
       audioStatus: safeLabel("audioStatus", snapshot.audioStatus),
+      adaptiveTier: snapshot.quality === "auto" ? safeLabel("quality", snapshot.stats?.adaptiveTier) : "Unavailable",
       hint,
       metrics: Object.freeze(metrics),
     });
@@ -68,12 +88,14 @@
     const data = normalize(snapshot);
     const units = { queueSeconds: "s", receiveFps: "fps", renderedFps: "fps",
       latestAvDriftMs: "ms", decodeMs: "ms/frame", receiveBytesPerSecond: "bytes/s",
-      decoderQueueSize: "frames", fps: "fps" };
+      decoderQueueSize: "frames", fps: "fps", effectiveHeight: "px", deliveryBps: "bits/s", sustainableBps: "bits/s", adaptiveRebufferMs: "ms" };
     return [
-      ["Method", data.method], ["Status", data.state], ["Audio", data.audioStatus], ["Quality", data.quality],
+      ["Method", data.method], ["Status", data.state], ["Audio", data.audioStatus], ["Quality", data.adaptiveTier === "Unavailable" ? data.quality : `${data.quality} · ${data.adaptiveTier}`],
       ["Playback hint", data.hint], ["Quality reason", data.qualityReason], ["Error category", data.errorCategory],
       ...METRICS.map(([key, label]) => [label, data.metrics[key] === "Unavailable" || !units[key]
         ? data.metrics[key] : `${data.metrics[key]} ${units[key]}`]),
+      ...SERVER_METRICS.filter(([key]) => data.metrics[key] !== "Unavailable")
+        .map(([key, label, , , , unit]) => [label, `${data.metrics[key]} ${unit}`]),
     ];
   }
   function report(snapshot) {

@@ -276,6 +276,13 @@ export function createTeslaMonHandsFree({
     void promise.finally(()=>{if(startPromise===promise)startPromise=null;});
     return promise;
   }
+  // Accept the first command on page entry without requiring wake-word audio.
+  // Reuse the exact same bounded pause, capture, STT and cooldown lifecycle.
+  function startCommand() {
+    if(!current(serial)||suspended||phase!=='listening'||recorder||pauseAbort)return false;
+    void onWake(serial,{});
+    return true;
+  }
   function suspend() {
     if(!wanted || suspended)return false;
     if(phase==='recording'||phase==='processing'||phase==='starting')return false;
@@ -292,7 +299,7 @@ export function createTeslaMonHandsFree({
     return true;
   }
   return Object.freeze({
-    enable,disable,suspend,resume,
+    enable,disable,suspend,resume,startCommand,
     get state(){return phase;},
     get enabled(){return wanted;},
     get suspended(){return suspended;},

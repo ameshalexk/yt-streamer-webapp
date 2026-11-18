@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { advanceAudioHealthIncident, classifyAudioSchedule, fastPlaybackBufferTargets, normalSpeedNeedsRebuffer, normalizePlaybackRate, planAudioSchedule } from "../public/cyberdash-embedded.mjs";
+import { advanceAudioHealthIncident, classifyAudioSchedule, detectPrematureAudioEnd, fastPlaybackBufferTargets, normalSpeedNeedsRebuffer, normalizePlaybackRate, planAudioSchedule, playbackStartupReady } from "../public/cyberdash-embedded.mjs";
 
 const FRAME = 1024 / 48000;
 
@@ -90,20 +90,44 @@ test("fast playback prebuffer scales source video with playback rate", () => {
   assert.equal(one.startupAudioWallSec, 0);
 
   const oneFive = fastPlaybackBufferTargets({ playbackRate: 1.5, fps: 30 });
-  assert.equal(oneFive.startupWallSec, 2.75);
-  assert.equal(oneFive.startupVideoSourceSec, 4.125);
-  assert.equal(oneFive.startupVideoFrames, 124);
-  assert.equal(oneFive.startupAudioWallSec, 2.75);
+  assert.equal(oneFive.startupWallSec, 1.5);
+  assert.equal(oneFive.startupVideoSourceSec, 2.25);
+  assert.equal(oneFive.startupVideoFrames, 68);
+  assert.equal(oneFive.startupAudioWallSec, 1.5);
   assert.equal(oneFive.rebufferLowWallSec, 0.65);
   assert.equal(oneFive.rebufferHighWallSec, 2);
   assert.equal(oneFive.rebufferHighVideoSourceSec, 3);
 
   const two = fastPlaybackBufferTargets({ playbackRate: 2, fps: 30 });
-  assert.equal(two.startupWallSec, 4);
-  assert.equal(two.startupVideoSourceSec, 6.5);
-  assert.equal(two.startupVideoFrames, 195);
+  assert.equal(two.startupWallSec, 1.5);
+  assert.equal(two.startupVideoSourceSec, 3);
+  assert.equal(two.startupVideoFrames, 90);
   assert.equal(two.rebufferHighWallSec, 2.5);
   assert.equal(two.rebufferHighVideoSourceSec, 5);
+});
+
+test("fast startup uses playable time rather than an assumed source frame cadence", () => {
+  const ready = { playbackRate: 2, videoFrames: 37, audioBlocks: 5, videoSourceSec: 3, audioWallSec: 1.5 };
+  assert.equal(playbackStartupReady(ready), true);
+  assert.equal(playbackStartupReady({ ...ready, videoSourceSec: 2.9 }), false);
+  assert.equal(playbackStartupReady({ ...ready, audioWallSec: 1.4 }), false);
+  assert.equal(playbackStartupReady({ ...ready, videoFrames: 0 }), false);
+  assert.equal(playbackStartupReady({ ...ready, audioBlocks: 0 }), false);
+  for (const rate of [1.25, 1.5, 2, 3, 4]) {
+    const targets = fastPlaybackBufferTargets({ playbackRate: rate });
+    assert.ok(targets.startupAudioWallSec > targets.rebufferLowWallSec);
+    assert.ok(targets.startupVideoSourceSec > targets.rebufferLowWallSec * rate);
+  }
+});
+
+test("startup plays a short completed tail without waiting for impossible reserves", () => {
+  const tail = { playbackRate: 2, videoFrames: 12, audioBlocks: 3, videoSourceSec: 0.8, audioWallSec: 0.4 };
+  assert.equal(playbackStartupReady(tail), false);
+  assert.equal(playbackStartupReady({ ...tail, videoFeedDone: true }), false);
+  assert.equal(playbackStartupReady({ ...tail, audioFeedDone: true }), false);
+  assert.equal(playbackStartupReady({ ...tail, videoFeedDone: true, audioFeedDone: true }), true);
+  assert.equal(playbackStartupReady({ ...tail, videoFeedDone: true, audioFeedDone: true, videoFrames: 0 }), false);
+  assert.equal(playbackStartupReady({ ...tail, videoFeedDone: true, audioFeedDone: true, audioBlocks: 0 }), false);
 });
 
 
@@ -148,4 +172,77 @@ test("audio diagnostics require persistent gaps, report once and record recovery
     event: "cyberdash_audio_recovered", reason: "audio_schedule_empty",
   });
   assert.equal(advanceAudioHealthIncident(state, 4200, null), null);
+});
+
+const terminalBase = {
+  playing: true, hasFirstPicture: true, audioFeedDone: true,
+  audioEndPtsSec: 569.6, videoEndPtsSec: 666.5, startAt: 113.83,
+  knownVideoEndSec: 779, currentSourceSec: 686,
+};
+
+test("premature audio exhaustion catches the confirmed late-video EOF and clearly short completed feeds", () => {
+  const failure = detectPrematureAudioEnd(terminalBase);
+  assert.ok(failure);
+  assert.ok(Math.abs(failure.audioEndSourceSec - 683.43) < 1e-9);
+  assert.ok(Math.abs(failure.evidenceEndSourceSec - 780.33) < 1e-9);
+  assert.ok(Math.abs(failure.remainingSourceSec - 94.33) < 1e-9);
+  assert.ok(detectPrematureAudioEnd({
+    ...terminalBase, videoEndPtsSec: 666.5, knownVideoEndSec: null,
+  }));
+});
+
+test("premature audio exhaustion waits for playback to reach the true audio end", () => {
+  assert.equal(detectPrematureAudioEnd({ ...terminalBase, currentSourceSec: 680.44 }), null);
+  assert.equal(detectPrematureAudioEnd({
+    ...terminalBase, currentSourceSec: 571.59, audioAheadSec: 0,
+    startAt: 0, videoEndPtsSec: 571.5, knownVideoEndSec: 572,
+  }), null);
+  assert.equal(detectPrematureAudioEnd({
+    ...terminalBase, currentSourceSec: 571.61, audioAheadSec: 0,
+    startAt: 0, videoEndPtsSec: 571.5, knownVideoEndSec: 572,
+  }), null);
+});
+
+test("premature audio exhaustion aligns seek offsets and rate-scaled audio PTS", () => {
+  const prepared = detectPrematureAudioEnd({
+    ...terminalBase,
+    startAt: 600,
+    segmentOffsetSourceSec: 0.75,
+    audioEndPtsSec: 10,
+    videoEndPtsSec: 80,
+    knownVideoEndSec: 700,
+    currentSourceSec: 623,
+    playbackRate: 2,
+  });
+  assert.ok(prepared);
+  assert.equal(prepared.audioEndSourceSec, 620.75);
+  assert.equal(prepared.evidenceEndSourceSec, 700);
+  assert.equal(prepared.remainingSourceSec, 77);
+  // Prepared video PTS is already segmentStartAt-relative, so the within-
+  // segment audio offset must not be added to its endpoint a second time.
+  assert.equal(detectPrematureAudioEnd({
+    ...terminalBase,
+    startAt: 600,
+    segmentOffsetSourceSec: 0.75,
+    audioEndPtsSec: 10,
+    videoEndPtsSec: 11.5,
+    knownVideoEndSec: null,
+    currentSourceSec: 625,
+    playbackRate: 2,
+  }), null);
+});
+
+test("premature audio exhaustion excludes startup, pause, mute, stop, and external audio", () => {
+  for (const override of [
+    { playing: false },
+    { hasFirstPicture: false },
+    { paused: true },
+    { stopped: true },
+    { muted: true },
+    { externalAudio: true },
+    { audioFeedDone: false },
+    { audioAheadSec: 0.051 },
+  ]) {
+    assert.equal(detectPrematureAudioEnd({ ...terminalBase, ...override }), null, JSON.stringify(override));
+  }
 });

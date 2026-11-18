@@ -21,7 +21,8 @@ test("phone playback autoscrolls on a new selection, not on replay or quality ch
  assert.match(app,/function maybeRevealMobilePlayer\(/);
  assert.match(app,/screen\.scrollIntoView\(\{ block: "start"/);
  assert.match(app,/new MutationObserver\(maybeRevealMobilePlayer\)/);
- assert.match(app,/function stopPlayback\(\) \{\s*mobilePlayerRevealPending = false/);
+ const stopBody=app.slice(app.indexOf('function stopPlayback()'),app.indexOf('\nfunction ',app.indexOf('function stopPlayback()')+1));
+ assert.match(stopBody,/mobilePlayerRevealPending = false/);
  assert.doesNotMatch(app,/function performQualityProfileSwitch\([^)]*\) \{[\s\S]{0,240}scheduleMobilePlayerReveal\(/);
 });
 test("iPhone viewport styles handle narrow widths and no video-covering preset grid",()=>{

@@ -66,7 +66,8 @@ function reportPeriodicPlaybackSample({ attempt, method, label, streamUrl, stats
     streamUrl,
     message: method,
     reason: streamQualitySelection || "auto",
-    stats,
+    stats: streamQualitySelection === AUTO_STREAM_QUALITY_ID && stats.adaptiveEligible !== false
+      ? { ...stats, ...autoQualityController?.getTelemetry() } : stats,
   });
 }
 
@@ -140,7 +141,7 @@ const STREAM_QUALITY_PROFILES = Object.freeze({
 });
 
 const AUTO_STREAM_QUALITY_ID = "auto";
-const AUTO_STREAM_INITIAL_TIER = "medium";
+const AUTO_STREAM_INITIAL_TIER = "high";
 const autoQualityController = window.YtAutoQuality?.AutoQualityController
   ? new window.YtAutoQuality.AutoQualityController()
   : null;
@@ -666,12 +667,25 @@ let hlsAudioPlayer = null; // active hls.js player for audio-only Browser captur
 let browserPcmAudio = null; // low-latency Browser capture via Web Audio
 let browserPcmSharedContext = null; // unlocked by the user's Open Chrome gesture
 let activeCompat = null; // active MJPEG + audio fallback URLs
+let preserveBufferedCanvasUntilFrame = false;
+let preserveBufferedCanvasReplayFn = null;
 const YOUTUBE_PLAYBACK_METHOD_KEY = "ytStreamerYoutubePlaybackMethod";
 const YOUTUBE_PLAYBACK_RATE_KEY = "ytStreamerYoutubePlaybackRate";
 const YOUTUBE_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 3, 4];
 // JXL must be explicitly opted into on each page visit, never restored from storage.
+const BUFFER_LAB_FLAG_KEY = "ytStreamerBufferLabV1";
+let bufferLabEnabled = localStorage.getItem(BUFFER_LAB_FLAG_KEY) === "1";
 let youtubePlaybackMethod = ["mjpeg", "webcodecs"].includes(localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY))
   ? localStorage.getItem(YOUTUBE_PLAYBACK_METHOD_KEY) : "mjpeg";
+// One-shot transfer to video-first MJPEG when browser policy blocks Web Audio
+// during a hands-free WebCodecs start. Never persist this fallback as a choice.
+let pendingWebAudioFallbackUrl = null;
+function isBlockedWebAudioStartup(error) {
+  const name = String(error?.name || "");
+  const message = String(error?.message || error || "");
+  return name === "NotAllowedError"
+    || /AudioContext (?:resume timed out|did not enter running state)/i.test(message);
+}
 // Only instantiated after an explicit JXL Experimental button press.
 let jxlWasmDecoder = null;
 let jxlModeSelectionTicket = 0;
@@ -708,8 +722,25 @@ function playbackDiagnosticsSnapshot() {
   const audioStatus = !playing ? "idle"
     : !soundOn ? "muted" : activeCompat?.audioStatus || "source";
   const sourceManaged = playing && !qualityProfilesAvailableForCurrentMode();
+  const mediaAudio = $("#audio");
+  const audioBufferedEnd = (() => {
+    try { return mediaAudio.buffered.length ? Number(mediaAudio.buffered.end(mediaAudio.buffered.length - 1).toFixed(3)) : 0; }
+    catch { return 0; }
+  })();
+  const audioBufferedSeconds = Math.max(0, audioBufferedEnd - Number(mediaAudio.currentTime || 0));
+  const stats = diagnosticsStats ? { ...diagnosticsStats,
+    ...(playing && streamQualitySelection === AUTO_STREAM_QUALITY_ID && diagnosticsStats.adaptiveEligible !== false
+      && ["mjpeg", "webcodecs"].includes(diagnosticsStats.transport) ? autoQualityController?.getTelemetry() : {}),
+    audioMediaReadyState: Number(mediaAudio.readyState || 0),
+    audioMediaNetworkState: Number(mediaAudio.networkState || 0),
+    audioMediaPaused: Boolean(mediaAudio.paused),
+    audioMediaTimeSec: Number((mediaAudio.currentTime || 0).toFixed(3)),
+    audioBufferedSeconds: Number(audioBufferedSeconds.toFixed(3)),
+    audioLoadElapsedMs: activeCompat?.audioLoadStartedAt ? Math.max(0, Date.now() - activeCompat.audioLoadStartedAt) : 0,
+    audioErrorCode: Number(mediaAudio.error?.code || 0),
+  } : null;
   return { method, state, audioStatus, quality: sourceManaged ? "source" : streamQualitySelection,
-    stats: diagnosticsError ? null : diagnosticsStats,
+    stats: diagnosticsError ? null : stats,
     qualityReason: sourceManaged ? null : diagnosticsQualityReason, errorCategory: diagnosticsError };
 }
 
@@ -779,17 +810,34 @@ function updateActivePlaybackStatus() {
   const audioText = status === "synced" ? "Audio: synchronized"
     : status === "ready" ? "Audio: preparing"
     : status === "starting" ? "Audio: connecting"
-    : status === "retrying" ? "Audio: reconnecting (" + (activeCompat?.audioRetryCount || 1) + "/3)"
+    : status === "retrying" ? "Audio: reconnecting automatically"
+    : status === "gesture-required" ? "Audio: tap to start"
     : status === "silent" ? "Audio: unavailable · video clock (silent)"
     : status === "muted" ? "Audio: muted"
     : status === "source" ? "Audio: source-managed"
     : "Audio: idle";
   if (audioInfo.textContent !== audioText) audioInfo.textContent = audioText;
   audioInfo.dataset.state = status;
-  if (retry) retry.hidden = !(playing && status === "silent" && typeof activeCompat?.repairAudio === "function");
+  if (retry) {
+    retry.hidden = !(playing && ["silent", "gesture-required"].includes(status)
+      && typeof activeCompat?.repairAudio === "function");
+    retry.textContent = status === "gesture-required" ? "Tap to start audio" : "Retry audio";
+    retry.setAttribute("aria-label", status === "gesture-required" ? "Tap to start audio" : "Retry audio");
+  }
+}
+
+function renderBufferLabToggle() {
+  const toggle = document.querySelector("#bufferLabToggle");
+  if (!toggle) return;
+  toggle.checked = bufferLabEnabled;
+  toggle.disabled = youtubePlaybackMethod !== "webcodecs";
+  toggle.title = toggle.disabled
+    ? "Select WebCodecs to enable experimental buffering"
+    : "Experimental: bounded compressed look-ahead and conservative decoder backpressure";
 }
 
 function renderYoutubePlaybackMethod() {
+  renderBufferLabToggle();
   document.querySelectorAll("[data-playback-method]").forEach((button) => {
     const active = button.dataset.playbackMethod === youtubePlaybackMethod;
     button.classList.toggle("active", active);
@@ -813,7 +861,7 @@ function renderYoutubePlaybackRate() {
 async function ensureCyberdashModule() {
   if (cyberdashModule) return cyberdashModule;
   if (!cyberdashModulePromise) {
-    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261007-prefetch-v11")
+    cyberdashModulePromise = import("/cyberdash-embedded.mjs?v=20261105-fast-quality-v3-bufferlab1")
       .then((module) => {
         cyberdashModule = module;
         return module;
@@ -830,10 +878,14 @@ async function stopCyberdashPlayback(options = {}) {
   }
 }
 
-function adaptiveCyberdashFps(baseFps, playbackRate = youtubePlaybackRate) {
+function adaptiveCyberdashFps(baseFps, playbackRate = youtubePlaybackRate, automatic = false) {
   const base = Number.isFinite(Number(baseFps)) ? Math.max(5, Math.min(30, Number(baseFps))) : 24;
   const rate = Number.isFinite(Number(playbackRate)) ? Math.max(1, Number(playbackRate)) : 1;
   if (rate <= 1) return Math.round(base);
+
+  // The decoder consumes source frames at the playback rate. Preserve each
+  // tier's source cadence through 2×, then cap its wall-time frame load.
+  if (automatic) return Math.max(5, Math.floor(Math.min(base, base * 2 / rate)));
 
   // YouTube-style fast playback keeps the source's frame cadence instead of
   // throwing most frames away first. Our MJPEG-oriented low FPS setting can be
@@ -850,7 +902,7 @@ function currentCyberdashSettings() {
   return {
     height: Number.isFinite(selectedHeight) ? Math.max(0, selectedHeight) : 0,
     baseFps,
-    fps: adaptiveCyberdashFps(baseFps),
+    fps: adaptiveCyberdashFps(baseFps, youtubePlaybackRate, streamQualitySelection === AUTO_STREAM_QUALITY_ID),
   };
 }
 
@@ -965,7 +1017,6 @@ function setBrowserStreamActive(active) {
 }
 
 let syntheticFullscreen = false;
-let fullscreenKeyboardModality = false;
 let fullscreenRequestSerial = 0;
 let fullscreenExitRequested = false;
 let activeEmbedCode = "";
@@ -978,6 +1029,47 @@ let restreamTimer = null;
 let qualitySwitchTimer = null;
 let qualitySwitchGeneration = 0;
 let pendingQualityRestore = null;
+let queuedAutoQuality = null;
+let recoveryReplay = null;
+let failedRecoveryPosition = null;
+let awaitingRecoveredFrame = null;
+
+function cancelAutoQualityTransition(outcome = "canceled") {
+  if (queuedAutoQuality) {
+    clearTimeout(qualitySwitchTimer);
+    qualitySwitchTimer = null;
+    autoQualityController?.cancelSwitch(queuedAutoQuality.decision);
+    queuedAutoQuality = null;
+  }
+  if (pendingQualityRestore?.adaptive) finishAutoQualityTransition(outcome);
+}
+
+function finishAutoQualityTransition(outcome, attempt = streamAttempt) {
+  const pending = pendingQualityRestore;
+  if (!pending?.adaptive || (outcome === "playing" && (!currentAttempt(attempt)
+      || attempt < pending.minAttempt || replayFn !== pending.replay))) return;
+  pendingQualityRestore = null;
+  reportPlaybackEvent("auto_quality_transition", {
+    reason: pending.decision.reason,
+    message: pending.decision.from + "->" + pending.decision.to + "; " + outcome,
+    stats: { ...autoQualityController.getTelemetry(),
+      switchInterruptionMs: Math.round(performance.now() - pending.startedAt) },
+  });
+  if (outcome === "failed" && pending.replay === replayFn && streamQualitySelection === AUTO_STREAM_QUALITY_ID) {
+    autoQualityController.rejectSwitch(pending.decision);
+    applyQualityProfileSettings(pending.decision.from, { selection: AUTO_STREAM_QUALITY_ID });
+  }
+  if (outcome === "playing" && pending.pause && !playbackPaused) {
+    requestAnimationFrame(() => { if (currentAttempt(attempt) && !playbackPaused) pausePlayback(); });
+  }
+}
+
+function noteRecoveredFrame(attempt) {
+  const pending = awaitingRecoveredFrame;
+  if (!pending || !currentAttempt(attempt) || attempt <= pending.previousAttempt || pending.replay !== replayFn) return;
+  awaitingRecoveredFrame = null;
+  reportPlaybackEvent("recovery_playing", { reason: pending.reason, message: String(pending.number) });
+}
 let autoplayEnabled = localStorage.getItem(AUTOPLAY_KEY) === "true";
 let autoplayContext = null;
 let autoplayAdvancing = false;
@@ -1351,6 +1443,9 @@ function resetStreamSettings({ persist = true } = {}) {
 
 function beginNewPlaybackQuality() {
   scheduleMobilePlayerReveal();
+  cancelAutoQualityTransition();
+  awaitingRecoveredFrame = failedRecoveryPosition = null;
+  autoQualityController?.resetSession();
   if (typeof playbackRecovery !== "undefined") playbackRecovery?.reset();
   resetStreamSettings({ persist: true });
   renderFpsPresets();
@@ -1375,6 +1470,7 @@ function setPlayerQualityPanelOpen(open) {
   panel.hidden = !expanded;
   button.setAttribute("aria-expanded", String(expanded));
   if (expanded) {
+    showFullscreenOverlays({ withProgress: false });
     renderQuickQuality();
   }
 }
@@ -1442,7 +1538,7 @@ function renderFpsPresets() {
   `).join("");
 }
 
-function setBadge(mode, text, { revealControls = true } = {}) {
+function setBadge(mode, text, { revealControls = false } = {}) {
   const b = $("#streamBadge");
   if (mode === "hidden") { b.hidden = true; updateActivePlaybackStatus(); return; }
   b.hidden = false;
@@ -1476,6 +1572,10 @@ function showStreamNotice(kind, title, detail) {
   n.className = "stream-notice " + kind;
   $("#streamNoticeTitle").textContent = title;
   $("#streamNoticeDetail").textContent = detail;
+  const lower = $("#streamLowerBtn");
+  if (lower) lower.hidden = !canLowerPlaybackSettings();
+  const actions = n.querySelector(".notice-actions");
+  if (actions) actions.hidden = !lower || lower.hidden;
   showFullscreenOverlays();
 }
 
@@ -1619,6 +1719,7 @@ function scheduleSlowBufferSuggestion(attempt, { reason = "startup", label = "",
 }
 
 function applySlowBufferSuggestion() {
+  cancelAutoQualityTransition();
   if (!replayFn) return hideSlowBufferSuggestion();
   const resumeAt = streamSeek.seekable ? streamReplayTime() : undefined;
   const attempt = streamAttempt;
@@ -1647,8 +1748,8 @@ function streamErrorDetail(reason) {
   if (/403|forbidden|denied|access/i.test(s)) return "The source denied the request. VPN/geo blocking or a missing referer/user-agent is likely.";
   if (/404|not found/i.test(s)) return "The stream URL was not found. The channel may have moved or gone offline.";
   if (/429|too many/i.test(s)) return "Too many streams are active. Stop the current stream and retry.";
-  if (/network|timeout|timed out|stalled/i.test(s)) return "The app could not get video data from the source fast enough. Try Retry, Lower quality, or another channel.";
-  return s || "The app did not receive playable video. Try Retry, Lower quality, or another channel.";
+  if (/network|timeout|timed out|stalled/i.test(s)) return "The app could not get video data fast enough. Playback will reconnect automatically.";
+  return s || "The app did not receive playable video. Playback will reconnect automatically.";
 }
 
 function formatMpegtsError(type, detail, info) {
@@ -1672,7 +1773,7 @@ function handleVideoPlayRejection(attempt, error) {
 
 function maybeRestorePlaybackAfterQualitySwitch(attempt) {
   const pending = pendingQualityRestore;
-  if (!pending
+  if (!pending || pending.adaptive
       || pending.generation !== qualitySwitchGeneration
       || attempt < pending.minAttempt
       || !currentAttempt(attempt)) return;
@@ -1685,6 +1786,7 @@ function maybeRestorePlaybackAfterQualitySwitch(attempt) {
 
 function markStreamLive(attempt) {
   if (!currentAttempt(attempt)) return;
+  noteRecoveredFrame(attempt);
   clearStreamTimers();
   clearStreamNotice();
   $("#screen").classList.remove("loading");
@@ -1761,54 +1863,64 @@ function updateStreamSeekUi(current = getStreamCurrentTime()) {
 
 function canAutoHideScreenOverlays() {
   const screen = $("#screen");
-  const noticeVisible = !$("#streamNotice")?.hidden;
-  return Boolean(screen
-    && screen.classList.contains("playing")
-    && !screen.classList.contains("loading")
-    && !screen.classList.contains("controls-interacting")
-    && !playbackPaused
-    && !noticeVisible);
+  return Boolean(screen && (screen.classList.contains("playing") || screen.classList.contains("loading")));
+}
+
+function setScreenOverlaysIdle(idle) {
+  document.body.classList.toggle("fullscreen-controls-idle", idle);
+  for (const selector of ["#videoControlsOverlay", "#playerQualityBtn"]) {
+    const control = $(selector);
+    if (!control) continue;
+    control.inert = idle;
+    if (idle) control.setAttribute("aria-hidden", "true");
+    else control.removeAttribute("aria-hidden");
+  }
+  if (idle) setPlayerQualityPanelOpen(false);
 }
 
 function clearFullscreenOverlayHide() {
   clearTimeout(fullscreenOverlayHideTimer);
   fullscreenOverlayHideTimer = null;
-  document.body.classList.remove("fullscreen-controls-idle");
-}
-
-function fullscreenKeyboardFocusIsVisible(screen) {
-  const active = document.activeElement;
-  if (!screen?.contains(active)) return false;
-  try { return active.matches(":focus-visible"); }
-  catch { return fullscreenKeyboardModality; }
+  setScreenOverlaysIdle(false);
 }
 
 function scheduleFullscreenOverlayHide() {
   clearTimeout(fullscreenOverlayHideTimer);
+  fullscreenOverlayHideTimer = null;
   if (!canAutoHideScreenOverlays()) {
-    document.body.classList.remove("fullscreen-controls-idle");
+    clearFullscreenOverlayHide();
     return;
   }
+  // Only an actual held pointer can defer hiding; retained focus cannot.
+  if ($("#screen").classList.contains("controls-interacting")) return;
   fullscreenOverlayHideTimer = setTimeout(() => {
     fullscreenOverlayHideTimer = null;
-    const screen = $("#screen");
-    const keyboardFocused = fullscreenKeyboardFocusIsVisible(screen);
-    if (canAutoHideScreenOverlays() && !keyboardFocused) {
-      document.body.classList.add("fullscreen-controls-idle");
-    }
+    if (canAutoHideScreenOverlays()) setScreenOverlaysIdle(true);
   }, FULLSCREEN_OVERLAY_HIDE_MS);
 }
 
+function syncScreenOverlayLifecycle() {
+  if (!canAutoHideScreenOverlays()) {
+    clearFullscreenOverlayHide();
+    return;
+  }
+  // Arm newly loaded players, including iframe/remote sources. Repeated class
+  // or statistics updates must not reset an existing timer or reveal idle UI.
+  if (fullscreenOverlayHideTimer === null
+      && !document.body.classList.contains("fullscreen-controls-idle")) {
+    scheduleFullscreenOverlayHide();
+  }
+}
+
 function showFullscreenOverlays({ withProgress = true } = {}) {
-  document.body.classList.remove("fullscreen-controls-idle");
+  clearFullscreenOverlayHide();
   if (withProgress) updateStreamSeekUi();
   if (canAutoHideScreenOverlays()) scheduleFullscreenOverlayHide();
-  else clearFullscreenOverlayHide();
 }
 
 function beginScreenControlInteraction() {
   $("#screen")?.classList.add("controls-interacting");
-  clearFullscreenOverlayHide();
+  showFullscreenOverlays();
 }
 
 function endScreenControlInteraction() {
@@ -1904,6 +2016,8 @@ function configureStreamSeek(meta = {}, startAt = 0) {
 }
 
 function seekStreamTo(time) {
+  cancelAutoQualityTransition();
+  awaitingRecoveredFrame = failedRecoveryPosition = null;
   playbackRecovery?.reset();
   if (!streamSeek.seekable || !replayFn) return;
   const target = streamSeekTarget(time);
@@ -1919,9 +2033,19 @@ function failStreamAttempt(attempt, title, detail) {
   diagnosticsMethod = playbackDiagnosticsSnapshot().method;
   diagnosticsError = "playback-failed";
   diagnosticsStats = null;
+  cancelAutoQualityTransition("failed");
+  awaitingRecoveredFrame = null;
   const recovery = playbackRecoverySample();
-  const retrying = playbackRecovery?.request("failure", recovery);
+  if (recovery) failedRecoveryPosition = { replay: replayFn, position: recovery.position };
+  const retrying = playbackRecovery?.request("failure", recovery && { ...recovery, transitioning: false });
+  const keepLastBufferedFrame = Boolean(retrying && activeCompat?.buffered
+    && Number(activeCompat?.bufferedPlayer?.getStats?.().renderedFrames || 0) > 0);
+  if (keepLastBufferedFrame) {
+    preserveBufferedCanvasUntilFrame = true;
+    preserveBufferedCanvasReplayFn = replayFn;
+  }
   pendingPlaybackMethodRestore = null;
+  try { activeCompat?.cancelAudioRecovery?.(); } catch {}
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
   streamAttempt++;
   clearStreamTimers();
@@ -1929,14 +2053,13 @@ function failStreamAttempt(attempt, title, detail) {
   destroyPlayer();
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
   void stopCyberdashPlayback();
-  screen.classList.remove("loading", "mjpeg-buffered-mode", "cyberdash-mode", "startup-preview");
-  setBadge("error", "Stream failed");
-  showStreamNotice("error", title, detail);
+  screen.classList.remove("loading", "cyberdash-mode", "startup-preview");
+  if (!keepLastBufferedFrame) screen.classList.remove("mjpeg-buffered-mode");
   try { video.pause(); } catch {}
   video.removeAttribute("src");
   try { video.load(); } catch {}
   img.removeAttribute("src");
-  if (canvas) {
+  if (canvas && !keepLastBufferedFrame) {
     const context = canvas.getContext("2d");
     context?.clearRect(0, 0, canvas.width, canvas.height);
   }
@@ -1950,11 +2073,13 @@ function failStreamAttempt(attempt, title, detail) {
   activeCompat = null;
   updateBufferedMjpegDebug(null);
   resetPauseControl(true);
-  if (retrying) {
-    setBadge("reconnecting", "Reconnecting playback…");
-    showStreamNotice("warning", "Reconnecting", "Your playback position and sound setting are kept.");
+  if (retrying || navigator.onLine === false || document.hidden) {
+    setBadge("reconnecting", navigator.onLine === false ? "Waiting for network…" : "Reconnecting playback…");
+    // Recovery needs no tap. A large notice must never cover the video.
+    clearStreamNotice();
   } else {
-    if (playbackRecovery?.exhausted) showStreamNotice("error", "Recovery stopped after 3 attempts", "Try Retry, lower quality, or a saved download.");
+    setBadge("error", "Stream failed");
+    showStreamNotice("error", title, detail);
     toast(title, true);
   }
 }
@@ -2006,8 +2131,12 @@ function freezeMjpegFrame() {
 }
 
 function pausePlayback() {
+  autoQualityController?.hold();
+  if (queuedAutoQuality) cancelAutoQualityTransition();
+  if (pendingQualityRestore?.adaptive) pendingQualityRestore.pause = true;
   playbackRecovery?.hold();
   if (playbackPaused || $("#pauseBtn")?.disabled) return;
+  suspendBufferedAudioRepairForHold();
   void watchProgress.save();
   const screen = $("#screen");
   if (screen.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
@@ -2066,6 +2195,7 @@ function pausePlayback() {
 }
 
 async function resumePlayback() {
+  if (pendingQualityRestore?.adaptive) pendingQualityRestore.pause = false;
   if (!playbackPaused) return;
   const screen = $("#screen");
   if (screen.classList.contains("cyberdash-mode") && cyberdashPlayer?.isActive?.()) {
@@ -2093,6 +2223,7 @@ async function resumePlayback() {
   showFullscreenOverlays();
   if (wasBufferedMjpeg) {
     activeCompat.bufferedPlayer.resumeUser();
+    resumeSilentBufferedAudioRepair();
     return;
   }
   if (wasMjpeg && replayFn) {
@@ -2101,6 +2232,7 @@ async function resumePlayback() {
     if (result?.catch) result.catch((e) => toast(e.message, true));
     return;
   }
+  if (pendingQualityRestore?.adaptive && screen.classList.contains("cyberdash-mode")) return;
   const video = $("#video");
   const audio = $("#audio");
   const attempt = streamAttempt;
@@ -2108,6 +2240,27 @@ async function resumePlayback() {
   if (soundOn && activeCompat?.browserPcm) startBrowserPcmAudio(activeCompat.audioUrl, true);
   if (soundOn && audio.src) audio.play().catch(() => toast("Tap sound to resume audio"));
   markStreamLive(attempt);
+}
+
+function suspendBufferedAudioRepairForHold() {
+  if (!activeCompat?.bufferedPlayer || activeCompat.audioStatus !== "retrying") return false;
+  // The shared scheduler may be waiting between attempts while there is no
+  // active local media promise to cancel. In that case cancelAudioRecovery()
+  // returns false; nevertheless the held player must not remain "retrying".
+  const canceled = Boolean(activeCompat.cancelAudioRecovery?.());
+  if (!canceled && activeCompat?.bufferedPlayer && activeCompat.audioStatus === "retrying") {
+    activeCompat.audioStatus = "silent";
+    updateActivePlaybackStatus();
+  }
+  return true;
+}
+
+function resumeSilentBufferedAudioRepair() {
+  if (!activeCompat?.buffered || activeCompat.audioStatus !== "silent"
+      || !soundOn || !activeCompat.audioUrl || playbackPaused || document.hidden) return false;
+  const sample = playbackRecoverySample();
+  if (!sample || !playbackRecovery) return false;
+  return playbackRecovery.request("audio", { ...sample, started: true, paused: false, hidden: false, audioError: true });
 }
 
 function togglePlaybackPause() {
@@ -2126,11 +2279,8 @@ function armStreamWatchdog(watchdog) {
       if (playbackPaused) return suspendStreamWatchdog();
       watchdog.warned = true;
       setBadge("reconnecting", "Still connecting...");
-      showStreamNotice(
-        "warning",
-        "Still connecting",
-        `${watchdog.mode} has not delivered a video frame yet. Waiting a bit longer before marking it failed.`
-      );
+      // A first-frame wait is not an actionable error. Keep the video visible.
+      clearStreamNotice();
     }, watchdog.warnRemaining);
   }
   streamFailTimer = setTimeout(() => {
@@ -2139,7 +2289,7 @@ function armStreamWatchdog(watchdog) {
     failStreamAttempt(
       watchdog.attempt,
       "No video frames received",
-      `No playable video frames arrived during ${Math.round(watchdog.failMs / 1000)} seconds of active loading. Try Retry or another video if this continues.`
+      `No playable video frames arrived during ${Math.round(watchdog.failMs / 1000)} seconds of active loading. Playback will reconnect automatically.`
     );
   }, watchdog.failRemaining);
 }
@@ -2272,6 +2422,11 @@ function canTryMpegts() {
 }
 
 function cleanupMedia(keepWatchProgress = false) {
+  const qualityTransition = pendingQualityRestore?.adaptive && pendingQualityRestore.replay === replayFn
+    ? pendingQualityRestore : null;
+  if (!qualityTransition && (!recoveryReplay || recoveryReplay !== replayFn)) playbackRecovery?.reset();
+  if (pendingQualityRestore?.adaptive && !qualityTransition) cancelAutoQualityTransition();
+  if (queuedAutoQuality) cancelAutoQualityTransition();
   diagnosticsStats = null;
   diagnosticsMethod = null;
   diagnosticsError = null;
@@ -2279,11 +2434,22 @@ function cleanupMedia(keepWatchProgress = false) {
   if (!keepWatchProgress) void watchProgress.stop();
   const screen = $("#screen"), video = $("#video"), img = $("#mjpeg"), canvas = $("#mjpegCanvas"), cyberdashCanvas = $("#cyberdashCanvas"), audio = $("#audio");
   void stopCyberdashPlayback({ report: true });
+  screen.classList.remove("controls-interacting");
   clearFullscreenOverlayHide();
   setDesktopStreamActive(false);
   setBrowserStreamActive(false);
+  try { activeCompat?.cancelAudioRecovery?.(); } catch {}
   try { activeCompat?.bufferedPlayer?.destroy?.(); } catch {}
-  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "mjpeg-buffered-mode", "cyberdash-mode", "startup-preview");
+  const preserveBufferedCanvas = qualityTransition?.transport === "mjpeg"
+    || (preserveBufferedCanvasUntilFrame && replayFn === preserveBufferedCanvasReplayFn);
+  const preserveCyberdashCanvas = qualityTransition?.transport === "webcodecs";
+  if (preserveBufferedCanvasUntilFrame && !preserveBufferedCanvas) {
+    preserveBufferedCanvasUntilFrame = false;
+    preserveBufferedCanvasReplayFn = null;
+  }
+  screen.classList.remove("browser-mode", "browser-input-active", "browser-keyboard-active", "startup-preview");
+  if (!preserveCyberdashCanvas) screen.classList.remove("cyberdash-mode");
+  if (!preserveBufferedCanvas) screen.classList.remove("mjpeg-buffered-mode");
   streamAttempt++;
   clearStreamTimers();
   clearStreamNotice();
@@ -2306,11 +2472,11 @@ function cleanupMedia(keepWatchProgress = false) {
   img.onerror = null;
   img.removeAttribute("src");
   img.style.visibility = "";
-  if (canvas) {
+  if (canvas && !preserveBufferedCanvas) {
     const context = canvas.getContext("2d");
     context?.clearRect(0, 0, canvas.width, canvas.height);
   }
-  if (cyberdashCanvas) {
+  if (cyberdashCanvas && !preserveCyberdashCanvas) {
     const context = cyberdashCanvas.getContext("2d");
     context?.clearRect(0, 0, cyberdashCanvas.width, cyberdashCanvas.height);
   }
@@ -2319,6 +2485,7 @@ function cleanupMedia(keepWatchProgress = false) {
   audio.onloadeddata = null;
   audio.oncanplay = null;
   audio.oncanplaythrough = null;
+  audio.onseeked = null;
   audio.onerror = null;
   audio.onplaying = null;
   audio.onended = null;
@@ -2960,12 +3127,16 @@ function retryBufferedAudioFromGesture() {
 function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   globalThis.ytStreamerVlcCast?.setSource({mjpegUrl,audioUrl},meta);
   if (!bufferedMjpegSupported()) {
-    playCompatStream({ mjpegUrl, audioUrl }, label, meta);
-    showStreamNotice(
-      "warning",
-      "Buffered playback unavailable",
-      "This browser cannot use streaming fetch + canvas playback, so YT Streamer is using the legacy MJPEG player."
-    );
+    playCompatStream({ mjpegUrl, audioUrl }, label, {
+      ...meta, looseAudioSync: Boolean(meta.silentAudioAutoplayFallback || meta.looseAudioSync),
+    });
+    if (!meta.silentAudioAutoplayFallback) {
+      showStreamNotice(
+        "warning",
+        "Buffered playback unavailable",
+        "This browser cannot use streaming fetch + canvas playback, so YT Streamer is using the legacy MJPEG player."
+      );
+    }
     return;
   }
 
@@ -3055,7 +3226,6 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     browserAudio: false,
     browserPcm: false,
     audioStatus: !soundOn ? "muted" : (audioUrl ? "starting" : "source"),
-    audioRetryCount: 0,
   };
   updateActivePlaybackStatus();
 
@@ -3063,14 +3233,20 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   let loggedPlaying = false;
   let jxlFallbackInProgress = false;
   let loggedRebufferCount = 0;
-  let audioRetryCount = 0;
-  let audioRetryTimer = null;
   let audioLoadTimer = null;
   let audioFailureHandled = false;
+  let audioRepairPromise = null;
+  let resolveAudioRepair = null;
+  let rejectAudioRepair = null;
+  let audioRepairActive = false;
+  let audioPrimeToken = 0;
+  let initialAudioPrimed = false;
+  let intentionalAudioAbortToken = 0;
+  let repairBaseLocal = 0;
+  let repairAlignmentReloaded = false;
+  let repairAlignmentComplete = false;
   const cancelAudioTimers = () => {
-    clearTimeout(audioRetryTimer);
     clearTimeout(audioLoadTimer);
-    audioRetryTimer = null;
     audioLoadTimer = null;
   };
   player = new window.BufferedMjpeg.BufferedMjpegPlayer({
@@ -3085,7 +3261,8 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     isCurrent: (sessionId) => currentAttempt(sessionId)
       && activeCompat?.bufferedPlayer === player
       && activeCompat?.mjpegUrl === bufferedUrl,
-    audioEnabled: () => Boolean(audioUrl && soundOn && !audioFailed),
+    audioEnabled: () => Boolean(audioUrl && soundOn && !audioFailed
+      && !["retrying", "gesture-required"].includes(activeCompat?.audioStatus)),
     startupSeconds: bufferPolicy.startupSeconds,
     rebufferSeconds: bufferPolicy.rebufferSeconds,
     maxQueueSeconds: bufferPolicy.maxQueueSeconds,
@@ -3154,6 +3331,14 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
         screen.classList.remove("startup-preview");
         activeCompat.playbackStarted = true;
         activeCompat.videoReady = true;
+        // Audio may have emitted its playing event before video left the
+        // startup buffer. Mark it synchronized only once both are playing.
+        if (soundOn && audioUrl && !audioFailed && !audioRepairActive
+            && audioReadyForSync(audio) && !audio.paused
+            && activeCompat.audioStatus !== "synced") {
+          activeCompat.audioStatus = "synced";
+          updateActivePlaybackStatus();
+        }
         if (!loggedPlaying) {
           loggedPlaying = true;
           reportPlaybackEvent("buffered_playing", {
@@ -3190,9 +3375,15 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     },
     onStats: (stats) => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+      if (Number(stats.renderedFrames || 0) > 0) {
+        preserveBufferedCanvasUntilFrame = false;
+        preserveBufferedCanvasReplayFn = null;
+        finishAutoQualityTransition("playing", attempt);
+        noteRecoveredFrame(attempt);
+      }
       updateBufferedMjpegDebug(stats);
       reportPeriodicPlaybackSample({ attempt, method: "mjpeg", label, streamUrl: bufferedUrl, stats });
-      if (maybeAdaptAutoQuality(stats)) return;
+      if (!meta.experimentalJxl && maybeAdaptAutoQuality(stats)) return;
       if (stats.state === "buffering") {
         const target = stats.renderedFrames ? Number(stats.recoveryTargetSeconds || bufferPolicy.rebufferSeconds) : bufferPolicy.startupSeconds;
         if (playbackPaused) {
@@ -3267,8 +3458,38 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   });
 
   activeCompat.bufferedPlayer = player;
+  const settleAudioRepair = (error = null) => {
+    const resolve = resolveAudioRepair;
+    const reject = rejectAudioRepair;
+    resolveAudioRepair = rejectAudioRepair = null;
+    audioRepairPromise = null;
+    if (error) reject?.(error);
+    else resolve?.(true);
+  };
   const handleBufferedAudioFailure = (reason) => {
     if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
+    const errorName = reason?.name || "";
+    const message = reason?.message || String(reason || "Audio source failed");
+    // Safari may reject play() even though the source is valid. That is a
+    // gesture requirement, not evidence that the transport needs reloading.
+    if (errorName === "NotAllowedError" || /notallowederror/i.test(message)) {
+      audioFailureHandled = true;
+      cancelAudioTimers();
+      audioFailed = true;
+      activeCompat.audioReady = true;
+      activeCompat.audioStatus = "gesture-required";
+      player.setAudioDisabled(true, player.currentTime());
+      player.setAudioReady(true, { playable: false });
+      updateActivePlaybackStatus();
+      // A hands-free URL playback must keep its video visible without an
+      // interrupting audio-permission dialog. The audio retry affordance remains
+      // available in the player after the next user gesture.
+      if (!meta.silentAudioAutoplayFallback) {
+        showStreamNotice("warning", "Tap to start audio", "Your browser requires a tap before audio can play. Tap Retry audio when ready.");
+      }
+      settleAudioRepair();
+      return;
+    }
     // Some browsers emit both audio.onerror and a rejected source attach for
     // the same failed resource. Count one failure per loading attempt.
     if (audioFailureHandled) return;
@@ -3277,39 +3498,30 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     const clockPosition = player.currentTime();
     audioFailed = true;
     activeCompat.audioReady = true;
+    activeCompat.audioStatus = "silent";
+    activeCompat.audioLoadStartedAt = 0;
     player.setAudioDisabled(true, clockPosition);
-    // Video may proceed silently, but don't report failed audio as playable.
+    // Release startup video without recording a successful audio milestone.
     player.setAudioReady(true, { playable: false });
     const mediaError = Number(audio.error?.code || 0);
     reportPlaybackEvent("buffered_audio_failed", {
       label,
-      reason: "media=" + mediaError + "; retry=" + audioRetryCount,
-      message: String(reason || "Audio source failed").slice(0, 100),
+      reason: "media=" + mediaError,
+      message: String(message).slice(0, 100),
     });
-    if (audioUrl && soundOn && audioRetryCount < 3) {
-      audioRetryCount++;
-      activeCompat.audioRetryCount = audioRetryCount;
-      activeCompat.audioStatus = "retrying";
-      updateActivePlaybackStatus();
-      const delayMs = [0, 900, 2000, 4000][audioRetryCount];
-      audioRetryTimer = setTimeout(() => {
-        audioRetryTimer = null;
-        if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player || !soundOn) return;
-        if (playbackPaused || document.hidden) {
-          activeCompat.audioStatus = "silent";
-          updateActivePlaybackStatus();
-          return;
-        }
-        void activeCompat.repairAudio().catch((error) =>
-          handleBufferedAudioFailure(error.message || "Audio reconnection failed"));
-      }, delayMs);
-      return;
-    }
-    activeCompat.audioStatus = "silent";
     updateActivePlaybackStatus();
-    toast("Sound unavailable · video continues silently. Tap Retry audio.", true);
-    showStreamNotice("warning", "Audio connection failed",
-      "Video continues using its own clock. Tap Retry audio to reconnect sound, or select WebCodecs for synchronized audio/video.");
+    if (audioRepairActive) {
+      settleAudioRepair(Object.assign(new Error(message), { name: errorName || "AudioTransportError" }));
+    } else {
+      // Start the single shared recovery scheduler after the silent video path
+      // has been released. It owns every retry and never replays the video.
+      queueMicrotask(() => {
+        if (currentAttempt(attempt) && activeCompat?.bufferedPlayer === player) {
+          const sample = playbackRecoverySample();
+          if (sample) playbackRecovery?.request("audio", { ...sample, started: true, audioError: true });
+        }
+      });
+    }
   };
 
   // The video is often ready in 2–5s while broken upstream audio consumes the
@@ -3321,54 +3533,163 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     audioLoadTimer = setTimeout(() => {
       audioLoadTimer = null;
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
-      if (!audioReadyForSync(audio)) handleBufferedAudioFailure(`Audio did not buffer within ${audioStartupTimeoutMs / 1000} seconds`);
+      if (!audioReadyForSync(audio) || (audioRepairActive && (!repairAlignmentComplete || audio.paused))) {
+        handleBufferedAudioFailure(`Audio did not become playable and aligned within ${audioStartupTimeoutMs / 1000} seconds`);
+      }
     }, audioStartupTimeoutMs);
   };
 
   const markAudioReady = () => {
     if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
-    if (!audioReadyForSync(audio) || (audioFailureHandled && audioRetryTimer)) return;
-    clearTimeout(audioLoadTimer);
-    audioLoadTimer = null;
+    if (!audioReadyForSync(audio)) return;
+    // Initial play primes Safari's media pipeline; pause it again once there is
+    // enough data so startup buffering cannot consume the beginning of audio.
+    if (!audioRepairActive && !player.playbackStarted && !initialAudioPrimed) {
+      // This priming pause must happen only once. A later canplay event can
+      // arrive while the buffered player is already starting real playback.
+      initialAudioPrimed = true;
+      intentionalAudioAbortToken = audioPrimeToken;
+      try { audio.pause(); } catch {}
+      try { if (audio.currentTime < 1) audio.currentTime = 0; } catch {}
+    }
+    if (!audioRepairActive || !audio.paused) {
+      clearTimeout(audioLoadTimer);
+      audioLoadTimer = null;
+    }
     audioFailureHandled = false;
     audioFailed = false;
     activeCompat.audioReady = true;
-    activeCompat.audioStatus = "ready";
+    activeCompat.audioStatus = audioRepairActive ? "retrying"
+      : player.playbackStarted && !audio.paused ? "synced" : "ready";
     updateActivePlaybackStatus();
     player.setAudioReady(true);
+    if (audioRepairActive && repairAlignmentComplete && !audio.paused) finishAudioRepair();
+  };
+  const finishAudioRepair = () => {
+    if (!audioRepairActive || !repairAlignmentComplete || audio.paused) return;
+    audioFailed = false;
+    activeCompat.audioStatus = "synced";
+    updateActivePlaybackStatus();
+    settleAudioRepair();
   };
   activeCompat.repairAudio = async ({ manual = false } = {}) => {
     if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player
         || playbackPaused || document.hidden || !soundOn || !audioUrl) return false;
-    if (manual) {
-      audioRetryCount = 0;
-      activeCompat.audioRetryCount = 0;
-    }
+    if (audioRepairPromise) return audioRepairPromise;
+    void manual;
     cancelAudioTimers();
-    const localTime = Math.max(0, player.currentTime());
-    const absoluteTime = streamSeek.startAt + localTime;
+    let localTime = Math.max(0, player.currentTime());
+    let absoluteTime = streamSeek.startAt + localTime;
     const url = new URL(audioUrl, location.origin);
     const fullFile = url.pathname.startsWith("/stream/legacy-audio/");
     url.searchParams.set("_", String(Date.now()));
     if (!fullFile) url.searchParams.set("timestamp", String(absoluteTime));
-    if (!player.beginAudioRecovery(fullFile ? streamSeek.startAt : -localTime)) return false;
+    audioFailed = true;
+    if (!player.beginAudioRecovery(fullFile ? streamSeek.startAt : -localTime, localTime)) return false;
     audioFailed = false;
     audioFailureHandled = false;
+    audioRepairActive = true;
+    activeCompat.audioLoadStartedAt = Date.now();
+    repairBaseLocal = localTime;
+    repairAlignmentReloaded = false;
+    repairAlignmentComplete = false;
     activeCompat.audioReady = false;
     activeCompat.audioStatus = "retrying";
     updateActivePlaybackStatus();
-    audio.onloadedmetadata = () => {
+    const alignRepairSource = () => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
-      if (fullFile) { try { audio.currentTime = absoluteTime; } catch {} }
-      markAudioReady();
+      if (repairAlignmentComplete) return true;
+      if (!audioReadyForSync(audio)) return false;
+      const currentLocal = Math.max(0, player.currentTime());
+      const alignment = window.PlaybackRecovery.audioAlignmentPlan({ fullFile,
+        streamStartAt: streamSeek.startAt, requestedLocalTime: repairBaseLocal,
+        currentLocalTime: currentLocal, toleranceSeconds: 0.1 });
+      const targetAudio = alignment.targetAudioTime;
+      let targetBuffered = false;
+      try {
+        for (let i = 0; i < audio.buffered.length; i += 1) {
+          if (targetAudio >= audio.buffered.start(i) - 0.1 && targetAudio <= audio.buffered.end(i) + 0.1) targetBuffered = true;
+        }
+        for (let i = 0; i < audio.seekable.length; i += 1) {
+          if (targetAudio >= audio.seekable.start(i) - 0.1 && targetAudio <= audio.seekable.end(i) + 0.1) targetBuffered = true;
+        }
+      } catch {}
+      if (targetAudio > 0.1 && targetBuffered) {
+        try {
+          if (Math.abs(Number(audio.currentTime || 0) - targetAudio) > 0.1) {
+            audio.currentTime = targetAudio;
+            return false;
+          }
+        } catch { return false; }
+        if (audio.seeking || Math.abs(Number(audio.currentTime || 0) - targetAudio) > 0.15) return false;
+      } else if (alignment.requestFreshSegment && !repairAlignmentReloaded) {
+        // Loading can take several seconds. Start a fresh audio segment at the
+        // current video position instead of grafting the stale request timeline.
+        repairAlignmentReloaded = true;
+        repairBaseLocal = currentLocal;
+        absoluteTime = alignment.sourceTimestamp;
+        url.searchParams.set("timestamp", String(absoluteTime));
+        player.audioClockOffset = -repairBaseLocal;
+        intentionalAudioAbortToken = audioPrimeToken;
+        const sourcePromise = setCompatAudioSource(audio, url.pathname + url.search);
+        const playToken = ++audioPrimeToken;
+        const playPromise = audio.play?.();
+        Promise.resolve(playPromise).catch((error) => {
+          if (error?.name === "AbortError" && intentionalAudioAbortToken === playToken) {
+            intentionalAudioAbortToken = 0;
+            return;
+          }
+          handleBufferedAudioFailure(error);
+        });
+        sourcePromise.catch((error) => handleBufferedAudioFailure(error));
+        return false;
+      } else if ((fullFile && targetAudio > 0.1) || !alignment.withinTolerance) return false;
+      repairAlignmentComplete = true;
+      return true;
     };
+    const onRepairAudioData = () => {
+      if (alignRepairSource()) {
+        markAudioReady();
+        if (!audio.paused) finishAudioRepair();
+      }
+    };
+    audio.onloadedmetadata = audio.onloadeddata = audio.oncanplay = audio.oncanplaythrough = audio.onseeked = onRepairAudioData;
     armAudioLoadTimeout();
+    let repairPromise;
     try {
-      await setCompatAudioSource(audio, url.pathname + url.search);
+      repairPromise = new Promise((resolve, reject) => {
+        resolveAudioRepair = resolve;
+        rejectAudioRepair = reject;
+      });
+      audioRepairPromise = repairPromise;
+      const sourcePromise = setCompatAudioSource(audio, url.pathname + url.search);
+      // Invoke play synchronously after src/load assignment so Safari has the
+      // best chance to associate it with the initiating user gesture.
+      const playPromise = audio.play?.();
+      const playToken = ++audioPrimeToken;
+      Promise.resolve(playPromise).catch((error) => {
+        if (error?.name === "AbortError" && intentionalAudioAbortToken === playToken) {
+          intentionalAudioAbortToken = 0;
+          return;
+        }
+        handleBufferedAudioFailure(error);
+      });
+      await sourcePromise;
     } catch (error) {
-      handleBufferedAudioFailure(error.message || "Audio source could not reconnect");
-      return false;
+      handleBufferedAudioFailure(error);
     }
+    try { return await repairPromise; }
+    finally { audioRepairActive = false; }
+  };
+  activeCompat.cancelAudioRecovery = () => {
+    if (!audioRepairActive) return false;
+    cancelAudioTimers();
+    audioRepairActive = false;
+    audioFailed = true;
+    activeCompat.audioReady = true;
+    activeCompat.audioStatus = "silent";
+    updateActivePlaybackStatus();
+    settleAudioRepair(Object.assign(new Error("Audio repair canceled"), { name: "AbortError" }));
     return true;
   };
 
@@ -3376,28 +3697,40 @@ function playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta = {}) {
   audio.muted = !soundOn;
 
   if (audioUrl && soundOn) {
-    audio.onloadedmetadata = markAudioReady;
-    audio.onloadeddata = markAudioReady;
-    audio.oncanplay = markAudioReady;
-    audio.oncanplaythrough = markAudioReady;
+    activeCompat.audioLoadStartedAt = Date.now();
+    audio.onloadedmetadata = audio.onloadeddata = audio.oncanplay = audio.oncanplaythrough = markAudioReady;
     audio.onplaying = () => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
-      cancelAudioTimers();
+      if (playbackPaused || document.hidden) return;
       audioFailureHandled = false;
+      if (audioRepairActive && !repairAlignmentComplete) return;
+      cancelAudioTimers();
       audioFailed = false;
-      activeCompat.audioStatus = "synced";
+      activeCompat.audioStatus = player.playbackStarted ? "synced" : "ready";
+      activeCompat.audioLoadStartedAt = 0;
       updateActivePlaybackStatus();
+      if (audioRepairActive) finishAudioRepair();
     };
     audio.onerror = () => {
       if (!currentAttempt(attempt) || activeCompat?.bufferedPlayer !== player) return;
       handleBufferedAudioFailure("HTML audio error " + Number(audio.error?.code || 0));
     };
     armAudioLoadTimeout();
-    setCompatAudioSource(audio, audioUrl).then(() => {
-      markAudioReady();
-    }).catch((error) => {
-      handleBufferedAudioFailure(error.message || "Could not load audio");
+    const sourcePromise = setCompatAudioSource(audio, audioUrl);
+    // Prime the media element before the future-data gate. iOS Safari can
+    // defer network reads indefinitely when it sees only preload + load().
+    const playToken = ++audioPrimeToken;
+    const playPromise = audio.play?.();
+    Promise.resolve(playPromise).catch((error) => {
+      if (error?.name === "AbortError" && intentionalAudioAbortToken === playToken) {
+        intentionalAudioAbortToken = 0;
+        return;
+      }
+      handleBufferedAudioFailure(error);
     });
+    sourcePromise.then(() => {
+      if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) markAudioReady();
+    }).catch((error) => handleBufferedAudioFailure(error));
   } else {
     player.setAudioReady(true);
   }
@@ -3435,8 +3768,43 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     playbackStarted: false,
     browserAudio: Boolean(meta.browserAudio),
     browserPcm: Boolean(meta.browserPcm),
+    audioStatus: audioUrl && soundOn ? "starting" : "muted",
   };
-  audio.onended = () => { void handleAutoplayEnd({ naturalEnd: true }); };
+  let liveAudioRetryTimer = null;
+  let liveAudioRetryCount = 0;
+  let cancelLiveAudioRecovery = false;
+  const scheduleLiveAudioRetry = () => {
+    if (!meta.isLive || !audioUrl || cancelLiveAudioRecovery || liveAudioRetryTimer
+        || !currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl) return;
+    if (liveAudioRetryCount >= 3) {
+      activeCompat.audioStatus = "silent";
+      updateActivePlaybackStatus();
+      return;
+    }
+    const delay = 2500 * (2 ** liveAudioRetryCount++);
+    activeCompat.audioStatus = "retrying";
+    updateActivePlaybackStatus();
+    liveAudioRetryTimer = setTimeout(() => {
+      liveAudioRetryTimer = null;
+      if (cancelLiveAudioRecovery || !currentAttempt(attempt)
+          || activeCompat?.mjpegUrl !== mjpegUrl || !soundOn) return;
+      // Reattach audio without restarting live video or the playback clock.
+      void setCompatAudioSource(audio, audioUrl).catch(() => scheduleLiveAudioRetry());
+    }, delay);
+  };
+  activeCompat.cancelAudioRecovery = () => {
+    cancelLiveAudioRecovery = true;
+    clearTimeout(liveAudioRetryTimer);
+    liveAudioRetryTimer = null;
+  };
+  if (meta.isLive) activeCompat.repairAudio = () => {
+    liveAudioRetryCount = 0;
+    clearTimeout(liveAudioRetryTimer);
+    liveAudioRetryTimer = null;
+    scheduleLiveAudioRetry();
+    return Promise.resolve(true);
+  };
+  audio.onended = () => { if (!meta.isLive) void handleAutoplayEnd({ naturalEnd: true }); };
 
   const releaseCompatPlayback = () => {
     if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl || activeCompat.playbackStarted) return;
@@ -3510,6 +3878,20 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       if (!currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl) return;
       if (!audioReadyForSync(audio)) return;
       activeCompat.audioReady = true;
+      if (meta.isLive) {
+        liveAudioRetryCount = 0;
+        clearTimeout(liveAudioRetryTimer);
+        liveAudioRetryTimer = null;
+        activeCompat.audioStatus = "synced";
+        updateActivePlaybackStatus();
+      }
+      // Live video may already be running after a temporary audio failure.
+      // Restore sound in place instead of making the image wait or restart.
+      if (meta.isLive && activeCompat.playbackStarted) {
+        const resumedAudio = startCompatAudio(false);
+        if (resumedAudio?.catch) resumedAudio.catch(() => {});
+        return;
+      }
       if (meta.syncVideoToAudio && !activeCompat.videoStarted) {
         const videoDelayMs = measuredAudioStartupDelayMs(activeCompat.audioLoadStartedAt);
         if (videoDelayMs > 0) {
@@ -3530,10 +3912,14 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
     audio.oncanplaythrough = loadVideoIfAudioReady;
     audio.onerror = () => {
       if (!currentAttempt(attempt)) return;
-      toast("Audio failed, starting video");
       activeCompat.audioReady = true;
       loadCompatVideo(attempt, mjpegUrl);
       releaseCompatPlayback();
+      if (meta.isLive) {
+        scheduleLiveAudioRetry();
+      } else {
+        toast("Audio unavailable · continuing video");
+      }
     };
     activeCompat.audioLoadStartedAt = performance.now();
     setCompatAudioSource(audio, audioUrl, {
@@ -3544,6 +3930,7 @@ function playCompatStream({ mjpegUrl, audioUrl }, label, meta = {}) {
       activeCompat.audioReady = true;
       loadCompatVideo(attempt, mjpegUrl);
       releaseCompatPlayback();
+      if (meta.isLive) scheduleLiveAudioRetry();
       return false;
     }).then((attached) => {
       if (attached === false || !currentAttempt(attempt) || activeCompat?.mjpegUrl !== mjpegUrl || !meta.browserAudio) return;
@@ -3572,6 +3959,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   const screen = $("#screen");
   const canvas = $("#cyberdashCanvas");
   const preparedId = String(meta.preparedId || "").trim();
+  const effectiveRate = meta.liveUrl ? 1 : youtubePlaybackRate;
   activeYoutubeSourceUrl = youtubeUrl || (preparedId ? `processed://${preparedId}` : "");
   $("#nowPlaying").textContent = label || "YouTube";
   $("#stopBtn").disabled = false;
@@ -3593,7 +3981,7 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
   if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) autoQualityController?.beginAttempt();
   screen.classList.remove("video-mode", "mjpeg-mode", "mjpeg-buffered-mode");
   screen.classList.add("playing", "loading", "cyberdash-mode");
-  if (!quietTransition) setBadge("reconnecting", "↻ WebCodecs…");
+  if (!quietTransition) setBadge("reconnecting", `↻ WebCodecs · ${effectiveRate}×…`);
   startStreamWatchdog(attempt, "WebCodecs playback", { warnMs: 18000, failMs: 40000, silent: quietTransition });
 
   // WebCodecs audio stays inside the DASH session. FFmpeg applies pitch-preserving
@@ -3616,8 +4004,9 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       canvas,
       onPlaying() {
         if (!currentAttempt(attempt)) return;
+        finishAutoQualityTransition("playing", attempt);
         markStreamLive(attempt);
-        setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×", { revealControls: !quietTransition });
+        setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + effectiveRate + "×", { revealControls: !quietTransition });
       },
       onEnded() {
         if (currentAttempt(attempt)) void handleAutoplayEnd({ naturalEnd: true });
@@ -3625,6 +4014,9 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       onStatus(status, detail = {}) {
         if (!currentAttempt(attempt)) return;
         if (playbackPaused) {
+          // A tap can land before the new WebCodecs session exists. Apply
+          // that intent once its AudioContext is ready, before drawing.
+          if (status === "resolving" && pendingQualityRestore?.adaptive) void player.pause().catch(() => {});
           setBadge("paused", "Ⅱ PAUSED · WebCodecs", { revealControls: false });
           return;
         }
@@ -3633,10 +4025,10 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
           // rebuffering stays behind the current frame instead of waking the UI.
           if (screen.classList.contains("loading") && !quietTransition) {
             const phase = detail.phase === "startup" ? "Buffering" : "Rebuffering";
-            setBadge("reconnecting", `↻ ${phase} · ${youtubePlaybackRate}×`);
+            setBadge("reconnecting", `↻ ${phase} · ${effectiveRate}×`);
           }
         } else if (status === "playing") {
-          setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + youtubePlaybackRate + "×", { revealControls: false });
+          setBadge("live", "● " + sourceBadge + " · " + sourceSettingsLabel + " · " + effectiveRate + "×", { revealControls: false });
         }
       },
       onStats(stats) {
@@ -3652,6 +4044,37 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
       onError(error) {
         if (!currentAttempt(attempt)) return;
         fatalHandled = true;
+        if (meta.liveUrl && typeof meta.fallbackLive === "function") {
+          // An unsupported or silent live source must return to the existing
+          // MPEG-TS/MJPEG path without changing the saved playback preference.
+          toast("Live WebCodecs unavailable · using channel fallback");
+          void Promise.resolve(meta.fallbackLive()).catch((fallbackError) => toast(fallbackError.message, true));
+          return;
+        }
+        if (isBlockedWebAudioStartup(error) && replayFn && youtubePlaybackMethod === "webcodecs") {
+          // Safari can refuse to start Web Audio without a user gesture. More
+          // WebCodecs retries cannot grant permission; hand off to buffered
+          // MJPEG which runs video without audio and can repair audio later.
+          const restorePause = playbackPaused;
+          const fallbackAt = Math.max(0, Number(meta.startAt) || 0);
+          youtubePlaybackMethod = "mjpeg";
+          renderYoutubePlaybackMethod();
+          reportPlaybackEvent("webcodecs_audio_autoplay_fallback", {
+            message: String(error?.message || error).slice(0, 100),
+            reason: "video_first_mjpeg",
+          });
+          pendingWebAudioFallbackUrl = youtubeUrl;
+          if (restorePause) {
+            pendingPlaybackMethodRestore = { minAttempt: attempt + 1, replay: replayFn };
+          }
+          try {
+            const result = replayFn(fallbackAt);
+            if (result?.catch) result.catch((fallbackError) => toast(fallbackError.message, true));
+          } finally {
+            pendingWebAudioFallbackUrl = null;
+          }
+          return;
+        }
         if (error?.body?.fallback === "mjpeg" && replayFn) {
           youtubePlaybackMethod = "mjpeg";
           localStorage.setItem(YOUTUBE_PLAYBACK_METHOD_KEY, youtubePlaybackMethod);
@@ -3668,17 +4091,24 @@ async function playCyberdashStream(youtubeUrl, label, meta = {}) {
     await player.play({
       url: preparedId ? null : youtubeUrl,
       preparedId: preparedId || null,
+      live: Boolean(meta.liveUrl),
+      userAgent: meta.liveUserAgent || "",
+      referer: meta.liveReferer || "",
       height: requestedHeight,
       fps: settings.fps,
       startAt: meta.startAt || 0,
       muted: !soundOn,
-      playbackRate: youtubePlaybackRate,
+      playbackRate: effectiveRate,
+      bufferLab: bufferLabEnabled && !preparedId && !meta.liveUrl,
     });
   } catch (error) {
     // Ignore a rejected promise from a player that was intentionally replaced
     // by Stop, seek, method switch, or playback-rate change.
     if (!currentAttempt(attempt) || (cyberdashPlayer && cyberdashPlayer !== player)) return;
-    if (!fatalHandled) {
+    if (!fatalHandled && meta.liveUrl && typeof meta.fallbackLive === "function") {
+      toast("Live WebCodecs unavailable · using channel fallback");
+      void Promise.resolve(meta.fallbackLive()).catch((fallbackError) => toast(fallbackError.message, true));
+    } else if (!fatalHandled) {
       failStreamAttempt(attempt, "WebCodecs playback failed", streamErrorDetail(error?.message || error));
     }
   }
@@ -3690,13 +4120,26 @@ async function playStream(sources, label, meta = {}) {
   const { tsUrl, mjpegUrl, audioUrl } = typeof sources === "string" ? { tsUrl: sources } : sources;
   const youtubeUrl = String(meta.youtubeUrl || "").trim();
   activeYoutubeSourceUrl = youtubeUrl;
+  if (meta.isLive && meta.liveUrl && youtubePlaybackMethod === "webcodecs" && !meta.skipWebcodecs) {
+    return playCyberdashStream(meta.liveUrl, label, {
+      ...meta, audioUrl,
+      fallbackLive: () => playStream(sources, label, { ...meta, skipWebcodecs: true }),
+    });
+  }
   if (youtubeUrl && youtubePlaybackMethod === "webcodecs" && !meta.isLive) {
     return playCyberdashStream(youtubeUrl, label, { ...meta, audioUrl });
   }
   if (youtubeUrl && youtubePlaybackMethod === "jxl" && !meta.isLive && mjpegUrl) {
     return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, { ...meta, experimentalJxl: true });
   }
-  if (meta.bufferedMjpeg && mjpegUrl) return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, meta);
+  if (meta.bufferedMjpeg && mjpegUrl) {
+    const silentAudioAutoplayFallback = Boolean(
+      pendingWebAudioFallbackUrl && pendingWebAudioFallbackUrl === youtubeUrl
+    );
+    return playBufferedMjpegStream({ mjpegUrl, audioUrl }, label, {
+      ...meta, silentAudioAutoplayFallback,
+    });
+  }
   const screen = $("#screen"), video = $("#video");
   if (legacy.playing) {
     state.legacyPlayingId = null;
@@ -3858,6 +4301,9 @@ async function playItem(item) {
     }, item.title, {
       seekable: item.type === "youtube" || item.type === "file",
       isLive: item.type !== "youtube" && item.type !== "file",
+      liveUrl: item.type !== "youtube" && item.type !== "file" ? item.url : "",
+      liveUserAgent: item.meta?.userAgent || "",
+      liveReferer: item.meta?.referer || "",
       bufferedMjpeg: item.type === "youtube" || item.type === "file",
       duration: item.meta?.duration,
       youtubeUrl: item.type === "youtube" ? item.url : "",
@@ -3873,6 +4319,10 @@ async function playItem(item) {
 }
 
 function stopPlayback() {
+  cancelAutoQualityTransition();
+  awaitingRecoveredFrame = failedRecoveryPosition = null;
+  preserveBufferedCanvasUntilFrame = false;
+  preserveBufferedCanvasReplayFn = null;
   mobilePlayerRevealPending = false;
   ++mobilePlayerRevealToken;
   setPlayerQualityPanelOpen(false);
@@ -3923,6 +4373,8 @@ function stopPlayback() {
 }
 
 function restreamPlayback() {
+  cancelAutoQualityTransition();
+  awaitingRecoveredFrame = failedRecoveryPosition = null;
   playbackRecovery?.reset();
   if (!replayFn) return;
   const replay = replayFn;
@@ -4132,10 +4584,15 @@ function isScreenFullscreen() {
 function updateFullscreenButton() {
   const btn = $("#fullscreenBtn");
   const active = isScreenFullscreen();
+  const exitedFullscreen = !active && document.body.classList.contains("screen-fullscreen");
   document.body.classList.toggle("screen-fullscreen", active);
   if (active) showFullscreenOverlays();
   else {
-    clearFullscreenOverlayHide();
+    // Reveal only on actual fullscreen exit; ordinary render updates should
+    // not keep resetting the five-second inactivity timer.
+    if (exitedFullscreen) showFullscreenOverlays({ withProgress: false });
+    else if (canAutoHideScreenOverlays()) scheduleFullscreenOverlayHide();
+    else clearFullscreenOverlayHide();
     updateStreamSeekUi();
   }
   if (!btn) return;
@@ -4315,6 +4772,11 @@ function performQualityProfileSwitch(transition) {
     resumeAt: transition.resumeAt,
     minAttempt: beforeAttempt + 1,
     silent: Boolean(transition.silentToast),
+    adaptive: Boolean(transition.decision),
+    decision: transition.decision,
+    transport: transition.transport,
+    replay: transition.replay,
+    startedAt: performance.now(),
   };
   const fallback = transition.fallback
     ? " · " + transition.fallback.requested + "p unavailable, using " + transition.fallback.height + "p"
@@ -4331,16 +4793,18 @@ function performQualityProfileSwitch(transition) {
     const result = transition.replay(transition.seekable ? transition.resumeAt : undefined);
     if (result?.catch) {
       result.catch((error) => {
-        if (transition.generation === qualitySwitchGeneration) {
-          pendingQualityRestore = null;
-          toast(error.message, true);
+        if (pendingQualityRestore?.generation === transition.generation) {
+          if (transition.decision) {
+            failStreamAttempt(streamAttempt, "Quality change could not start", streamErrorDetail(error?.message));
+          }
+          else { pendingQualityRestore = null; toast(error.message, true); }
         }
       });
     }
   } catch (error) {
     if (transition.generation === qualitySwitchGeneration) {
-      pendingQualityRestore = null;
-      toast(error.message, true);
+      if (transition.decision) failStreamAttempt(streamAttempt, "Quality change could not start", streamErrorDetail(error?.message));
+      else { pendingQualityRestore = null; toast(error.message, true); }
     }
   }
 }
@@ -4371,6 +4835,7 @@ function requestAutoQualityMode() {
   const isLive = Boolean(streamSeek.isLive && !seekable);
   const replay = replayFn;
   const previousProfile = streamQualityProfileForSettings();
+  cancelAutoQualityTransition();
   const generation = ++qualitySwitchGeneration;
   clearTimeout(qualitySwitchTimer);
   qualitySwitchTimer = null;
@@ -4384,7 +4849,7 @@ function requestAutoQualityMode() {
 
   reportPlaybackEvent("auto_quality_enabled", {
     streamUrl: activeCompat?.mjpegUrl || "",
-    reason: "start-medium",
+    reason: "start-high",
     message: `tier=${AUTO_STREAM_INITIAL_TIER}`,
     stats: activeCompat?.bufferedPlayer?.getStats?.(),
   });
@@ -4412,58 +4877,68 @@ function requestAutoQualityMode() {
   qualitySwitchTimer = setTimeout(() => performQualityProfileSwitch(transition), STREAM_QUALITY_SWITCH_DELAY_MS);
 }
 
-function requestAutoQualityTier(decision, stats = null) {
-  if (!decision || decision.action !== "switch"
-      || streamQualitySelection !== AUTO_STREAM_QUALITY_ID
-      || !autoQualityController?.enabled) return false;
+function adaptiveQualityAllowed(stats) {
+  return Boolean(replayFn && qualityProfilesAvailableForCurrentMode() && streamSeek.seekable
+    && !isStreamAtEnd() && stats.adaptiveEligible !== false && !stats.sourceEnded && !stats.eof
+    && !playbackPaused && !document.hidden && navigator.onLine !== false
+    && !pendingQualityRestore && !queuedAutoQuality && !playbackRecovery?.isVideoRecoveryPending()
+    && (!soundOn || !["retrying", "gesture-required", "silent"].includes(activeCompat?.audioStatus)));
+}
+
+function requestAutoQualityTier(decision, stats) {
   const profile = STREAM_QUALITY_PROFILES[decision.to];
-  if (!profile) return false;
-
-  const resumeAt = qualitySwitchResumeAt();
-  const pause = qualitySwitchPauseIntent();
-  const seekable = streamSeek.seekable;
-  const isLive = Boolean(streamSeek.isLive && !seekable);
-  const replay = replayFn;
-  const generation = ++qualitySwitchGeneration;
-  clearTimeout(qualitySwitchTimer);
-  qualitySwitchTimer = null;
-  pendingQualityRestore = null;
-
-  const applied = applyQualityProfileSettings(decision.to, {
-    selection: AUTO_STREAM_QUALITY_ID,
-  });
-  if (!applied) return false;
-
-  reportPlaybackEvent("auto_quality_switch", {
-    streamUrl: activeCompat?.mjpegUrl || "",
-    reason: decision.reason,
-    message: `${decision.from}->${decision.to}; ${autoQualityReasonLabel(decision.reason)}`,
-    stats: stats || decision.metrics,
-  });
-  diagnosticsQualityReason = decision.reason;
-
-  if (!replay || !qualityProfilesAvailableForCurrentMode()) return true;
-  const transition = {
-    generation,
-    replay,
-    profile,
-    statusLabel: "Auto · " + profile.label,
-    seekable,
-    resumeAt,
-    pause,
-    isLive,
-    silentToast: true,
-    fallback: applied.fallback ? { requested: applied.requested, height: applied.height } : null,
-  };
-  qualitySwitchTimer = setTimeout(() => performQualityProfileSwitch(transition), STREAM_QUALITY_SWITCH_DELAY_MS);
+  if (!profile || !adaptiveQualityAllowed(stats)) {
+    autoQualityController.cancelSwitch(decision);
+    return false;
+  }
+  const planned = { decision, replay: replayFn, attempt: streamAttempt };
+  queuedAutoQuality = planned;
+  // Leave the engine's stats/render callback before destroying its player.
+  qualitySwitchTimer = setTimeout(() => {
+    if (queuedAutoQuality !== planned) return;
+    queuedAutoQuality = null;
+    qualitySwitchTimer = null;
+    if (!currentAttempt(planned.attempt) || replayFn !== planned.replay || !adaptiveQualityAllowed(stats)
+        || streamQualitySelection !== AUTO_STREAM_QUALITY_ID) {
+      autoQualityController.cancelSwitch(decision);
+      return;
+    }
+    const resumeAt = qualitySwitchResumeAt();
+    const applied = applyQualityProfileSettings(decision.to, { selection: AUTO_STREAM_QUALITY_ID });
+    if (!applied) {
+      autoQualityController.cancelSwitch(decision);
+      return;
+    }
+    const generation = ++qualitySwitchGeneration;
+    diagnosticsQualityReason = decision.reason;
+    reportPlaybackEvent("auto_quality_switch", {
+      streamUrl: activeCompat?.mjpegUrl || activeYoutubeSourceUrl || "",
+      reason: decision.reason,
+      message: `${decision.from}->${decision.to}; ${autoQualityReasonLabel(decision.reason)}`,
+      stats: { ...stats, ...decision.metrics },
+    });
+    performQualityProfileSwitch({
+      generation, replay: planned.replay, profile, seekable: true, resumeAt, pause: false,
+      silentToast: true, decision, transport: stats.transport,
+    });
+  }, 0);
   return true;
 }
 
 function maybeAdaptAutoQuality(stats) {
   if (streamQualitySelection !== AUTO_STREAM_QUALITY_ID || !autoQualityController?.enabled) return false;
-  const decision = autoQualityController.observe(stats);
-  if (!decision) return false;
-  return requestAutoQualityTier(decision, stats);
+  if (!adaptiveQualityAllowed(stats) || stats.audioOnlyPressure || stats.renderedFrames < 1
+      || !["playing", "buffering", "syncing"].includes(stats.state)) {
+    autoQualityController.hold();
+    return false;
+  }
+  if (!autoQualityController.readyForSample()) return false;
+  const profiles = Object.fromEntries(Object.entries(STREAM_QUALITY_PROFILES).map(([tier, profile]) => [
+    tier, { ...profile, height: Number(legacyProfileHeightFallback(profile.height).height),
+      fps: stats.transport === "webcodecs" ? adaptiveCyberdashFps(profile.fps, stats.playbackRate, true) : Number(profile.fps) },
+  ]));
+  const decision = autoQualityController.observe({ ...stats, audioMuted: !soundOn, profiles });
+  return decision ? requestAutoQualityTier(decision, stats) : false;
 }
 
 function requestQualityProfile(profileId) {
@@ -4480,6 +4955,7 @@ function requestQualityProfile(profileId) {
   const isLive = Boolean(streamSeek.isLive && !seekable);
   const replay = replayFn;
   const previousProfile = streamQualityProfileForSettings();
+  cancelAutoQualityTransition();
   const generation = ++qualitySwitchGeneration;
   clearTimeout(qualitySwitchTimer);
   qualitySwitchTimer = null;
@@ -4517,6 +4993,7 @@ function requestQualityProfile(profileId) {
 
 // Re-apply controls live: restart whatever is currently playing with new params.
 function reapplyControls() {
+  cancelAutoQualityTransition();
   diagnosticsQualityReason = null;
   if (streamQualitySelection === AUTO_STREAM_QUALITY_ID) {
     setStreamQualitySelection(null);
@@ -4555,10 +5032,21 @@ function updateBwHint() {
   $("#bwHint").textContent = risky ? `~${est} Mbps est. · risky` : `~${est} Mbps est.`;
 }
 
+function canLowerPlaybackSettings() {
+  // Existing downloaded/embedded streams do not necessarily expose another
+  // rendition. Offer the one-click action only for a configurable stream.
+  if (!replayFn || !qualityProfilesAvailableForCurrentMode() || legacy.playing) return false;
+  const { height, fps, quality } = streamSettingsSnapshot();
+  return height === "0" || Number(height) > 360 || Number(fps) > 12 || Number(quality) < 12;
+}
+
 function lowerPlaybackSettings() {
+  if (!canLowerPlaybackSettings()) return false;
   const height = $("#ctlHeight");
   const fps = $("#ctlFps");
   const quality = $("#ctlQuality");
+  // Do not allow Auto to immediately override the user's chosen lower settings.
+  setStreamQualitySelection(null, { persist: false });
   if (parseInt(height.value, 10) > 360 || height.value === "0") height.value = "360";
   if (parseInt(fps.value, 10) > 12) fps.value = "12";
   if (parseInt(quality.value, 10) < 12) quality.value = "12";
@@ -4566,6 +5054,7 @@ function lowerPlaybackSettings() {
   renderQuickQuality();
   renderSettingOptions();
   updateBwHint();
+  return true;
 }
 
 // ---- Modals ----
@@ -5678,8 +6167,10 @@ function playLegacyItem(item, resolution = null, startAt = 0, autoplayQueue = nu
   setDownloadsDrawerOpen(false);
   if (isMobileMode()) setPlayerDropdownOpen(true);
 
-  replayFn = (resumeAt = getStreamCurrentTime() || startAt || 0) =>
-    playLegacyItem(item, legacy.resolution, resumeAt, autoplayQueue, { skipHistory: true });
+  if (!options.skipHistory) {
+    replayFn = (resumeAt = getStreamCurrentTime() || startAt || 0) =>
+      playLegacyItem(item, legacy.resolution, resumeAt, autoplayQueue, { skipHistory: true });
+  }
 
   const autoplayContext = {
     kind: "library",
@@ -6013,19 +6504,30 @@ function renderYoutubeHistory() {
 }
 
 async function loadYoutubeHistory() {
+  // Only the most recently requested refresh may update history state.
+  const requestId = (state.youtubeHistoryRequestId || 0) + 1;
+  state.youtubeHistoryRequestId = requestId;
   state.youtubeHistoryLoading = true;
   state.youtubeHistoryError = "";
   renderYoutubeHistory();
   try {
-    state.youtubeHistory = await api.get(`/api/watch-history?_=${Date.now()}`);
+    const history = await api.get(`/api/watch-history?_=${Date.now()}`);
+    if (requestId !== state.youtubeHistoryRequestId) return;
+    state.youtubeHistory = history;
     state.youtubeHistoryLoaded = true;
   } catch (e) {
+    if (requestId !== state.youtubeHistoryRequestId) return;
     state.youtubeHistory = [];
+    // A failed refresh must not keep the old loaded flag: reopening History
+    // should retry the request instead of being stuck on an empty list.
+    state.youtubeHistoryLoaded = false;
     state.youtubeHistoryError = e.message;
     toast(e.message, true);
   } finally {
-    state.youtubeHistoryLoading = false;
-    renderYoutubeHistory();
+    if (requestId === state.youtubeHistoryRequestId) {
+      state.youtubeHistoryLoading = false;
+      renderYoutubeHistory();
+    }
   }
 }
 
@@ -6037,6 +6539,8 @@ async function performYoutubeSearch() {
     return toast("Enter a YouTube search", true);
   }
   const btn = $("#ytSearchBtn");
+  const requestId = (state.youtubeSearchRequestId || 0) + 1;
+  state.youtubeSearchRequestId = requestId;
   state.youtubeSearchQuery = query;
   state.youtubeSearchLoading = true;
   state.youtubeSearchPlayingId = null;
@@ -6046,18 +6550,21 @@ async function performYoutubeSearch() {
   btn.textContent = "...";
   try {
     const data = await api.get(`/api/youtube/search?q=${encodeURIComponent(query)}&limit=20`);
-    if (state.youtubeSearchQuery !== query) return;
+    if (state.youtubeSearchRequestId !== requestId) return;
     state.youtubeSearchResults = data.items || [];
     renderYoutubeSearch();
   } catch (e) {
+    if (state.youtubeSearchRequestId !== requestId) return;
     state.youtubeSearchResults = [];
     state.youtubeSearchError = e.message;
     toast(e.message, true);
   } finally {
-    if (state.youtubeSearchQuery === query) state.youtubeSearchLoading = false;
-    btn.disabled = false;
-    btn.textContent = "Search";
-    renderYoutubeSearch();
+    if (state.youtubeSearchRequestId === requestId) {
+      state.youtubeSearchLoading = false;
+      btn.disabled = false;
+      btn.textContent = "Search";
+      renderYoutubeSearch();
+    }
   }
 }
 
@@ -8750,7 +9257,10 @@ $("#chList").addEventListener("click", async (e) => {
   renderItems();
   renderYoutubeSearch();
   showAttemptedUrl(c.url);
-  replayFn = () => playStream(channelStreamSrc(c), c.name);
+  replayFn = () => playStream(channelStreamSrc(c), c.name, {
+    isLive: true, seekable: false, liveUrl: c.url,
+    liveUserAgent: c.userAgent || "", liveReferer: c.referer || "",
+  });
   replayFn();
 });
 
@@ -9050,22 +9560,19 @@ $("#playerQualityCloseBtn").onclick = () => setPlayerQualityPanelOpen(false);
 $("#playerRetryAudioBtn").onclick = () => {
   const repair = activeCompat?.repairAudio;
   if (typeof repair !== "function") return;
+  // A user gesture supersedes a queued automatic retry and is the only way to
+  // satisfy browsers that returned NotAllowedError.
+  playbackRecovery?.hold();
   void repair({ manual: true }).catch((error) => {
     toast("Audio retry failed: " + (error?.message || "unavailable"), true);
   });
 };
-$("#streamRetryBtn").onclick = () => {
-  playbackRecovery?.reset();
-  if (!replayFn) return;
-  toast("Retrying stream");
-  replayFn(streamSeek.seekable ? streamReplayTime() : undefined);
-};
 $("#streamLowerBtn").onclick = () => {
+  if (!replayFn || !lowerPlaybackSettings()) return;
   playbackRecovery?.reset();
-  if (!replayFn) return;
-  lowerPlaybackSettings();
-  toast("Retrying at " + currentSettingsLabel());
-  replayFn(streamSeek.seekable ? streamReplayTime() : undefined);
+  const resumeAt = streamSeek.seekable ? streamReplayTime() : undefined;
+  toast("Switching to " + currentSettingsLabel());
+  replayFn(resumeAt);
 };
 $("#slowBufferApplyBtn").onclick = applySlowBufferSuggestion;
 $("#slowBufferDismissBtn").onclick = () => {
@@ -9206,6 +9713,7 @@ seekTrack.addEventListener("pointerdown", (e) => {
     document.removeEventListener("pointermove", move);
     document.removeEventListener("pointerup", up);
     document.removeEventListener("pointercancel", cancel);
+    window.removeEventListener("blur", blur);
     seekPreview.dragging = false;
     hideStreamSeekPreview();
     if (commit) seekStreamTo(target);
@@ -9215,6 +9723,8 @@ seekTrack.addEventListener("pointerdown", (e) => {
   };
   const up = (ev) => { if (ev.pointerId === pointerId) finish(true); };
   const cancel = (ev) => { if (ev.pointerId === pointerId) finish(false); };
+  const blur = () => finish(false);
+  window.addEventListener("blur", blur);
   document.addEventListener("pointermove", move);
   document.addEventListener("pointerup", up);
   document.addEventListener("pointercancel", cancel);
@@ -9232,11 +9742,26 @@ videoControlsOverlay.addEventListener("pointerup", (e) => {
   if (!e.target.closest(".stream-seek-track")) endScreenControlInteraction();
 });
 videoControlsOverlay.addEventListener("pointercancel", endScreenControlInteraction);
-videoControlsOverlay.addEventListener("focusin", beginScreenControlInteraction);
-videoControlsOverlay.addEventListener("focusout", () => {
-  requestAnimationFrame(() => {
-    if (!videoControlsOverlay.contains(document.activeElement)) endScreenControlInteraction();
-  });
+document.addEventListener("pointerup", () => {
+  if ($("#screen").classList.contains("controls-interacting")) endScreenControlInteraction();
+});
+document.addEventListener("pointercancel", () => {
+  if ($("#screen").classList.contains("controls-interacting")) endScreenControlInteraction();
+});
+videoControlsOverlay.addEventListener("focusin", () => showFullscreenOverlays());
+// Inert controls may lose focus when hidden. Focus loss is not user activity.
+window.addEventListener("blur", () => {
+  if ($("#screen").classList.contains("controls-interacting")) endScreenControlInteraction();
+});
+videoControlsOverlay.addEventListener("lostpointercapture", () => {
+  if (!seekPreview.dragging && $("#screen").classList.contains("controls-interacting")) endScreenControlInteraction();
+});
+const playerQualityPanel = $("#playerQualityPanel");
+for (const event of ["pointerdown", "focusin", "keydown", "click"]) {
+  playerQualityPanel.addEventListener(event, () => showFullscreenOverlays({ withProgress: false }));
+}
+playerQualityPanel.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "mouse") showFullscreenOverlays({ withProgress: false });
 });
 $("#muteBtn").onclick = () => {
   const a = $("#audio");
@@ -9381,6 +9906,7 @@ $("#playbackMethodToggle")?.addEventListener("click", async (event) => {
   const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
   const restorePause = playbackPaused;
   const beforeAttempt = streamAttempt;
+  cancelAutoQualityTransition();
   youtubePlaybackMethod = next;
   // Explicit opt-in only: a reload cannot silently re-enable experimental JXL.
   if (next === "jxl") localStorage.removeItem(YOUTUBE_PLAYBACK_METHOD_KEY);
@@ -9397,6 +9923,27 @@ $("#playbackMethodToggle")?.addEventListener("click", async (event) => {
       : (next === "webcodecs" ? "WebCodecs selected for YouTube" : "MJPEG selected for YouTube"));
   }
 });
+$("#bufferLabToggle")?.addEventListener("change", (event) => {
+  bufferLabEnabled = Boolean(event.target.checked);
+  try {
+    if (bufferLabEnabled) localStorage.setItem(BUFFER_LAB_FLAG_KEY, "1");
+    else localStorage.removeItem(BUFFER_LAB_FLAG_KEY);
+  } catch {}
+  renderBufferLabToggle();
+  // Switching a transport's buffer policy requires a new encoder session. Do
+  // not touch any live session until this explicit user toggle is changed.
+  if (youtubePlaybackMethod === "webcodecs" && activeYoutubeSourceUrl && replayFn) {
+    const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
+    const wasPaused = playbackPaused;
+    const beforeAttempt = streamAttempt;
+    cancelAutoQualityTransition();
+    if (wasPaused) pendingPlaybackMethodRestore = { minAttempt: beforeAttempt + 1, replay: replayFn };
+    const result = replayFn(resumeAt);
+    if (result?.catch) result.catch((error) => toast(error.message, true));
+  } else {
+    toast(bufferLabEnabled ? "Buffer Lab enabled for next WebCodecs video" : "Standard buffering selected");
+  }
+});
 $("#playbackSpeedSelect")?.addEventListener("change", (event) => {
   const requested = Number(event.target.value);
   const next = YOUTUBE_PLAYBACK_RATES.includes(requested) ? requested : 1;
@@ -9404,6 +9951,7 @@ $("#playbackSpeedSelect")?.addEventListener("change", (event) => {
   const resumeAt = streamSeek.seekable ? streamReplayTime() : 0;
   const restorePause = playbackPaused;
   const beforeAttempt = streamAttempt;
+  cancelAutoQualityTransition();
   youtubePlaybackRate = next;
   localStorage.setItem(YOUTUBE_PLAYBACK_RATE_KEY, String(youtubePlaybackRate));
   renderYoutubePlaybackRate();
@@ -9416,6 +9964,7 @@ $("#playbackSpeedSelect")?.addEventListener("change", (event) => {
     pendingPlaybackMethodRestore = restorePause
       ? { minAttempt: beforeAttempt + 1, replay: replayFn }
       : null;
+    toast("Switching to " + youtubePlaybackRate + "×…");
     const result = replayFn(resumeAt);
     if (result?.catch) result.catch((error) => toast(error.message, true));
   } else {
@@ -9997,9 +10546,11 @@ function handleDesktopPanPointerUp(e) {
   let fullscreenTapRevealOnly = false;
   let controlsRevealOnlyUntil = 0;
 
-  document.addEventListener("keydown", () => { fullscreenKeyboardModality = true; }, true);
-  screen.addEventListener("pointerdown", () => { fullscreenKeyboardModality = false; }, true);
-  screen.addEventListener("touchstart", () => { fullscreenKeyboardModality = false; }, { capture: true, passive: true });
+  document.addEventListener("keydown", (e) => {
+    const target = e.target;
+    const editable = target?.closest?.("input, textarea, select, [contenteditable='true']");
+    if (screen.contains(target) || playerQualityPanel.contains(target) || e.key === "Tab" && !editable) showFullscreenOverlays();
+  }, true);
 
   function canTogglePlaybackFromTap(target) {
     if (!screen.classList.contains("playing") || screen.classList.contains("embed-mode")) return false;
@@ -10032,9 +10583,6 @@ function handleDesktopPanPointerUp(e) {
   }
 
   screen.addEventListener("focusin", () => showFullscreenOverlays());
-  screen.addEventListener("focusout", () => setTimeout(() => {
-    if (canAutoHideScreenOverlays()) scheduleFullscreenOverlayHide();
-  }, 0));
   if (window.PointerEvent) {
     screen.addEventListener("pointerdown", (e) => {
       retryBufferedAudioFromGesture();
@@ -10044,13 +10592,13 @@ function handleDesktopPanPointerUp(e) {
         && !browserInputActiveForScreen()
         && !e.target?.closest("button, input, select, textarea, a, .video-controls-overlay");
       if (fullscreenTapRevealOnly) controlsRevealOnlyUntil = 0;
-      if (screen.classList.contains("playing") || isScreenFullscreen()) showFullscreenOverlays();
+      if (canAutoHideScreenOverlays() || isScreenFullscreen()) showFullscreenOverlays();
     });
     screen.addEventListener("pointerdown", handleDesktopInputPointerDown);
     screen.addEventListener("pointerdown", handleBrowserInputPointerDown);
     screen.addEventListener("pointerdown", handleDesktopPanPointerDown);
     screen.addEventListener("pointermove", (e) => {
-      if (screen.classList.contains("playing") && e.pointerType === "mouse") {
+      if (canAutoHideScreenOverlays() && e.pointerType === "mouse") {
         const controlsWereIdle = document.body.classList.contains("fullscreen-controls-idle");
         showFullscreenOverlays({ withProgress: false });
         if (controlsWereIdle) controlsRevealOnlyUntil = Date.now() + 500;
@@ -10087,7 +10635,7 @@ function handleDesktopPanPointerUp(e) {
         && !desktopInputActiveForScreen()
         && !browserInputActiveForScreen()
         && !e.target?.closest("button, input, select, textarea, a, .video-controls-overlay");
-      if (screen.classList.contains("playing") || isScreenFullscreen()) showFullscreenOverlays();
+      if (canAutoHideScreenOverlays() || isScreenFullscreen()) showFullscreenOverlays();
     }, { passive: true });
     screen.addEventListener("touchend", (e) => {
       if (desktopInputActiveForScreen() || browserInputActiveForScreen()) return;
@@ -10292,27 +10840,38 @@ $("#ctlFpsPresets").addEventListener("click", (e) => {
 });
 
 // Playback recovery keeps media transport and watch-progress identity intact.
+const playbackRecoverySourceKeys = new WeakMap();
+let playbackRecoverySourceSequence = 0;
 function playbackRecoverySample() {
-  if (!replayFn || !$('#screen')?.classList.contains('playing')) return null;
+  if (typeof replayFn !== 'function' || !$('#screen')?.classList.contains('playing')) return null;
   const stats = activeCompat?.bufferedPlayer?.getStats?.();
   const audio = $('#audio');
-  const source = activeCompat?.mjpegUrl || activeYoutubeSourceUrl || '';
-  let key = source;
-  try {
-    const parsed = new URL(source, location.origin);
-    for (const name of ['timestamp', '_', 'height', 'fps', 'quality', 'buffered', 'eautoSession', 'videoDelay']) parsed.searchParams.delete(name);
-    key = parsed.pathname + '?' + parsed.searchParams.toString();
-  } catch {}
-  if (!source) return null;
+  // Resolve identity once per replay callback. Teardown may remove activeCompat,
+  // but recovery must still have a key for TS-only and other live URLs.
+  let key = playbackRecoverySourceKeys.get(replayFn);
+  if (!key) {
+    const source = activeYoutubeSourceUrl || activeCompat?.mjpegUrl || '';
+    key = source || 'replay:' + (++playbackRecoverySourceSequence);
+    if (source) {
+      try {
+        const parsed = new URL(source, location.origin);
+        for (const name of ['timestamp', '_', 'height', 'fps', 'quality', 'buffered', 'eautoSession', 'videoDelay']) parsed.searchParams.delete(name);
+        key = parsed.pathname + '?' + parsed.searchParams.toString();
+      } catch {}
+    }
+    playbackRecoverySourceKeys.set(replayFn, key);
+  }
   return {
     key, attempt: streamAttempt, replay: replayFn, position: getStreamCurrentTime(),
     paused: playbackPaused, hidden: document.hidden, offline: navigator.onLine === false,
     ended: stats?.state === 'ended' || isStreamAtEnd(), blocked: stats?.state === 'autoplay-blocked',
-    started: Boolean(activeCompat?.playbackStarted || cyberdashPlayer),
+    transitioning: Boolean(pendingQualityRestore?.adaptive),
+    started: Boolean(activeCompat?.playbackStarted || (cyberdashPlayer && diagnosticsStats?.renderedFrames > 0)),
     canMeasureVideo: Boolean(stats || cyberdashPlayer),
-    videoProgress: stats ? Number(stats.renderedFrames || 0) : Number(cyberdashPlayer?.currentTime?.() || 0),
+    videoProgress: Number(stats?.renderedFrames ?? diagnosticsStats?.renderedFrames ?? 0),
     videoAvailable: Boolean(stats ? stats.queueSeconds > 0.5 || stats.receiveFps > 0 : activeCompat?.videoReady),
     audioEnabled: Boolean(soundOn && activeCompat?.audioUrl && !activeCompat?.browserPcm),
+    audioStatus: activeCompat?.audioStatus || "source",
     audioTime: Number(audio?.currentTime || 0), audioError: Boolean(audio?.error),
     driftMs: Number(stats?.lastAvDriftMs || 0), canRepairAudio: Boolean(activeCompat?.repairAudio),
     repairAudio: activeCompat?.repairAudio,
@@ -10320,29 +10879,53 @@ function playbackRecoverySample() {
 }
 
 async function recoverPlayback(sample) {
-  if (!replayFn || replayFn !== sample.replay || playbackPaused || document.hidden || navigator.onLine === false) return;
-  if (sample.audioOnly && activeCompat?.repairAudio === sample.repairAudio) {
-    await sample.repairAudio();
-    return;
+  const current = () => replayFn === sample.replay && !playbackPaused && !document.hidden
+    && navigator.onLine !== false && !pendingQualityRestore?.adaptive;
+  if (!current()) return { status: "canceled" };
+  if (sample.audioOnly) {
+    if (activeCompat?.repairAudio !== sample.repairAudio) return { status: "canceled" };
+    const repaired = await sample.repairAudio();
+    return { status: repaired ? "playing" : "noop" };
   }
-  const resumeAt = streamSeek.seekable ? clampStreamSeekTime(sample.position) : undefined;
+  const before = streamAttempt;
+  if (sample.attempt !== before && failedRecoveryPosition?.replay !== sample.replay) return { status: "canceled" };
+  const fresh = playbackRecoverySample();
+  if (fresh?.ended || fresh?.blocked || (fresh?.attempt === sample.attempt && fresh?.started
+      && sample.reason === "video" && fresh.videoProgress > sample.videoProgress)) return { status: "noop" };
+  const resumeAt = streamSeek.seekable ? clampStreamSeekTime(
+    failedRecoveryPosition?.replay === replayFn ? failedRecoveryPosition.position : fresh?.position ?? sample.position) : undefined;
   void watchProgress.save();
-  // Stop both active paths, including Mac desktop audio, before rebuilding.
   await stopDesktopAudioHlsSession();
-  if (replayFn !== sample.replay || playbackPaused || document.hidden || navigator.onLine === false) return;
+  if (!current() || streamAttempt !== before) return { status: "canceled" };
   clearBrowserAudioRetry();
-  cleanupMedia(true);
-  await sample.replay(resumeAt);
+  failedRecoveryPosition = null;
+  awaitingRecoveredFrame = { replay: sample.replay, previousAttempt: before,
+    reason: sample.reason, number: sample.recoveryAttempt };
+  recoveryReplay = sample.replay;
+  try {
+    // Player startup and later failures are handled by their attempt-scoped
+    // callbacks; WebCodecs play() itself lasts until end of playback.
+    const result = sample.replay(resumeAt);
+    result?.catch?.(() => {
+      if (replayFn === sample.replay && streamAttempt === before) {
+        const failed = playbackRecoverySample();
+        if (failed) playbackRecovery?.request("failure", failed);
+      }
+    });
+  } finally { recoveryReplay = null; }
+  return { status: "started" };
 }
 
 const playbackRecovery = window.PlaybackRecovery ? new window.PlaybackRecovery.Monitor({
   recover: recoverPlayback,
   notify: (event) => {
     if (event.state === 'recovering') {
-      setBadge('reconnecting', `Recovering ${event.audioOnly ? 'audio' : 'playback'} · ${event.attempt}/3`);
-      showStreamNotice('warning', 'Reconnecting', 'Your playback position and sound setting are kept.');
-    } else if (event.state === 'exhausted') {
-      showStreamNotice('error', 'Recovery stopped after 3 attempts', 'Try Retry, lower quality, or a saved download.');
+      if (event.audioOnly && activeCompat?.buffered) {
+        activeCompat.audioStatus = 'retrying';
+        updateActivePlaybackStatus();
+      }
+      setBadge('reconnecting', `Reconnecting ${event.audioOnly ? 'audio' : 'playback'} automatically…`);
+      clearStreamNotice();
     }
     reportPlaybackEvent('recovery_' + event.state, { reason: event.reason, message: String(event.attempt) });
   },
@@ -10400,7 +10983,10 @@ function initEverydayControls() {
   const savedApneReturn = returnToApne ? restoreApneReturnState() : null;
   setMode(returnToApne ? "apne" : "watch");
   installMobilePlayerReveal();
-  new MutationObserver(updatePlayerQualityAccess).observe($("#screen"), {
+  new MutationObserver(() => {
+    updatePlayerQualityAccess();
+    syncScreenOverlayLifecycle();
+  }).observe($("#screen"), {
     attributes: true, attributeFilter: ["class"],
   });
   resetStreamSettings();
@@ -10439,9 +11025,33 @@ function initEverydayControls() {
   });
   document.addEventListener("pointerdown", retryBrowserAudioFromGesture, true);
   document.addEventListener("keydown", retryBrowserAudioFromGesture, true);
-  window.addEventListener("offline", () => playbackRecovery?.hold());
+  window.addEventListener("offline", () => {
+    autoQualityController?.hold();
+    playbackRecovery?.hold();
+  });
+  function resumeInterruptedRecovery() {
+    if (playbackPaused || document.hidden || navigator.onLine === false) return;
+    const sample = playbackRecoverySample() || playbackRecovery?.last;
+    if (!sample || sample.replay !== replayFn || sample.ended || sample.blocked) return;
+    // Returning from background must never convert a held audio-only retry
+    // into a full stream replay. A scheduler status can remain retrying even
+    // after its local in-flight promise was canceled by visibility change.
+    if (activeCompat?.buffered && activeCompat?.bufferedPlayer
+        && activeCompat.audioStatus === "retrying") suspendBufferedAudioRepairForHold();
+    if (resumeSilentBufferedAudioRepair()) return;
+    if (!playbackRecovery?.resume(sample) && !playbackRecovery?.pending
+        && $("#streamBadge")?.classList.contains("reconnecting") && !activeCompat) {
+      playbackRecovery?.request("connection-restored", { ...sample, offline: false, hidden: false });
+    }
+  }
+  window.addEventListener("online", resumeInterruptedRecovery);
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) playbackRecovery?.hold();
+    if (document.hidden) {
+      autoQualityController?.hold();
+      playbackRecovery?.hold();
+      suspendBufferedAudioRepairForHold();
+    }
+    else resumeInterruptedRecovery();
     if (document.hidden) void watchProgress.save({ keepalive: true });
     activeCompat?.bufferedPlayer?.setVisible?.(!document.hidden);
   });

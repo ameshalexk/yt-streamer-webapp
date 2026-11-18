@@ -17,10 +17,10 @@ const plain=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 export function directRankedCandidate(query,candidates){
   if(typeof query!=='string'||!Array.isArray(candidates)||!candidates.length)return null;
   const tokens=text=>String(text).normalize('NFKC').toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu,' ').trim().split(/\s+/u).filter(Boolean);
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu,' ').trim().split(/\s+/u).filter(Boolean);
   const ignored=new Set(['the','a','an','of','and','in','to','on','for','youtube','video','videos','movie','movies','song','songs','official','please','me','some']);
   const words=tokens(query).filter(token=>!ignored.has(token));
-  if(!words.length||words.join('').length<4)return null;
+  if(words.join('').length<4||words.every(word=>/^(?:anything|something|random|another|latest|newest|most|recent)$/.test(word)))return null;
   const first=candidates[0];
   if(!plain(first)||!VIDEO.test(first.media_id||''))return null;
   const title=tokens(first.title||'');
@@ -73,7 +73,8 @@ export function createTeslaMonLocalPlayer({
   async function run(intent,{originalRequest='',signal,isCurrent=()=>true,explicitLocalPlay=false}={}){
     if(!supported(intent))return fail('invalid_local_playback_intent');
     if(busy)return fail('target_busy');
-    const player=getPlayer();
+    let player;
+    try{player=getPlayer();}catch{return fail('local_player_not_ready','offline');}
     if(!player||typeof player.execute!=='function')
       return fail('local_player_not_ready','offline');
     busy=true;
@@ -102,7 +103,10 @@ export function createTeslaMonLocalPlayer({
         // The user's own bounded "play <title>" request can choose a strong
         // first-ranked literal title match without waiting on Codex quota.
         // All other search results retain the existing cautious AI selector.
-        const directIndex=explicitLocalPlay?(latestMkbhd?0:directRankedCandidate(query,candidates)):null;
+        const explicitLatestMkbhd=latestMkbhd&&
+          /^(?:the )?(?:latest|newest|most recent) (?:(?:mkbhd|marques brownlee)(?: (?:video|upload))?|(?:video|upload) from (?:mkbhd|marques brownlee))$/i.test(query);
+        const directIndex=explicitLocalPlay?
+          (explicitLatestMkbhd?0:directRankedCandidate(query,candidates)):null;
         let selection;
         if(directIndex!==null)selection={status:'selected',index:directIndex};
         else try{selection=await selectCandidate({originalRequest:String(originalRequest).slice(0,220),query,
@@ -128,7 +132,9 @@ export function createTeslaMonLocalPlayer({
         const read=await snapshot(player);
         if(read.status!=='observed')return {...read,fullscreenAttempt};
         if(['native','in_page'].includes(read.fullscreenMode))fullscreenAttempt='observed';
-        const direct=player.get_player_state?.();
+        let direct;
+        try{direct=player.get_player_state?.();}
+        catch{/* Snapshot already confirmed playback state; direct frames are optional. */}
         if(direct?.media_id===mediaId&&direct.playback_phase==='playing'&&
            (direct.mode!=='buffered_mjpeg'||Number(direct.rendered_frames)>0))
           return {...read,mediaId,fullscreenAttempt};
@@ -156,7 +162,8 @@ export function createTeslaMonLocalPlayer({
   async function observe(mediaId,{attempts=12,intervalMs=1000,isCurrent=()=>true}={}){
     if(!VIDEO.test(mediaId)||typeof isCurrent!=='function')
       return fail('invalid_playback_observation');
-    const player=getPlayer();
+    let player;
+    try{player=getPlayer();}catch{return fail('local_player_not_ready','offline');}
     if(!player||typeof player.get_player_state!=='function')
       return fail('local_player_not_ready','offline');
     let priorFrames=null;
@@ -182,6 +189,7 @@ export function createTeslaMonLocalPlayer({
     return fail('playback_not_confirmed','uncertain');
   }
   return Object.freeze({run,observe,get ready(){
-    return typeof getPlayer()?.execute==='function';
+    try{return typeof getPlayer()?.execute==='function';}
+    catch{return false;}
   }});
 }

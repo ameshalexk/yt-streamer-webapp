@@ -377,14 +377,28 @@ test("read-ahead failure during queue backpressure remains handled on abort", as
   await new Promise(resolve=>setImmediate(resolve));
 });
 
-test('audio repair freezes rendering and rebases the clock without dropping video frames', () => {
-  const player = new globalThis.BufferedMjpeg.BufferedMjpegPlayer({url:'/fixture',canvas:{getContext:()=>({drawImage(){},clearRect(){}})}, audio:{pause(){}}, audioEnabled:()=>true});
-  player.playing = true; player.audioReady = true;
+test('audio transport repair preserves running video and its current position', () => {
+  const player = new globalThis.BufferedMjpeg.BufferedMjpegPlayer({url:'/fixture',canvas:{getContext:()=>({drawImage(){},clearRect(){}})}, audio:{pause(){}}, audioEnabled:()=>false});
+  let renders = 0;
+  player._scheduleRender = () => { renders++; };
+  player.playing = true; player.playbackStarted = true; player.audioReady = true;
   const queue = player.queue;
-  assert.equal(player.beginAudioRecovery(-42), true);
-  assert.equal(player.playing, false); assert.equal(player.audioReady, false);
+  assert.equal(player.beginAudioRecovery(-42, 42), true);
+  assert.equal(player.playing, true); assert.equal(player.audioReady, false);
   assert.equal(player.audioClockOffset, -42); assert.equal(player.queue, queue);
-  assert.equal(player.getStats().state, 'buffering');
+  assert.equal(player.getStats().state, 'playing');
+  assert.ok(player.currentTime() >= 42 && player.currentTime() < 42.2);
+  assert.equal(renders, 1);
   player.userPaused = true; assert.equal(player.beginAudioRecovery(-50), false);
   assert.equal(player.audioClockOffset, -42); player.destroy();
+});
+
+test('audio recovery before any video frame remains buffering instead of claiming playback', () => {
+  const player = new BufferedMjpegPlayer({url:'/fixture',canvas:{getContext:()=>({drawImage(){}})}, audio:{pause(){}}, audioEnabled:()=>false});
+  assert.equal(player.beginAudioRecovery(0, 0), true);
+  assert.equal(player.playbackStarted, false);
+  assert.equal(player.playing, false);
+  assert.equal(player.getStats().renderedFrames, 0);
+  assert.equal(player.getStats().state, 'buffering');
+  player.destroy();
 });

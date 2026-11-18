@@ -1406,7 +1406,7 @@ function buildAudioArgs({ input, userAgent, referer, isLive, startAt = 0 }) {
 // Do not return HTTP 200 before FFmpeg has produced playable audio.
 // req.close fires when a normal GET *request* finishes, before streaming
 // response completion. Only res.close should abort a streaming encoder.
-export function streamAudio(req, res, { input, userAgent = "", referer = "", isLive = false, startAt = 0 }) {
+export function streamAudio(req, res, { input, userAgent = "", referer = "", isLive = false, startAt = 0, onTelemetry = null }) {
   if (audioActive >= config.maxConcurrentStreams) {
     res.status(429).json({ error: "Too many audio streams", retryable: true });
     return;
@@ -1418,20 +1418,37 @@ export function streamAudio(req, res, { input, userAgent = "", referer = "", isL
   let closed = false;
   let sentAudio = false;
   let stderr = "";
+  const startedAt = Date.now();
+  let firstOutputAt = null;
+  let bytesWritten = 0;
+  let endReason = "client-close";
+  let failureKind = null;
+  let exitCode = null;
   const cleanup = () => {
     if (closed) return;
     closed = true;
     audioActive = Math.max(0, audioActive - 1);
     ff.stdout.unpipe(res);
     if (ff.exitCode === null && !ff.killed) ff.kill("SIGTERM");
+    // Retain only scalar transport evidence, never source URLs or stderr.
+    try {
+      const reported = onTelemetry?.({
+        bytesWritten,
+        firstOutputMs: firstOutputAt == null ? null : Math.max(0, firstOutputAt - startedAt),
+        durationMs: Math.max(0, Date.now() - startedAt),
+        endReason, failureKind, exitCode,
+      });
+      reported?.catch?.(() => {});
+    } catch {}
   };
   const fail = (reason) => {
     if (closed) return;
-    const failureKind = /(?:403|Forbidden)/i.test(stderr) ? "upstream-access-denied"
+    failureKind = /(?:403|Forbidden)/i.test(stderr) ? "upstream-access-denied"
       : /(?:404|Not Found)/i.test(stderr) ? "upstream-not-found"
       : /(?:contains no stream|matches no streams)/i.test(stderr) ? "no-audio-track"
       : /(?:timed out|Timeout)/i.test(stderr) ? "upstream-timeout"
       : "ffmpeg-error";
+    endReason = "error";
     console.warn("[audio-stream] " + reason + " (" + failureKind + ")");
     // Never expose signed media URLs or raw FFmpeg stderr to logs/clients.
     if (!res.headersSent) {
@@ -1445,6 +1462,7 @@ export function streamAudio(req, res, { input, userAgent = "", referer = "", isL
     if (closed || res.destroyed) return;
     if (!sentAudio) {
       sentAudio = true;
+      firstOutputAt = Date.now();
       res.writeHead(200, {
         "Content-Type": "audio/mpeg",
         "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -1452,6 +1470,7 @@ export function streamAudio(req, res, { input, userAgent = "", referer = "", isL
         "X-Accel-Buffering": "no",
       });
     }
+    bytesWritten += chunk.byteLength || chunk.length || 0;
     if (!res.write(chunk)) ff.stdout.pause();
   });
   res.on("drain", () => ff.stdout.resume());
@@ -1464,8 +1483,10 @@ export function streamAudio(req, res, { input, userAgent = "", referer = "", isL
   });
   ff.on("close", (code) => {
     if (closed) return;
+    exitCode = code;
     if (!sentAudio) return fail("Audio source unavailable or contains no playable audio");
     if (code !== 0 && !res.destroyed) return fail("Audio stream ended unexpectedly");
+    endReason = "completed";
     if (!res.destroyed) res.end();
     cleanup();
   });

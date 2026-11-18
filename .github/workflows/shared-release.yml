@@ -20,6 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Native Audio Tap uses processRestoreEnabled from the macOS 26 SDK;
+        # macos-15 cannot compile it. macos-26 previously passed the shared checks.
         os: [ubuntu-24.04, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
@@ -57,6 +59,18 @@ jobs:
         working-directory: webapp
       - run: npm test
         working-directory: webapp
+      - name: Smart Adaptive quality switch fixture (baseline and candidate)
+        run: |
+          git fetch --depth=1 origin dfc719cf50d22c794e700d9e514d2fba546520ca
+          # Match the existing real-media gate: hosted Linux Chrome's hardware
+          # H.264 WebCodecs decoder rejects the baseline fixture configuration.
+          if [ "$RUNNER_OS" = Linux ]; then
+            MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/smart-adaptive-browser-check.mjs --mjpeg-only
+          else
+            MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/smart-adaptive-browser-check.mjs
+          fi
+        working-directory: webapp
+        timeout-minutes: 3
       - name: TeslaMon same-tab responsive browser smoke
         run: npm run test:teslamon-live-browser
         working-directory: webapp
@@ -81,6 +95,34 @@ jobs:
           if-no-files-found: error
       - name: iPhone player responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
+        working-directory: webapp
+      # Hosted headless Chrome on either OS may load MP3 successfully but
+      # have no output audio clock (readyState=4, currentTime remains zero).
+      # CI gates real HTTP MJPEG frames + audio HTTP failure retries, video
+      # continuity, reconnect and responsive UI. Audio clock alignment and
+      # pause/visibility paths are unit-tested here and the full decoded audio
+      # fixture passed 32/32 on the physical Mac mini before this release.
+      - name: Buffered MJPEG transport recovery browser regression (CI)
+        run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mjpeg-audio-coordination-browser-check.mjs --automated --ci-transport
+        working-directory: webapp
+        timeout-minutes: 8
+      - name: Save MJPEG recovery fixture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mjpeg-audio-recovery-${{ matrix.os }}
+          path: docs/evidence/mjpeg-audio-coordination-20261104.json
+          if-no-files-found: warn
+      - name: Playback speed menu responsive browser regression
+        run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/playback-speed-menu-browser-check.mjs
+        working-directory: webapp
+      # GitHub-hosted Ubuntu Chrome can report a closed WebCodecs decoder in
+      # its headless media environment despite valid fixture media. Exercise
+      # actual WebCodecs A/V playback on macOS (a deployment target), while
+      # retaining UI, Node/FFmpeg and packaging checks on both runners.
+      - name: Playback speed real-media Chrome regression (macOS)
+        if: runner.os == 'macOS'
+        run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/playback-speed-browser-check.mjs
         working-directory: webapp
       - name: AI Access sign-in UI browser smoke
         run: npm run test:ai-agent-access-ui

@@ -9,6 +9,9 @@ import { config } from "./config.js";
 import {startProductionMediaRelay} from "./lib/ai-media-agent-production-relay.js";
 import {createTeslaMonTranscriber} from "./lib/teslamon-transcribe.js";
 import {createTeslaMonCodex,createTeslaMonCodexSelector} from "./lib/teslamon-codex-cli.js";
+import {createDevicePlanner} from "./lib/teslamon-device-plan.js";
+import {createHACommandService} from "./lib/teslamon-device-mcp.js";
+import {createMacCommandService} from "./lib/teslamon-mac-mcp.js";
 import * as store from "./lib/store.js";
 import * as storageManager from "./lib/storage-manager.js";
 import { findSavedPlayback } from "./lib/saved-playback.js";
@@ -34,6 +37,7 @@ import { createApneThumbnailService } from "./lib/apne-thumbnails.js";
 import { createApneLiveThumbnailService } from "./lib/apne-hls-thumbnails.js";
 import { createApneOfficialArtwork } from "./lib/apne-official-artwork.js";
 import * as cyberdashDash from "./lib/cyberdash-dash.js";
+import { openBoundedMediaRange } from "./lib/bounded-media-range.js";
 import * as processedDashCache from "./lib/processed-dash-cache.js";
 import { readReleaseRevision } from "./lib/release-info.js";
 import { createCastService } from "./lib/vlc-cast.js";
@@ -124,8 +128,31 @@ function playbackStats(value) {
     "audioContinuityCorrections", "audioMaxScheduleSlipMs", "audioFeedDone",
     "videoFeedDone", "audioMuted", "audioMediaReadyState", "audioMediaNetworkState",
     "audioMediaPaused", "audioMediaTimeSec", "playbackPositionSec",
+    "audioEndPtsSec", "audioEndSourceSec", "videoEndPtsSec", "knownVideoEndSourceSec",
+    "sourceDurationSec", "playbackRate",
+    "audioStatus", "audioBufferedSeconds", "audioErrorCode", "audioLoadElapsedMs",
   ];
-  return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
+  const sanitized = Object.fromEntries(keys.filter((key) => source[key] !== undefined)
+    .map((key) => [key, source[key]]));
+  const adaptiveNumbers = [
+    "deliveryBps", "capacityBps", "sustainableBps", "deliveryFloorBps", "mediaBps", "candidateBps",
+    "capacityFastBps", "capacitySlowBps", "deliveryFastBps", "deliverySlowBps", "latencyMs",
+    "queueTargetSeconds", "queueDepletion", "decodeLoad", "decodePressure", "decoderQueueSize", "effectiveWidth", "effectiveHeight", "effectiveFps",
+    "adaptiveUpgrades", "adaptiveDowngrades", "adaptiveLowMs", "adaptiveMediumMs", "adaptiveHighMs",
+    "adaptiveRebuffers", "adaptiveRebufferMs", "rebufferDurationMs", "switchInterruptionMs",
+  ];
+  for (const key of adaptiveNumbers) {
+    const value = source[key];
+    if (typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1e12) sanitized[key] = value;
+  }
+  for (const key of ["serverVideoSpeed", "sourceVideoMbps", "sourceAudioMbps"]) {
+    const value = source[key];
+    if (Number.isFinite(value) && value >= 0 && value <= 1e12) sanitized[key] = value;
+  }
+  if (["low", "medium", "high"].includes(source.adaptiveTier)) sanitized.adaptiveTier = source.adaptiveTier;
+  if (["network", "delivery", "device", "healthy"].includes(source.adaptiveSignal)) sanitized.adaptiveSignal = source.adaptiveSignal;
+  if (["mjpeg", "webcodecs"].includes(source.transport)) sanitized.transport = source.transport;
+  return sanitized;
 }
 
 function playbackTiming(value) {
@@ -198,7 +225,10 @@ function pruneGoogleVideoProxySessions() {
   }
 }
 
-function localGoogleVideoProxyUrl(value, { headers = {}, sourceUrl = "", role = "video", maxHeight = config.download.maxHeight } = {}) {
+function localGoogleVideoProxyUrl(value, {
+  headers = {}, sourceUrl = "", role = "video", maxHeight = config.download.maxHeight,
+  inputBytes = null, boundedReads = false,
+} = {}) {
   if (!isGoogleVideoUrl(value)) return value;
   pruneGoogleVideoProxySessions();
   const id = crypto.randomBytes(18).toString("base64url");
@@ -210,16 +240,25 @@ function localGoogleVideoProxyUrl(value, { headers = {}, sourceUrl = "", role = 
     maxHeight,
     createdAt: Date.now(),
     refreshCount: 0,
+    inputBytes,
+    boundedReads,
   });
   return `http://127.0.0.1:${config.port}/internal/googlevideo/${id}`;
 }
 
-function proxyYouTubeStreams(resolved, { sourceUrl = "", maxHeight = config.download.maxHeight } = {}) {
+function proxyYouTubeStreams(resolved, options = {}) {
+  const { sourceUrl = "", maxHeight = config.download.maxHeight, measureInput = false, boundedReads = false } = options;
   const { videoUrl, audioUrl, videoHeaders, audioHeaders } = resolved;
   const durationValue = resolved.duration;
+  const inputBytes = measureInput ? {
+    video: isGoogleVideoUrl(videoUrl) ? 0 : null,
+    audio: isGoogleVideoUrl(audioUrl) ? 0 : null,
+  } : null;
+  const proxyOptions = { sourceUrl, maxHeight, inputBytes, boundedReads };
   return {
-    videoUrl: localGoogleVideoProxyUrl(videoUrl, { headers: videoHeaders, sourceUrl, role: "video", maxHeight }),
-    audioUrl: audioUrl ? localGoogleVideoProxyUrl(audioUrl, { headers: audioHeaders, sourceUrl, role: "audio", maxHeight }) : null,
+    videoUrl: localGoogleVideoProxyUrl(videoUrl, { ...proxyOptions, headers: videoHeaders, role: "video" }),
+    audioUrl: audioUrl ? localGoogleVideoProxyUrl(audioUrl, { ...proxyOptions, headers: audioHeaders, role: "audio" }) : null,
+    inputBytes,
     isLive: Boolean(resolved.isLive),
     duration: durationValue != null && durationValue !== "" && Number.isFinite(Number(durationValue))
       ? Number(durationValue)
@@ -273,10 +312,10 @@ async function resolveYouTubeStreamsCached(sourceUrl, maxHeight = config.downloa
   }
 }
 
-async function resolveProxiedYouTubeStreams(sourceUrl, maxHeight = config.download.maxHeight) {
+async function resolveProxiedYouTubeStreams(sourceUrl, maxHeight = config.download.maxHeight, options = {}) {
   const result = await resolveYouTubeStreamsCached(sourceUrl, maxHeight);
   return {
-    ...proxyYouTubeStreams(result.resolved, { sourceUrl, maxHeight }),
+    ...proxyYouTubeStreams(result.resolved, { ...options, sourceUrl, maxHeight }),
     resolveCache: result.resolveCache,
     resolveMs: result.resolveMs,
   };
@@ -1535,40 +1574,65 @@ app.get("/internal/googlevideo/:id", asyncH(async (req, res) => {
 
   const controller = new AbortController();
   res.on("close", () => controller.abort());
-  const fetchUpstream = () => {
-    const headers = { ...session.headers };
-    if (!headers["User-Agent"] && !headers["user-agent"]) headers["User-Agent"] = YOUTUBE_STREAM_HEADERS.userAgent;
-    if (!headers.Accept && !headers.accept) headers.Accept = "*/*";
-    if (req.headers.range) headers.Range = req.headers.range;
-    if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
-    return fetch(session.target, { method: "GET", headers, redirect: "follow", signal: controller.signal });
+  const fetchUpstream = async (range = req.headers.range, bounded = false, signal = controller.signal) => {
+    const headers = new Headers(session.headers);
+    if (!headers.has("User-Agent")) headers.set("User-Agent", YOUTUBE_STREAM_HEADERS.userAgent);
+    if (!headers.has("Accept")) headers.set("Accept", "*/*");
+    if (range) headers.set("Range", range);
+    if (req.headers["if-range"]) headers.set("If-Range", req.headers["if-range"]);
+    if (bounded) headers.set("Accept-Encoding", "identity");
+    const request = () => fetch(session.target, {
+      method: "GET", headers, redirect: "follow", signal,
+    });
+
+    let response = await request();
+    const firstStatus = response.status;
+    if ((firstStatus === 403 || firstStatus === 410) && !signal.aborted && await refreshGoogleVideoProxySession(session)) {
+      try { await response.body?.cancel(); } catch {}
+      console.warn(`[googlevideo-proxy] upstream ${firstStatus}; refreshed signed ${session.role} URL`);
+      await appendPlaybackEvent({
+        at: new Date().toISOString(),
+        event: "googlevideo_refresh",
+        youtubeId: youtubeIdFromPlaybackUrl(session.sourceUrl),
+        role: session.role,
+        upstreamStatus: firstStatus,
+        serverInstanceId: SERVER_INSTANCE_ID,
+      });
+      response = await request();
+    }
+    if (response.status >= 400) {
+      await appendPlaybackEvent({
+        at: new Date().toISOString(),
+        event: "googlevideo_proxy_error",
+        youtubeId: youtubeIdFromPlaybackUrl(session.sourceUrl),
+        role: session.role,
+        upstreamStatus: response.status,
+        refreshCount: session.refreshCount,
+        serverInstanceId: SERVER_INSTANCE_ID,
+      });
+    }
+    return response;
   };
 
-  let upstream = await fetchUpstream();
-  const firstStatus = upstream.status;
-  if ((upstream.status === 403 || upstream.status === 410) && await refreshGoogleVideoProxySession(session)) {
-    try { await upstream.body?.cancel(); } catch {}
-    console.warn(`[googlevideo-proxy] upstream ${firstStatus}; refreshed signed ${session.role} URL`);
-    await appendPlaybackEvent({
-      at: new Date().toISOString(),
-      event: "googlevideo_refresh",
-      youtubeId: youtubeIdFromPlaybackUrl(session.sourceUrl),
-      role: session.role,
-      upstreamStatus: firstStatus,
-      serverInstanceId: SERVER_INSTANCE_ID,
-    });
-    upstream = await fetchUpstream();
-  }
-  if (upstream.status >= 400) {
-    await appendPlaybackEvent({
-      at: new Date().toISOString(),
-      event: "googlevideo_proxy_error",
-      youtubeId: youtubeIdFromPlaybackUrl(session.sourceUrl),
-      role: session.role,
-      upstreamStatus: upstream.status,
-      refreshCount: session.refreshCount,
-      serverInstanceId: SERVER_INSTANCE_ID,
-    });
+  let bounded, upstream;
+  try {
+    // GoogleVideo may pace open-ended transfers at about 1×. Serve the same
+    // seekable response from finite upstream reads for accelerated WebCodecs.
+    if (session.boundedReads && !req.headers["if-range"]) {
+      bounded = await openBoundedMediaRange({
+        rangeHeader: req.headers.range,
+        fetchRange: ({ start, end, signal }) => fetchUpstream(`bytes=${start}-${end}`, true, signal),
+        signal: controller.signal,
+      });
+    }
+    if (controller.signal.aborted) {
+      bounded?.body.destroy();
+      return;
+    }
+    upstream = bounded || await fetchUpstream();
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    throw error;
   }
 
   res.status(upstream.status);
@@ -1586,11 +1650,14 @@ app.get("/internal/googlevideo/:id", asyncH(async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
   if (!upstream.body) return res.end();
-  Readable.fromWeb(upstream.body)
-    .on("error", (error) => {
-      if (!res.destroyed && error?.name !== "AbortError") res.destroy(error);
-    })
-    .pipe(res);
+  const media = bounded ? upstream.body : Readable.fromWeb(upstream.body);
+  if (upstream.status >= 200 && upstream.status < 300 && session.inputBytes) {
+    media.on("data", (chunk) => { session.inputBytes[session.role] += chunk.length; });
+  }
+  media.on("error", (error) => {
+    if (!res.destroyed && error?.name !== "AbortError") res.destroy(error);
+  }).pipe(res);
+  res.once("close", () => media.destroy());
 }));
 
 // The JPEG XL option is gated by an actual installed libjxl encoder.
@@ -1809,7 +1876,14 @@ app.get("/stream/audio/youtube", asyncH(async (req, res) => {
   const { videoUrl, audioUrl, resolveCache, resolveMs } = await resolveProxiedYouTubeStreams(url, maxHeight);
   res.set("X-YT-Resolve-Ms", String(Math.max(0, Math.round(resolveMs))));
   res.set("X-YT-Resolve-Cache", resolveCache);
-  return stream.streamAudio(req, res, { input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS });
+  return stream.streamAudio(req, res, {
+    input: audioUrl || videoUrl, startAt: req.query.timestamp, ...YOUTUBE_STREAM_HEADERS,
+    onTelemetry: (telemetry) => appendPlaybackEvent({
+      at: new Date().toISOString(), event: "server_audio_summary",
+      youtubeId: youtubeIdFromPlaybackUrl(url), serverInstanceId: SERVER_INSTANCE_ID,
+      serverTelemetry: telemetry, timing: { resolveMs, resolveCache },
+    }),
+  });
 }));
 
 app.get("/stream/audio/prepared/:id", asyncH(async (req, res) => {
@@ -1865,6 +1939,34 @@ app.get("/stream/processed-dash/:id/*", asyncH(async (req, res) => {
   res.sendFile(filePath);
 }));
 
+// Live IPTV channels use a single A/V FFmpeg session, avoiding the two
+// independent upstream connections required by the legacy MJPEG+MP3 path.
+// Only remote HTTP(S) sources are eligible; local addresses and credentials
+// must not be accepted as video sources from browser-supplied JSON.
+app.post("/api/experimental/cyberdash/live/start", asyncH(async (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const raw = String(body.url || "").trim();
+  let source;
+  try { source = new URL(raw); } catch { return res.status(400).json({ error: "Invalid live channel URL" }); }
+  if (!/^https?:$/.test(source.protocol) || source.username || source.password
+      || /^(?:localhost|.*\.localhost|.*\.local|.*\.internal)$/i.test(source.hostname)
+      || /^(?:\d+\.){3}\d+$/.test(source.hostname)
+      || source.hostname.includes(":")) {
+    return res.status(400).json({ error: "A remote HTTP(S) channel URL is required" });
+  }
+  const height = requestedYouTubeMaxHeight(body.height);
+  const fps = Math.max(5, Math.min(30, Number.parseInt(String(body.fps ?? 24), 10) || 24));
+  const userAgent = String(body.userAgent || "").replace(/[\r\n]/g, "").slice(0, 300);
+  const referer = String(body.referer || "").replace(/[\r\n]/g, "").slice(0, 1200);
+  const session = await cyberdashDash.startYouTubeDashSession({
+    videoInput: source.href,
+    sourceUrl: source.href,
+    height, fps, live: true, playbackRate: 1,
+    userAgent, referer,
+  });
+  res.json({ ...session, duration: null, player: "experimental-live-cyberdash-v1" });
+}));
+
 app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const url = String(body.url || "").trim();
@@ -1877,10 +1979,10 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
   // Only HTTPS archive.org/download URLs are accepted; arbitrary remote URLs
   // still follow the existing YouTube resolver and cannot become FFmpeg inputs.
   const retroArchive = retroEnabled ? archiveVideoUrl(url) : null;
-  const { videoUrl, audioUrl, resolveCache, resolveMs, isLive, duration, title } =
+  const { videoUrl, audioUrl, inputBytes, resolveCache, resolveMs, isLive, duration, title } =
     retroArchive ? { videoUrl: retroArchive, audioUrl: null, resolveCache: "archive", resolveMs: 0,
       isLive: false, duration: null, title: null }
-      : await resolveProxiedYouTubeStreams(url, maxHeight);
+      : await resolveProxiedYouTubeStreams(url, maxHeight, { measureInput: true, boundedReads: playbackRate > 1 });
   if (isLive) {
     return res.status(409).json({
       error: "Live YouTube streams use MJPEG playback.",
@@ -1899,6 +2001,8 @@ app.post("/api/experimental/cyberdash/start", asyncH(async (req, res) => {
     fps,
     startAt,
     playbackRate,
+    bufferLab: body.bufferLab === true,
+    inputBytes,
   });
   res.json({
     ...session,
@@ -2305,6 +2409,9 @@ const teslamonCodex=createTeslaMonCodex({
   onDiagnostic:event=>console.info('[teslamon-codex]',JSON.stringify(event))
 });
 const teslamonCodexSelector=createTeslaMonCodexSelector();
+const teslamonHACommands=createHACommandService({planner:createDevicePlanner()});
+const teslamonMacCommands=createMacCommandService({planner:createDevicePlanner({provider:'mac'})});
+const teslamonUrlRouter=createDevicePlanner({provider:'route'});
 // Stage durations only: never log speech, queries, identities, or credentials.
 function logTeslaMonLatency(stage,started,status){
   console.info('[teslamon-latency]',JSON.stringify({stage,ms:Date.now()-started,status}));
@@ -2337,7 +2444,7 @@ app.post('/api/teslamon/capabilities',verifyTeslaMonVoiceRequest,(req,res)=>{
 });
 // Codex selects ONE strict playback command. No model output is executed on
 // the Mac: the authenticated requesting browser tab performs its own action.
-app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
+async function handleTeslaMonPlan(req,res,{videoOnly=false}={}){
   if(!req.body||Object.getPrototypeOf(req.body)!==Object.prototype||
      Object.keys(req.body).sort().join(',')!=='session,text'||
      typeof req.body.session!=='string'||typeof req.body.text!=='string'||
@@ -2353,7 +2460,7 @@ app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
   const identity=crypto.createHash('sha256').update(principal.issuer+'\n'+principal.subject).digest('hex');
   const started=Date.now();
   try{
-    const outcome=await teslamonCodex.plan(req.body.text,req.body.session,identity);
+    const outcome=await teslamonCodex.plan(req.body.text,req.body.session,identity,{videoOnly});
     logTeslaMonLatency('codex_plan',started,outcome.status);
     res.set('Server-Timing',`codex;dur=${Date.now()-started}`);
     return res.status(outcome.status==='unavailable'?503:outcome.status==='failed'?422:200)
@@ -2362,6 +2469,102 @@ app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
     logTeslaMonLatency('codex_plan',started,'unavailable');
     return res.status(503).json({status:'unavailable',code:'codex_unavailable'});
   }
+}
+app.post('/api/teslamon/plan',verifyTeslaMonVoiceRequest,
+  (req,res)=>handleTeslaMonPlan(req,res));
+// Separate signed, origin-bound planner: URL navigation cannot trigger HA MCPs.
+app.post('/api/teslamon/url-video-plan',verifyTeslaMonVoiceRequest,
+  (req,res)=>handleTeslaMonPlan(req,res,{videoOnly:true}));
+// Unprefixed natural-language URLs are classified with a tool-free Codex
+// process. Classification does not execute actions; each routed provider uses
+// its own separate signed endpoint and explicit confirmation for mutations.
+app.post('/api/teslamon/url-route',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  const body=req.body;
+  if(!body||Object.getPrototypeOf(body)!==Object.prototype||
+     Object.keys(body).sort().join(',')!=='session,text'||
+     typeof body.session!=='string'||!/^[a-f0-9-]{36}$/i.test(body.session)||
+     typeof body.text!=='string'||body.text.length<2||body.text.length>220||
+     /[\x00-\x1f\x7f]/.test(body.text))
+    return res.status(400).json({status:'failed',code:'invalid_url_request'});
+  const principal=req.teslamonVoiceIdentity;
+  if(typeof principal?.subject!=='string'||!principal.subject||
+     typeof principal.issuer!=='string'||!principal.issuer)
+    return res.status(401).json({status:'failed',code:'signed_access_required'});
+  const controller=new AbortController();
+  const onClose=()=>{if(!res.writableEnded)controller.abort();};
+  res.once('close',onClose);
+  const started=Date.now();
+  try{
+    const outcome=await teslamonUrlRouter.plan(body.text,{signal:controller.signal});
+    console.info('[teslamon-url-route]',JSON.stringify({status:outcome.status,
+      route:outcome.route||null,ms:Date.now()-started}));
+    return res.status(outcome.status==='unavailable'?503:outcome.status==='failed'?422:200)
+      .json(outcome);
+  }catch{return res.status(503).json({status:'unavailable',code:'codex_unavailable'});}
+  finally{res.removeListener('close',onClose);}
+});
+// Device URLs use explicit /ha/ namespace and signed POSTs. A GET by itself
+// never calls MCP. Signed HA plans execute allowlisted actions hands-free;
+// Mac Control plans still require separate, one-use human confirmation.
+function validatedDeviceRequest(req,keys){
+  const body=req.body;
+  return body&&Object.getPrototypeOf(body)===Object.prototype&&
+    Object.keys(body).sort().join(',')===keys.slice().sort().join(',')&&
+    typeof body.session==='string'&&/^[a-f0-9-]{36}$/i.test(body.session);
+}
+function deviceIdentity(req){
+  const principal=req.teslamonVoiceIdentity;
+  if(typeof principal?.subject!=='string'||!principal.subject||
+     typeof principal.issuer!=='string'||!principal.issuer)return null;
+  return crypto.createHash('sha256').update(principal.issuer+'\n'+principal.subject).digest('hex');
+}
+app.post('/api/teslamon/ha-plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  if(!validatedDeviceRequest(req,['session','text'])||
+    typeof req.body.text!=='string'||req.body.text.length<2||req.body.text.length>220||
+    /[\x00-\x1f\x7f]/.test(req.body.text))
+    return res.status(400).json({status:'failed',code:'invalid_device_request'});
+  const identity=deviceIdentity(req);
+  if(!identity)return res.status(401).json({status:'failed',code:'signed_access_required'});
+  const started=Date.now();
+  const controller=new AbortController();
+  const onClose=()=>{if(!res.writableEnded)controller.abort()};
+  res.once('close',onClose);
+  try{
+    const result=await teslamonHACommands.plan(req.body.text,req.body.session,identity,
+      {signal:controller.signal});
+    console.info('[teslamon-ha]',JSON.stringify({outcome:result.status,ms:Date.now()-started}));
+    return res.status(result.status==='unavailable'?503:200).json(result);
+  }catch{return res.status(503).json({status:'unavailable',code:'home_assistant_unavailable'});}
+  finally{res.removeListener('close',onClose);}
+});
+// Separate signed Mac Control namespace and local MCP allowlist. No device
+// commands are accepted through the unprefixed, video-only Grok URL path.
+app.post('/api/teslamon/mac-plan',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  if(!validatedDeviceRequest(req,['session','text'])||
+     typeof req.body.text!=='string'||req.body.text.length<2||req.body.text.length>220||
+     /[\x00-\x1f\x7f]/.test(req.body.text))
+    return res.status(400).json({status:'failed',code:'invalid_device_request'});
+  const identity=deviceIdentity(req);
+  if(!identity)return res.status(401).json({status:'failed',code:'signed_access_required'});
+  const started=Date.now(),controller=new AbortController();
+  const onClose=()=>{if(!res.writableEnded)controller.abort()};
+  res.once('close',onClose);
+  try{
+    const result=await teslamonMacCommands.plan(req.body.text,req.body.session,identity,
+      {signal:controller.signal});
+    console.info('[teslamon-mac]',JSON.stringify({outcome:result.status,ms:Date.now()-started}));
+    return res.status(result.status==='unavailable'?503:200).json(result);
+  }catch{return res.status(503).json({status:'unavailable',code:'mac_control_unavailable'});}
+  finally{res.removeListener('close',onClose);}
+});
+app.post('/api/teslamon/mac-confirm',verifyTeslaMonVoiceRequest,async(req,res)=>{
+  if(!validatedDeviceRequest(req,['id','session'])||
+    typeof req.body.id!=='string'||! /^[a-f0-9]{48}$/.test(req.body.id))
+    return res.status(400).json({status:'failed',code:'invalid_confirmation'});
+  const identity=deviceIdentity(req);
+  if(!identity)return res.status(401).json({status:'failed',code:'signed_access_required'});
+  try{return res.json(await teslamonMacCommands.confirm(req.body.id,req.body.session,identity));}
+  catch{return res.status(503).json({status:'unavailable',code:'mac_control_unavailable'});}
 });
 app.post('/api/teslamon/select-candidate',verifyTeslaMonVoiceRequest,async(req,res)=>{
   const body=req.body;

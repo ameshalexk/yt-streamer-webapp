@@ -57,6 +57,10 @@ export function buildCyberdashDashArgs({
   playbackRate = 1,
   encoder = config.video.dashEncoder,
   initialBurstSupported = true,
+  bufferLab = false,
+  live = false,
+  userAgent = "",
+  referer = "",
   manifestPath,
 }) {
   if (!videoInput) throw new Error("video input required");
@@ -75,27 +79,44 @@ export function buildCyberdashDashArgs({
   // network/decoder hiccup does not immediately drain the client buffer.
   const inputReadRate = speed > 1
     ? Math.min(5, Math.max(1.6, speed * 1.6))
-    : 1.15;
+    : (bufferLab ? 2 : 1.15);
   const initialBurst = speed > 1
     ? Math.min(15, Math.max(6, speed * 5))
-    : 4;
+    : (bufferLab ? 8 : 4);
   const args = ["-hide_banner", "-loglevel", "warning", "-y"];
-  const addInput = (input) => {
-    if (seek) args.push("-ss", String(seek));
-    args.push("-readrate", String(inputReadRate));
-    if (initialBurstSupported) args.push("-readrate_initial_burst", String(initialBurst));
+  const addInput = (input, readRate) => {
+    if (!live && seek) args.push("-ss", String(seek));
+    // Live HLS already arrives in real time. Readrate can throttle live
+    // playlists and prevent the DASH muxer from reaching its first segment.
+    if (!live) {
+      args.push("-readrate", String(readRate));
+      if (initialBurstSupported) args.push("-readrate_initial_burst", String(initialBurst));
+    }
+    if (live && /^https?:\/\//i.test(String(input))) {
+      if (userAgent) args.push("-user_agent", userAgent);
+      if (referer) args.push("-headers", `Referer: ${referer}\r\n`);
+      args.push("-rw_timeout", "15000000");
+    }
     args.push("-i", String(input));
   };
 
-  addInput(videoInput);
-  if (audioInput) addInput(audioInput);
+  addInput(videoInput, inputReadRate);
+  // DASH interleaves the output timestamps. atempo shortens the audio
+  // timeline, so a separate audio input needs proportionally more input
+  // headroom to avoid holding back ready video packets.
+  if (audioInput) addInput(audioInput, inputReadRate * speed);
 
   args.push("-map", "0:v:0");
   args.push("-map", audioInput ? "1:a:0" : "0:a:0?");
 
+  // VideoToolbox can reject live HLS frames with irregular SEI metadata
+  // even when the same source decodes with libx264. Keep VOD's configured
+  // hardware encoder; use the portable low-latency encoder for live IPTV.
+  const outputEncoder = live ? "libx264" : encoder;
   args.push(
     "-vf", `scale=-2:${outHeight},fps=${outFps}`,
-    "-c:v", encoder,
+    "-c:v", outputEncoder,
+    ...(live ? ["-preset", "veryfast", "-tune", "zerolatency"] : []),
     "-pix_fmt", "yuv420p",
     "-b:v", `${rate.target}k`,
     "-maxrate", `${rate.max}k`,
@@ -113,8 +134,9 @@ export function buildCyberdashDashArgs({
     "-frag_duration", String(segmentSeconds),
     "-use_template", "1",
     "-use_timeline", "1",
-    "-window_size", "0",
-    "-extra_window_size", "0",
+    // Limit live segment retention. VOD still keeps its complete timeline.
+    "-window_size", live ? "60" : "0",
+    "-extra_window_size", live ? "60" : "0",
     "-remove_at_exit", "0",
     "-init_seg_name", "init-$RepresentationID$.m4s",
     "-media_seg_name", "chunk-$RepresentationID$-$Number%05d$.m4s",
@@ -163,6 +185,20 @@ export function parseDashManifest(text = "") {
       (attrs.match(/\bframeRate="([^"]+)"/) || [])[1] ||
       null;
     result[kind] = { id, codec, bandwidth, width, height, frameRate };
+    if (kind === "video") {
+      const template = body.match(/<SegmentTemplate\b([^>]*)>([\s\S]*?)<\/SegmentTemplate>/);
+      const timescale = Number(template?.[1].match(/\btimescale="(\d+)"/)?.[1] ?? 1);
+      const timeline = template?.[2].match(/<SegmentTimeline>([\s\S]*?)<\/SegmentTimeline>/)?.[1];
+      if (timeline && timescale > 0) {
+        let ticks = 0;
+        for (const [, entry] of timeline.matchAll(/<S\b([^>]*)\/>/g)) {
+          const duration = Number(entry.match(/\bd="(\d+)"/)?.[1]);
+          const repeat = Number(entry.match(/\br="(-?\d+)"/)?.[1] ?? 0);
+          if (duration > 0 && repeat >= 0) ticks += duration * (repeat + 1);
+        }
+        if (ticks > 0) result.videoTimelineSeconds = ticks / timescale;
+      }
+    }
   }
 
   return result;
@@ -231,6 +267,11 @@ export async function startYouTubeDashSession({
   fps = 30,
   startAt = 0,
   playbackRate = 1,
+  bufferLab = false,
+  inputBytes = null,
+  live = false,
+  userAgent = "",
+  referer = "",
 } = {}) {
   await pruneIdleSessions();
   await fs.mkdir(rootDir(), { recursive: true });
@@ -247,6 +288,10 @@ export async function startYouTubeDashSession({
     fps,
     startAt,
     playbackRate,
+    bufferLab,
+    live,
+    userAgent,
+    referer,
     manifestPath,
     initialBurstSupported: await supportsInitialBurst(),
   });
@@ -256,10 +301,13 @@ export async function startYouTubeDashSession({
     id,
     dir,
     sourceUrl: String(sourceUrl || ""),
+    live: Boolean(live),
     height: clampInt(height, 240, 1080, 720),
     fps: clampInt(fps, 5, 60, 30),
     startAt: safeSeek(startAt),
     playbackRate: safePlaybackRate(playbackRate),
+    producerStartedAt: performance.now(),
+    inputBytes,
     createdAt: now,
     lastAccessAt: now,
     stderr: "",
@@ -296,6 +344,7 @@ export async function startYouTubeDashSession({
     fps: session.fps,
     startAt: session.startAt,
     playbackRate: session.playbackRate,
+    isLive: session.live,
     statusUrl: `/api/experimental/cyberdash/${id}/status`,
     manifestUrl: `/stream/experimental/cyberdash/${id}/manifest.mpd`,
   };
@@ -310,6 +359,7 @@ export async function getSessionStatus(id) {
   return {
     id: session.id,
     state: session.error ? "error" : session.closed ? "done" : "running",
+    isLive: session.live,
     done: session.closed,
     stopped: session.stopped,
     exitCode: session.exitCode,
@@ -319,6 +369,12 @@ export async function getSessionStatus(id) {
     startAt: session.startAt,
     playbackRate: session.playbackRate,
     createdAt: session.createdAt,
+    throughput: {
+      elapsedMs: Math.round(performance.now() - session.producerStartedAt),
+      outputVideoSeconds: files.manifest.videoTimelineSeconds ?? 0,
+      sourceVideoBytes: session.inputBytes?.video ?? null,
+      sourceAudioBytes: session.inputBytes?.audio ?? null,
+    },
     ...files,
   };
 }

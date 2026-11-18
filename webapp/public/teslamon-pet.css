@@ -136,3 +136,12 @@
 #teslamonPet #tmAuraPreview{grid-column:1/-1;min-height:44px;border:1px solid #69b9bb;border-radius:9px;background:linear-gradient(90deg,#234c65,#2c4776);color:#e8fffc;font-weight:700;letter-spacing:.02em}
 #teslamonPet #tmAuraPreview:disabled{opacity:.45}
 @media(prefers-reduced-motion:reduce){#teslamonPet .tm-aura-switch input:before{transition:none}}
+
+/* Device changes never happen just because a Grok URL was opened. */
+.tm-device-approval{position:fixed;z-index:2147483647;inset:auto 12px max(18px,env(safe-area-inset-bottom)) 12px;max-width:480px;margin:auto;padding:22px;border:1px solid #587e98;border-radius:16px;background:#142638;color:#fff;box-shadow:0 16px 64px #000b;font:16px/1.4 system-ui,sans-serif}
+.tm-device-approval p{margin:12px 0 18px;overflow-wrap:anywhere}
+.tm-device-approval div{display:flex;gap:12px}
+.tm-device-approval button{flex:1;min-height:48px;border:1px solid #7c9ab2;border-radius:10px;font:inherit;color:#fff;background:#285377;cursor:pointer}
+.tm-device-approval button+button{background:#293a46}
+.tm-device-approval button:disabled{opacity:.6}
+.tm-device-approval [data-error=true]{color:#ffbeb8}

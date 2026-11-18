@@ -1,4 +1,5 @@
 import { orderedPrefetch } from "./ordered-prefetch.mjs";
+import { BoundedSegmentBuffer } from "./segment-prefetch.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -30,13 +31,26 @@ async function fetchJson(url, options = {}, timeoutMs = 15000) {
   }
 }
 
-async function fetchBytes(url, timeoutMs = 12000, cacheMode = "no-store") {
+// A short completion provides a conservative lower bound rather than
+// disqualifying fast links. Ignore tiny bodies dominated by framing overhead.
+export function videoCapacitySample(bytes, elapsedMs) {
+  if (!Number.isFinite(bytes) || bytes < 16 * 1024 || !Number.isFinite(elapsedMs) || elapsedMs < 0) return null;
+  return Math.round(bytes * 8000 / Math.max(35, elapsedMs));
+}
+
+async function fetchBytes(url, timeoutMs = 12000, cacheMode = "no-store", onTiming = null) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = performance.now();
   try {
     const res = await fetch(url, { cache: cacheMode, signal: controller.signal });
+    const headersAt = performance.now();
     if (!res.ok) throw new Error(`${url} HTTP ${res.status}`);
-    return await res.arrayBuffer();
+    const value = await res.arrayBuffer();
+    if (typeof onTiming === "function") {
+      onTiming({ bytes: value.byteLength, ttfbMs: headersAt - startedAt, elapsedMs: performance.now() - startedAt });
+    }
+    return value;
   } finally {
     clearTimeout(timer);
   }
@@ -53,6 +67,26 @@ function round(value, digits = 1) {
   if (!Number.isFinite(value)) return null;
   const f = 10 ** digits;
   return Math.round(value * f) / f;
+}
+
+export function measureServerThroughput(previous, current) {
+  const elapsedMs = current?.elapsedMs - previous?.elapsedMs;
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 3000) return null;
+  const perSecond = (key) => {
+    const start = previous?.[key];
+    const end = current?.[key];
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+    return (end - start) * 1000 / elapsedMs;
+  };
+  const mbps = (key) => {
+    const bytesPerSecond = perSecond(key);
+    return bytesPerSecond == null ? null : round(bytesPerSecond * 8 / 1e6, 2);
+  };
+  return {
+    serverVideoSpeed: round(perSecond("outputVideoSeconds"), 2),
+    sourceVideoMbps: mbps("sourceVideoBytes"),
+    sourceAudioMbps: mbps("sourceAudioBytes"),
+  };
 }
 
 function avcDescription(MP4Box, sample) {
@@ -125,9 +159,22 @@ export function normalizePlaybackRate(value = 1) {
   return Math.max(1, Math.min(4, rate));
 }
 
-export function fastPlaybackBufferTargets({ playbackRate = 1, fps = 30 } = {}) {
+export function fastPlaybackBufferTargets({ playbackRate = 1, fps = 30, bufferLab = false } = {}) {
   const rate = normalizePlaybackRate(playbackRate);
   const sourceFps = Math.max(5, Math.min(60, Number(fps) || 30));
+  if (bufferLab) {
+    // Longer *compressed* look-ahead is separate from this small decoded-frame
+    // reserve. Do not keep tens of seconds of VideoFrame objects in Tesla RAM.
+    return {
+      startupWallSec: 1.25,
+      startupVideoSourceSec: 1.25 * rate,
+      startupVideoFrames: Math.max(6, Math.ceil(sourceFps * 1.25 * rate)),
+      startupAudioWallSec: 1.25,
+      rebufferLowWallSec: rate > 1 ? 0.65 : 0.15,
+      rebufferHighWallSec: 2,
+      rebufferHighVideoSourceSec: 2 * rate,
+    };
+  }
   if (rate <= 1) {
     return {
       startupWallSec: 0,
@@ -141,9 +188,10 @@ export function fastPlaybackBufferTargets({ playbackRate = 1, fps = 30 } = {}) {
       rebufferHighVideoSourceSec: 0.45,
     };
   }
-  // Trade a little startup latency for enough reserve to survive normal Wi-Fi/cellular
-  // jitter. The target grows with speed because 1.5x/2x burns source time faster.
-  const startupWallSec = Math.min(4, 1.5 + ((rate - 1) * 2.5));
+  // Rate changes restart the pitch-preserving server audio pipeline. Start with
+  // a modest wall-time reserve instead of making 2x wait for four seconds of
+  // audio before showing a frame. Keep the larger recovery targets below.
+  const startupWallSec = 1.5;
   const startupVideoSourceSec = Math.min(6.5, startupWallSec * rate);
   const rebufferHighWallSec = Math.min(3, 1.5 + (rate - 1));
   return {
@@ -155,6 +203,23 @@ export function fastPlaybackBufferTargets({ playbackRate = 1, fps = 30 } = {}) {
     rebufferHighWallSec,
     rebufferHighVideoSourceSec: Math.min(6.5, rebufferHighWallSec * rate),
   };
+}
+
+export function playbackStartupReady({
+  playbackRate = 1, videoFrames = 0, audioBlocks = 0,
+  videoSourceSec = 0, audioWallSec = 0,
+  videoFeedDone = false, audioFeedDone = false, externalAudio = false,
+  targets = fastPlaybackBufferTargets({ playbackRate }),
+} = {}) {
+  const minimumReady = videoFrames >= (videoFeedDone ? 1 : 3)
+    && (externalAudio || audioBlocks >= 1);
+  if (!minimumReady) return false;
+  if (normalizePlaybackRate(playbackRate) <= 1) return true;
+  // Time coverage is the reserve that matters. A fixed requested-FPS frame
+  // count can be unreachable for a lower-cadence source. At EOF no more data
+  // can arrive, so play the available tail instead of waiting 15 seconds.
+  return (videoFeedDone || videoSourceSec >= targets.startupVideoSourceSec)
+    && (externalAudio || audioFeedDone || audioWallSec >= targets.startupAudioWallSec);
 }
 
 // Normal-speed playback usually has only a few decoded frames in flight.
@@ -228,12 +293,53 @@ function audioHealthSnapshot(state) {
     audioMaxScheduleSlipMs: round(state.maxAudioScheduleSlipMs),
     audioFeedDone: Boolean(state.audioFeedDone),
     videoFeedDone: Boolean(state.videoFeedDone),
+    audioEndPtsSec: round(state.audioEndPtsSec, 3),
+    audioEndSourceSec: round(state.audioEndSourceSec, 3),
+    videoEndPtsSec: round(state.videoEndPtsSec, 3),
+    knownVideoEndSourceSec: round(state.knownVideoEndSourceSec, 3),
+    sourceDurationSec: round(state.sourceDurationSec, 3),
+    playbackRate: normalizePlaybackRate(state.playbackRate),
     audioMuted: Boolean(state.requestedMuted),
     audioMediaReadyState: external?.readyState ?? null,
     audioMediaNetworkState: external?.networkState ?? null,
     audioMediaPaused: external?.paused ?? null,
     audioMediaTimeSec: external ? round(Number(external.currentTime), 2) : null,
     playbackPositionSec: round(state.startAt + playbackElapsed(state), 2),
+  };
+}
+
+// Fail only after internal audio has actually run out while reliable timeline
+// evidence says video should continue. The two-second margin absorbs AAC
+// priming/padding and ordinary end-of-stream timestamp rounding.
+export function detectPrematureAudioEnd({
+  playing = false, hasFirstPicture = false, paused = false, stopped = false,
+  muted = false, externalAudio = false, audioFeedDone = false,
+  audioEndPtsSec, videoEndPtsSec, knownVideoEndSec, currentSourceSec = 0,
+  audioAheadSec = 0, playbackRate = 1, startAt = 0, segmentOffsetSourceSec = 0,
+  toleranceSec = 2,
+} = {}) {
+  if (!playing || !hasFirstPicture || paused || stopped || muted || externalAudio || !audioFeedDone) return null;
+  const audioEnd = Number(audioEndPtsSec);
+  if (!Number.isFinite(audioEnd) || audioEnd <= 0 || Number(audioAheadSec) > 0.05) return null;
+  const rate = normalizePlaybackRate(playbackRate);
+  const origin = Math.max(0, Number(startAt) || 0) + Math.max(0, Number(segmentOffsetSourceSec) || 0);
+  const audioEndSource = origin + audioEnd * rate;
+  const current = Number(currentSourceSec);
+  if (!Number.isFinite(current) || current < audioEndSource + toleranceSec) return null;
+  const evidenceEnd = Math.max(
+    Number.isFinite(Number(knownVideoEndSec)) ? Number(knownVideoEndSec) : 0,
+    // Prepared video PTS remains relative to segmentStartAt; unlike audio it
+    // is not trimmed by segmentOffsetSourceSec.
+    Number.isFinite(Number(videoEndPtsSec)) ? (Math.max(0, Number(startAt) || 0) + Number(videoEndPtsSec)) : 0,
+  );
+  if (evidenceEnd <= audioEndSource + toleranceSec) return null;
+  // A sub-two-second tail can be ordinary encoder padding/timestamp slop at
+  // natural completion, especially when both feeds have already ended.
+  if (evidenceEnd - current <= toleranceSec) return null;
+  return {
+    audioEndSourceSec: audioEndSource,
+    evidenceEndSourceSec: evidenceEnd,
+    remainingSourceSec: evidenceEnd - current,
   };
 }
 
@@ -352,6 +458,7 @@ async function holdIfTooFarAhead(state, lastPtsSec, kind) {
   const sourceLeadLimit = state.preparedStatic
     ? Math.max(3, Number(state.bufferTargets?.rebufferHighVideoSourceSec || 0) + 0.75)
     : 6.5 * playbackRate;
+  const effectiveLeadLimit = state.bufferLab && !state.preparedStatic ? 4 * playbackRate : sourceLeadLimit;
   // Server-side atempo compresses the audio timeline. Convert its output-time
   // PTS back to source-time before comparing it with the video master clock.
   const segmentOffset = state.preparedStatic ? Math.max(0, Number(state.segmentOffsetSourceSec) || 0) : 0;
@@ -361,7 +468,7 @@ async function holdIfTooFarAhead(state, lastPtsSec, kind) {
   while (
     !state.stopRequested &&
     state.audioStart != null &&
-    sourcePtsSec - playbackElapsed(state) > sourceLeadLimit
+    sourcePtsSec - playbackElapsed(state) > effectiveLeadLimit
   ) {
     await sleep(80);
   }
@@ -461,7 +568,7 @@ async function feedTrack(state, MP4Box, kind, initName) {
           });
           configured = true;
         }
-        await waitForVideoQueue(state, 40);
+        await waitForVideoQueue(state, state.bufferLab ? 8 : 40);
         state.videoDecoder.decode(new EncodedVideoChunk({
           type: sample.is_sync ? "key" : "delta",
           timestamp,
@@ -481,8 +588,10 @@ async function feedTrack(state, MP4Box, kind, initName) {
     }
   };
 
+  let trackReceivedBytes = 0;
   const appendBuffer = (ab) => {
     state.receivedBytes += ab.byteLength;
+    trackReceivedBytes += ab.byteLength;
     ab.fileStart = offset;
     offset += ab.byteLength;
     file.appendBuffer(ab);
@@ -497,8 +606,39 @@ async function feedTrack(state, MP4Box, kind, initName) {
       appendBuffer(ab);
       return;
     }
-    const ab = await fetchBytes(`/stream/experimental/cyberdash/${state.sessionId}/${encodeURIComponent(name)}?t=${Date.now()}`);
+    const isInit = name === initName;
+    let timing = null;
+    const ab = await fetchBytes(
+      `/stream/experimental/cyberdash/${state.sessionId}/${encodeURIComponent(name)}?t=${Date.now()}`,
+      12000,
+      "no-store",
+      isInit ? null : (sample) => { timing = sample; },
+    );
+    if (!isInit && timing && kind === "video") {
+      state.deliveryBytes = (state.deliveryBytes || 0) + ab.byteLength;
+      state.latencyMs = round(timing.ttfbMs, 1);
+      state.latencyAt = performance.now();
+      const capacityBps = videoCapacitySample(ab.byteLength, timing.elapsedMs);
+      if (capacityBps != null) {
+        state.capacityBps = capacityBps;
+        state.capacityAt = performance.now();
+      }
+    }
     appendBuffer(ab);
+  };
+
+  const finishTrack = async () => {
+    const decoder = kind === "video" ? state.videoDecoder : state.audioDecoder;
+    if (decoder?.state === "configured") await decoder.flush();
+    if (kind === "audio") {
+      state.audioEndPtsSec = lastPtsSec;
+      state.audioEndSourceSec = Math.max(0, Number(state.startAt) || 0)
+        + Math.max(0, Number(state.segmentOffsetSourceSec) || 0)
+        + lastPtsSec * normalizePlaybackRate(state.playbackRate);
+    } else {
+      state.videoEndPtsSec = lastPtsSec;
+    }
+    return { lastPtsSec, segments: fed.size };
   };
 
   await appendFile(initName);
@@ -562,30 +702,156 @@ async function feedTrack(state, MP4Box, kind, initName) {
     if (state.stopRequested) throw new Error("Stopped");
     file.flush();
     await processPending();
-    return { lastPtsSec, segments: fed.size };
+    return finishTrack();
+  }
+
+  if (state.bufferLab) {
+    // Network production stays ahead of decoding. The producer fetches ordered
+    // compressed 0.5s fragments concurrently; the consumer keeps only 4s of
+    // decoded frames/PCM. Both bytes and segment count bound Tesla memory.
+    const reserve = new BoundedSegmentBuffer();
+    const claimed = new Set();
+    const stopped = () => state.stopRequested;
+    const producer = (async () => {
+      while (!stopped()) {
+        if (!reserve.hasCapacity) {
+          await sleep(80);
+          continue;
+        }
+        const status = await fetchJson(`/api/experimental/cyberdash/${state.sessionId}/status`, {}, 5000);
+        if (status.error) throw new Error(status.error);
+        if (kind === "video" && status.throughput && !status.done) {
+          state.serverThroughputBaseline ??= status.throughput;
+          const measured = measureServerThroughput(state.serverThroughputBaseline, status.throughput);
+          if (measured) {
+            state.serverThroughput = measured;
+            state.serverThroughputBaseline = status.throughput;
+          }
+        }
+        const available = status.available?.[kind] || [];
+        const fresh = available.filter((name) => !claimed.has(name) && !fed.has(name))
+          .slice(0, Math.min(6, reserve.maxSegments - reserve.size));
+        fresh.forEach((name) => claimed.add(name));
+        if (kind === "video") state.videoProducerWaiting = fresh.length === 0 && !status.done;
+        for await (const { value: segment } of orderedPrefetch(fresh, async (name) => {
+          let timing = null;
+          const data = await fetchBytes(
+            `/stream/experimental/cyberdash/${state.sessionId}/${encodeURIComponent(name)}?t=${Date.now()}`,
+            12000, "no-store", (sample) => { timing = sample; }
+          );
+          return { name, data, timing };
+        }, { concurrency: 4, shouldStop: stopped })) {
+          if (stopped()) break;
+          if (kind === "video" && segment.timing) {
+            state.deliveryBytes = (state.deliveryBytes || 0) + segment.data.byteLength;
+            state.latencyMs = round(segment.timing.ttfbMs, 1);
+            state.latencyAt = performance.now();
+            const capacityBps = videoCapacitySample(segment.data.byteLength, segment.timing.elapsedMs);
+            if (capacityBps != null) {
+              state.capacityBps = capacityBps;
+              state.capacityAt = performance.now();
+            }
+          }
+          if (!await reserve.push(segment, { shouldStop: stopped })) break;
+          state.compressedPrefetchBytesMax = Math.max(state.compressedPrefetchBytesMax, reserve.peakBytes);
+          state.compressedPrefetchSourceSec = Math.max(state.compressedPrefetchSourceSec, reserve.peakSegments * 0.5);
+          if (kind === "video") {
+            state.compressedAheadSec = reserve.size * 0.5;
+            state.compressedAheadBytes = reserve.bytes;
+          }
+        }
+        if (status.done && available.every((name) => claimed.has(name) || fed.has(name))) break;
+        if (fresh.length === 0) await sleep(120);
+      }
+      reserve.close();
+    })().catch((error) => reserve.fail(error));
+
+    try {
+      while (!stopped()) {
+        const segment = await reserve.shift({ shouldStop: stopped });
+        if (!segment) break;
+        if (kind === "video") {
+          state.compressedAheadSec = reserve.size * 0.5;
+          state.compressedAheadBytes = reserve.bytes;
+        }
+        // Do not decode the entire compressed reserve before the audio clock
+        // starts: the pre-start limiter below matches the safe prepared path.
+        while (!stopped() && state.audioStart == null && !state.externalAudioElement) {
+          const targets = state.bufferTargets;
+          const ready = kind === "video"
+            ? decodedVideoAheadSec(state, state.segmentOffsetSourceSec || 0) >= targets.startupVideoSourceSec + 0.5
+            : pendingAudioBufferedSec(state) >= targets.startupAudioWallSec + 0.5;
+          if (!ready) break;
+          await sleep(20);
+        }
+        await holdIfTooFarAhead(state, lastPtsSec, kind);
+        const segmentStartPts = lastPtsSec;
+        const segmentStartBytes = trackReceivedBytes;
+        appendBuffer(segment.data);
+        fed.add(segment.name);
+        await processPending();
+        if (kind === "video") {
+          const mediaSeconds = lastPtsSec - segmentStartPts;
+          const segmentBytes = trackReceivedBytes - segmentStartBytes;
+          if (mediaSeconds >= 0.25 && segmentBytes >= 16 * 1024) {
+            state.mediaBps = Math.round(segmentBytes * 8 / mediaSeconds);
+            state.mediaAt = performance.now();
+          }
+        }
+      }
+      await producer;
+    } finally {
+      reserve.close();
+    }
+    if (stopped()) throw new Error("Stopped");
+    file.flush();
+    await processPending();
+    return finishTrack();
   }
 
   while (!state.stopRequested) {
     const status = await fetchJson(`/api/experimental/cyberdash/${state.sessionId}/status`, {}, 5000);
     if (status.error) throw new Error(status.error);
+    if (kind === "video" && status.throughput && !status.done) {
+      state.serverThroughputBaseline ??= status.throughput;
+      const measured = measureServerThroughput(state.serverThroughputBaseline, status.throughput);
+      if (measured) {
+        state.serverThroughput = measured;
+        state.serverThroughputBaseline = status.throughput;
+      }
+    }
     const available = status.available?.[kind] || [];
     let progressed = false;
 
     for (const name of available) {
       if (fed.has(name)) continue;
+      if (kind === "video") state.videoProducerWaiting = false;
       await holdIfTooFarAhead(state, lastPtsSec, kind);
+      const segmentStartPts = lastPtsSec;
+      const segmentStartBytes = trackReceivedBytes;
       await appendFile(name);
       fed.add(name);
       await processPending();
+      if (kind === "video" && !state.preparedStatic) {
+        const mediaSeconds = lastPtsSec - segmentStartPts;
+        const segmentBytes = trackReceivedBytes - segmentStartBytes;
+        if (mediaSeconds >= 0.25 && segmentBytes >= 16 * 1024) {
+          state.mediaBps = Math.round(segmentBytes * 8 / mediaSeconds);
+          state.mediaAt = performance.now();
+        }
+      }
       progressed = true;
     }
 
     if (status.done && available.every((name) => fed.has(name))) {
       file.flush();
       await processPending();
-      return { lastPtsSec, segments: fed.size };
+      return finishTrack();
     }
-    if (!progressed) await sleep(120);
+    if (!progressed) {
+      if (kind === "video") state.videoProducerWaiting = true;
+      await sleep(120);
+    }
   }
 
   throw new Error("Stopped");
@@ -604,6 +870,8 @@ function startRenderLoop(state) {
     let lastStatsAt = performance.now();
     let lastStatsRenderedFrames = state.renderedFrames;
     let lastStatsReceivedFrames = state.renderedFrames + state.droppedFrames + state.decodedVideo.length;
+    let lastStatsDroppedFrames = state.droppedFrames;
+    let lastStatsDeliveryBytes = state.deliveryBytes || 0;
     let lastStatsQueueSeconds = 0;
 
     const emitStats = (now = performance.now()) => {
@@ -617,29 +885,72 @@ function startRenderLoop(state) {
       const deltaSec = Math.max(0.001, (now - lastStatsAt) / 1000);
       const renderedFps = Math.max(0, (state.renderedFrames - lastStatsRenderedFrames) / deltaSec);
       const receiveFps = Math.max(0, (receivedFrames - lastStatsReceivedFrames) / deltaSec);
+      const deliveryBytes = state.deliveryBytes || 0;
+      const deliveryBps = state.preparedStatic ? null : Math.round(Math.max(0, deliveryBytes - lastStatsDeliveryBytes) * 8 / deltaSec);
+      const recentCapacity = !state.preparedStatic && state.capacityAt != null && now - state.capacityAt <= 3500;
+      const recentLatency = !state.preparedStatic && state.latencyAt != null && now - state.latencyAt <= 3500;
+      const recentMedia = state.mediaAt != null && now - state.mediaAt <= 3500;
       const queueDelta = queueSeconds - lastStatsQueueSeconds;
       const queueTrend = queueDelta > 0.12 ? "growing" : (queueDelta < -0.12 ? "shrinking" : "stable");
       const lastDriftMs = state.drifts.length ? state.drifts[state.drifts.length - 1] : 0;
       auditAudioHealth(state, now, state.renderedFrames > state.audioDiagnosticLastFrames);
       state.audioDiagnosticLastFrames = state.renderedFrames;
       state.onStats({
+        transport: "webcodecs",
+        adaptiveEligible: !state.preparedStatic,
+        bufferLab: Boolean(state.bufferLab),
+        compressedAheadSec: state.bufferLab ? state.compressedAheadSec : null,
+        compressedAheadBytes: state.bufferLab ? state.compressedAheadBytes : null,
         fps: state.requestedFps,
+        ...state.serverThroughput,
+        effectiveFps: renderedFps,
+        effectiveWidth: state.effectiveWidth || null,
+        effectiveHeight: state.effectiveHeight || null,
         renderedFps,
         receiveFps,
+        deliveryBps,
+        capacityBps: recentCapacity ? state.capacityBps : null,
+        capacitySampleAt: recentCapacity ? state.capacityAt : null,
+        sourceWaiting: Boolean(state.videoProducerWaiting),
+        latencyMs: recentLatency ? state.latencyMs : null,
+        mediaBps: recentMedia ? state.mediaBps : null,
         producerSpeed: receiveFps / Math.max(1, state.requestedFps),
         renderedFrames: state.renderedFrames,
         receivedFrames,
         droppedFrames: state.droppedFrames,
+        droppedFramesDelta: Math.max(0, state.droppedFrames - lastStatsDroppedFrames),
         decoderQueueSize: state.videoDecoder?.decodeQueueSize ?? null,
         queueSeconds,
+        queueTargetSeconds: state.firstPictureMs == null
+          ? Math.max(
+            Number(state.bufferTargets?.startupVideoSourceSec || 0),
+            Number(state.bufferTargets?.startupVideoFrames || 0) / Math.max(1, Number(state.requestedFps) || 30),
+          )
+          : Number(state.bufferTargets?.rebufferHighVideoSourceSec || 0),
         queueTrend,
         rebufferCount: state.rebufferCount,
+        rebufferDurationMs: Math.max(0, state.rebufferMs + (state.rebuffering
+          ? now - (state.rebufferStartedAt || now)
+          : 0)),
+        playbackRate: normalizePlaybackRate(state.playbackRate),
+        audioMuted: Boolean(state.requestedMuted),
+        audioOnlyPressure: state.rebuffering && !state.audioFeedDone
+          && (state.videoFeedDone || queueSeconds >= targets.rebufferHighVideoSourceSec)
+          && scheduledAudioAheadSec(state) < targets.rebufferHighWallSec,
+        audioStatus: state.requestedMuted
+          ? "muted"
+          : (state.externalAudioElement
+            ? (state.externalAudioElement.readyState >= 3 ? "ready" : "waiting")
+            : (state.audioFeedDone ? "ended" : (state.audioCtx?.state === "running" ? "ready" : `context-${state.audioCtx?.state || "missing"}`))),
+        sourceEnded: Boolean(state.videoFeedDone),
         lastAvDriftMs: lastDriftMs,
         state: state.paused ? "paused" : (state.rebuffering ? "buffering" : "playing"),
       });
       lastStatsAt = now;
       lastStatsRenderedFrames = state.renderedFrames;
       lastStatsReceivedFrames = receivedFrames;
+      lastStatsDroppedFrames = state.droppedFrames;
+      lastStatsDeliveryBytes = deliveryBytes;
       lastStatsQueueSeconds = queueSeconds;
     };
 
@@ -764,6 +1075,35 @@ function startRenderLoop(state) {
             );
           }
         }
+        const exhaustion = detectPrematureAudioEnd({
+          playing: true,
+          hasFirstPicture: state.firstPictureMs != null,
+          paused: state.paused,
+          stopped: state.stopRequested,
+          muted: state.requestedMuted,
+          externalAudio: Boolean(state.externalAudioElement),
+          audioFeedDone: state.audioFeedDone,
+          audioEndPtsSec: state.audioEndPtsSec,
+          videoEndPtsSec: Math.max(
+            Number(state.videoEndPtsSec) || 0,
+            Number(state.lastVideoPtsSec) || 0,
+          ),
+          knownVideoEndSec: state.knownVideoEndSourceSec,
+          currentSourceSec: state.startAt + elapsed,
+          audioAheadSec: scheduledAudioAheadSec(state),
+          playbackRate: state.playbackRate,
+          startAt: state.startAt,
+          segmentOffsetSourceSec: state.segmentOffsetSourceSec,
+        });
+        if (exhaustion) {
+          throw new Error(
+            "Audio ended before video continued" +
+            ` audioEnd=${round(exhaustion.audioEndSourceSec, 2)}s` +
+            ` videoEnd=${round(exhaustion.evidenceEndSourceSec, 2)}s` +
+            ` position=${round(state.startAt + elapsed, 2)}s` +
+            ` rate=${normalizePlaybackRate(state.playbackRate)}`
+          );
+        }
         if (state.decodedVideo.length > 1) {
           state.decodedVideo.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
         }
@@ -786,6 +1126,8 @@ function startRenderLoop(state) {
             state.canvas.width = frame.displayWidth;
             state.canvas.height = frame.displayHeight;
           }
+          state.effectiveWidth = Number(frame.displayWidth) > 0 ? Number(frame.displayWidth) : null;
+          state.effectiveHeight = Number(frame.displayHeight) > 0 ? Number(frame.displayHeight) : null;
           ctx.drawImage(frame, 0, 0, state.canvas.width, state.canvas.height);
           state.lastVideoFrameAt = performance.now();
           const videoPts = (frame.timestamp || 0) / 1e6;
@@ -828,10 +1170,19 @@ async function runSession(state) {
   const initial = await waitForInitialStatus(state);
   state.manifest = initial.manifest;
   state.height = initial.height;
+  const sourceDuration = Number(state.sourceDurationSec ?? initial.duration);
+  const manifestDuration = Number(initial.manifest?.durationSec);
+  state.sourceDurationSec = Number.isFinite(sourceDuration) && sourceDuration > 0
+    ? sourceDuration
+    : (Number.isFinite(manifestDuration) && manifestDuration > 0
+      ? Math.max(0, Number(state.startAt) || 0) + manifestDuration
+      : null);
+  state.knownVideoEndSourceSec = state.sourceDurationSec;
 
   state.videoDecoder = new VideoDecoder({
     output(frame) {
       state.decodedVideo.push(frame);
+      state.lastVideoPtsSec = Math.max(Number(state.lastVideoPtsSec) || 0, Number(frame.timestamp || 0) / 1e6);
       state.maxVideoQueue = Math.max(state.maxVideoQueue, state.videoDecoder.decodeQueueSize || 0);
     },
     error(error) {
@@ -899,13 +1250,18 @@ async function runSession(state) {
     if (state.decoderError) throw new Error(state.decoderError);
     const videoSourceSec = decodedVideoAheadSec(state, state.segmentOffsetSourceSec || 0);
     const audioWallSec = state.externalAudioElement ? targets.startupAudioWallSec : pendingAudioBufferedSec(state);
-    const minimumReady = state.decodedVideo.length >= 3 && (state.externalAudioElement || state.pendingAudio.length >= 1);
-    const targetReady = !fastPlayback || (
-      state.decodedVideo.length >= targets.startupVideoFrames &&
-      videoSourceSec >= targets.startupVideoSourceSec &&
-      audioWallSec >= targets.startupAudioWallSec
-    );
-    if (minimumReady && targetReady) break;
+    const minimumReady = state.decodedVideo.length >= (state.videoFeedDone ? 1 : 3)
+      && (state.externalAudioElement || state.pendingAudio.length >= 1);
+    if (playbackStartupReady({
+      playbackRate: state.playbackRate,
+      videoFrames: state.decodedVideo.length,
+      audioBlocks: state.pendingAudio.length,
+      videoSourceSec, audioWallSec,
+      videoFeedDone: state.videoFeedDone,
+      audioFeedDone: state.audioFeedDone,
+      externalAudio: Boolean(state.externalAudioElement),
+      targets,
+    })) break;
 
     if (performance.now() > prebufferDeadline) {
       if (minimumReady) {
@@ -953,9 +1309,10 @@ async function runSession(state) {
   }
 
   const renderPromise = startRenderLoop(state);
-  const [videoResult, audioResult] = await Promise.all([videoFeed, audioFeed]);
+  // Observe render failures immediately. A broken audio schedule must release
+  // feedTrack's lead limiter instead of waiting for both media feeds to finish.
+  const [videoResult, audioResult] = await Promise.all([videoFeed, audioFeed, renderPromise]);
   state.mediaEndSec = Math.max(videoResult.lastPtsSec, audioResult.lastPtsSec || 0);
-  await renderPromise;
 
   if (state.decoderError) throw new Error(state.decoderError);
   state.onEnded?.();
@@ -982,6 +1339,7 @@ async function sendSummary(state, result, message = "") {
           droppedFrames: state.droppedFrames,
           receivedBytes: state.receivedBytes,
           rebufferCount: state.rebufferCount,
+          ...state.serverThroughput,
           lastAvDriftMs: round(lastDrift, 1),
           audioLateBlocks: state.audioLateBlocks,
           audioOverlapPrevented: state.audioOverlapPrevented,
@@ -1059,6 +1417,10 @@ export function createCyberdashPlayer({
     startAt = 0,
     muted = false,
     playbackRate = 1,
+    bufferLab = false,
+    live = false,
+    userAgent = "",
+    referer = "",
     audioElement = null,
     audioPlayPromise = null,
   } = {}) {
@@ -1085,6 +1447,7 @@ export function createCyberdashPlayer({
 
     const next = {
       sourceUrl: url || `processed://${preparedId}`,
+      live: Boolean(live),
       preparedId: preparedId || null,
       preparedStatic: false,
       initialStatus: null,
@@ -1118,7 +1481,8 @@ export function createCyberdashPlayer({
       decodedVideo: [],
       lastVideoFrameAt: null,
       lastAudioAheadAt: null,
-      bufferTargets: fastPlaybackBufferTargets({ playbackRate, fps }),
+      bufferLab: Boolean(bufferLab && !preparedId && !live),
+      bufferTargets: fastPlaybackBufferTargets({ playbackRate, fps, bufferLab: Boolean(bufferLab && !preparedId && !live) }),
       startupVideoBufferSec: 0,
       startupAudioBufferSec: 0,
       startupBufferShortfall: false,
@@ -1132,6 +1496,12 @@ export function createCyberdashPlayer({
       audioDecoder: null,
       videoFeedDone: false,
       audioFeedDone: false,
+      audioEndPtsSec: null,
+      audioEndSourceSec: null,
+      videoEndPtsSec: null,
+      lastVideoPtsSec: 0,
+      knownVideoEndSourceSec: null,
+      sourceDurationSec: null,
       mediaEndSec: 0,
       renderedFrames: 0,
       droppedFrames: 0,
@@ -1143,8 +1513,19 @@ export function createCyberdashPlayer({
       audioDiagnosticGapReason: null,
       audioDiagnosticReported: false,
       receivedBytes: 0,
+      deliveryBytes: 0,
+      capacityBps: null,
+      capacityAt: null,
+      latencyMs: null,
+      latencyAt: null,
+      mediaBps: null,
+      mediaAt: null,
+      effectiveWidth: null,
+      effectiveHeight: null,
       compressedPrefetchSourceSec: 0,
       compressedPrefetchBytesMax: 0,
+      compressedAheadSec: 0,
+      compressedAheadBytes: 0,
       drifts: [],
       firstPictureMs: null,
       maxVideoQueue: 0,
@@ -1173,7 +1554,7 @@ export function createCyberdashPlayer({
       onStatus?.("resolving");
       const endpoint = preparedId
         ? "/api/experimental/cyberdash/prepared/start"
-        : "/api/experimental/cyberdash/start";
+        : live ? "/api/experimental/cyberdash/live/start" : "/api/experimental/cyberdash/start";
       const response = await fetchJson(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1184,16 +1565,30 @@ export function createCyberdashPlayer({
           playbackRate: next.playbackRate,
         } : {
           url,
+          live: Boolean(live),
+          userAgent: live ? String(userAgent || "") : undefined,
+          referer: live ? String(referer || "") : undefined,
           height: Number.isFinite(Number(height)) ? Number(height) : 0,
           fps: Number(fps) || 30,
           startAt: next.startAt,
           playbackRate: next.playbackRate,
+          bufferLab: next.bufferLab,
         }),
       }, preparedId ? 12000 : 45000);
-      if (state !== next) return;
       next.sessionId = response.id;
-      next.resolveMs = response.resolveMs;
+      const responseDuration = Number(response.duration);
+      if (Number.isFinite(responseDuration) && responseDuration > 0) {
+        next.sourceDurationSec = responseDuration;
+        next.knownVideoEndSourceSec = responseDuration;
+      }
       next.preparedStatic = Boolean(response.preparedStatic);
+      // A rapid rate change/Stop can finish while the start request is still
+      // resolving. Release that late-created encoder instead of orphaning it.
+      if (state !== next || next.stopRequested) {
+        await stopServerSession(next);
+        return;
+      }
+      next.resolveMs = response.resolveMs;
       next.initialStatus = next.preparedStatic ? response : null;
       next.staticTracks = response.staticTracks || null;
       next.segmentOffsetSourceSec = Math.max(0, Number(response.segmentOffsetSourceSec) || 0);
