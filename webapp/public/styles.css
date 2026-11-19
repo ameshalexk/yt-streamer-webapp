@@ -94,6 +94,7 @@ textarea {
   background: transparent; color: var(--muted); font-size: 15px; font-weight: 800; cursor: pointer;
   min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.mode-tab[data-mode="tesla-remote-play"] { min-width: 44px; min-height: 44px; }
 .mode-tab.active {
   background: var(--panel-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line);
 }

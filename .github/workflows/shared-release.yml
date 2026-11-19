@@ -21,8 +21,9 @@ jobs:
       fail-fast: false
       matrix:
         # Native Audio Tap uses processRestoreEnabled from the macOS 26 SDK;
-        # macos-15 cannot compile it. macos-26 previously passed the shared checks.
-        os: [ubuntu-24.04, macos-26]
+        # macOS 15 cannot compile it. Keep macOS 26 coverage on Intel while
+        # GitHub hosted Apple Silicon capacity is constrained.
+        os: [ubuntu-24.04, macos-26-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -63,9 +64,10 @@ jobs:
       - name: Smart Adaptive quality switch fixture (baseline and candidate)
         run: |
           git fetch --depth=1 origin dfc719cf50d22c794e700d9e514d2fba546520ca
-          # Match the existing real-media gate: hosted Linux Chrome's hardware
-          # H.264 WebCodecs decoder rejects the baseline fixture configuration.
-          if [ "$RUNNER_OS" = Linux ]; then
+          # Hosted Linux and macOS Intel Chrome cannot decode the generated
+          # H.264 WebCodecs baseline fixture on these runner images. Still test
+          # both MJPEG baseline and candidate; run WebCodecs on capable ARM Mac.
+          if [ "$RUNNER_OS" = Linux ] || [ "$RUNNER_ARCH" = X64 ]; then
             MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/smart-adaptive-browser-check.mjs --mjpeg-only
           else
             MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/smart-adaptive-browser-check.mjs
@@ -97,6 +99,21 @@ jobs:
       - name: iPhone player responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
         working-directory: webapp
+      - name: Tesla Remote Play source and responsive player fixtures
+        run: |
+          python3 test/chiaki-ng-package-check.py
+          node scripts/tesla-remote-play-browser-check.mjs
+        working-directory: webapp
+        timeout-minutes: 5
+      # Browser media decoding needs a supported hardware-backed Chrome codec.
+      # The Intel-hosted macOS 26 runner rejects the real H.264 fixture. Its
+      # tests still cover the complete WASM package, relay and browser UI.
+      # Validate actual media decoding separately on an ARM Mac and in Tesla.
+      - name: Tesla Remote Play WASM, H.264, audio and controller fixture
+        if: runner.os == 'macOS' && runner.arch != 'X64'
+        run: node scripts/tesla-remote-play-media-check.mjs
+        working-directory: webapp
+        timeout-minutes: 4
       # Hosted headless Chrome on either OS may load MP3 successfully but
       # have no output audio clock (readyState=4, currentTime remains zero).
       # CI gates real HTTP MJPEG frames + audio HTTP failure retries, video
@@ -119,10 +136,11 @@ jobs:
         working-directory: webapp
       # GitHub-hosted Ubuntu Chrome can report a closed WebCodecs decoder in
       # its headless media environment despite valid fixture media. Exercise
-      # actual WebCodecs A/V playback on macOS (a deployment target), while
+      # actual WebCodecs A/V playback on capable ARM macOS, while
       # retaining UI, Node/FFmpeg and packaging checks on both runners.
+      # Run the real-media check on an Apple Silicon Mac before rollout.
       - name: Playback speed real-media Chrome regression (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && runner.arch != 'X64'
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/playback-speed-browser-check.mjs
         working-directory: webapp
       - name: AI Access sign-in UI browser smoke

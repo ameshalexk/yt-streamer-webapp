@@ -10974,6 +10974,7 @@ function initEverydayControls() {
   };
   const params = new URLSearchParams(window.location.search);
   const returnToApne = params.get("mode") === "apne";
+  const returnToBrowse = params.get("mode") === "browse";
   // Preserve old episode return bookmarks, but promote the new APNE list.
   // Classic mode is retained for the separate Manage Shows flow.
   if (returnToApne && params.get("classic") !== "1") {
@@ -10981,7 +10982,9 @@ function initEverydayControls() {
     return;
   }
   const savedApneReturn = returnToApne ? restoreApneReturnState() : null;
-  setMode(returnToApne ? "apne" : "watch");
+  if (returnToApne) setMode("apne");
+  else if (returnToBrowse) openChannels();
+  else setMode("watch");
   installMobilePlayerReveal();
   new MutationObserver(() => {
     updatePlayerQualityAccess();

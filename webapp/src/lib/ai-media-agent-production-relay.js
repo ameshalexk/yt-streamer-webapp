@@ -21,7 +21,7 @@ const send=(ws,frame)=>{if(ws.readyState!==ws.OPEN)return false;ws.send(JSON.str
 const reject=(socket)=>{if(!socket.destroyed)socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');};
 
 export async function startProductionMediaRelay({server,controlDir,teamDomain,audience,
-  allowedSubjects=[],origin='https://stream.ameshalex.com',jwksProvider}={}) {
+  allowedSubjects=[],reservedUpgradePath,origin='https://stream.ameshalex.com',jwksProvider}={}) {
   if(!server||typeof server.on!=='function'||typeof controlDir!=='string'||
      !path.isAbsolute(controlDir)||!/^https:\/\/[a-z0-9.-]+$/.test(origin)||
      typeof audience!=='string'||audience.length<8||
@@ -145,6 +145,7 @@ export async function startProductionMediaRelay({server,controlDir,teamDomain,au
     }
   }};
   const onUpgrade=(req,socket,head)=>{
+    if(reservedUpgradePath && req.url===reservedUpgradePath)return;
     // Any upgraded socket remains untrusted and inert until it redeems a
     // one-time ticket from an independently JWT-verified HTTP request.
     if(req.url!=='/ai-agent/player'||req.headers.origin!==origin||

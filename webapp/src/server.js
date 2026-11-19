@@ -6,6 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { config } from "./config.js";
+import { mountTeslaRemotePlay, TESLA_REMOTE_PLAY_SOCKET } from "./lib/tesla-remote-play.js";
 import {startProductionMediaRelay} from "./lib/ai-media-agent-production-relay.js";
 import {createTeslaMonTranscriber} from "./lib/teslamon-transcribe.js";
 import {createTeslaMonCodex,createTeslaMonCodexSelector} from "./lib/teslamon-codex-cli.js";
@@ -68,7 +69,6 @@ app.use((req, res, next) => {
 app.get("/robots.txt", (_req, res) => {
   res.type("text/plain").send("User-agent: *\nDisallow: /\n");
 });
-app.use(express.json({ limit: "256kb" }));
 // The retired Money hostname may never access other application routes.
 app.use((req, res, next) => req.hostname === "money.ameshalex.com" ? res.status(404).end() : next());
 // Receiver hostname is deliberately media-only: never expose the authenticated
@@ -91,6 +91,10 @@ const RELEASE_REVISION = await readReleaseRevision().catch((error) => {
   console.error("[release-info]", error.message);
   return null;
 });
+const teslaRemotePlay = mountTeslaRemotePlay(app, {
+  root: config.root, dataDir: config.dataDir, revision: RELEASE_REVISION,
+});
+app.use(express.json({ limit: "256kb" }));
 const SERVER_INSTANCE_ID = `${SERVER_STARTED_AT.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const LAUNCHD_SERVICE_NAME = "com.ytstreamer.webapp";
 const YOUTUBE_STREAM_HEADERS = {
@@ -523,6 +527,7 @@ app.get("/api/health", (req, res) => {
     activeAudioStreams: stream.activeAudioCount(),
     activeBrowserSessions: browserRenderer.activeSessionCount(),
     activeRealChromeSessions: realChromeRenderer.activeSessionCount(),
+    activeRemotePlaySessions: Number(teslaRemotePlay.active),
     apneBackgroundCheck: apneBackgroundCheck.status(),
     time: Date.now(),
   });
@@ -596,6 +601,7 @@ app.post("/api/app/restart", requireMoneyAccess, asyncH(async (req, res) => {
   if (!req.is("application/json") || req.body?.confirm !== "restart-app") {
     return res.status(400).json({ error: "Restart confirmation is required." });
   }
+  if (teslaRemotePlay.active) return res.status(409).json({ error: "Disconnect Tesla Remote Play before restarting." });
   const activeJobs = activeBackgroundJobCount();
   if (activeJobs) {
     return res.status(409).json({ error: `Wait for ${activeJobs} active download or preparation job${activeJobs === 1 ? "" : "s"} to finish before restarting.` });
@@ -2676,12 +2682,14 @@ httpServer = app.listen(config.port, config.host, () => {
   console.log(`  → point your Cloudflare Tunnel at http://${config.host}:${config.port}\n`);
 });
 
+teslaRemotePlay.attach(httpServer);
+
 // Opt-in same-origin WSS receives only Cloudflare Access signed browser sessions.
 // The Mac Control command endpoint is a private 0600 Unix socket, never HTTP.
 if(process.env.YT_AI_AGENT_ACCESS_AUDIENCE && process.env.YT_AI_AGENT_CONTROL_DIR){
   try {
     productionMediaRelay=await startProductionMediaRelay({
-      server:httpServer,controlDir:process.env.YT_AI_AGENT_CONTROL_DIR,
+      server:httpServer,reservedUpgradePath:TESLA_REMOTE_PLAY_SOCKET,controlDir:process.env.YT_AI_AGENT_CONTROL_DIR,
       teamDomain:process.env.YT_AI_AGENT_ACCESS_TEAM_DOMAIN || 'ameshalex.cloudflareaccess.com',
       audience:process.env.YT_AI_AGENT_ACCESS_AUDIENCE,
       allowedSubjects:(process.env.YT_AI_AGENT_ALLOWED_SUBJECTS || '').split(',').map(x=>x.trim()).filter(Boolean),
