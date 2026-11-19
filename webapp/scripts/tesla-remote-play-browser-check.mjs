@@ -205,80 +205,76 @@ try {
         assert.equal(await page.locator("#qualityBefore").inputValue(), "720", `${device} ${mode} default quality`);
         assert.equal(await page.locator("#quality").inputValue(), "720", `${device} ${mode} active-player default quality`);
         const fullscreen = page.locator("#fullscreen");
+        assert.equal(await fullscreen.evaluate(el => el.closest(".video-stage")?.id), "",
+          `${device} ${mode} fullscreen button must be inside the video viewport`);
         const waitForNativeFullscreen = (expected) => page.waitForFunction((target) => {
-          const isFullscreen = document.fullscreenElement === document.querySelector("#player");
-          return isFullscreen === target;
+          return (document.fullscreenElement === document.querySelector(".video-stage")) === target;
         }, expected, { timeout: 5000 });
         await fullscreen.click();
         if (await page.evaluate(() => window.fullscreenHarness.supported)) {
           await waitForNativeFullscreen(true);
           assert.equal(await fullscreen.getAttribute("aria-pressed"), "true", `${device} ${mode} native fullscreen state`);
-          // Exercise the native exit event without using the app's exit handler.
+          assert.equal(await page.locator(".live-controls").isVisible(), false, `${device} ${mode} settings visible in native fullscreen`);
+          const nativeStage = await page.locator(".video-stage").boundingBox();
+          assert.ok(nativeStage.width >= viewport.width - 2 && nativeStage.height >= viewport.height - 2,
+            `${device} ${mode} native video did not fill viewport: ${JSON.stringify(nativeStage)}`);
           await page.evaluate(() => document.exitFullscreen());
           await waitForNativeFullscreen(false);
           await page.locator("#player:not(.expanded-player)").waitFor({ state: "attached", timeout: 5000 });
-          assert.equal(await fullscreen.innerText(), "Fullscreen", `${device} ${mode} browser-exit fullscreen label`);
-          assert.equal(await page.locator("body").evaluate(node => node.classList.contains("player-expanded")), false,
-            `${device} ${mode} browser-exit left page scroll lock active`);
+          assert.equal(await fullscreen.getAttribute("aria-label"), "Full screen", `${device} ${mode} browser-exit label`);
           await fullscreen.click();
           await waitForNativeFullscreen(true);
           await fullscreen.click();
           await waitForNativeFullscreen(false);
-          await page.locator("#player:not(.expanded-player)").waitFor({ state: "attached", timeout: 5000 });
         } else {
           await page.locator("#player.expanded-player").waitFor({ state: "attached" });
+          assert.equal(await page.locator(".live-controls").isVisible(), false);
           await fullscreen.click();
           await page.locator("#player:not(.expanded-player)").waitFor({ state: "attached" });
         }
         await page.evaluate(() => { window.fullscreenHarness.mode = "denied"; });
         await fullscreen.click();
         await page.locator("#player.expanded-player").waitFor({ state: "attached" });
-        assert.equal(await fullscreen.innerText(), "Exit expanded view", `${device} ${mode} fallback toggle label`);
-        const fallbackToggle = await fullscreen.boundingBox();
-        assert.ok(fallbackToggle.width >= 44 && fallbackToggle.height >= 44, `${device} ${mode} expanded toggle below 44px`);
+        assert.equal(await fullscreen.getAttribute("aria-label"), "Exit full screen", `${device} ${mode} fallback toggle label`);
+        assert.equal(await page.locator(".live-controls").isVisible(), false,
+          `${device} ${mode} expanded player still shows the settings row`);
         const expandedSize = await page.evaluate(() => ({
           client: document.documentElement.clientWidth,
           scroll: document.documentElement.scrollWidth,
           player: document.querySelector("#player").getBoundingClientRect().toJSON(),
           stage: document.querySelector(".video-stage").getBoundingClientRect().toJSON(),
-          controls: document.querySelector(".live-controls").getBoundingClientRect().toJSON(),
-          quality: document.querySelector("#quality").getBoundingClientRect().toJSON(),
-          disconnect: document.querySelector("#liveDisconnect").getBoundingClientRect().toJSON(),
           toggle: document.querySelector("#fullscreen").getBoundingClientRect().toJSON(),
-          padding: {
-            top: parseFloat(getComputedStyle(document.querySelector("#player")).paddingTop),
-            right: parseFloat(getComputedStyle(document.querySelector("#player")).paddingRight),
-            bottom: parseFloat(getComputedStyle(document.querySelector("#player")).paddingBottom),
-            left: parseFloat(getComputedStyle(document.querySelector("#player")).paddingLeft),
-          },
         }));
-        assert.ok(expandedSize.scroll <= expandedSize.client + 2, `${device} ${mode} expanded overflow at ${viewport.width}×${viewport.height}: ${JSON.stringify(expandedSize)}`);
-        assert.ok(expandedSize.player.width >= viewport.width - 2, `${device} ${mode} expanded player does not fill width: ${JSON.stringify(expandedSize)}`);
-        assert.ok(expandedSize.player.height >= viewport.height - 2, `${device} ${mode} expanded player does not fill height: ${JSON.stringify(expandedSize)}`);
-        assert.ok(expandedSize.stage.width > 0 && expandedSize.stage.height > 0, `${device} ${mode} expanded video has no layout space: ${JSON.stringify(expandedSize.stage)}`);
-        for (const control of ["controls", "quality", "disconnect", "toggle"]) {
-          const rect = expandedSize[control];
-          assert.ok(rect.left >= 0 && rect.right <= expandedSize.client + 1 && rect.top >= 0 && rect.bottom <= expandedSize.player.height + 1,
-            `${device} ${mode} expanded ${control} is outside viewport at ${viewport.width}×${viewport.height}: ${JSON.stringify(rect)}`);
-        }
-        assert.ok(expandedSize.padding.top >= 8 && expandedSize.padding.right >= 8 && expandedSize.padding.bottom >= 8 && expandedSize.padding.left >= 8,
-          `${device} ${mode} expanded view did not preserve safe-area padding: ${JSON.stringify(expandedSize.padding)}`);
-        if (device === "tesla" && mode === "classic" && viewport.width === 844 && viewport.height === 390 && evidenceDir) {
-          await page.screenshot({ path: path.join(evidenceDir, "tesla-expanded-landscape.png") });
+        assert.ok(expandedSize.scroll <= expandedSize.client + 2,
+          `${device} ${mode} expanded overflow: ${JSON.stringify(expandedSize)}`);
+        assert.ok(expandedSize.stage.width >= viewport.width - 2 && expandedSize.stage.height >= viewport.height - 2,
+          `${device} ${mode} video-only fallback does not fill viewport: ${JSON.stringify(expandedSize)}`);
+        assert.ok(expandedSize.toggle.width >= 44 && expandedSize.toggle.height >= 44,
+          `${device} ${mode} fullscreen toggle below 44px`);
+        assert.ok(expandedSize.toggle.left >= 0 && expandedSize.toggle.right <= viewport.width + 1 &&
+          expandedSize.toggle.top >= 0 && expandedSize.toggle.bottom <= viewport.height + 1,
+          `${device} ${mode} fullscreen control outside viewport`);
+        if (device === "tesla" && mode === "classic" && viewport.width === 844 && viewport.height === 390) {
+          // Match the main player's 5-second auto-hide and tap-to-reveal.
+          await page.waitForFunction(() => document.querySelector(".video-stage")?.classList.contains("fullscreen-controls-idle"),
+            null, { timeout: 7500 });
+          assert.equal(await fullscreen.isVisible(), true, "Auto-hidden button should remain in DOM");
+          assert.equal(await fullscreen.evaluate(el => getComputedStyle(el).pointerEvents), "none");
+          await page.locator(".video-stage").click({ position: { x: 25, y: 25 } });
+          assert.equal(await fullscreen.evaluate(el => getComputedStyle(el).pointerEvents), "auto",
+            "Tapping the video must reveal fullscreen exit control");
+          if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "tesla-video-only-fullscreen.png") });
         }
         await fullscreen.click();
         await page.locator("#player:not(.expanded-player)").waitFor({ state: "attached" });
-        await page.locator("#player").evaluate((element) => {
+        await page.locator(".video-stage").evaluate((element) => {
           for (const method of ["requestFullscreen", "webkitRequestFullscreen"]) {
-            Object.defineProperty(element, method, {
-              configurable: true,
-              value: undefined,
-            });
+            Object.defineProperty(element, method, { configurable: true, value: undefined });
           }
         });
         await fullscreen.click();
         await page.locator("#player.expanded-player").waitFor({ state: "attached" });
-        assert.equal(await fullscreen.innerText(), "Exit expanded view", `${device} ${mode} missing fullscreen API`);
+        assert.equal(await fullscreen.getAttribute("aria-label"), "Exit full screen", `${device} ${mode} missing fullscreen API`);
         await fullscreen.dispatchEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
         await page.locator("#player:not(.expanded-player)").waitFor({ state: "attached" });
         measurements.push({ device, mode, viewport, siteWidth, playerWidth: { client: playerWidth.client, scroll: playerWidth.scroll }, touchTargets, playerPadding, qualities, expandedSize, nativeFullscreenSupported: await page.evaluate(() => window.fullscreenHarness.supported), isolated: access.isolated, wasmReady: true });

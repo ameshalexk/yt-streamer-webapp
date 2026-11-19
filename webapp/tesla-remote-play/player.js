@@ -9,6 +9,7 @@ const audioToggle = $("audioToggle");
 const qualityBefore = $("qualityBefore");
 const qualityDuring = $("quality");
 const fullscreenButton = $("fullscreen");
+const videoStage = document.querySelector(".video-stage");
 const player = $("player");
 const canvas = $("screen");
 const context = canvas.getContext("2d", { alpha: false });
@@ -45,7 +46,8 @@ let api,
   connecting = false,
   stopping = false,
   expandedFallback = false,
-  wasNativeFullscreen = false;
+  wasNativeFullscreen = false,
+  fullscreenHideTimer = null;
 let consolePower = "unknown",
   connectionAttempt = 0;
 let decoderSetup,
@@ -98,67 +100,76 @@ function saveQuality(value) {
   qualityDuring.value = selection;
   sessionStorage.setItem("tesla-remote-play-quality", selection);
 }
+function isVideoFullscreen() {
+  return document.fullscreenElement === videoStage ||
+    document.webkitFullscreenElement === videoStage || expandedFallback;
+}
+function showFullscreenControl() {
+  clearTimeout(fullscreenHideTimer);
+  fullscreenHideTimer = null;
+  videoStage.classList.remove("fullscreen-controls-idle");
+  fullscreenButton.inert = false;
+  if (isVideoFullscreen()) {
+    fullscreenHideTimer = setTimeout(() => {
+      fullscreenHideTimer = null;
+      if (!isVideoFullscreen()) return;
+      videoStage.classList.add("fullscreen-controls-idle");
+      fullscreenButton.inert = true;
+    }, 5000);
+  }
+}
 function updateFullscreenControls() {
-  const native =
-    document.fullscreenElement === player ||
-    document.webkitFullscreenElement === player;
+  const native = document.fullscreenElement === videoStage ||
+    document.webkitFullscreenElement === videoStage;
   if (native || wasNativeFullscreen) expandedFallback = false;
   wasNativeFullscreen = native;
-  const expanded = expandedFallback;
-  player.classList.toggle("expanded-player", native || expanded);
-  const shown = native || expanded;
-  fullscreenButton.textContent = expanded
-    ? "Exit expanded view"
-    : shown
-      ? "Exit fullscreen"
-      : "Fullscreen";
+  const shown = native || expandedFallback;
+  player.classList.toggle("expanded-player", shown);
+  fullscreenButton.title = shown ? "Exit full screen" : "Full screen";
+  fullscreenButton.setAttribute("aria-label", fullscreenButton.title);
   fullscreenButton.setAttribute("aria-pressed", String(shown));
-  document.body.classList.toggle("player-expanded", expanded);
-  if (expanded && !inertSiblings.length) {
+  fullscreenButton.querySelector(".fullscreen-glyph").textContent = shown ? "⤡" : "⛶";
+  document.body.classList.toggle("player-expanded", shown);
+  if (expandedFallback && !inertSiblings.length) {
     inertSiblings = Array.from(player.parentElement.children)
       .filter((element) => element !== player)
       .map((element) => [element, element.inert]);
     for (const [element] of inertSiblings) element.inert = true;
-  } else if (!expanded && inertSiblings.length) {
+  } else if (!expandedFallback && inertSiblings.length) {
     for (const [element, wasInert] of inertSiblings) element.inert = wasInert;
     inertSiblings = [];
   }
+  showFullscreenControl();
 }
 async function enterFullscreen() {
-  if (
-    document.fullscreenElement === player ||
-    document.webkitFullscreenElement === player ||
-    expandedFallback
-  ) {
+  if (isVideoFullscreen()) {
     await exitFullscreen();
     return;
   }
   try {
-    if (player.requestFullscreen) {
-      await player.requestFullscreen({ navigationUI: "hide" });
-    } else if (player.webkitRequestFullscreen) {
-      await player.webkitRequestFullscreen();
+    if (videoStage.requestFullscreen) {
+      await videoStage.requestFullscreen({ navigationUI: "hide" });
+    } else if (videoStage.webkitRequestFullscreen) {
+      await videoStage.webkitRequestFullscreen();
     } else {
       throw Error("unsupported");
     }
-    if (
-      document.fullscreenElement !== player &&
-      document.webkitFullscreenElement !== player
-    )
+    if (document.fullscreenElement !== videoStage &&
+        document.webkitFullscreenElement !== videoStage)
       throw Error("not entered");
     updateFullscreenControls();
   } catch {
+    // Tesla browsers without native Fullscreen support still get a
+    // viewport-sized VIDEO; no quality, disconnect or other settings row.
     expandedFallback = true;
     updateFullscreenControls();
   }
 }
 async function exitFullscreen() {
-  if (document.fullscreenElement === player && document.exitFullscreen) {
-    try {
-      await document.exitFullscreen();
-    } catch {}
-  } else if (document.webkitFullscreenElement === player && document.webkitExitFullscreen) {
-    document.webkitExitFullscreen();
+  if (document.fullscreenElement === videoStage && document.exitFullscreen) {
+    try { await document.exitFullscreen(); } catch {}
+  } else if (document.webkitFullscreenElement === videoStage && document.webkitExitFullscreen) {
+    try { await document.webkitExitFullscreen(); } catch {}
   }
   expandedFallback = false;
   updateFullscreenControls();
@@ -167,11 +178,20 @@ async function exitFullscreen() {
 document.addEventListener("fullscreenchange", updateFullscreenControls);
 document.addEventListener("webkitfullscreenchange", updateFullscreenControls);
 fullscreenButton.addEventListener("click", () => void enterFullscreen());
+videoStage.addEventListener("pointermove", () => {
+  if (isVideoFullscreen()) showFullscreenControl();
+});
+videoStage.addEventListener("pointerdown", () => {
+  if (isVideoFullscreen()) showFullscreenControl();
+});
+videoStage.addEventListener("touchstart", () => {
+  if (isVideoFullscreen()) showFullscreenControl();
+}, { passive: true });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && expandedFallback) {
     event.preventDefault();
     void exitFullscreen();
-  }
+  } else if (isVideoFullscreen()) showFullscreenControl();
 });
 qualityBefore.addEventListener("change", () =>
   saveQuality(qualityBefore.value),

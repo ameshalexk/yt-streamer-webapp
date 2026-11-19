@@ -302,7 +302,7 @@ try {
       for (const [side, value] of Object.entries({ top: "12px", right: "8px", bottom: "20px", left: "8px" })) {
         document.documentElement.style.setProperty(`--safe-${side}`, value);
       }
-      document.querySelector("#player").requestFullscreen = () => Promise.reject(Error("fixture fullscreen fallback"));
+      document.querySelector(".video-stage").requestFullscreen = () => Promise.reject(Error("fixture fullscreen fallback"));
     });
     await page.locator("#fullscreen").click();
     await page.locator("#player.expanded-player").waitFor({ state: "attached" });

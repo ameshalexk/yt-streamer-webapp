@@ -65,12 +65,13 @@
         <div class="video-stage">
           <canvas id="screen" aria-label="PS5 video"></canvas>
           <div class="overlay" id="overlay">Connect to start</div>
+          <button id="fullscreen" class="stage-fullscreen" type="button"
+            aria-label="Full screen" title="Full screen" aria-pressed="false">
+            <span class="fullscreen-glyph" aria-hidden="true">⛶</span>
+          </button>
         </div>
         <div class="live-controls">
           <button id="liveDisconnect" disabled>Disconnect</button
-          ><button id="fullscreen" type="button" aria-pressed="false">
-            Fullscreen
-          </button
           ><label class="quality"
             >Requested · next connection<select id="quality">
               <option value="720" selected>720p · 60 fps</option>
