@@ -224,6 +224,7 @@ try {
           await waitForNativeFullscreen(true);
           await fullscreen.click();
           await waitForNativeFullscreen(false);
+          await page.locator("#player:not(.expanded-player)").waitFor({ state: "attached", timeout: 5000 });
         } else {
           await page.locator("#player.expanded-player").waitFor({ state: "attached" });
           await fullscreen.click();
@@ -267,14 +268,17 @@ try {
         }
         await fullscreen.click();
         await page.locator("#player:not(.expanded-player)").waitFor({ state: "attached" });
-        await page.evaluate(() => Object.defineProperty(Element.prototype, "requestFullscreen", {
-          configurable: true,
-          value: undefined,
-        }));
+        await page.locator("#player").evaluate((element) => {
+          for (const method of ["requestFullscreen", "webkitRequestFullscreen"]) {
+            Object.defineProperty(element, method, {
+              configurable: true,
+              value: undefined,
+            });
+          }
+        });
         await fullscreen.click();
         await page.locator("#player.expanded-player").waitFor({ state: "attached" });
-        // The hosted macOS browser can consume Escape in its own window after
-        // native fullscreen. Send the in-page fallback's key event directly.
+        assert.equal(await fullscreen.innerText(), "Exit expanded view", `${device} ${mode} missing fullscreen API`);
         await fullscreen.dispatchEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
         await page.locator("#player:not(.expanded-player)").waitFor({ state: "attached" });
         measurements.push({ device, mode, viewport, siteWidth, playerWidth: { client: playerWidth.client, scroll: playerWidth.scroll }, touchTargets, playerPadding, qualities, expandedSize, nativeFullscreenSupported: await page.evaluate(() => window.fullscreenHarness.supported), isolated: access.isolated, wasmReady: true });
