@@ -16,6 +16,8 @@ import { mountTeslaRemotePlay, TESLA_REMOTE_PLAY_SOCKET } from "../src/lib/tesla
 import { chiakiRelayProtocol as wire } from "../src/lib/tesla-remote-play-relay.mjs";
 
 const CHROME = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const evidenceDir = process.env.TESLA_REMOTE_PLAY_EVIDENCE_DIR
+  ? path.resolve(process.env.TESLA_REMOTE_PLAY_EVIDENCE_DIR) : null;
 const host = "192.168.42.23";
 const audience = "remote-play-media-fixture";
 const issuer = "https://fixture.cloudflareaccess.com";
@@ -108,6 +110,7 @@ server.prependListener("upgrade", (request, socket) => {
 });
 let browser;
 try {
+  if (evidenceDir) await fs.mkdir(evidenceDir, { recursive: true });
   browser = await chromium.launch({ headless: true, executablePath: CHROME });
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   await context.addCookies([{ name: "CF_Authorization", value: token, url: origin, httpOnly: true }]);
@@ -144,6 +147,19 @@ try {
 
   await page.goto(`${origin}/tesla-remote-play/`);
   await page.locator("#qualityBefore").selectOption("540");
+  await page.evaluate(async () => {
+    await loadRuntime();
+    window.sessionStartCalls = [];
+    const cwrap = Module.cwrap.bind(Module);
+    Module.cwrap = (name, ...args) => {
+      const fn = cwrap(name, ...args);
+      if (name !== "chiaki_wasm_session_start") return fn;
+      return (...values) => {
+        window.sessionStartCalls.push(values);
+        return fn(...values);
+      };
+    };
+  });
   const connectionCount = () => operations.filter(event => event.type === TYPES.CONNECT && event.port === 9295).length;
   let priorConnections = connectionCount();
   await page.locator("#connect").click();
@@ -151,6 +167,10 @@ try {
   await page.waitForFunction(() => window.__chiakiWasmReady === 1);
   await see(() => connectionCount() > priorConnections,
     "Pinned WASM did not attempt a session through the authenticated WebSocket");
+  await see(() => page.evaluate(() => window.sessionStartCalls.length > 0),
+    "Player did not invoke the pinned Chiaki session start function");
+  assert.deepEqual(await page.evaluate(() => window.sessionStartCalls[0].slice(3)),
+    [1, 2, 30, 0, 4500], "540p30 must request the 960x540 preset and its configured bitrate");
   await page.evaluate(() => {
     const original = api.sessionSetController;
     window.fixtureInput = [];
@@ -193,6 +213,20 @@ try {
   }, footage);
   await page.waitForFunction(() => document.getElementById("screen").width === 320 &&
     document.getElementById("screen").height === 180 && document.getElementById("observed").textContent.includes("320×180"));
+  if (evidenceDir) {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.evaluate(() => {
+      for (const [side, value] of Object.entries({ top: "12px", right: "8px", bottom: "20px", left: "8px" })) {
+        document.documentElement.style.setProperty(`--safe-${side}`, value);
+      }
+      document.querySelector("#player").requestFullscreen = () => Promise.reject(Error("fixture fullscreen fallback"));
+    });
+    await page.locator("#fullscreen").click();
+    await page.locator("#player.expanded-player").waitFor({ state: "attached" });
+    await page.screenshot({ path: path.join(evidenceDir, "tesla-expanded-landscape-h264-fixture.png") });
+    await page.locator("#fullscreen").click();
+    await page.locator("#player:not(.expanded-player)").waitFor({ state: "attached" });
+  }
   const peak = await page.evaluate(async () => {
     const meter = audioContext.createAnalyser();
     audioNode.connect(meter);
@@ -233,8 +267,37 @@ try {
     "Explicit Retry did not restore the authenticated relay");
   await page.locator("#liveDisconnect").click();
   await see(() => !feature.active, "The retried session did not release the relay");
+  for (const profile of ["1080", "720"]) {
+    await page.goto(`${origin}/tesla-remote-play/`);
+    await page.locator("#qualityBefore").selectOption(profile);
+    await page.evaluate(async () => {
+      await loadRuntime();
+      window.sessionStartCalls = [];
+      const cwrap = Module.cwrap.bind(Module);
+      Module.cwrap = (name, ...args) => {
+        const fn = cwrap(name, ...args);
+        if (name !== "chiaki_wasm_session_start") return fn;
+        return (...values) => {
+          window.sessionStartCalls.push(values);
+          return fn(...values);
+        };
+      };
+    });
+    priorConnections = connectionCount();
+    await page.locator("#connect").click();
+    await see(() => connectionCount() > priorConnections,
+      `${profile}p did not establish its Chiaki session`);
+    await see(() => page.evaluate(() => window.sessionStartCalls.length > 0),
+      `${profile}p did not call the pinned Chiaki session start function`);
+    const expected = profile === "1080" ? [1, 4, 60, 0, 15000] : [1, 3, 60, 0, 8000];
+    assert.deepEqual(await page.evaluate(() => window.sessionStartCalls.at(-1).slice(3)), expected,
+      `${profile}p60 must request its Chiaki resolution preset, frame rate, codec and bitrate`);
+    await page.evaluate(() => Module.onEvent("connected", 0, ""));
+    await page.locator("#liveDisconnect").click();
+    await see(() => !feature.active, `${profile}p disconnect did not release the authenticated relay`);
+  }
   assert.deepEqual(errors, []);
-  console.log(`PASS pinned WASM registration probe, fixture registration storage, explicit Wake, session packet, selected quality, controller focus/removal neutral state, H.264 320×180 decode, AudioWorklet peak ${peak.toFixed(3)}, disconnect, transport loss, and explicit retry.`);
+  console.log(`PASS pinned WASM registration probe, fixture registration storage, explicit Wake, requested 1080p60/15Mbps, 720p60/8Mbps, 540p30/4.5Mbps profiles, controller focus/removal neutral state, H.264 320×180 decode, AudioWorklet peak ${peak.toFixed(3)}, disconnect, transport loss, and explicit retry.`);
 } finally {
   await browser?.close();
   feature.close(server);

@@ -8,6 +8,7 @@ const retryButton = $("retry");
 const audioToggle = $("audioToggle");
 const qualityBefore = $("qualityBefore");
 const qualityDuring = $("quality");
+const fullscreenButton = $("fullscreen");
 const player = $("player");
 const canvas = $("screen");
 const context = canvas.getContext("2d", { alpha: false });
@@ -42,7 +43,9 @@ let api,
   configured = false,
   active = false,
   connecting = false,
-  stopping = false;
+  stopping = false,
+  expandedFallback = false,
+  wasNativeFullscreen = false;
 let decoderSetup,
   sessionFps = 60;
 let videoDecoder,
@@ -61,7 +64,14 @@ let decodedFrames = 0,
   firstPictureAt = 0,
   sessionStartedAt = 0,
   sessionStopListener = null,
-  muted = false;
+  muted = false,
+  inertSiblings = [];
+const QUALITY_PROFILES = {
+  540: { resolution: 2, fps: 30, bitrate: 4500 },
+  720: { resolution: 3, fps: 60, bitrate: 8000 },
+  1080: { resolution: 4, fps: 60, bitrate: 15000 },
+};
+const hasQualityProfile = (value) => Object.hasOwn(QUALITY_PROFILES, value);
 const report = (message) => {
   state.textContent = message;
 };
@@ -76,16 +86,91 @@ document.querySelector(".back").href = returnTargets.has(requestedReturn)
   ? requestedReturn
   : "/";
 const savedQuality = sessionStorage.getItem("tesla-remote-play-quality");
-if (savedQuality === "540" || savedQuality === "720") {
+if (hasQualityProfile(savedQuality)) {
   qualityBefore.value = savedQuality;
   qualityDuring.value = savedQuality;
 }
 function saveQuality(value) {
-  const profile = value === "540" ? "540" : "720";
-  qualityBefore.value = profile;
-  qualityDuring.value = profile;
-  sessionStorage.setItem("tesla-remote-play-quality", profile);
+  const selection = hasQualityProfile(value) ? value : "720";
+  qualityBefore.value = selection;
+  qualityDuring.value = selection;
+  sessionStorage.setItem("tesla-remote-play-quality", selection);
 }
+function updateFullscreenControls() {
+  const native =
+    document.fullscreenElement === player ||
+    document.webkitFullscreenElement === player;
+  if (native || wasNativeFullscreen) expandedFallback = false;
+  wasNativeFullscreen = native;
+  const expanded = expandedFallback;
+  player.classList.toggle("expanded-player", native || expanded);
+  const shown = native || expanded;
+  fullscreenButton.textContent = expanded
+    ? "Exit expanded view"
+    : shown
+      ? "Exit fullscreen"
+      : "Fullscreen";
+  fullscreenButton.setAttribute("aria-pressed", String(shown));
+  document.body.classList.toggle("player-expanded", expanded);
+  if (expanded && !inertSiblings.length) {
+    inertSiblings = Array.from(player.parentElement.children)
+      .filter((element) => element !== player)
+      .map((element) => [element, element.inert]);
+    for (const [element] of inertSiblings) element.inert = true;
+  } else if (!expanded && inertSiblings.length) {
+    for (const [element, wasInert] of inertSiblings) element.inert = wasInert;
+    inertSiblings = [];
+  }
+}
+async function enterFullscreen() {
+  if (
+    document.fullscreenElement === player ||
+    document.webkitFullscreenElement === player ||
+    expandedFallback
+  ) {
+    await exitFullscreen();
+    return;
+  }
+  try {
+    if (player.requestFullscreen) {
+      await player.requestFullscreen({ navigationUI: "hide" });
+    } else if (player.webkitRequestFullscreen) {
+      await player.webkitRequestFullscreen();
+    } else {
+      throw Error("unsupported");
+    }
+    if (
+      document.fullscreenElement !== player &&
+      document.webkitFullscreenElement !== player
+    )
+      throw Error("not entered");
+    updateFullscreenControls();
+  } catch {
+    expandedFallback = true;
+    updateFullscreenControls();
+  }
+}
+async function exitFullscreen() {
+  if (document.fullscreenElement === player && document.exitFullscreen) {
+    try {
+      await document.exitFullscreen();
+    } catch {}
+  } else if (document.webkitFullscreenElement === player && document.webkitExitFullscreen) {
+    document.webkitExitFullscreen();
+  }
+  expandedFallback = false;
+  updateFullscreenControls();
+  fullscreenButton.focus();
+}
+document.addEventListener("fullscreenchange", updateFullscreenControls);
+document.addEventListener("webkitfullscreenchange", updateFullscreenControls);
+fullscreenButton.addEventListener("click", () => void enterFullscreen());
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && expandedFallback) {
+    event.preventDefault();
+    void exitFullscreen();
+  }
+});
 qualityBefore.addEventListener("change", () =>
   saveQuality(qualityBefore.value),
 );
@@ -536,18 +621,20 @@ async function connect() {
       throw Error("Audio output could not start. Use Retry to try again.");
     }
     await prepareConnection();
-    const high = qualityDuring.value === "720";
-    sessionFps = high ? 60 : 30;
+    const profile = hasQualityProfile(qualityDuring.value)
+      ? QUALITY_PROFILES[qualityDuring.value]
+      : QUALITY_PROFILES[720];
+    sessionFps = profile.fps;
     if (
       api.sessionStart(
         consoleInfo.host,
         consoleInfo.registration.registKey,
         consoleInfo.registration.morning,
         1,
-        high ? 3 : 2,
+        profile.resolution,
         sessionFps,
         0,
-        high ? 8000 : 4500,
+        profile.bitrate,
       ) !== 0
     )
       throw Error("The PS5 session did not start. Use Retry to try again.");
