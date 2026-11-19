@@ -27,7 +27,8 @@
         <div class="actions">
           <label class="quality"
             >Requested quality<select id="qualityBefore">
-              <option value="720">720p · 60 fps</option>
+              <option value="720" selected>720p · 60 fps</option>
+              <option value="1080">1080p · 60 fps</option>
               <option value="540">540p · 30 fps</option>
             </select></label
           ><button class="primary" id="connect" disabled>Connect</button
@@ -67,9 +68,13 @@
         </div>
         <div class="live-controls">
           <button id="liveDisconnect" disabled>Disconnect</button
+          ><button id="fullscreen" type="button" aria-pressed="false">
+            Fullscreen
+          </button
           ><label class="quality"
             >Requested · next connection<select id="quality">
-              <option value="720">720p · 60 fps</option>
+              <option value="720" selected>720p · 60 fps</option>
+              <option value="1080">1080p · 60 fps</option>
               <option value="540">540p · 30 fps</option>
             </select></label
           ><button id="audioToggle" aria-pressed="false">Mute audio</button
