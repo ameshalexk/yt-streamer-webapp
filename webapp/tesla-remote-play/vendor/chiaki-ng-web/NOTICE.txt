@@ -1,0 +1,6 @@
+Chiaki-NG Web Edition browser runtime
+Upstream revision 70669b47a16376768001db229e3e8c3baf3e5238
+
+The chiaki.js and chiaki.wasm files are built from AGPL-3.0-only software. Corresponding source, build notes, source patch, and dependency license texts are provided here.
+The build uses Emscripten's generated JavaScript runtime and musl libc. Third-party components include gf-complete, Jerasure, nanopb, mbed TLS, and Opus. Their license texts and the OpenSSL linking exception are in licenses/.
+The authenticated source route must serve chiaki-ng-web-source.tar.gz and SOURCE-MANIFEST.json to every user who can access this player, as the AGPL network source offer.

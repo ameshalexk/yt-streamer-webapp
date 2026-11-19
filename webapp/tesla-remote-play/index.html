@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#10151d" />
+    <title>Tesla Remote Play</title>
+    <link rel="stylesheet" href="player.css" />
+    <script src="player.js" defer></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="top">
+        <a class="back" href="/">‹ <span>Streamer</span></a>
+        <h1>Tesla Remote Play</h1>
+        <span class="state" id="state" role="status" aria-live="polite"
+          >Checking access…</span
+        >
+      </header>
+      <section class="connect-panel">
+        <p class="intro">
+          Connect to your home PS5. Keep this page open while you play.
+        </p>
+        <div class="actions">
+          <label class="quality"
+            >Requested quality<select id="qualityBefore">
+              <option value="720">720p · 60 fps</option>
+              <option value="540">540p · 30 fps</option>
+            </select></label
+          ><button class="primary" id="connect" disabled>Connect</button
+          ><button id="wake" disabled>Wake PS5</button>
+        </div>
+        <details class="pairing" id="pairing">
+          <summary>Pair this PS5</summary>
+          <p>
+            On PS5, open Settings → System → Remote Play → Pair Device. Enter
+            the displayed code here. The browser sends the registration request
+            to your PS5 through the Mac relay and clears both fields when you
+            submit.
+          </p>
+          <label
+            >Pair Device code<input
+              id="pin"
+              type="password"
+              inputmode="numeric"
+              autocomplete="off"
+              maxlength="8" /></label
+          ><label
+            >PSN account ID (base64 for the signed-in PS5 user)<input
+              id="accountId"
+              type="password"
+              autocomplete="off"
+              spellcheck="false" /></label
+          ><button id="pair" disabled>Pair this PS5</button>
+        </details>
+        <p class="help" id="help">
+          The player connects only to the configured console.
+        </p>
+      </section>
+      <section class="player" id="player" aria-label="PS5 game" hidden>
+        <div class="video-stage">
+          <canvas id="screen" aria-label="PS5 video"></canvas>
+          <div class="overlay" id="overlay">Connect to start</div>
+        </div>
+        <div class="live-controls">
+          <button id="liveDisconnect" disabled>Disconnect</button
+          ><label class="quality"
+            >Requested · next connection<select id="quality">
+              <option value="720">720p · 60 fps</option>
+              <option value="540">540p · 30 fps</option>
+            </select></label
+          ><button id="audioToggle" aria-pressed="false">Mute audio</button
+          ><button id="retry" hidden>Retry in a fresh session</button
+          ><span id="controller">Controller: waiting</span
+          ><span id="observed">Observed: —</span>
+        </div>
+      </section>
+      <footer>
+        <a href="/tesla-remote-play/source">Corresponding source and license</a>
+      </footer>
+    </main>
+  </body>
+</html>

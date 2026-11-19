@@ -97,6 +97,17 @@ jobs:
       - name: iPhone player responsive browser regression
         run: MOBILE_TEST_CHROME="$CHROME_PATH" node scripts/mobile-player-browser-check.mjs
         working-directory: webapp
+      - name: Tesla Remote Play source and responsive player fixtures
+        run: |
+          python3 test/chiaki-ng-package-check.py
+          node scripts/tesla-remote-play-browser-check.mjs
+        working-directory: webapp
+        timeout-minutes: 5
+      - name: Tesla Remote Play WASM, H.264, audio and controller fixture
+        if: runner.os == 'macOS'
+        run: node scripts/tesla-remote-play-media-check.mjs
+        working-directory: webapp
+        timeout-minutes: 4
       # Hosted headless Chrome on either OS may load MP3 successfully but
       # have no output audio clock (readyState=4, currentTime remains zero).
       # CI gates real HTTP MJPEG frames + audio HTTP failure retries, video

@@ -1,0 +1,38 @@
+{
+  "upstream": "https://github.com/CSystem77/Chiaki-NG-Web",
+  "revision": "70669b47a16376768001db229e3e8c3baf3e5238",
+  "submodules": {
+    "third-party/gf-complete": "fa54a4670a5705c84abf6c24b92b0cd479625478",
+    "third-party/jerasure": "505ccb4bc69eee8d7ea40a6089a056b99671134f",
+    "third-party/nanopb": "e9e6eb5b4b57c69afe6161094e3996e322701e87"
+  },
+  "fetch_content": {
+    "mbedtls": "8b3f26a5ac38d4fdccbc5c5366229f3e01dafcc0",
+    "opus": "ddbe48383984d56acd9e1ab6a090c54ca6b735a6"
+  },
+  "artifacts": {
+    "chiaki.js": {
+      "sha256": "f69259d0ce2c07f09ab441d9036451ee542b2618a64ce23a6e24fe32238bb13e",
+      "bytes": 84873
+    },
+    "chiaki.wasm": {
+      "sha256": "881f8fb9a9c5d125794e2ada972f1bdb25d63ecc744146e543e8ee18079ce3b9",
+      "bytes": 644375
+    }
+  },
+  "source_bundle": {
+    "file": "chiaki-ng-web-source.tar.gz",
+    "sha256": "5a11b0bdf328fe260e7cfc5ea84eeb6881b931f10cadbdeffd3499b797876703",
+    "includes": "Pinned upstream source needed for the WASM client and proxy, exact source submodules and FetchContent dependencies, and the applied gf-complete prototype fix. Unrelated GUI art, docs, UI assets, test fixtures, and test key material are omitted."
+  },
+  "build": {
+    "emscripten": "4.0.23",
+    "emscripten_commit": "708dcbcc9ee23bc7d2dad44fc90db377e38b771c",
+    "cmake": "4.4.3",
+    "python": "3.11",
+    "protobuf": "4.25.3",
+    "protoc": "25.3",
+    "node": "26.9.0",
+    "target": "chiaki-wasm"
+  }
+}
