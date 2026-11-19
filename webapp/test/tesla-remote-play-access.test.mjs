@@ -74,7 +74,8 @@ function refused(ws) {
 test("owner can open the isolated player; signed-out, expired and non-owner credentials cannot", async t => {
   const fixture = await start(t);
   const paths = ["/api/tesla-remote-play/status", "/api/tesla-remote-play/console",
-    "/tesla-remote-play/", "/tesla-remote-play/chiaki.wasm", "/tesla-remote-play/source"];
+    "/api/tesla-remote-play/power", "/api/tesla-remote-play/wake", "/tesla-remote-play/",
+    "/tesla-remote-play/chiaki.wasm", "/tesla-remote-play/source"];
   const denied = [
     [{}, 401],
     [{ "cf-access-jwt-assertion": jwt(fixture.time.at, { exp: Math.floor(fixture.time.at / 1000) - 1 }) }, 401],
@@ -125,6 +126,75 @@ test("registration is owner-bound, same-origin and private on disk", async t => 
   assert.equal((await fs.stat(path.join(fixture.data, "registration.json"))).mode & 0o777, 0o600);
   const alternate = await fetch(endpoint, { headers: { "cf-access-jwt-assertion": jwt(fixture.time.at, { sub: "different-profile" }) } });
   assert.deepEqual(await alternate.json(), { host: consoleIp, registration: null });
+});
+
+test("power check probes only the configured console and briefly caches its bounded result", async t => {
+  const hosts = [];
+  const fixture = await start(t, { powerProbe: async host => { hosts.push(host); return "standby"; } });
+  const endpoint = fixture.base + "/api/tesla-remote-play/power";
+  const getPower = () => fetch(endpoint, { headers: fixture.headers });
+  assert.deepEqual(await (await getPower()).json(), { power: "unknown" });
+  assert.deepEqual(hosts, []);
+  await fixture.configure();
+  const [first, second] = await Promise.all([getPower(), getPower()]);
+  assert.equal(first.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual(await first.json(), { power: "standby" });
+  assert.deepEqual(await second.json(), { power: "standby" });
+  assert.deepEqual(hosts, [consoleIp]);
+  fixture.time.at += 1001;
+  assert.deepEqual(await (await getPower()).json(), { power: "standby" });
+  assert.deepEqual(hosts, [consoleIp, consoleIp]);
+});
+
+test("wake submits the native PS5 discovery packet only to the owner's configured console", async t => {
+  const sent = [];
+  const fixture = await start(t, { wakeSender: async (host, packet) => sent.push({ host, packet: packet.toString("ascii") }) });
+  const endpoint = fixture.base + "/api/tesla-remote-play/wake";
+  const wake = (requestOrigin = origin, headers = fixture.headers) => fetch(endpoint, {
+    method: "POST", headers: { ...headers, origin: requestOrigin },
+  });
+  assert.equal((await wake()).status, 409);
+  assert.deepEqual(sent, []);
+  await fixture.configure();
+  assert.equal((await wake()).status, 409);
+  assert.equal((await wake("https://other.example")).status, 403);
+  assert.deepEqual(sent, []);
+
+  const credentials = { registKey: "31613200000000000000000000000000", morning: "f".repeat(32) };
+  const stored = await fetch(fixture.base + "/api/tesla-remote-play/console", {
+    method: "PUT", headers: { ...fixture.headers, origin, "content-type": "application/json" },
+    body: JSON.stringify(credentials),
+  });
+  assert.equal(stored.status, 204);
+  const submitted = await wake();
+  assert.equal(submitted.status, 204);
+  assert.equal(await submitted.text(), "");
+  assert.deepEqual(sent, [{
+    host: consoleIp,
+    packet: ["WAKEUP * HTTP/1.1", "client-type:vr", "auth-type:R", "model:w", "app-type:r",
+      "user-credential:418", "device-discovery-protocol-version:00030010", ""].join("\n") + "\0",
+  }]);
+  const otherOwner = await wake(origin, {
+    "cf-access-jwt-assertion": jwt(fixture.time.at, { sub: "other-profile" }),
+  });
+  assert.equal(otherOwner.status, 409);
+  assert.equal(sent.length, 1);
+});
+
+test("wake rejects registration bytes that cannot form the Chiaki hexadecimal credential", async t => {
+  const sent = [];
+  const fixture = await start(t, { wakeSender: async (...args) => sent.push(args) });
+  await fixture.configure();
+  const credentials = { registKey: "0102030405060708090a0b0c0d0e0f10", morning: "f".repeat(32) };
+  await fetch(fixture.base + "/api/tesla-remote-play/console", {
+    method: "PUT", headers: { ...fixture.headers, origin, "content-type": "application/json" },
+    body: JSON.stringify(credentials),
+  });
+  const response = await fetch(fixture.base + "/api/tesla-remote-play/wake", {
+    method: "POST", headers: { ...fixture.headers, origin },
+  });
+  assert.equal(response.status, 503);
+  assert.deepEqual(sent, []);
 });
 
 test("WebSocket relays the pinned binary protocol and never hands an active lease to a competitor", async t => {

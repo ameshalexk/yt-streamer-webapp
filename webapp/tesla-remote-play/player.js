@@ -9,6 +9,7 @@ const audioToggle = $("audioToggle");
 const qualityBefore = $("qualityBefore");
 const qualityDuring = $("quality");
 const fullscreenButton = $("fullscreen");
+const videoStage = document.querySelector(".video-stage");
 const player = $("player");
 const canvas = $("screen");
 const context = canvas.getContext("2d", { alpha: false });
@@ -45,7 +46,10 @@ let api,
   connecting = false,
   stopping = false,
   expandedFallback = false,
-  wasNativeFullscreen = false;
+  wasNativeFullscreen = false,
+  fullscreenHideTimer = null;
+let consolePower = "unknown",
+  connectionAttempt = 0;
 let decoderSetup,
   sessionFps = 60;
 let videoDecoder,
@@ -96,67 +100,76 @@ function saveQuality(value) {
   qualityDuring.value = selection;
   sessionStorage.setItem("tesla-remote-play-quality", selection);
 }
+function isVideoFullscreen() {
+  return document.fullscreenElement === videoStage ||
+    document.webkitFullscreenElement === videoStage || expandedFallback;
+}
+function showFullscreenControl() {
+  clearTimeout(fullscreenHideTimer);
+  fullscreenHideTimer = null;
+  videoStage.classList.remove("fullscreen-controls-idle");
+  fullscreenButton.inert = false;
+  if (isVideoFullscreen()) {
+    fullscreenHideTimer = setTimeout(() => {
+      fullscreenHideTimer = null;
+      if (!isVideoFullscreen()) return;
+      videoStage.classList.add("fullscreen-controls-idle");
+      fullscreenButton.inert = true;
+    }, 5000);
+  }
+}
 function updateFullscreenControls() {
-  const native =
-    document.fullscreenElement === player ||
-    document.webkitFullscreenElement === player;
+  const native = document.fullscreenElement === videoStage ||
+    document.webkitFullscreenElement === videoStage;
   if (native || wasNativeFullscreen) expandedFallback = false;
   wasNativeFullscreen = native;
-  const expanded = expandedFallback;
-  player.classList.toggle("expanded-player", native || expanded);
-  const shown = native || expanded;
-  fullscreenButton.textContent = expanded
-    ? "Exit expanded view"
-    : shown
-      ? "Exit fullscreen"
-      : "Fullscreen";
+  const shown = native || expandedFallback;
+  player.classList.toggle("expanded-player", shown);
+  fullscreenButton.title = shown ? "Exit full screen" : "Full screen";
+  fullscreenButton.setAttribute("aria-label", fullscreenButton.title);
   fullscreenButton.setAttribute("aria-pressed", String(shown));
-  document.body.classList.toggle("player-expanded", expanded);
-  if (expanded && !inertSiblings.length) {
+  fullscreenButton.querySelector(".fullscreen-glyph").textContent = shown ? "⤡" : "⛶";
+  document.body.classList.toggle("player-expanded", shown);
+  if (expandedFallback && !inertSiblings.length) {
     inertSiblings = Array.from(player.parentElement.children)
       .filter((element) => element !== player)
       .map((element) => [element, element.inert]);
     for (const [element] of inertSiblings) element.inert = true;
-  } else if (!expanded && inertSiblings.length) {
+  } else if (!expandedFallback && inertSiblings.length) {
     for (const [element, wasInert] of inertSiblings) element.inert = wasInert;
     inertSiblings = [];
   }
+  showFullscreenControl();
 }
 async function enterFullscreen() {
-  if (
-    document.fullscreenElement === player ||
-    document.webkitFullscreenElement === player ||
-    expandedFallback
-  ) {
+  if (isVideoFullscreen()) {
     await exitFullscreen();
     return;
   }
   try {
-    if (player.requestFullscreen) {
-      await player.requestFullscreen({ navigationUI: "hide" });
-    } else if (player.webkitRequestFullscreen) {
-      await player.webkitRequestFullscreen();
+    if (videoStage.requestFullscreen) {
+      await videoStage.requestFullscreen({ navigationUI: "hide" });
+    } else if (videoStage.webkitRequestFullscreen) {
+      await videoStage.webkitRequestFullscreen();
     } else {
       throw Error("unsupported");
     }
-    if (
-      document.fullscreenElement !== player &&
-      document.webkitFullscreenElement !== player
-    )
+    if (document.fullscreenElement !== videoStage &&
+        document.webkitFullscreenElement !== videoStage)
       throw Error("not entered");
     updateFullscreenControls();
   } catch {
+    // Tesla browsers without native Fullscreen support still get a
+    // viewport-sized VIDEO; no quality, disconnect or other settings row.
     expandedFallback = true;
     updateFullscreenControls();
   }
 }
 async function exitFullscreen() {
-  if (document.fullscreenElement === player && document.exitFullscreen) {
-    try {
-      await document.exitFullscreen();
-    } catch {}
-  } else if (document.webkitFullscreenElement === player && document.webkitExitFullscreen) {
-    document.webkitExitFullscreen();
+  if (document.fullscreenElement === videoStage && document.exitFullscreen) {
+    try { await document.exitFullscreen(); } catch {}
+  } else if (document.webkitFullscreenElement === videoStage && document.webkitExitFullscreen) {
+    try { await document.webkitExitFullscreen(); } catch {}
   }
   expandedFallback = false;
   updateFullscreenControls();
@@ -165,11 +178,20 @@ async function exitFullscreen() {
 document.addEventListener("fullscreenchange", updateFullscreenControls);
 document.addEventListener("webkitfullscreenchange", updateFullscreenControls);
 fullscreenButton.addEventListener("click", () => void enterFullscreen());
+videoStage.addEventListener("pointermove", () => {
+  if (isVideoFullscreen()) showFullscreenControl();
+});
+videoStage.addEventListener("pointerdown", () => {
+  if (isVideoFullscreen()) showFullscreenControl();
+});
+videoStage.addEventListener("touchstart", () => {
+  if (isVideoFullscreen()) showFullscreenControl();
+}, { passive: true });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && expandedFallback) {
     event.preventDefault();
     void exitFullscreen();
-  }
+  } else if (isVideoFullscreen()) showFullscreenControl();
 });
 qualityBefore.addEventListener("change", () =>
   saveQuality(qualityBefore.value),
@@ -369,11 +391,6 @@ function bindWasm() {
         "number",
       ],
     ),
-    wakeup: Module.cwrap("chiaki_wasm_wakeup", "number", [
-      "string",
-      "string",
-      "number",
-    ]),
   };
   Module.onLog = () => {};
   Module.onVideo = (ptr, size, lost) =>
@@ -395,7 +412,7 @@ function bindWasm() {
       neutralInput();
       if (sessionStopListener) sessionStopListener();
       else if (active && !stopping)
-        startFreshDocument("PS5 session ended. Use Connect to try again.");
+        startFreshDocument("PS5 session ended. Use Connect to try again.", true);
     }
     if (type === "pin")
       report(
@@ -432,8 +449,9 @@ function bindWasm() {
     $("accountId").value = "";
   };
 }
-function startFreshDocument(message) {
+function startFreshDocument(message, failed = false) {
   if (message) sessionStorage.setItem("tesla-remote-play-message", message);
+  if (failed) sessionStorage.setItem("tesla-remote-play-failed", "1");
   location.replace(location.pathname + location.search);
 }
 function browserLimitation() {
@@ -504,16 +522,73 @@ async function loadConsole() {
   )
     throw Error("console missing");
   configured = true;
-  connectButton.disabled = false;
   pairButton.disabled = false;
   wakeButton.disabled = !consoleInfo.registration;
-  $("help").textContent = consoleInfo.registration
-    ? "Registered PS5 ready. Pair again only to replace registration."
-    : "PS5 address configured. Pair it once, then connect.";
+  await refreshConsolePower();
+}
+async function refreshConsolePower() {
+  if (!consoleInfo?.registration) {
+    consolePower = "unknown";
+    connectButton.textContent = "Connect";
+    connectButton.disabled = !configured;
+    $("help").textContent = configured
+      ? "PS5 address configured. Pair it once, then connect."
+      : "Configure the home PS5 before connecting.";
+    return consolePower;
+  }
+  const power = await readConsolePower();
+  if (active || connecting) return consolePower;
+  consolePower = power;
+  connectButton.textContent =
+    consolePower === "standby" ? "Wake PS5 and connect" : "Connect";
+  connectButton.disabled = !configured;
+  $("help").textContent =
+    consolePower === "standby"
+      ? "The PS5 is in rest mode. Use Wake PS5 and connect to start it, then open Remote Play."
+      : consolePower === "ready"
+        ? "Registered PS5 is ready. Pair again only to replace registration."
+        : "Registered PS5 power is unknown. Connect tries the current state. Use Wake PS5 if it is in rest mode.";
+  return consolePower;
+}
+async function readConsolePower() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2000);
+  try {
+    const response = await fetch("/api/tesla-remote-play/power", {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) return "unknown";
+    const result = await response.json();
+    return ["ready", "standby"].includes(result.power)
+      ? result.power
+      : "unknown";
+  } catch {
+    return "unknown";
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+async function requestConsoleWake() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch("/api/tesla-remote-play/wake", {
+      method: "POST",
+      signal: controller.signal,
+    });
+    return response.status === 204;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 async function refreshStatus() {
+  let response;
+  let terminalAccess = false;
   try {
-    const response = await fetch("/api/tesla-remote-play/status", {
+    response = await fetch("/api/tesla-remote-play/status", {
       cache: "no-store",
       redirect: "manual",
     }).catch(() => null);
@@ -522,13 +597,20 @@ async function refreshStatus() {
         report("Cannot check Remote Play access. Check your network.");
       return;
     }
-    if (!response.ok) throw Error("status");
+    if (response.type === "opaqueredirect") throw Error("access");
+    if (!response.ok) {
+      if ([401, 403, 404].includes(response.status)) throw Error("access");
+      return;
+    }
     const data = await response.json();
-    if (!data.available) throw Error("closed");
-    if (!data.configured && (active || connecting)) throw Error("relay closed");
+    if (!data.available || (!data.configured && (active || connecting))) {
+      terminalAccess = true;
+      throw Error("closed");
+    }
     if (!data.configured) {
       configured = false;
       consoleInfo = null;
+      consolePower = "unknown";
       connectButton.disabled = true;
       pairButton.disabled = true;
       wakeButton.disabled = true;
@@ -542,6 +624,10 @@ async function refreshStatus() {
     if (data.configured && !active && !connecting) await loadConsole();
   } catch {
     if (active || connecting) {
+      if (!terminalAccess && (!response ||
+        (response.type !== "opaqueredirect" &&
+          ![401, 403, 404].includes(response.status))))
+        return;
       neutralInput();
       try {
         api?.sessionStop();
@@ -599,6 +685,9 @@ async function connect() {
     return;
   }
   if (active || connecting) return;
+  const attempt = ++connectionAttempt;
+  const wakeAndConnect =
+    connectButton.textContent === "Wake PS5 and connect";
   connecting = true;
   connectButton.disabled = true;
   liveDisconnect.disabled = false;
@@ -620,7 +709,32 @@ async function connect() {
     } catch {
       throw Error("Audio output could not start. Use Retry to try again.");
     }
+    if (attempt !== connectionAttempt) return;
+    if (wakeAndConnect) {
+      if (!(await requestConsoleWake()))
+        throw Error("The PS5 wake request failed. Use Wake PS5 and try again.");
+      const deadline = Date.now() + 45_000;
+      report("Wake request sent. Waiting for the PS5…");
+      $("overlay").textContent = "Waking PS5…";
+      let ready = false;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (attempt !== connectionAttempt) return;
+        const power = await readConsolePower();
+        if (attempt !== connectionAttempt) return;
+        if (power === "ready") {
+          ready = true;
+          break;
+        }
+      }
+      if (attempt !== connectionAttempt) return;
+      if (!ready)
+        throw Error("PS5 did not wake in time. Use Wake PS5 and try again.");
+      report("PS5 is ready. Starting Remote Play…");
+      $("overlay").textContent = "Starting PS5 session…";
+    }
     await prepareConnection();
+    if (attempt !== connectionAttempt) return;
     const profile = hasQualityProfile(qualityDuring.value)
       ? QUALITY_PROFILES[qualityDuring.value]
       : QUALITY_PROFILES[720];
@@ -647,12 +761,14 @@ async function connect() {
         );
     }, 45_000);
   } catch (error) {
+    if (attempt !== connectionAttempt) return;
     connecting = false;
     stopping = true;
     liveDisconnect.disabled = true;
-    retryButton.hidden = false;
-    $("overlay").textContent = "Remote Play could not start";
-    report(error.message);
+    try {
+      api?.sessionStop();
+    } catch {}
+    startFreshDocument(error.message, true);
   }
 }
 function neutralInput() {
@@ -668,6 +784,8 @@ async function disconnect(
   message = "Disconnected. The PS5 remains in its current power state.",
 ) {
   if (stopping) return;
+  connectionAttempt++;
+  const waitingToConnect = connecting && !active;
   neutralInput();
   stopping = true;
   liveDisconnect.disabled = true;
@@ -678,6 +796,12 @@ async function disconnect(
     try {
       api?.sessionStop();
     } catch {}
+    if (waitingToConnect) {
+      active = false;
+      connecting = false;
+      startFreshDocument("Connection cancelled.");
+      return;
+    }
     await Promise.race([
       stopped,
       new Promise((resolve) => setTimeout(resolve, 1500)),
@@ -692,11 +816,7 @@ async function wakeConsole() {
   connecting = true;
   wakeButton.disabled = true;
   try {
-    await prepareConnection();
-    if (
-      api.wakeup(consoleInfo.host, consoleInfo.registration.registKey, 1) !== 0
-    )
-      throw Error("wake");
+    if (!(await requestConsoleWake())) throw Error("wake");
     report("Wake request sent to the configured PS5.");
     setTimeout(
       () => startFreshDocument("Wake request sent to the configured PS5."),
@@ -823,8 +943,17 @@ setInterval(() => {
 window.addEventListener("focus", () => void refreshStatus());
 void refreshStatus().finally(() => {
   const message = sessionStorage.getItem("tesla-remote-play-message");
+  const failed = sessionStorage.getItem("tesla-remote-play-failed") === "1";
   if (message) {
     sessionStorage.removeItem("tesla-remote-play-message");
     report(message);
+  }
+  if (failed) {
+    sessionStorage.removeItem("tesla-remote-play-failed");
+    player.hidden = false;
+    $("overlay").hidden = false;
+    $("overlay").textContent = message || "Remote Play disconnected.";
+    retryButton.hidden = false;
+    liveDisconnect.disabled = true;
   }
 });

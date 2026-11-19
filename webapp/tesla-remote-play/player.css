@@ -137,6 +137,8 @@ button.primary {
   margin-top: 14px;
   min-width: 0;
 }
+/* Match the main Streamer: only the video stage fills fullscreen.
+   The connection/status settings stay outside the fullscreen surface. */
 .player.expanded-player {
   position: fixed;
   z-index: 1000;
@@ -145,16 +147,22 @@ button.primary {
   height: 100vh;
   height: 100dvh;
   margin: 0;
-  padding: var(--safe-top) var(--safe-right) var(--safe-bottom)
-    var(--safe-left);
-  background: #10151d;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
+  padding: 0;
+  background: #050608;
+  overflow: hidden;
 }
-.player.expanded-player .video-stage {
+.player.expanded-player .video-stage,
+.video-stage:fullscreen,
+.video-stage:-webkit-full-screen {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  aspect-ratio: auto;
+  border-radius: 0;
+  background: #050608;
+}
+.player.expanded-player .live-controls { display: none !important; }
+.video-stage {
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -206,6 +214,34 @@ canvas {
   background: #050608;
   pointer-events: none;
 }
+/* Fullscreen is controlled from within the PS5 image, not a settings row. */
+.stage-fullscreen {
+  position: absolute;
+  z-index: 5;
+  right: calc(12px + var(--safe-right));
+  bottom: calc(12px + var(--safe-bottom));
+  min-width: 48px;
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: rgb(0 0 0 / 70%);
+  border: 1px solid rgb(255 255 255 / 45%);
+  border-radius: 10px;
+  opacity: 1;
+  transition: opacity 180ms;
+  touch-action: manipulation;
+}
+.fullscreen-glyph { font-size: 30px; line-height: 1; }
+.video-stage.fullscreen-controls-idle .stage-fullscreen:not(:focus-visible) {
+  opacity: 0;
+  pointer-events: none;
+}
+.video-stage:fullscreen .stage-fullscreen,
+.video-stage:-webkit-full-screen .stage-fullscreen { position: absolute; }
 .live-controls {
   align-items: center;
   padding-top: 10px;
@@ -262,20 +298,6 @@ footer a {
   }
   .video-stage {
     min-height: 0;
-  }
-  .player.expanded-player .live-controls {
-    gap: 6px;
-  }
-  .player.expanded-player .live-controls button {
-    min-width: 0;
-    flex: 1 1 auto;
-    padding: 8px 10px;
-  }
-  .player.expanded-player .live-controls > span {
-    flex: 1 1 150px;
-  }
-  .player.expanded-player .live-controls .quality {
-    flex: 1 1 100%;
   }
 }
 @media (orientation: landscape) and (max-height: 520px) {
