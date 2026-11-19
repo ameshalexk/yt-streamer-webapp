@@ -27,7 +27,10 @@ const encode = value => Buffer.from(JSON.stringify(value)).toString("base64url")
 const claims = { iss: issuer, aud: [audience], iat: at - 20, exp: at + 600, sub: "the-fixture-owner", email };
 const assertion = `${encode({ alg: "RS256", kid: "fixture" })}.${encode(claims)}`;
 const token = `${assertion}.${sign("RSA-SHA256", Buffer.from(assertion), privateKey).toString("base64url")}`;
-const generatedRegistration = { registKey: randomBytes(16).toString("hex"), morning: randomBytes(16).toString("hex") };
+const generatedRegistration = {
+  registKey: Buffer.from(randomBytes(4).toString("hex").padEnd(16, "\0")).toString("hex"),
+  morning: randomBytes(16).toString("hex"),
+};
 const operations = [];
 const { TYPES } = wire;
 
@@ -134,16 +137,29 @@ try {
   await see(() => !feature.active, "The pairing socket did not close");
 
   await page.goto(`${origin}/tesla-remote-play/`);
+  await page.locator("#wake").click();
+  await see(() => operations.some(event => event.type === TYPES.SENDTO && event.port === 9302),
+    "Pinned WASM did not send a unicast PS5 Wake packet through the relay");
+  await see(() => !feature.active, "Wake did not release the relay");
+
+  await page.goto(`${origin}/tesla-remote-play/`);
+  await page.locator("#qualityBefore").selectOption("540");
+  const connectionCount = () => operations.filter(event => event.type === TYPES.CONNECT && event.port === 9295).length;
+  let priorConnections = connectionCount();
   await page.locator("#connect").click();
+  assert.equal(await page.locator("#quality").inputValue(), "540");
   await page.waitForFunction(() => window.__chiakiWasmReady === 1);
-  await see(() => operations.some(event => event.type === TYPES.CONNECT && event.port === 9295),
+  await see(() => connectionCount() > priorConnections,
     "Pinned WASM did not attempt a session through the authenticated WebSocket");
   await page.evaluate(() => {
     const original = api.sessionSetController;
     window.fixtureInput = [];
     api.sessionSetController = (...values) => {
       window.fixtureInput.push(values);
-      return original(...values);
+      original(...values);
+      // The fixture does not negotiate the console feedback channel. Model its
+      // accepted state while still exercising the real WASM call boundary.
+      return 0;
     };
     Module.onEvent("connected", 0, "");
     const buttons = Array.from({ length: 18 }, () => ({ pressed: false, value: 0 }));
@@ -153,6 +169,14 @@ try {
     window.fixturePads = [{ id: "Synthetic controller", index: 0, connected: true, mapping: "standard", buttons, axes: [.5, -.7, 0, .3] }];
   });
   await page.waitForFunction(() => window.fixtureInput.some(values => values[0] === (1 | 16_384) && values[1] === 128 && values[3] > 0));
+  const beforeBlur = await page.evaluate(() => window.fixtureInput.length);
+  await page.evaluate(() => {
+    Document.prototype.hasFocus = () => false;
+    window.dispatchEvent(new Event("blur"));
+  });
+  await page.waitForFunction(from => window.fixtureInput.slice(from).some(values => values.every(value => value === 0)), beforeBlur);
+  await page.evaluate(() => { Document.prototype.hasFocus = () => true; });
+  await page.waitForFunction(from => window.fixtureInput.slice(from).some(values => values[0] === (1 | 16_384)), beforeBlur);
   const before = await page.evaluate(() => window.fixtureInput.length);
   await page.evaluate(() => { window.fixturePads = []; });
   await page.waitForFunction(from => window.fixtureInput.slice(from).some(values => values.every(value => value === 0)), before);
@@ -195,22 +219,22 @@ try {
   assert.ok(peak > 0.01, "The player AudioWorklet did not output the injected waveform");
   await page.locator("#liveDisconnect").click();
   await see(() => !feature.active, "Disconnect did not release the authenticated relay");
-  let priorConnections = operations.filter(event => event.type === TYPES.CONNECT && event.port === 9295).length;
+  priorConnections = connectionCount();
   await page.locator("#connect").click();
-  await see(() => operations.filter(event => event.type === TYPES.CONNECT && event.port === 9295).length > priorConnections,
+  await see(() => connectionCount() > priorConnections,
     "The browser did not create a fresh session after Disconnect");
   relaySocket.destroy();
   await page.locator("#retry").waitFor({ state: "visible", timeout: 12000 });
   await see(() => !feature.active, "Dropped WebSocket retained the previous lease");
   await page.locator("#retry").click();
-  priorConnections = operations.filter(event => event.type === TYPES.CONNECT && event.port === 9295).length;
+  priorConnections = connectionCount();
   await page.locator("#connect").click();
-  await see(() => operations.filter(event => event.type === TYPES.CONNECT && event.port === 9295).length > priorConnections,
+  await see(() => connectionCount() > priorConnections,
     "Explicit Retry did not restore the authenticated relay");
   await page.locator("#liveDisconnect").click();
   await see(() => !feature.active, "The retried session did not release the relay");
   assert.deepEqual(errors, []);
-  console.log(`PASS pinned WASM registration probe, fixture registration storage, session packet, controller neutral state, H.264 320×180 decode, AudioWorklet peak ${peak.toFixed(3)}, disconnect, transport loss, and explicit retry.`);
+  console.log(`PASS pinned WASM registration probe, fixture registration storage, explicit Wake, session packet, selected quality, controller focus/removal neutral state, H.264 320×180 decode, AudioWorklet peak ${peak.toFixed(3)}, disconnect, transport loss, and explicit retry.`);
 } finally {
   await browser?.close();
   feature.close(server);
