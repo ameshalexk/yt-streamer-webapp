@@ -273,7 +273,9 @@ try {
         }));
         await fullscreen.click();
         await page.locator("#player.expanded-player").waitFor({ state: "attached" });
-        await page.keyboard.press("Escape");
+        // The hosted macOS browser can consume Escape in its own window after
+        // native fullscreen. Send the in-page fallback's key event directly.
+        await fullscreen.dispatchEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
         await page.locator("#player:not(.expanded-player)").waitFor({ state: "attached" });
         measurements.push({ device, mode, viewport, siteWidth, playerWidth: { client: playerWidth.client, scroll: playerWidth.scroll }, touchTargets, playerPadding, qualities, expandedSize, nativeFullscreenSupported: await page.evaluate(() => window.fullscreenHarness.supported), isolated: access.isolated, wasmReady: true });
 
