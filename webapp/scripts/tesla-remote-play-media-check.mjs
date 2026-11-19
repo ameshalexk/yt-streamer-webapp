@@ -34,6 +34,8 @@ const generatedRegistration = {
   morning: randomBytes(16).toString("hex"),
 };
 const operations = [];
+let powerState = "ready";
+let wakeRequests = 0;
 const { TYPES } = wire;
 
 function fixturePeer({ send }) {
@@ -102,6 +104,12 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const feature = mountTeslaRemotePlay(app, {
   root: fileURLToPath(new URL("../", import.meta.url)), dataDir: temp, origin, enabled: true,
   audience, ownerEmail: email, provider: { issuer, get: async () => keys }, relayFactory: fixturePeer,
+  powerProbe: async () => powerState,
+  wakeSender: async (target, packet) => {
+    assert.equal(target, host);
+    assert.ok(Buffer.isBuffer(packet));
+    wakeRequests++;
+  },
 });
 feature.attach(server);
 let relaySocket;
@@ -140,10 +148,85 @@ try {
   await see(() => !feature.active, "The pairing socket did not close");
 
   await page.goto(`${origin}/tesla-remote-play/`);
+  const priorWakeRequests = wakeRequests;
   await page.locator("#wake").click();
-  await see(() => operations.some(event => event.type === TYPES.SENDTO && event.port === 9302),
-    "Pinned WASM did not send a unicast PS5 Wake packet through the relay");
-  await see(() => !feature.active, "Wake did not release the relay");
+  await see(() => wakeRequests === priorWakeRequests + 1,
+    "Wake did not send exactly one native PS5 wake request");
+  assert.equal(feature.active, false, "Wake must not acquire a Remote Play relay lease");
+
+  // Model a PS5 in rest mode. The primary action must issue exactly one
+  // explicit wake packet and defer sessionStart until discovery says ready.
+  powerState = "standby";
+  // Expire one-second server-side power probe cache before reloading.
+  await delay(1100);
+  await page.goto(`${origin}/tesla-remote-play/`);
+  await page.locator("#qualityBefore").selectOption("1080");
+  await page.getByRole("button", { name: "Wake PS5 and connect" }).waitFor();
+  if (evidenceDir) {
+    await page.screenshot({ path: path.join(evidenceDir, "tesla-standby-wake-connect-fixture.png"), fullPage: true });
+  }
+  await page.evaluate(async () => {
+    await loadRuntime();
+    window.sessionStartCalls = [];
+    const cwrap = Module.cwrap.bind(Module);
+    Module.cwrap = (name, ...args) => {
+      const fn = cwrap(name, ...args);
+      if (name !== "chiaki_wasm_session_start") return fn;
+      return (...values) => { window.sessionStartCalls.push(values); return fn(...values); };
+    };
+  });
+  const priorConnectRequests = wakeRequests;
+  let wakeSessionCount = operations.filter(event => event.type === TYPES.CONNECT && event.port === 9295).length;
+  await page.getByRole("button", { name: "Wake PS5 and connect" }).click();
+  await see(() => wakeRequests === priorConnectRequests + 1,
+    "Wake and connect did not send exactly one native PS5 wake request");
+  await delay(1100);
+  assert.equal(await page.evaluate(() => window.sessionStartCalls.length), 0,
+    "The player started a session before the PS5 left standby");
+  assert.equal(operations.filter(event => event.type === TYPES.CONNECT && event.port === 9295).length,
+    wakeSessionCount, "The player opened a relay connection while the PS5 was still in standby");
+  assert.equal(feature.active, false, "The player held a relay lease while the PS5 was still waking");
+  powerState = "ready";
+  await see(() => page.evaluate(() => window.sessionStartCalls.length > 0),
+    "The player did not start after the PS5 became ready");
+  assert.deepEqual(await page.evaluate(() => window.sessionStartCalls[0].slice(3)),
+    [1, 4, 60, 0, 15000], "Wake and connect must preserve the requested 1080p60 profile");
+  await page.evaluate(() => Module.onEvent("quit", 1, "fixture console quit"));
+  await page.locator("#retry").waitFor({ state: "visible" });
+  assert.match(await page.locator("#state").innerText(), /session ended|connection failed|quit/i);
+  assert.equal(await page.locator("#player").isVisible(), true,
+    "Unexpected PS5 quit should keep the failure and retry controls in view");
+  await see(() => !feature.active, "Unexpected PS5 quit did not release the authenticated relay");
+
+  // A user can cancel while the PS5 is still waking. A late ready reply must
+  // never launch a session after cancellation.
+  powerState = "standby";
+  // Expire one-second server-side power probe cache before reloading.
+  await delay(1100);
+  await page.goto(`${origin}/tesla-remote-play/`);
+  await page.locator("#qualityBefore").selectOption("1080");
+  await page.evaluate(async () => {
+    await loadRuntime();
+    window.sessionStartCalls = [];
+    const cwrap = Module.cwrap.bind(Module);
+    Module.cwrap = (name, ...args) => {
+      const fn = cwrap(name, ...args);
+      if (name !== "chiaki_wasm_session_start") return fn;
+      return (...values) => { window.sessionStartCalls.push(values); return fn(...values); };
+    };
+  });
+  await page.getByRole("button", { name: "Wake PS5 and connect" }).waitFor();
+  const beforeCancelConnectRequests = wakeRequests;
+  await page.getByRole("button", { name: "Wake PS5 and connect" }).click();
+  await see(() => wakeRequests === beforeCancelConnectRequests + 1,
+    "The second wake and connect action did not issue one native wake request");
+  wakeSessionCount = operations.filter(event => event.type === TYPES.CONNECT && event.port === 9295).length;
+  await page.locator("#liveDisconnect").click();
+  await page.getByText("Connection cancelled.", { exact: true }).waitFor();
+  powerState = "ready";
+  await delay(2300);
+  assert.equal(operations.filter(event => event.type === TYPES.CONNECT && event.port === 9295).length,
+    wakeSessionCount, "Cancellation opened a Remote Play session after the user cancelled");
 
   await page.goto(`${origin}/tesla-remote-play/`);
   await page.locator("#qualityBefore").selectOption("540");

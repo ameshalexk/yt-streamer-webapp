@@ -46,6 +46,8 @@ let api,
   stopping = false,
   expandedFallback = false,
   wasNativeFullscreen = false;
+let consolePower = "unknown",
+  connectionAttempt = 0;
 let decoderSetup,
   sessionFps = 60;
 let videoDecoder,
@@ -369,11 +371,6 @@ function bindWasm() {
         "number",
       ],
     ),
-    wakeup: Module.cwrap("chiaki_wasm_wakeup", "number", [
-      "string",
-      "string",
-      "number",
-    ]),
   };
   Module.onLog = () => {};
   Module.onVideo = (ptr, size, lost) =>
@@ -395,7 +392,7 @@ function bindWasm() {
       neutralInput();
       if (sessionStopListener) sessionStopListener();
       else if (active && !stopping)
-        startFreshDocument("PS5 session ended. Use Connect to try again.");
+        startFreshDocument("PS5 session ended. Use Connect to try again.", true);
     }
     if (type === "pin")
       report(
@@ -432,8 +429,9 @@ function bindWasm() {
     $("accountId").value = "";
   };
 }
-function startFreshDocument(message) {
+function startFreshDocument(message, failed = false) {
   if (message) sessionStorage.setItem("tesla-remote-play-message", message);
+  if (failed) sessionStorage.setItem("tesla-remote-play-failed", "1");
   location.replace(location.pathname + location.search);
 }
 function browserLimitation() {
@@ -504,16 +502,73 @@ async function loadConsole() {
   )
     throw Error("console missing");
   configured = true;
-  connectButton.disabled = false;
   pairButton.disabled = false;
   wakeButton.disabled = !consoleInfo.registration;
-  $("help").textContent = consoleInfo.registration
-    ? "Registered PS5 ready. Pair again only to replace registration."
-    : "PS5 address configured. Pair it once, then connect.";
+  await refreshConsolePower();
+}
+async function refreshConsolePower() {
+  if (!consoleInfo?.registration) {
+    consolePower = "unknown";
+    connectButton.textContent = "Connect";
+    connectButton.disabled = !configured;
+    $("help").textContent = configured
+      ? "PS5 address configured. Pair it once, then connect."
+      : "Configure the home PS5 before connecting.";
+    return consolePower;
+  }
+  const power = await readConsolePower();
+  if (active || connecting) return consolePower;
+  consolePower = power;
+  connectButton.textContent =
+    consolePower === "standby" ? "Wake PS5 and connect" : "Connect";
+  connectButton.disabled = !configured;
+  $("help").textContent =
+    consolePower === "standby"
+      ? "The PS5 is in rest mode. Use Wake PS5 and connect to start it, then open Remote Play."
+      : consolePower === "ready"
+        ? "Registered PS5 is ready. Pair again only to replace registration."
+        : "Registered PS5 power is unknown. Connect tries the current state. Use Wake PS5 if it is in rest mode.";
+  return consolePower;
+}
+async function readConsolePower() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2000);
+  try {
+    const response = await fetch("/api/tesla-remote-play/power", {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) return "unknown";
+    const result = await response.json();
+    return ["ready", "standby"].includes(result.power)
+      ? result.power
+      : "unknown";
+  } catch {
+    return "unknown";
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+async function requestConsoleWake() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch("/api/tesla-remote-play/wake", {
+      method: "POST",
+      signal: controller.signal,
+    });
+    return response.status === 204;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 async function refreshStatus() {
+  let response;
+  let terminalAccess = false;
   try {
-    const response = await fetch("/api/tesla-remote-play/status", {
+    response = await fetch("/api/tesla-remote-play/status", {
       cache: "no-store",
       redirect: "manual",
     }).catch(() => null);
@@ -522,13 +577,20 @@ async function refreshStatus() {
         report("Cannot check Remote Play access. Check your network.");
       return;
     }
-    if (!response.ok) throw Error("status");
+    if (response.type === "opaqueredirect") throw Error("access");
+    if (!response.ok) {
+      if ([401, 403, 404].includes(response.status)) throw Error("access");
+      return;
+    }
     const data = await response.json();
-    if (!data.available) throw Error("closed");
-    if (!data.configured && (active || connecting)) throw Error("relay closed");
+    if (!data.available || (!data.configured && (active || connecting))) {
+      terminalAccess = true;
+      throw Error("closed");
+    }
     if (!data.configured) {
       configured = false;
       consoleInfo = null;
+      consolePower = "unknown";
       connectButton.disabled = true;
       pairButton.disabled = true;
       wakeButton.disabled = true;
@@ -542,6 +604,10 @@ async function refreshStatus() {
     if (data.configured && !active && !connecting) await loadConsole();
   } catch {
     if (active || connecting) {
+      if (!terminalAccess && (!response ||
+        (response.type !== "opaqueredirect" &&
+          ![401, 403, 404].includes(response.status))))
+        return;
       neutralInput();
       try {
         api?.sessionStop();
@@ -599,6 +665,9 @@ async function connect() {
     return;
   }
   if (active || connecting) return;
+  const attempt = ++connectionAttempt;
+  const wakeAndConnect =
+    connectButton.textContent === "Wake PS5 and connect";
   connecting = true;
   connectButton.disabled = true;
   liveDisconnect.disabled = false;
@@ -620,7 +689,32 @@ async function connect() {
     } catch {
       throw Error("Audio output could not start. Use Retry to try again.");
     }
+    if (attempt !== connectionAttempt) return;
+    if (wakeAndConnect) {
+      if (!(await requestConsoleWake()))
+        throw Error("The PS5 wake request failed. Use Wake PS5 and try again.");
+      const deadline = Date.now() + 45_000;
+      report("Wake request sent. Waiting for the PS5…");
+      $("overlay").textContent = "Waking PS5…";
+      let ready = false;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (attempt !== connectionAttempt) return;
+        const power = await readConsolePower();
+        if (attempt !== connectionAttempt) return;
+        if (power === "ready") {
+          ready = true;
+          break;
+        }
+      }
+      if (attempt !== connectionAttempt) return;
+      if (!ready)
+        throw Error("PS5 did not wake in time. Use Wake PS5 and try again.");
+      report("PS5 is ready. Starting Remote Play…");
+      $("overlay").textContent = "Starting PS5 session…";
+    }
     await prepareConnection();
+    if (attempt !== connectionAttempt) return;
     const profile = hasQualityProfile(qualityDuring.value)
       ? QUALITY_PROFILES[qualityDuring.value]
       : QUALITY_PROFILES[720];
@@ -647,12 +741,14 @@ async function connect() {
         );
     }, 45_000);
   } catch (error) {
+    if (attempt !== connectionAttempt) return;
     connecting = false;
     stopping = true;
     liveDisconnect.disabled = true;
-    retryButton.hidden = false;
-    $("overlay").textContent = "Remote Play could not start";
-    report(error.message);
+    try {
+      api?.sessionStop();
+    } catch {}
+    startFreshDocument(error.message, true);
   }
 }
 function neutralInput() {
@@ -668,6 +764,8 @@ async function disconnect(
   message = "Disconnected. The PS5 remains in its current power state.",
 ) {
   if (stopping) return;
+  connectionAttempt++;
+  const waitingToConnect = connecting && !active;
   neutralInput();
   stopping = true;
   liveDisconnect.disabled = true;
@@ -678,6 +776,12 @@ async function disconnect(
     try {
       api?.sessionStop();
     } catch {}
+    if (waitingToConnect) {
+      active = false;
+      connecting = false;
+      startFreshDocument("Connection cancelled.");
+      return;
+    }
     await Promise.race([
       stopped,
       new Promise((resolve) => setTimeout(resolve, 1500)),
@@ -692,11 +796,7 @@ async function wakeConsole() {
   connecting = true;
   wakeButton.disabled = true;
   try {
-    await prepareConnection();
-    if (
-      api.wakeup(consoleInfo.host, consoleInfo.registration.registKey, 1) !== 0
-    )
-      throw Error("wake");
+    if (!(await requestConsoleWake())) throw Error("wake");
     report("Wake request sent to the configured PS5.");
     setTimeout(
       () => startFreshDocument("Wake request sent to the configured PS5."),
@@ -823,8 +923,17 @@ setInterval(() => {
 window.addEventListener("focus", () => void refreshStatus());
 void refreshStatus().finally(() => {
   const message = sessionStorage.getItem("tesla-remote-play-message");
+  const failed = sessionStorage.getItem("tesla-remote-play-failed") === "1";
   if (message) {
     sessionStorage.removeItem("tesla-remote-play-message");
     report(message);
+  }
+  if (failed) {
+    sessionStorage.removeItem("tesla-remote-play-failed");
+    player.hidden = false;
+    $("overlay").hidden = false;
+    $("overlay").textContent = message || "Remote Play disconnected.";
+    retryButton.hidden = false;
+    liveDisconnect.disabled = true;
   }
 });

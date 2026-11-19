@@ -2,6 +2,7 @@ import express from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import dgram from "node:dgram";
 import { WebSocketServer, WebSocket } from "ws";
 import { verifyAccessJwt } from "./ai-media-agent-remote-authorization.js";
 import { createPinnedCloudflareJwksProvider } from "../../scripts/ai-agent-remote-mcp.mjs";
@@ -16,6 +17,92 @@ const KEY = /^[a-f0-9]{32}$/;
 const RESPONSE_BUFFER_LIMIT = 8 * 1024 * 1024;
 const NO_CACHE = { "Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer" };
 const REJECT = { 401: "Unauthorized", 403: "Forbidden", 409: "Conflict", 503: "Service Unavailable" };
+const DISCOVERY_PORT = 9302;
+const DISCOVERY_QUERY = Buffer.from("SRCH * HTTP/1.1\ndevice-discovery-protocol-version:00030010\n");
+
+function wakePacket(keys) {
+  const decoded = Buffer.from(keys.registKey, "hex");
+  const end = decoded.indexOf(0);
+  const credentialBytes = decoded.subarray(0, end < 0 ? decoded.length : end);
+  const credentialPrefix = /^[0-9a-fA-F]+/.exec(credentialBytes.toString("latin1"))?.[0];
+  if (credentialBytes.length < 1 || credentialBytes.length > 8 || !credentialPrefix) {
+    throw new Error("Registration key cannot be represented as a PS5 wake credential");
+  }
+  const credential = BigInt(`0x${credentialPrefix}`).toString(10);
+  return Buffer.from([
+    "WAKEUP * HTTP/1.1",
+    "client-type:vr",
+    "auth-type:R",
+    "model:w",
+    "app-type:r",
+    `user-credential:${credential}`,
+    "device-discovery-protocol-version:00030010",
+    "",
+  ].join("\n") + "\0");
+}
+
+function sendWakePacket(host, packet, { timeoutMs = 1500 } = {}) {
+  return new Promise((resolve, reject) => {
+    const socket = dgram.createSocket("udp4");
+    let settled = false;
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.close(); } catch {}
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => finish(new Error("PS5 wake request timed out")), timeoutMs);
+    socket.on("error", error => finish(error));
+    socket.send(packet, DISCOVERY_PORT, host, error => finish(error));
+  });
+}
+
+function queryConsolePower(host, { timeoutMs = 900 } = {}) {
+  return new Promise(resolve => {
+    const socket = dgram.createSocket("udp4");
+    let settled = false;
+    const finish = power => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.close(); } catch {}
+      resolve(power);
+    };
+    const timer = setTimeout(() => finish("unknown"), timeoutMs);
+    socket.on("error", () => finish("unknown"));
+    socket.on("message", (packet, remote) => {
+      if (remote.address !== host || remote.port !== DISCOVERY_PORT || packet.length > 512) return;
+      const status = /^HTTP\/1\.1\s+(\d{3})(?:\s|$)/.exec(packet.toString("ascii"));
+      if (!status) return;
+      if (status[1] === "200") finish("ready");
+      else if (status[1] === "620") finish("standby");
+      else finish("unknown");
+    });
+    socket.bind(0, "0.0.0.0", () => {
+      socket.send(DISCOVERY_QUERY, DISCOVERY_PORT, host, error => {
+        if (error) finish("unknown");
+      });
+    });
+  });
+}
+
+function cachedPowerProbe(probe, now) {
+  let cached = null;
+  let pending = null;
+  return async host => {
+    if (cached?.host === host && now() - cached.at < 1000) return cached.power;
+    if (pending?.host === host) return pending.promise;
+    const promise = Promise.resolve().then(() => probe(host)).catch(() => "unknown");
+    pending = { host, promise };
+    const power = await promise;
+    if (pending?.promise !== promise) return ["ready", "standby"].includes(power) ? power : "unknown";
+    pending = null;
+    cached = { host, at: now(), power: ["ready", "standby"].includes(power) ? power : "unknown" };
+    return cached.power;
+  };
+}
 
 function registration(value) {
   if (!value || Object.keys(value).length !== 2 || typeof value.registKey !== "string" ||
@@ -119,7 +206,7 @@ export function mountTeslaRemotePlay(app, {
   audience = process.env.YT_AI_AGENT_ACCESS_AUDIENCE,
   ownerEmail = process.env.TESLA_REMOTE_PLAY_OWNER_EMAIL || "ameshalex@gmail.com",
   origin = ACCESS_ORIGIN, provider, now = Date.now, relayFactory = createChiakiRelay,
-  pingIntervalMs = 10_000,
+  pingIntervalMs = 10_000, powerProbe = queryConsolePower, wakeSender = sendWakePacket,
 } = {}) {
   const available = Boolean(enabled && audience && ownerEmail);
   const authorize = available ? ownerAuthentication({
@@ -128,6 +215,7 @@ export function mountTeslaRemotePlay(app, {
     }), audience, ownerEmail: ownerEmail.toLowerCase(), now,
   }) : async () => ({ status: 404 });
   const state = privateFiles(path.join(dataDir, "tesla-remote-play"));
+  const probePower = cachedPowerProbe(powerProbe, now);
   const playerRoot = path.join(root, "tesla-remote-play");
   const api = express.Router();
   const player = express.Router();
@@ -150,6 +238,19 @@ export function mountTeslaRemotePlay(app, {
   api.get("/status", safe(async (_req, res) => {
     res.json({ available: true, configured: Boolean(await state.consoleIp()) });
   }));
+  api.get("/power", safe(async (_req, res) => {
+    const host = await state.consoleIp();
+    res.json({ power: host ? await probePower(host) : "unknown" });
+  }));
+  api.post("/wake", (req, res, next) => sameOrigin(req) ? next() : res.status(403).end(),
+    safe(async (req, res) => {
+      const host = await state.consoleIp();
+      if (!host) return res.status(409).end();
+      const keys = await state.registration(host, req.remotePlayOwner.subject);
+      if (!keys) return res.status(409).end();
+      await wakeSender(host, wakePacket(keys));
+      res.status(204).end();
+    }));
   api.get("/console", safe(async (req, res) => {
     const host = await state.consoleIp();
     const keys = host ? await state.registration(host, req.remotePlayOwner.subject) : null;
