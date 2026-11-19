@@ -96,10 +96,11 @@ test("capture rejects output overflow and terminates timed out executables", asy
   await writeFile(sleeper, "#!/bin/sh\nsleep 5\n");
   await Promise.all([chmod(oversized, 0o755), chmod(sleeper, 0o755)]);
   const moduleUrl = new URL("../src/lib/ytdlp.js", import.meta.url).href;
-  const invoke = (binary, timeoutMs = 3_000) => spawnSync(process.execPath, ["--input-type=module", "-e", `const m=await import(${JSON.stringify(moduleUrl)}); try { await m.capture(['--help'],{timeoutMs:${timeoutMs}}); process.exit(3); } catch(e) { console.log(e.code || e.message); }`], {
-    encoding: "utf8", env: { ...process.env, YTDLP_PATH: binary, YTDLP_FALLBACK_PATH: "" }, timeout: 8_000,
+  const invoke = (binary, timeoutMs) => spawnSync(process.execPath, ["--input-type=module", "-e", `const m=await import(${JSON.stringify(moduleUrl)}); try { await m.capture(['--help'],{timeoutMs:${timeoutMs}}); process.exit(3); } catch(e) { console.log(e.code || e.message); }`], {
+    encoding: "utf8", env: { ...process.env, YTDLP_PATH: binary, YTDLP_FALLBACK_PATH: "" }, timeout: timeoutMs + 10_000,
   });
-  const overflow = invoke(oversized);
+  // Keep the overflow assertion independent of loaded hosted runner startup.
+  const overflow = invoke(oversized, 15_000);
   assert.equal(overflow.status, 0, overflow.stderr);
   assert.match(overflow.stdout, /EOUTPUTLIMIT/);
   const timeout = invoke(sleeper, 1_000);
