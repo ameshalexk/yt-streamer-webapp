@@ -311,3 +311,35 @@ test('video failure during an in-flight audio repair runs a full recovery next',
     ['audio', true], ['failure', false],
   ]);
 });
+
+test('audio stall during an in-flight video recovery cannot downgrade the queued video retry', async () => {
+  let finishVideo;
+  const gate = new Promise(resolve => { finishVideo = resolve; });
+  const calls = [];
+  const f = fixture({ recover: async sample => {
+    calls.push([sample.reason, sample.audioOnly]);
+    if (!sample.audioOnly && calls.length === 1) await gate;
+    return { status: 'started' };
+  } });
+  const sample = { ...f.sample, audioEnabled: true, canRepairAudio: true };
+  assert.equal(f.monitor.request('failure', sample), true);
+  const first = f.task.fn();
+  assert.equal(f.monitor.inFlight, true);
+  assert.equal(f.monitor.request('audio', sample), true);
+  finishVideo();
+  await first;
+  if (f.task) await f.run();
+  assert.equal(calls[0][1], false);
+  assert.equal(calls.some(([, audioOnly]) => audioOnly === true), false);
+});
+
+test('simultaneous video stall and audio error prioritize full video recovery', async () => {
+  const f = fixture();
+  f.advance(0, { audioEnabled: true, audioError: false });
+  f.advance(16000, { audioEnabled: true, audioError: true, videoProgress: 10, audioTime: 5 });
+  assert.equal(f.task?.delay, 1000);
+  await f.run();
+  assert.equal(f.recoveries.length, 1);
+  assert.equal(f.recoveries[0].audioOnly, false);
+  assert.equal(f.recoveries[0].reason, 'video');
+});
