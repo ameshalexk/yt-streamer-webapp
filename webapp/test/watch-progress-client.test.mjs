@@ -521,3 +521,50 @@ test("failed Clear retains the current playback session and permits later progre
   ]);
   assert.deepEqual(errors, ["clear unavailable"]);
 });
+
+test("successful Remove followed by same-video replay does not invalidate the new session", async () => {
+  const { Tracker } = loadModule();
+  const events = [];
+  const rows = new Map();
+  let releaseDelete;
+  let signalDelete;
+  const deletionStarted = new Promise(resolve => { signalDelete = resolve; });
+  const deletionGate = new Promise(resolve => { releaseDelete = resolve; });
+  const tracker = new Tracker({
+    record: async payload => {
+      events.push("record:" + payload.playbackSessionId);
+      const entry = { id: payload.youtubeId, ...payload };
+      rows.set(entry.id, entry);
+      return entry;
+    },
+    update: async (id, payload) => {
+      events.push("update:" + payload.playbackSessionId);
+      const entry = { ...rows.get(id), ...payload };
+      rows.set(id, entry);
+      return entry;
+    },
+    capture: () => ({ positionSeconds: 44, duration: 120 }),
+  });
+  await tracker.begin({ youtubeId: "same-video" });
+  const oldSession = tracker.session;
+  const removing = tracker.runHistoryMutation(async () => {
+    signalDelete();
+    await deletionGate;
+    rows.delete("same-video");
+  }, { deletedEntry: { id: "same-video" } });
+  await deletionStarted;
+  const replay = tracker.begin({ youtubeId: "same-video" });
+  const newSession = tracker.session;
+  assert.notEqual(newSession, oldSession);
+  releaseDelete();
+  await Promise.all([removing, replay]);
+  await tracker.save();
+  assert.equal(oldSession.historyInvalidated, true);
+  assert.equal(newSession.historyInvalidated, false);
+  assert.equal(tracker.session, newSession);
+  assert.equal(rows.get("same-video")?.playbackSessionId, newSession.token);
+  assert.equal(rows.get("same-video")?.positionSeconds, 44);
+  assert.deepEqual(events.map(event => event.split(":")[0]), [
+    "record", "record", "update",
+  ]);
+});
