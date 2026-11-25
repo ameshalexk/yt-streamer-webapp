@@ -19,6 +19,7 @@ const fixtureBootstrap=()=>{
   window.__fixtureDevicePlans=0;
   window.__fixtureConfirmRequests=0;
   window.__fixtureSpeechText='turn on office lights';
+  window.__fixturePlanFailure=false;
   window.__fixtureCalls={search:0,play:0,pause:0,resume:0,commands:0};
   window.__fixtureMicRequests=0;
   window.__fixtureAllowMic=false;
@@ -82,6 +83,7 @@ const fixtureBootstrap=()=>{
     if(['/api/teslamon/ha-plan','/api/teslamon/mac-plan'].includes(new URL(url,location.href).pathname))window.__fixtureDevicePlans++;
     if(['/api/teslamon/ha-confirm','/api/teslamon/mac-confirm'].includes(new URL(url,location.href).pathname))window.__fixtureConfirmRequests++;
     if(isCapabilities)window.__fixtureCapabilitiesRequests++;
+    if(isPlan&&window.__fixturePlanFailure)throw new Error('fixture planner network failure');
     const response=await nativeFetch(...args);
     if(isPlan)window.__fixturePlanResponses++;
     if(isCapabilities)window.__fixtureCapabilitiesResponses++;
@@ -247,6 +249,7 @@ const server=http.createServer(async(req,res)=>{
         {status:'ok',message:'Confirmed action complete'}:
       pathname==='/api/teslamon/plan'?(['search_play','slow_play'].includes(fixtureScenario)?{status:'ok',tool:'search_and_play',args:{query:'fixture video'}}:
         ['error','slow_error'].includes(fixtureScenario)?{status:'failed',code:'codex_unavailable'}:
+        fixtureScenario==='unsupported_voice'?{status:'unsupported',code:'unsupported_voice_command'}:
         fixtureScenario==='uncertain'?{status:'uncertain',code:'invalid_codex_reply'}:
         fixtureScenario==='slow_ha'?{status:'ha_done',action:'light_checked'}:
         fixtureScenario==='no_speech'?{status:'failed',code:'no_speech_detected'}:{status:'ha_done',action:'light_checked'}):
@@ -806,6 +809,7 @@ try{
       if(width===390&&ui==='classic'){
         const scenario=async value=>page.evaluate(async value=>{
           await fetch('/__fixture/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({scenario:value})});
+          window.__fixturePlanFailure=value==='network_error';
         },value);
         const submitVoice=async text=>page.evaluate(async text=>{
           window.__fixtureSpeechText=text;
@@ -845,7 +849,8 @@ try{
           const terminalStatus={ha_done:'Home Assistant light',error:'Codex CLI is unavailable',
             uncertain:'Result uncertain',no_speech:'No words recognized'}[mode];
           await page.waitForFunction(status=>document.querySelector('#tmState')?.textContent?.includes(status),terminalStatus,{timeout:9000});
-          await page.locator('#tmAura').waitFor({state:'hidden',timeout:9000});
+          if(mode==='ha_done')await page.locator('#tmAura').waitFor({state:'hidden',timeout:9000});
+          else assert.equal(await page.locator('#tmAura').isVisible(),true,mode+' leaves actionable feedback visible in Aura');
           assert.equal(await page.locator('#tmWakeToggle').getAttribute('aria-pressed'),'true',mode+' keeps wake enabled');
           await waitForVoiceReady();
         }
@@ -876,6 +881,55 @@ try{
           await page.evaluate(()=>{window.__auraStandby();document.querySelector('#tmText').value='';});
           await page.locator('#tmAura').waitFor({state:'hidden',timeout:4000});
         }
+
+        // An incomplete transcript rejected by the planner stays visible in
+        // Aura with the heard words and a useful retry prompt. Wake listening
+        // can accept a corrected request, and rejection never plays a result.
+        await scenario('unsupported_voice');
+        const beforeRejected=await page.evaluate(()=>({plans:window.__fixturePlanRequests,
+          searches:window.__fixtureCalls.search,plays:window.__fixtureCalls.play}));
+        await submitVoice('video.');
+        await page.waitForFunction(()=>document.querySelector('#tmAura')?.innerText?.includes('Which video should I play?'),null,{timeout:9000});
+        await waitForVoiceReady();
+        assert.equal(await page.locator('#tmAura').isVisible(),true,
+          'unsupported voice request keeps Aura visible after wake re-arms');
+        assert.equal(await page.locator('#tmAura').getAttribute('data-phase'),'error',
+          'unsupported transcript presents an actionable error');
+        assert.match(await page.locator('#tmAura').innerText(),/video\./i,
+          'Aura shows the recognized fragment so the user can correct it');
+        assert.match(await page.locator('#tmAura').innerText(),/(?:what would you like me to play|which video should i play)/i,
+          'Aura asks a direct clarification question');
+        const retryBounds=await page.locator('#tmAura').evaluate(root=>{
+          const rect=root.getBoundingClientRect();
+          return {left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,
+            width:rect.width,height:rect.height,viewportWidth:innerWidth,viewportHeight:innerHeight};
+        });
+        assert.ok(retryBounds.width>0&&retryBounds.height>0&&retryBounds.left>=0&&retryBounds.top>=0&&
+          retryBounds.right<=retryBounds.viewportWidth&&retryBounds.bottom<=retryBounds.viewportHeight,
+          'clarification remains within the visible viewport '+JSON.stringify(retryBounds));
+        assert.equal(await page.evaluate(()=>window.__fixturePlanRequests),beforeRejected.plans+1,
+          'incomplete request is sent to the planner once');
+        assert.equal(await page.evaluate(()=>window.__fixtureCalls.search),beforeRejected.searches,
+          'rejected request never searches media');
+        assert.equal(await page.evaluate(()=>window.__fixtureCalls.play),beforeRejected.plays,
+          'rejected request never dispatches playback');
+
+        await scenario('network_error');
+        await submitVoice('video.');
+        await page.waitForFunction(()=>document.querySelector('#tmAura')?.innerText?.includes('Could not connect'),null,{timeout:9000});
+        await waitForVoiceReady();
+        assert.equal(await page.locator('#tmAura').isVisible(),true,
+          'planner network failure keeps Aura visible for retry');
+        assert.match(await page.locator('#tmAura').innerText(),/could not connect · try again/i,
+          'network failure leaves a visible actionable retry prompt');
+
+        await scenario('search_play');
+        await submitVoice('play a fixture video');
+        await page.waitForFunction(count=>window.__fixtureCalls.play===count,beforeRejected.plays+1,{timeout:9000});
+        await page.locator('#tmAura').waitFor({state:'hidden',timeout:4000});
+        assert.equal(await page.evaluate(()=>window.__fixtureCalls.search),beforeRejected.searches+1,
+          'corrected retry searches once');
+        await waitForVoiceReady();
       }
       // Existing playback wins when a local toggle On overlaps real playback.
       await page.evaluate(()=>window.__fixturePlayback='playing');

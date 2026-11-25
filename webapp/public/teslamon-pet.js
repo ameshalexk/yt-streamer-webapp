@@ -160,7 +160,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   const AURA_KEY='ytStreamerTeslaMonAuraEnabledV1';
   let auraEnabled=true,userDisabled=false,startupAuraPending=false;
   let startupAuraEntry=null;
-  let activeAuraEntry=null,voiceAuraEntry=null,urlAuraEntry=null,urlAuraDismissed=false,
+  let activeAuraEntry=null,voiceAuraEntry=null,auraRetryEntry=null,urlAuraEntry=null,urlAuraDismissed=false,
     playbackTimer=null,wakePauseGuard=false;
   let voiceOwner=0,pendingVoice=null,modelGeneration=0;
   let activePlannerVoice=false,activeIssueVoice=false;
@@ -177,7 +177,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       // Dismissal hides the visual. An already submitted capture can finish.
       if(startupAuraEntry===entry)startupAuraEntry=null;
       if(urlAuraEntry===entry){urlAuraEntry=null;urlAuraDismissed=true;}
-      if(activeAuraEntry===entry){activeAuraEntry=null;voiceAuraEntry=null;}
+      if(activeAuraEntry===entry){activeAuraEntry=null;voiceAuraEntry=null;auraRetryEntry=null;}
       if(playbackTimer!==null){clearTimeout(playbackTimer);playbackTimer=null;}
       if(!userDisabled&&!fullscreenActive()){
         pet.hidden=false;
@@ -190,6 +190,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
   };
   function closeAura(){
     startupAuraEntry=null;urlAuraEntry=null;
+    auraRetryEntry=null;
     aura.close();activeAuraEntry=null;voiceAuraEntry=null;
     if(playbackTimer!==null){clearTimeout(playbackTimer);playbackTimer=null;}
     if(!userDisabled&&!fullscreenActive())pet.hidden=false;
@@ -199,6 +200,15 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(owner===null||owner!==voiceOwner||!entry||entry!==voiceAuraEntry||entry!==activeAuraEntry)return false;
     auraVoiceFlow=false;
     closeAura();
+    return true;
+  }
+  function retainVoiceAura(owner,entry){
+    // Rejected and incomplete commands keep their Aura presentation for retry.
+    if((owner!==null&&owner!==voiceOwner)||!entry||entry!==activeAuraEntry||
+       (owner!==null&&entry!==voiceAuraEntry))return false;
+    auraVoiceFlow=false;
+    auraRetryEntry=entry;
+    if(entry===voiceAuraEntry)voiceAuraEntry=null;
     return true;
   }
   function observeAuraPlayback(){
@@ -218,6 +228,7 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     if(!auraEnabled||userDisabled||document.hidden)return null;
     if(!fromWake&&!preview&&!holdForFrames&&playerState()?.playback_phase==='playing')return null;
     startupAuraPending=false;
+    auraRetryEntry=null;
     if(!startup)startupAuraEntry=null;
     wakePauseGuard=fromWake;
     activeAuraEntry=aura.open({phase,status:message,captureOnHold:startup||fromWake});
@@ -524,27 +535,35 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }else if(phase==='processing'){
       auraStage('transcribing','Understanding your request…',{entry:voiceAuraEntry});
     }else if(phase==='no_speech'){
-      auraStage('error',"Didn't catch that",{entry:voiceAuraEntry,kind:'warn'});
-      finishVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
+      auraStage('error',"I didn't catch that. Hold to try again.",{entry:voiceAuraEntry,kind:'warn'});
+      retainVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
     }else if(phase==='recovering'){
       // A failed pause no longer owns the old playing snapshot. If frames
       // continue, observed playback must be allowed to reveal the player.
       wakePauseGuard=false;
-      auraStage('error','Could not pause video · try again',{entry:voiceAuraEntry,kind:'warn'});
+      auraStage('error','I could not pause the video. Hold to try again.',{entry:voiceAuraEntry,kind:'warn'});
       status('Playback pause did not complete. Try the wake phrase again.','warn',voiceOwner);
-      finishVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
+      retainVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
     }else if(phase==='cooldown'){
       const standbyEntry=voiceAuraEntry??activeAuraEntry;
-      if(/no command/i.test(message||''))auraStage('error',"Didn't catch that",{entry:standbyEntry,kind:'warn'});
-      else if(/pause/i.test(message||''))auraStage('error','Could not pause video · try again',{entry:standbyEntry,kind:'warn'});
-      else auraStage('standby','Rearming wake detection…',{entry:standbyEntry});
-      finishVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
+      if(auraRetryEntry!==standbyEntry){
+        if(/no command/i.test(message||'')){
+          auraStage('error',"I didn't catch that. Hold to try again.",{entry:standbyEntry,kind:'warn'});
+          retainVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
+        }else if(/pause/i.test(message||'')){
+          auraStage('error','I could not pause the video. Hold to try again.',{entry:standbyEntry,kind:'warn'});
+          retainVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
+        }else{
+          auraStage('standby','Rearming wake detection…',{entry:standbyEntry});
+          finishVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
+        }
+      }
     }else if(phase==='listening'){
       // A newly opened visual can follow the global wake-standby state
       // without accepting an older invocation's transcript or action result.
       if(startupAuraEntry===activeAuraEntry&&aura.phase==='standby')
         updateStartupAuraStatus(auraHoldHint);
-      else if(voiceAuraEntry!==null)
+      else if(voiceAuraEntry!==null&&auraRetryEntry!==activeAuraEntry)
         auraStage('standby','Say a wake phrase',{entry:voiceAuraEntry});
     }else if(phase==='starting'){
       updateStartupAuraStatus(message||'Requesting microphone permission…');
@@ -557,6 +576,10 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         // presentation or revealing the paw over it.
         const startupMessage=phase==='error'?(message||'Voice unavailable'):auraHoldHint;
         auraStage(phase==='error'?'error':'standby',startupMessage,{entry:startupAuraEntry,kind:phase==='error'?'warn':'info'});
+      }else if(phase==='error'&&voiceAuraEntry===activeAuraEntry&&aura.active){
+        auraStage('error',message||'Voice stopped. Hold to try again.',
+          {entry:voiceAuraEntry,kind:'warn'});
+        retainVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
       }else{
         if(phase==='off')closeAura();
         else finishVoiceAura(invocationId||voiceOwner,voiceAuraEntry);
@@ -653,13 +676,21 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
     }
   });
   updateWakeUI({state:'off',message:'Off'});
-  function report(response,action,{owner=null,entry=null,fromAuraHold=false}={}){
+  function report(response,action,{owner=null,entry=null,fromAuraHold=false,request=''}={}){
     // Dispatch acceptance is not evidence of playing frames.
     if(response?.status==='observed'&&response?.playbackPhase==='playing'){
       if(entry!==null&&entry===activeAuraEntry&&entry!==urlAuraEntry)closeAura();
     }else if(response?.status==='accepted')auraStage('acting','Waiting for playback…',{entry});
     else if(response?.status==='observed')auraStage('complete',fromAuraHold?'Done · hold to talk':'Done · say a wake phrase',{entry});
     else if(response?.status==='needs_user_gesture')auraStage('error','Use the player control',{entry,kind:'warn'});
+    else if(response?.status==='unsupported'&&/^(?:the )?(?:video|youtube video)[.!?]*$/i.test(request.trim())){
+      const heard=request.trim().replace(/[.!?]+$/,'');
+      auraStage('error','I heard “'+heard+'.” Which video should I play?',{entry,kind:'warn'});
+    }
+    else if(response?.status==='unsupported')
+      auraStage('error','Try a video title or a Home Assistant light command.',{entry,kind:'warn'});
+    else if(response?.status==='uncertain'&&response.code?.startsWith('candidate_selection_'))
+      auraStage('error','I found possible videos but could not choose confidently. Hold to retry with a title or creator.',{entry,kind:'warn'});
     else auraStage('error','Please try again',{entry,kind:'warn'});
     const feedback=(message,type='info')=>status(message,type,owner);
     const phase=response?.playbackPhase;
@@ -761,11 +792,15 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       // Player acceptance, including an optimistic "playing" snapshot, is
       // not proof that new video frames have appeared for this URL request.
       report(urlPlayback&&result.mediaId&&result.status==='observed'?
-        {...result,status:'accepted'}:result,intent.tool,{owner,entry,fromAuraHold:context.fromAuraHold});
+        {...result,status:'accepted'}:result,intent.tool,{owner,entry,fromAuraHold:context.fromAuraHold,request:context.originalRequest||''});
       dismissAfterSuccess(result,intent.tool,requestRevision);
       // An accepted play handoff is the end of the voice task. Do not keep
       // the listening surface over a buffering or paused player.
-      if(context.voice)finishVoiceAura(owner,entry);
+      if(context.voice){
+        if(['failed','uncertain','unsupported','offline'].includes(result.status))retainVoiceAura(owner,entry);
+        else finishVoiceAura(owner,entry);
+      }
+      if(context.fromAuraHold&&result.status==='needs_user_gesture'&&entry===activeAuraEntry)closeAura();
       if(intent.tool==='search_and_play'&&['accepted','observed'].includes(result.status)&&result.mediaId){
         if(context.fromAuraHold&&entry===activeAuraEntry)closeAura();
         status('Video selected. Waiting for video frames…','info',owner);
@@ -796,7 +831,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       if(current()){
         status('Playback failed unexpectedly. Check the player.','warn',owner);
         auraStage('error','Playback failed',{entry,kind:'warn'});
-        finishVoiceAura(owner,entry);
+        if(context.voice)retainVoiceAura(owner,entry);
+        else finishVoiceAura(owner,entry);
       }
       return false;
     }finally{
@@ -863,21 +899,21 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         return true;
       }
       if(voice&&input.value.trim()===request)input.value='';
-      report(result,null,{owner,entry});
+      report(result,null,{owner,entry,request});
       if(videoOnly&&result.code==='codex_usage_limit')
         auraStage('error','Codex usage limit reached · retry after reset',{entry,kind:'warn'});
       else if(videoOnly&&result.code==='codex_busy')
         auraStage('error','Codex is still busy · retry later',{entry,kind:'warn'});
       else if(videoOnly&&(result.status==='unsupported'||result.code==='video_only_command'))
         auraStage('error','This URL only plays videos · use /ha/ for lights',{entry,kind:'warn'});
-      if(voice)finishVoiceAura(owner,entry);
+      if(voice)retainVoiceAura(owner,entry);
       return false;
     }catch{
       if(current()){
         if(voice&&input.value.trim()===request)input.value='';
         status('Codex is unavailable. Quick controls still work.','warn',owner);
         auraStage('error','Could not connect · try again',{entry,kind:'warn'});
-        if(voice)finishVoiceAura(owner,entry);
+        if(voice)retainVoiceAura(owner,entry);
       }
       return false;
     }finally{
@@ -1045,15 +1081,15 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
       }
       if(!result.text){
         status('No words recognized. Try speaking closer, or type a command.','warn',owner);
-        auraStage('error',"Didn't catch that",{entry,kind:'warn'});
-        finishVoiceAura(owner,entry);
+        auraStage('error',"I didn't catch that. Hold to try again.",{entry,kind:'warn'});
+        retainVoiceAura(owner,entry);
         return;
       }
       const command=stripTeslaMonWakePhrasePrefix(result.text);
       if(!command){
         status('Say a command after the wake phrase.','warn',owner);
-        auraStage('error',"Didn't catch that",{entry,kind:'warn'});
-        finishVoiceAura(owner,entry);
+        auraStage('error','Say what you would like me to do, then hold to try again.',{entry,kind:'warn'});
+        retainVoiceAura(owner,entry);
         return;
       }
       autoSend.cancel(); // Only the earlier typed timer; voice uses its own owner.
@@ -1072,8 +1108,8 @@ if(['stream.ameshalex.com','teslamon-stage.ameshalex.com'].includes(location.hos
         sttModelMessage=`${localStt.getState().selectedModel.label} could not finish loading or transcribing: ${detail}`;
         renderSttModelState(sttModelMessage);
         status(detail+' You can still type commands.','warn',owner);
-        auraStage('error','Could not understand · try again',{entry,kind:'warn'});
-        finishVoiceAura(owner,entry);
+        auraStage('error','I could not understand that. Hold to try again.',{entry,kind:'warn'});
+        retainVoiceAura(owner,entry);
       }
     }finally{
       clearElapsed();
